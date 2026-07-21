@@ -1,0 +1,1 @@
+vasmm68k_mot RiVA-0.54a0.s -nowarn=32 -devpac -Fhunkexe -Igg:os-include

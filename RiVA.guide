@@ -1,0 +1,1351 @@
+@database "RiVA.guide"
+@width 80
+@wordwrap
+@author "Stephen Fellner"
+
+@node main "RiVA --- AmigaGuide Documentation"
+@{b}
+---------------------------------------------------------------------------
+
+                   RiVA v0.52 - Realtime Video for Amiga
+
+              MPEG-1 Video Player for AmigaOS Classic Platform
+@{ub}
+                       Written by Stephen Fellner
+@{i}
+          (Additional programming by László Török and Apollo Team)
+@{ui}
+@{b}---------------------------------------------------------------------------@{ub}
+
+        @{"    Disclaimer    " link Disclaimer} Don't let this scare you off :-)
+        @{"   Introduction   " link Introduction} A few words about RiVA
+        @{"     Features     " link Features} What it CAN do
+        @{"   Limitations    " link Limitations} What's still missing
+        @{"   Performance    " link Performance} Just how fast is it ?
+        @{"   Requirements   " link Requirements} What you need
+        @{"   Installation   " link Installation} No install script ?
+        @{"   Transcoding    " link Transcoding} Preparation of input video
+        @{"      Usage       " link Usage} How to get it going
+        @{"     RivaGUI      " link RivaGUI} A starter GUI for RiVA
+        @{"   Current bugs   " link Bugs} All currently known bugs
+        @{"     History      " link History} Evolution of RivA...
+        @{"     Credits      " link Credits} Thank you all!
+        @{"     Contact      " link Contact} Who to blame...
+
+@{b}---------------------------------------------------------------------------@{ub}
+
+@endnode
+
+@node Disclaimer "Disclaimer"
+@{b}---------------------------------------------------------------------------
+                               Disclaimer
+---------------------------------------------------------------------------@{ub}
+
+This software package is provided "as is" without warranty of any kind,
+neither express or implied.
+
+In no event shall the author be held liable for any damages, direct, indirect,
+incidential, special or consequencial, resulting from the use, misuse, or
+inability to use this program.
+
+The author reserves the right to stop development of this software package,
+without notice, or any reason whatsoever.
+
+This archive may be freely distributed as long as all files are included, no
+modifications are done to any of the files and no files are added to the
+archive that may be inappropriate.
+
+Aminet is explicitly allowed to distribute this archive on its CDs.
+
+Magazines may distribute this archive on their coverdisk floppies or CDs,
+however I would be greatful for a copy of the magazine to be sent to me. Also
+I would assume that at least an EMail message would be sent to me so that I'm
+aware of such an event.
+
+@endnode
+
+@node Introduction "Introduction"
+@{b}---------------------------------------------------------------------------
+                              Introduction
+---------------------------------------------------------------------------@{ub}
+
+@{u}Foreword@{uu}
+
+RiVA is currently the fastest 68k MPEG player that exists for the Classic Amiga
+Platform. It was developed from scratch in 100% assembly language and is highly
+optimized to achieve the highest possible performance on Classic Amiga Systems.
+
+Take a look at the @{"Performance" link Performance} to see how RiVA compares
+to other MPEG Players.
+
+Development of RiVA started in 1997, and still continues today.
+
+Great care had been taken to ensure that RiVA is as stable and bug-free as
+possible. If you do find any bugs, please report it to the @{"author" link Contact}.
+
+The current version is far from complete, and has many missing features.
+
+I wish you much joy with RiVA, and I hope that it will give you endless
+hours of fun and enjoyment...
+
+@endnode
+
+@node Features "Features"
+@{b}---------------------------------------------------------------------------
+                                Features
+---------------------------------------------------------------------------@{ub}
+
+- RiVA can play any standard MPEG-1 Video Sequence.
+
+- Support for system streams
+
+- Audio support via mpega.library
+
+- Fast audio playback via audio.device
+
+- Retargetable audio via AHI sound system
+
+- Highly efficient AsyncIO reading
+
+- Full Picasso96 support (not emulated CyberGraphics)
+
+- CybergraphX support (including VLayer)
+
+- AGA support (with very fast c2p routines)
+
+- Fast, high-quality colour AGA modes (DHAM6 and DHAM8). Same as the STORM dither in
+  the MooVId AVI/MOV Player, but even faster!
+
+- HALFHEIGHT option to increase playback speed on AGA machines
+
+- PIP support under P96 (needs PIP-capable gfxcard, like the PIV or CV64/3D)
+
+- Can use the special PlanarAssist hardware of the PicassoIV to increase playback
+  speed. (Will require the next Picasso96 release!!)
+
+- VLayer support under CyberGraphX
+
+- Very efficient YUV to RGB conversion routines for fast TrueColor playback
+
+- Very fast, special HiColor playback mode to achive fastest possible speeds
+  in colour on gfxcards without PIP!
+
+- Custom HiColor routines for EVERY possible hicolor format. This gives high
+  performance on ANY GfxCard
+
+- Fast playback (it really is fast, check out the @{"speedtests" link Performance}!!!
+
+- High playback quality: RiVA uses high-precision arithmetic to provide
+  excellent playback quality in both grayscale and colour!
+
+- Fast, intelligent frame skipping, to be able to keep up with required frame
+  rate.
+
+- Written in pure 100% Assembly language!
+
+- Specially written to utilise the advanced pipeline caching of the 68060!
+
+- Intelligent display mode selection! RiVA should automatically find the best
+  display mode on your system automatically, so you don't need to worry about
+  specifying screen mode IDs or other options. For instance it will instantly
+  use PIP or Vlayer if available or will fall back to other alternative display
+  options if not.
+
+- On-the-fly zooming of PIP/VLayer window
+
+- Standard features like ASL filerequester, icon tooltypes, drag'n'drop...
+
+- Audio scaling when different framerate is specified
+
+- Surround Sound option (MONOSURROUND)
+
+- Fullscreen PIP mode (toggle with Enter key)
+
+- Pause mode (toggle with SPACE key)
+
+@endnode
+
+@node Limitations "Limitations"
+@{b}---------------------------------------------------------------------------
+                               Limitations
+---------------------------------------------------------------------------@{ub}
+
+
+@{u}The following features are currently missing:@{uu}
+
+- GUI (being worked on, RiVAGui would be an intermediate option)
+
+- VideoCD track reading (you need to grab the tracks for now...)
+
+- Files with bad audio/video mux settings don't play smoothly. RiVA uses
+  a systems layer processing with some constraints towards the buffer
+  size. Larger buffers delay the queue too long with Non-DMA disk input and
+  this might lead to stuttering video and drained audio. The current
+  tradeoff works fine for typical movies.
+
+- The Apollo AMMX version leaves out a number of video output modes. It will 
+  require P96 installed and configured.
+
+
+@endnode
+
+@node Performance "Performance"
+@{b}---------------------------------------------------------------------------
+                               Performance
+---------------------------------------------------------------------------@{ub}
+
+From these results you will be able to see that no other MPEG player can even
+come close to the speed of RiVA! This is especially true for the AMMX version
+on Vampire cards.
+
+Choose one of the machines below to see the performance of different MPEG
+players on that system:
+
+ @{" MACHINE 1 " link Benchmark1} A4000 68040/25 (A3640 rev3.1) RetinaBLT Z3 GfxCard
+
+ @{" MACHINE 2 " link Benchmark2} A4000 68060/50 & PPC604e/200 (CyberStormPPC) PicassoIV GfxCard
+
+ @{" MACHINE 3 " link Benchmark3} A1200 68040/40 (Blizzard 1260 revII)
+
+ @{" MACHINE 4 " link Benchmark4} A1200 68030/50 (Blizzard 1230/IV)
+
+ @{" MACHINE 5 " link Benchmark5} A500 68080/x11,x13, A4000 68060/50
+
+ @{" MACHINE 6 " link Benchmark6} A600 68080/x11-x14 (Vampire 600 V2)
+
+@endnode
+
+@node Benchmark1 "Benchmark 1"
+@{b}---------------------------------------------------------------------------
+                            Speedtest Results
+---------------------------------------------------------------------------@{ub}
+
+MACHINE: A4000 68040/25 (A3640 rev3.1) RetinaBLT Z3 GfxCard
+
+All values are in units of FPS (Frames Per Seconds)
+
+Notes:
+
+The AGA DHAM8 and DHAM6 modes are HAM8 and HAM6 modes with double horizontal
+resolution to simulate 18bit and 12bit modes with minimal HAM artifacts.
+Only RiVA and aMiPEG support these modes.
+
+The tables show both RiVA-0.40 and RiVA-0.20 so you can see how much speed has
+improved.
+
+This machine did not have FBlit installed because it would not work with P96,
+so AGA Frogger tests could possibly be faster...
+
+
+Grand.mpeg (160x120)
++----------------+-------+-------+-------+-------+------+---------+------+
+|                | True- |  Hi-  |  AGA  |  AGA  | AGA  |  Grey   | Grey |
+|                | Color | Color | DHAM8 | DHAM6 | 8bit | GfxCard | AGA  |
++----------------+-------+-------+-------+-------+------+---------+------+
+| RiVA-0.40      | 15.0  | 18.1  | 13.7  | 14.6  |  --- |  28.2   | 25.4 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| RiVA-0.20      | 13.3  | 15.7  |  ---  |  ---  |  --- |  24.4   | 22.3 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| aMiPEG 1.1     |  8.7  |  8.6  |  8.4  |  9.2  |  --- |  17.0   | 11.3 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| mpeg_play 1.03 |  8.2  |  ---  |  ---  |  ---  |  7.6 |   ---   | 11.0 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| Frogger 1.64b2 |  5.9  |  5.8  |  ---  |  ---  |  6.3 |  10.0   |  8.5 |
++----------------+-------+-------+-------+-------+------+---------+------+
+
+
+mgs_launch.mpg (320x240)
++----------------+-------+-------+-------+-------+------+---------+------+
+|                | True- |  Hi-  |  AGA  |  AGA  | AGA  |  Grey   | Grey |
+|                | Color | Color | DHAM8 | DHAM6 | 8bit | GfxCard | AGA  |
++----------------+-------+-------+-------+-------+------+---------+------+
+| RiVA-0.40      |  5.4  |  7.2  |  4.7  |  5.3  |  --- |  11.8   |  9.6 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| RiVA-0.20      |  4.8  |  6.3  |  ---  |  ---  |  --- |  10.1   |  8.6 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| aMiPEG 1.1     |  2.6  |  2.6  |  2.4  |  2.7  |  --- |   5.5   |  3.5 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| mpeg_play 1.03 |  2.6  |  ---  |  ---  |  ---  |  2.4 |   ---   |  3.8 |
++----------------+-------+-------+-------+-------+------+---------+------+
+| Frogger 1.64b2 |  2.2  |  2.0  |  ---  |  ---  |  2.1 |   4.2   |  3.0 |
++----------------+-------+-------+-------+-------+------+---------+------+
+
+@endnode
+
+@node Benchmark2 "Benchmark 2"
+@{b}---------------------------------------------------------------------------
+                            Speedtest Results
+---------------------------------------------------------------------------@{ub}
+
+MACHINE: A4000 68060/50 & PPC604e/200 (CyberStormPPC), PicassoIV GfxCard
+
+All values are in units of FPS (Frames Per Seconds)
+
+Notes:
+
+The AGA DHAM8 and DHAM6 modes are HAM8 and HAM6 modes with double horizontal
+resolution to simulate 18bit and 12bit modes with minimal HAM artifacts.
+Only RiVA and aMiPEG support these modes.
+
+This machine did not have FBlit installed because it would not work with P96,
+so AGA Frogger tests could possibly be faster.
+
+For Frogger I used 'DISPLAY VLayer' instead of 'DISPLAY P96' because it was much
+faster (I don't know why, they both use the PicassoIV's PIP)
+
+I've also included FroggerPPC tests, although it's stupid to compare 060/50 RiVA
+to 604/200 Frogger, but I was surprised how close RiVA playing on 68k is to
+Frogger playing on this PPC, even beating it in some cases!
+
+Maybe I should optimize some more... :)
+
+
+Grand.mpeg (160x120)
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+|                   | VLayer | True- |  Hi-  |  AGA  |  AGA  | AGA  |  Grey   | Grey |
+|                   | (PIP)  | Color | Color | DHAM8 | DHAM6 | 8bit | GfxCard | AGA  |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| RiVA-0.40         |  76.2  | 53.3  | 69.5  | 46.3  | 51.6  |  --- | 102.4   | 85.3 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| aMiPEG 1.1        |  ---   | 27.5  | 28.9  | 25.5  | 28.5  |  --- |  57.4   | 35.0 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| mpeg_play 1.03    |  ---   | 26.1  |  ---  |  ---  |  ---  | 22.5 |   ---   | 32.8 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| Frogger060 1.64b2 |  40.7  | 21.7  | 28.3  |  ---  |  ---  | 20.1 |  39.6   | 24.6 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| FroggerWOS 1.64b2 |  87.6  | 32.3  | 89.7  |  ---  |  ---  | 36.6 |  69.5   | 37.9 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+
+
+Xwing.mpg (320x240)
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+|                   | VLayer | True- |  Hi-  |  AGA  |  AGA  | AGA  |  Grey   | Grey |
+|                   | (PIP)  | Color | Color | DHAM8 | DHAM6 | 8bit | GfxCard | AGA  |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| RiVA-0.40         |  23.5  | 15.5  | 21.0  | 12.0  | 14.1  |  --- |  30.1   | 22.8 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| aMiPEG 1.1        |  ---   |  6.9  |  7.3  |  6.1  |  7.2  |  --- |  13.9   |  8.6 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| mpeg_play 1.03    |  ---   |  6.4  |  ---  |  ---  |  ---  |  5.6 |   ---   |  7.9 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| Frogger060 1.64b2 |  12.9  |  6.1  |  8.4  |  ---  |  ---  |  5.0 |  11.7   |  6.4 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+| FroggerWOS 1.64b2 |  31.5  |  8.9  | 30.3  |  ---  |  ---  |  8.8 |  21.8   | 10.9 |
++-------------------+--------+-------+-------+-------+-------+------+---------+------+
+
+
+@endnode
+
+@node Benchmark3 "Benchmark 3"
+@{b}---------------------------------------------------------------------------
+                            Speedtest Results
+---------------------------------------------------------------------------@{ub}
+
+MACHINE: A1200 68040/40 (Blizzard 1260 revII)
+
+All values are in units of FPS (Frames Per Seconds)
+
+Notes:
+
+The AGA DHAM8 and DHAM6 modes are HAM8 and HAM6 modes with double horizontal
+resolution to simulate 18bit and 12bit modes with minimal HAM artifacts.
+Only RiVA and aMiPEG support these modes.
+
+This machine had FBlit installed which should give the best performance
+with Frogger.
+
+Grand.mpeg (160x120)
++----------------+---------+---------+---------+--------+
+|                |   AGA   |   AGA   |  AGA    |  Grey  |
+|                |  DHAM8  |  DHAM6  |  8bit   |  AGA   |
++----------------+---------+---------+---------+--------+
+| RiVA-0.40      |  22.2   |  24.0   |   ---   |  39.8  |
++----------------+---------+---------+---------+--------+
+| aMiPEG 1.1     |  13.1   |  15.0   |   ---   |  23.0  |
++----------------+---------+---------+---------+--------+
+| Frogger 1.64b2 |   ---   |   ---   |  11.1   |  15.1  |
++----------------+---------+---------+---------+--------+
+
+Xwing.mpg (320x240)
++----------------+---------+---------+---------+--------+
+|                |   AGA   |   AGA   |  AGA    |  Grey  |
+|                |  DHAM8  |  DHAM6  |  8bit   |  AGA   |
++----------------+---------+---------+---------+--------+
+| RiVA-0.40      |   6.0   |   6.9   |   ---   |  10.8  |
++----------------+---------+---------+---------+--------+
+| aMiPEG 1.1     |   3.3   |   3.8   |         |   5.7  |
++----------------+---------+---------+---------+--------+
+| Frogger 1.64b2 |   ---   |   ---   |   3.4   |   4.3  |
++----------------+---------+---------+---------+--------+
+
+@endnode
+
+
+@node Benchmark4 "Benchmark 4"
+@{b}---------------------------------------------------------------------------
+                            Speedtest Results
+---------------------------------------------------------------------------@{ub}
+
+MACHINE: A1200 68030/50 (Blizzard 1230/IV)
+
+All values are in units of FPS (Frames Per Seconds)
+
+Notes:
+
+The AGA DHAM8 and DHAM6 modes are HAM8 and HAM6 modes with double horizontal
+resolution to simulate 18bit and 12bit modes with minimal HAM artifacts.
+Only RiVA and aMiPEG support these modes.
+
+This machine had FBlit installed which should give the best performance
+with Frogger.
+
+Grand.mpeg (160x120)
++----------------+---------+---------+---------+--------+
+|                |   AGA   |   AGA   |  AGA    |  Grey  |
+|                |  DHAM8  |  DHAM6  |  8bit   |  AGA   |
++----------------+---------+---------+---------+--------+
+| RiVA-0.40      |  10.5   |  11.5   |   ---   |  18.5  |
++----------------+---------+---------+---------+--------+
+| aMiPEG 1.1     |   6.5   |   6.9   |   ---   |   5.2  |
++----------------+---------+---------+---------+--------+
+| Frogger 1.64b2 |   ---   |   ---   |   5.3   |   4.8  |
++----------------+---------+---------+---------+--------+
+
+Xwing.mpg (320x240)
++----------------+---------+---------+---------+--------+
+|                |   AGA   |   AGA   |  AGA    |  Grey  |
+|                |  DHAM8  |  DHAM6  |  8bit   |  AGA   |
++----------------+---------+---------+---------+--------+
+| RiVA-0.40      |   3.0   |   3.5   |   ---   |   5.5  |
++----------------+---------+---------+---------+--------+
+| aMiPEG 1.1     |   1.6   |   1.7   |   ---   |   1.4  |
++----------------+---------+---------+---------+--------+
+| Frogger 1.64b2 |   ---   |   ---   |   1.6   |   2.0  |
++----------------+---------+---------+---------+--------+
+
+
+@endnode
+
+@node Benchmark5 "Benchmark 5"
+@{b}---------------------------------------------------------------------------
+                            Speedtest Results
+---------------------------------------------------------------------------@{ub}
+
+MACHINES:
+A4000, 68060/50 MHz, CS MK-I (Mem Speed "medium", 112 MB), Cybervision 64 / 4MB
+A500,  68080/x11 (78 MHz) with Vampire V500 V2, V500_3686_magic_797.jic (Gold2)
+A500,  68080/x13 (92 MHz) with Vampire V500 V2, V500_3690_x13_90.jic
+
+Notes:
+ All tests were run from RAM:
+ All values are in units of FPS (Frames Per Seconds)
+ Script running in Shell-Window after booting to workbench, no WBStartup
+ The first 3 tests were in Fullscreen with a Resolution selected by P96.
+ Workbench was set to 16 Bit, 800x600 (windowed mode test)
+
+SHK_TopGun320 (320x192)
++-------------------------+--------+-------+-------+-------+
+|                         | Hi-    | Gray  | True- | Win-  |
+|                         | Color  |       | Color | dow   |
++-------------------------+--------+-------+-------+-------+
+| A4k RiVA-0.52 68k       |   27.4 |  33.6 |  17.9 |  27.4 |
++-------------------------+--------+-------+-------+-------+
+| A4k RiVA-0.50           |   22.1 |  29.1 |  16.0 |  20.2 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.52 AMMX |  123.9 | 128.8 | 103.0 |  97.8 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.52 68k  |   67.4 |  84.6 |  38.9 |  65.2 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.50      |   44.5 |  62.4 |  32.1 |  40.1 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.52 AMMX |  147.7 | 153.4 | 122.7 | 116.8 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.52 68k  |   80.6 | 101.4 |  46.6 |  78.2 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.50      |   54.0 |  74.5 |  38.9 |  48.9 |
++-------------------------+--------+-------+-------+-------+
+
+SHK_TopGun640 (640x360)
++-------------------------+--------+-------+-------+-------+
+|                         | Hi-    | Gray  | True- | Win-  |
+|                         | Color  |       | Color | dow   |
++-------------------------+--------+-------+-------+-------+
+| A4k RiVA-0.52 68k       |   10.3 |  13.3 |   5.6 |  10.3 |
++-------------------------+--------+-------+-------+-------+
+| A4k RiVA-0.50           |    7.3 |  10.1 |   4.9 |   6.4 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.52 AMMX |   47.6 |  51.7 |  31.8 |  35.6 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.52 68k  |   29.0 |  39.8 |  12.6 |  28.2 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.50      |   16.1 |  25.2 |  10.2 |  14.1 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.52 AMMX |   56.4 |  62.0 |  39.1 |  42.4 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.52 68k  |   34.6 |  48.2 |  15.1 |  33.9 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.50      |   19.7 |  31.5 |  12.3 |  17.4 |
++-------------------------+--------+-------+-------+-------+
+
+
+SHK_Tron (640x360, 2 MBit/s)
++-------------------------+--------+-------+-------+-------+
+|                         | Hi-    | Gray  | True- | Win-  |
+|                         | Color  |       | Color | dow   |
++-------------------------+--------+-------+-------+-------+
+| A4k RiVA-0.52 68k       |        |       |       |       |
++-------------------------+--------+-------+-------+-------+
+| A4k RiVA-0.50           |        |       |       |       |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.52 AMMX |   27.8 |  29.5 |  21.6 |  23.2 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.52 68k  |   15.4 |  19.4 |   9.1 |  15.1 |
++-------------------------+--------+-------+-------+-------+
+| V500/x11 RiVA-0.50      |    9.3 |  12.8 |   7.0 |   8.6 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.52 AMMX |   33.0 |  35.2 |  26.1 |  27.5 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.52 68k  |   18.7 |  23.8 |  11.0 |  18.4 |
++-------------------------+--------+-------+-------+-------+
+| V500/x13 RiVA-0.50      |   11.5 |  16.2 |   8.5 |  10.7 |
++-------------------------+--------+-------+-------+-------+
+
+
+@endnode
+
+@node Benchmark6 "Benchmark 6"
+@{b}---------------------------------------------------------------------------
+                            Speedtest Results
+---------------------------------------------------------------------------@{ub}
+
+MACHINE:
+A600, Vampire 600V2
+
+Notes:
+- Tron lightcycle scene, 640x360, 2 MBit/s, 24 Hz
+- mpega.library 2.0 using Paula in 44.1 kHz, 128 kBit/s MPEG-Audio Layer II
+- Fullscreen use HICOLOR RGB565 with 0.50 and 0.52-m68k and high-quality YUV 
+  with 0.52-apollo
+- Window modes use SAGA 960x540 @ 50Hz HiColor and TrueColor Workbench 
+  screenmodes.											
+
+
+Vampire V600 - Core GOLD2 @ 78MHz - x11
++-----------------------+-------------------+-----------------+------------------+
+|                       |  RiVA-0.50 (ORI)  | RiVA-0.52-m68k  | RiVA-0.52-apollo |
++-----------------------+------+------+-----+------+----------+------------------+
+|                       |  FPS | SKIP       |  FPS | SKIP     | FPS  | SKIP      |
+|Fullscreen HiColor/YUV |  7,8 | 4156   68% | 10,9 | 3363 55% | 21,7 |  607 10%  |
+|Window HiColor         |  6,7 | 4425   72% | 10,6 | 3428 56% | 17,6 | 1664 27%  |
+|Window TrueColor       |   -  |    -     - |   -  |    -   - | 16,8 | 1865 30%  |
+|-----------------------+------+------------+------+----------+------------------+
+
+Vampire V600 - Core GOLD2 @ 85MHz - x12
++-----------------------+-------------------+-----------------+------------------+
+|                       |  RiVA-0.50 (ORI)  | RiVA-0.52-m68k  | RiVA-0.52-apollo |
++-----------------------+------+------------+------+----------+------------------+
+|                       |  FPS | SKIP       |  FPS | SKIP     | FPS  | SKIP      |
+|Fullscreen HiColor/YUV |  9,4 | 3746   61% | 13,0 | 2818 46% | 24,0 |    1  0%  |
+|Window HiColor         |  8,4 | 3987   65% | 12,3 | 2999 49% | 19,6 | 1153 19%  |
+|Window TrueColor       |   -  |    -     - |   -  |    -   - | 18,8 | 1363 22%  |
+|-----------------------+------+------------+------+----------+------------------+
+
+Vampire V600 - Core GOLD2 @ 92MHz - x13
++-----------------------+-------------------+-----------------+------------------+
+|                       |  RiVA-0.50 (ORI)  | RiVA-0.52-m68k  | RiVA-0.52-apollo |
++-----------------------+------+------------+------+----------+------------------+
+|                       |  FPS | SKIP       |  FPS | SKIP     | FPS  | SKIP      |
+|Fullscreen HiColor/YUV | 10,8 | 3541   58% | 14,3 | 2491 41% | 24,0 |    1  0%  |
+|Window HiColor         |  9,1 | 3816   62% | 13,9 | 2590 42% | 20,6 |  889 14%  |
+|Window TrueColor       |   -  |    -     - |   -  |    -   - | 19,9 | 1062 17%  |
+|-----------------------+------+------------+------+----------+------------------+
+
+Vampire V600 - Core GOLD2 @ 99MHz - x14
++-----------------------+-------------------+-----------------+------------------+
+|                       |  RiVA-0.50 (ORI)  | RiVA-0.52-m68k  | RiVA-0.52-apollo |
++-----------------------+------+------------+------+----------+------------------+
+|                       |  FPS | SKIP       |  FPS | SKIP     | FPS  | SKIP      |
+|Fullscreen HiColor/YUV | 10,8 | 3380   55% | 15,2 | 2262 37% | 24,0 |    1  0%  |
+|Window HiColor         |  9,7 | 3664   60% | 14,3 | 2479 40% | 20,9 |  820 13%  |
+|Window TrueColor       |   -  |    -     - |   -  |    -   - | 19,8 | 1104 18%  |
+|-----------------------+------+------------+------+----------+------------------+
+
+
+@endnode
+
+@node Requirements "Requirements"
+@{b}---------------------------------------------------------------------------
+                               Requirements
+---------------------------------------------------------------------------@{ub}
+
+@{u}Minimum Configuration 68k version:@{uu}
+
+ - An Amiga with AGA (ie. A1200 or A4000) or a graphics card.
+
+ - Kickstart 3.1 or higher (and CyberGraphics/Picasso96 for graphics cards)
+
+ - A 68020 processor (no FPU needed)
+
+ - 1MB of memory.
+
+ - mpega.library installed to enable audio
+
+@{u}Recommended Configuration:@{uu}
+
+ - A graphics card with Picasso96 (and preferably one with PIP hardware)
+
+ - A 68060 processor (you really need this for smooth fullscreen playback)
+
+@{u}Optimal Configuration:@{uu}
+
+ - Vampire Card with Gold2 or newer Core installed
+
+ - Picasso96 with latest saga.card driver and a number of 16 Bit screenmodes 
+   (including typical video resolutions like 320x240, 640x480, 800x600 or 
+    similar, depending on monitor aspect ratio )
+
+ - mpega.library installed to enable audio (use the faster original mpega 
+   instead of the libMAD based one)
+
+ - asyncio.library
+
+
+@endnode
+
+@node Installation "Installation"
+@{b}---------------------------------------------------------------------------
+                               Installation
+---------------------------------------------------------------------------@{ub}
+
+RiVA does not need any installation, just copy it to a convenient place on
+your harddisk or SSD.
+
+@endnode
+
+
+@node Transcoding "Transcoding"
+@{b}---------------------------------------------------------------------------
+                               Transcoding
+---------------------------------------------------------------------------@{ub}
+
+MPEG-1 has never been the most widespread format, as the Video-CD was not too 
+successul in a commercial sense. One exception to this observation applies to 
+some digital cameras in the mid-2000s which were coding video clips in MPEG-1 
+format. 
+
+The bottom line is: Common video material "in the wild" requires transcoding to
+be usable with RiVA. This way you can ensure that the video resolution and bit
+rate are in ranges that work well with Amiga computers.
+
+For the development of RiVA 0.52, FFMPEG and MEncoder have been used to 
+generate the streams.
+
+FFMPEG / MENCODER examples (16:9 aspect ratio):
+
+ffmpeg -i source.mp4 -vcodec mpeg1video -filter:v scale=640:360 -b:v 1500k -bf 3 -ac 2 -acodec mp2 -b:a 128k dest_640x360.mpg
+
+mencoder -of mpeg -mpegopts format=mpeg1:tsaf:muxrate=1500 -o dest_640x360.mpg -aid 1 -vf scale=640:360 -ofps 24 -oac lavc -ovc lavc -lavcopts acodec=mp2:abitrate=128:vcodec=mpeg1video:vbitrate=1500:keyint=15:mbd=2:aspect=16/9:vmax_b_frames=3 source.mp4
+
+Please replace source.mp4 and dest_640x360.mpg with the actual file names.
+Both commandlines are supposed to be one-liners. The video bit rate of 
+1.5 MBit/s works well with Vampire cards at 78 MHz (x11, Gold2 release).
+
+Something like 192x144 would be a sensible choice for 68k silicon (68060), 
+along with bit rates in the 300-500 kBit/s range.
+
+@endnode
+
+
+@node Usage "Usage"
+@{b}---------------------------------------------------------------------------
+                                   Usage
+---------------------------------------------------------------------------@{ub}
+
+RiVA can be started by one of the following ways:
+
+1. By Double-clicking its icon and selecting a file from the requester
+2. By dragging a file on top of RiVA's icon
+3. Using the command line (Shell)
+4. By using the @{"RivaGUI" link RivaGUI} starter program
+
+To abort playback, press escape or close the window
+
+The Enter key can be used during playback to toggle between fullscreen and
+window mode. (only on graphics cards)
+
+The Space can be used to toggle between Halfheight and Normal mode (on AGA only)
+
+For PIP/VLayer playback, the + and - keys on the numeric keypad can be used to
+zoom the window. Additionally, you can press keys 1-6 on your keyboard for preset
+zoom values (100%, 150%, 200%, 300%, 400% and 500% respectively).
+
+
+Additionally, RiVA can be configured by the following ways:
+
+1. Adjusting its icon's tooltypes
+2. Specifying command-line options
+
+
+Below is a list of each option with detailed description of what it's for. Please
+bear in mind that most options will have an impact on the runtime performance. Windowed
+mode is way slower than fullscreen, AHI is way slower than Paula audio. For Vampire
+tuning, have a look at DISPLAY, AUDIOQUALITY and AUDIOFREQDIV.
+
+@{u}@{b}OPTIONS:@{uu}@{ub}
+
+@{u}DISPLAY@{uu}
+
+  @{b}USAGE:@{ub} DISPLAY=<keyword>
+
+  @{b}DESCRIPTION:@{ub}
+
+  Selects desired display type. This allows you to specify what display format
+  RiVA should use for playback. This is useful if the default display RiVA
+  selected automatically is not what you want. For instance you may want to use
+  a faster HICOLOR mode, instead of the higher quality TRUECOLOR (default).
+
+  Available display types are:
+
+    HICOLOR.........16bit HiColor Screen (Truecolor YUV on Vampire cards, fastest 
+                    display option for AMMX version)
+
+    WINDOW..........Normal Window (only on HiColor/TrueColor screens)
+
+    GRAY/GREY.......Standard 8bit grayscale (fastest mode available for 68k)
+
+    TRUECOLOR.......24bit or 32bit TrueColor Screen
+
+    PIP.............Picture-In-Picture (VLayer) Window, not for AMMX
+
+    ACCUPAK.........Special fast YUV Color Mode (available on PicassoIV only)
+
+    DHAM8...........Double-width HAM8 Colour AGA mode (default on AGA)
+
+    DHAM6...........Double-width HAM6 Colour AGA mode (very fast!)
+
+  In Command Line (Shell) mode it is also possible to use 'DISPLAY ?' which brings
+  up a display selection menu.
+
+  @{b}EXAMPLE:@{ub} DISPLAY=HICOLOR
+
+@{u}ZOOM@{uu}
+
+  @{b}USAGE:@{ub} ZOOM=<percentage>
+
+  @{b}DESCRIPTION:@{ub}
+
+  This option lets you specify a default zoom value for PIP (VLayer) playback. The
+  value is a percentage.
+
+  @{b}EXAMPLE:@{ub} ZOOM=200
+
+@{u}FPS@{uu}
+
+  @{b}USAGE:@{ub} FPS=<value>
+
+  @{b}DESCRIPTION:@{ub}
+
+  Allows framerate to be specified. This lets you control playback speed.
+  It's useful since some MPEGs have been encoded with the wrong framerate, this
+  lets you specify the correct framerate for those files.
+
+  It's also useful in combination with the NOSKIP and VERBOSE options to test the
+  maximum speed your machine can play a particular MPEG with the given DISPLAY mode.
+  (ie FPS 1000 NOSKIP VERBOSE as command line arguments give you the maximum speed)
+
+  @{b}EXAMPLE:@{ub} FPS=15
+
+@{u}NOSKIP@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Disables frame-skipping. With this option, RiVA will not attempt to keep
+  up with the specified framerate by skipping frames.
+
+  This option is not recommended with files containing audio, because framerate may
+  not be maintained correctly, causing audio 'gaps'.
+
+@{u}HALFHEIGHT@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Displays MPEG with halved vertical resolution. This mode will only work in AGA
+  modes and achieves great speedup in colour! Also requires Kickstart 3.1+ !
+  Will only work in PAL!
+
+@{u}PICASSO96@{uu}
+
+  @{b}DESCRIPTION:@{ub} Forces RiVA to use Picasso96 graphics system.
+
+@{u}BORDERLESS@{uu}
+
+  @{b}DESCRIPTION:@{ub} Forces RiVA to open playing window without GUI borders.
+
+@{u}CYBERGFX@{uu}
+
+  @{b}DESCRIPTION:@{ub} Forces RiVA to use CyberGfx system.
+
+@{u}AGA@{uu}
+
+  @{b}DESCRIPTION:@{ub} Use PAL screen on AGA.
+
+@{u}FULLPIP@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Displays MPEGs in a fullscreen borderless PIP window. The Enter key can be
+  used to toggle between fullscreen mode and normal mode during playback.
+
+
+@{u}PIVPLANARASSIST@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Uses the special PlanarAssist hardware of the PicassoIV.
+
+  This option is not available with the current Picasso96 v2.0 release. It
+  requires a special PicassoIV.card, which has never been officially released
+  by the Picasso96 team.
+
+  When this is enabled, PIP playback will be considerably faster.
+
+@{u}AHI@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Forces RiVA to output audio via AHI. If audio.device cannot be opened (e.g.
+  on non-classic Amigas), RiVA shall try to use AHI by default. On classic
+  Amiga systems RiVA will use the standard audio.device, unless this option
+  is specified. Please note that AHI is not well runtime optimized. Enabling 
+  AHI will reduce the overall playback speed.
+
+@{u}HQAUDIO@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  This option will enable 14 Bit audio output over Paula. The corresponding
+  code is quite runtime optimized and will perform better than AHI.
+  
+  Please note that this option also enables true 16 Bit audio output on 
+  Vampire V4.
+
+@{u}NOAUDIO@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Disables audio playback. If no audio output is required, this option will
+  greatly speed up playback.
+
+@{u}NOVIDEO@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Disables video decoding. Can be useful if only audio playback is desired.
+
+@{u}NORENDER@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Disables video display. Video is decoded, but not displayed. Useful for testing
+  how much your video bandwith is limiting playback speed. (you can compare
+  speed test with and without this option to see if it's worth upgrading to a
+  GfxCard with faster memory bus :))
+
+@{u}NOP@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Forces P frames to be skipped. (Useful for performance calculations)
+
+@{u}NOB@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Forces B frames to be skipped. (Useful for performance calculations)
+
+@{u}PUBSCREEN@{uu}
+
+  @{b}USAGE:@{ub} PUBSCREEN=<public screen name>
+
+  @{b}DESCRIPTION:@{ub}
+
+  This option lets you specify a public screen on which the RiVA window is to be
+  opened. (By default the window is opened on the Workbench screen)
+
+  @{b}EXAMPLE:@{ub} PUBSCREEN=MyPublicScreen
+
+@{u}MONOSURROUND@{uu}
+
+  @{b}DESCRIPTION:@{ub}
+
+  Enables an experimental surround audio effect. This option should make audio to
+  be more enjoyable compared to a flat mono sound. May increase synchronisation
+  problems though.  
+
+@{u}AUDIOQUALITY@{uu}
+
+  @{b}USAGE:@{ub} AUDIOQUALITY=<value>
+
+  @{b}DESCRIPTION:@{ub}
+
+  Lets you specify the quality of audio decoding. The quality options are the same
+  as in mpega:
+
+  AUDIOQUALITY=0....Worst Quality
+  AUDIOQUALITY=1....Medium Quality
+  AUDIOQUALITY=2....High Quality
+
+  Default is 1 (Medium Quality).
+
+  If illegal values are encountered, the default setting will be used.
+
+@{u}AUDIOFREQDIV@{uu}
+
+  @{b}USAGE:@{ub} AUDIOFREQDIV=<value>
+
+  @{b}DESCRIPTION:@{ub}
+
+  Frequency division to be used for audio decoding. Values are the same as in mpega:
+
+  AUDIOFREQDIV=1....Use Full Frequency (ie. 32 kHz, 44.1 kHz, 48 kHz...)
+  AUDIOFREQDIV=2....Use Half Frequency (ie. 16 kHz, 22 kHz, 24 kHz...)
+  AUDIOFREQDIV=4....Use Quarter Frequency (ie. 8 kHz, 11 kHz, 12 kHz...)
+
+  Higher frequency means more CPU time used, resulting in slower video updates.
+
+  Default is 2 (Half Frequency).
+
+  For illegal values given, the default setting will be used.
+
+  The AMMX version of RiVA will check whether ECS is available and
+  also whether the Amiga Chipset is likely in double scan mode (P96
+  environment variable ENV:Picasso96/AmigaVideo ). If that is the
+  case, the default will be 1 for no frequency division. Bear in
+  mind that AUDIOFREQDIV=1 won't work on OCS Amigas when the sampling
+  rate is >28 kHz.
+
+@{u}SAVEAUDIO@{uu}
+
+  [command-line only]
+
+  @{b}USAGE:@{ub} SAVEAUDIO=<audio filename>
+
+  @{b}DESCRIPTION:@{ub}
+
+  This option lets you save the audio from MPEG files with audio.
+
+  The audio will be constantly saved into the file during playback until the end
+  of the MPEG file is reached or the user aborts playback.
+
+  IMPORTANT: Make sure you have enough free space for the audio to be saved!
+
+  @{b}EXAMPLE:@{ub} SAVEAUDIO=RAM:MyAudioFile.mp2
+
+@{u}DEFAULTDIR@{uu}
+
+  @{b}USAGE:@{ub} DEFAULTDIR=<path for default directory>
+
+  @{b}DESCRIPTION:@{ub}
+
+  The default directory used in the filerequester can be specified with this option.
+
+  @{b}EXAMPLE:@{ub} DEFAULTDIR="Work:MyMovies/MPEGs"
+
+@{u}VGA or MULTISCAN@{uu}
+
+  [command-line only]
+
+  @{b}DESCRIPTION:@{ub}
+
+  Use Multiscan Productivity screen on AGA. Currently only available as command
+  line argument and not yet implemented in colour modes (in colour it'd be much
+  slower due to increased AGA bandwidth usage and HALFHEIGHT option is not
+  possible). Best to use a scandoubler, but I can implement this if requested.
+
+@{u}RTG or AKIKO@{uu}
+
+  [command-line only]
+
+  @{b}DESCRIPTION:@{ub}
+
+  Use OS RTG rendering routines. This should also automatically use the AKIKO C2P
+  hardware of a CD32 if available.
+
+@{u}VERBOSE@{uu}
+
+  [command-line only]
+
+  @{b}DESCRIPTION:@{ub}
+
+  Displays some information about the MPEG being played and gives some statistical
+  feedback (ie. playback speed etc.)
+
+@endnode
+
+
+
+@node RivaGUI "RivaGUI"
+@{b}---------------------------------------------------------------------------
+                                 RivaGUI
+---------------------------------------------------------------------------@{ub}
+
+
+RivaGUI is a simple MUI-based starter application, designed to make using RiVA
+more convenient.
+
+With this program you can select an MPEG file for playing, set a number of
+options for playback (video and audio options) and RiVA will be invoked with
+the appropriate command line options, when the Play button is pressed.
+
+You can also specify the RiVA Executable file, which you want RivaGUI to use for
+playback.
+
+The 'Save Prefs' button saves the settings in a prefs file, including the path
+of the directory in which the last MPEG file was selected.
+
+The 'Load Prefs' button loads the last saved settings.
+
+RivaGUI was written by Gábor Nagy.
+
+RivaGUI may be used with the AMMX version as well. The commandline options
+were kept compatible. Please refer to the @{"Usage" link Usage} section
+for information how the RivaGUI settings map on the commandline and
+tooltypes.
+
+@endnode
+
+
+
+
+@node Reg "Registration"
+@{b}---------------------------------------------------------------------------
+                               Registration
+---------------------------------------------------------------------------@{ub}
+
+
+When you register RiVA, you will receive the full version which has colour
+playback as well.
+
+By registering you also support the development of RiVA and other future
+Amiga projects.
+
+The quickest and easiest way to register is via RegNet. To register online, go
+to the following webpage:
+
+  https://secure.reg.net/Product.asp?ID=9546
+
+Using RegNet, you will normally receive your registration within 48 hours.
+
+Please use the online registartion if possible, because registration via
+snail-mail is not only slower, but is also more risky (the postman could
+get rich...)
+
+If there's no way you can register online, you can register by sending the
+registration fee along with a registration form in an envelope via conventional
+mail to the following address:
+
+         Istvan Fellner
+         1139 Budapest
+         Szegedi ut 5. II/22.
+         HUNGARY
+
+Here is a list of currencies and the amount required as the registration fee
+that will be accepted:
+
+  10 UKP  (UK Pounds)
+  15 USD  (US Dollars)
+  15 EURO (Adopted currency in the European Union)
+
+Only cash is accepted, no foreign cheques, bank transfers or money orders...
+
+DO NOT USE COINS! Only use bank notes and always put the money between a few
+pages of paper so that it is not obvious that there is money in there,
+otherwise the mailman could get rich, and I may never get your registration. :(
+
+After your registration was received, the full version will be sent to you
+in the form you have specified in your registration form. Typical delivery
+time using conventional snail mail is between 1 and 2 weeks. When using
+email, the program should be sent to you on the same day of receiving the
+registration fee.
+
+Please take your time to fill in all the information on the registration form.
+
+With your registration you support my program and encourage me to continue
+development of RiVA and other great programs for the Amiga.
+
+Thank you for supporting the Amiga and the concept of shareware!
+
+@endnode
+
+@node Bugs "Current Bugs"
+@{b}---------------------------------------------------------------------------
+                               Current Bugs
+---------------------------------------------------------------------------@{ub}
+
+If you find any bugs, crashes or unpredictable behaviour of this program,
+please do not hesistate to contact the @{"author" link Contact}.
+
+If you contact me with a bugreport, please give me a detailed description of
+your system configuration (both software and hardware) and describe exactly how
+the crash happened, so I can try to reproduce the bug with a similar configuration
+under the same situation.
+
+@endnode
+
+@node History "History"
+@{b}---------------------------------------------------------------------------
+                                 History
+---------------------------------------------------------------------------@{ub}
+
+******************************************************************************
+*                           RiVA Revision History                            *
+*                                                                            *
+* 0.1     (18 Jun 1999)                                                      *
+*         - First public release                                             *
+*                                                                            *
+* 0.11    (5 Jul 1999)                                                       *
+*         - ADDED FPS limiting code, intelligent frame-skipping, FPS and     *
+*           NOSKIP options.                                                  *
+*         - Completely redesigned Video Stream parser                        *
+*         - Major code structure redesign! (better internal error            *
+*           detection)                                                       *
+*         - ADDED Automatic screen-centering                                 *
+*         - IMPROVED Playback quality (more contrast - as it's supposed      *
+*           to be)                                                           *
+*         - IMPROVED Looping - now loops properly with as much skipping      *
+*           as you like! it skips over end of anim and skips into the        *
+*           exact(!) place needed to keep the loop playback constant.        *
+*         - IMPROVED Frametime code (optimisations)                          *
+*         - ADDED ESC-Quit detect on screens too + fixed PIP close bug.      *
+*         - ADDED HiColor dither (faster colour playback)                    *
+*         - ADDED DITHER option with help/request (using 'DITHER ?')         *
+*         - Complete redesign of DitherMode selection logic                  *
+*         - ADDED On-the-fly dither selection!!! (using SPACE bar)           *
+*         - IMPROVED CybergraphX support                                     *
+*                                                                            *
+* 0.12    (8 Jul 1999)                                                       *
+*         - PIP bugfix by László Török                                       *
+*                                                                            *
+* 0.20    (27 Aug 1999)                                                      *
+*         - ADDED P frame support                                            *
+*         - Major changes in internal code structure                         *
+*         - FIXED all known decoder bugs                                     *
+*         - FIXED some old bugs which caused incorrect decoding of P frames  *
+*           in some very rare MPEG files                                     *
+*         - FIXED XING framerate (Was 8 fps, now 15 fps)                     *
+*         - Implemented new frame-skipping routines to handle P and B frames *
+*                                                                            *
+* 0.21    (4 Sep 1999)                                                       *
+*         - Fixed bug which caused crashes on some 030-based systems without *
+*           a gfxcard                                                        *
+*                                                                            *
+* 0.30    (2 Apr 2000)                                                       *
+*         - OPTIMIZED IDCT routines (up to 15% global speedup)               *
+*         - OPTIMIZED B-frame skipping (up to 60% global speedup!)           *
+*         - ADDED AsyncIO (smooth real-time load/playback)                   *
+*         - Major internal code re-design (for system stream code)           *
+*         - ADDED System Stream support (FINALLY !!! :-)                     *
+*         - FIXED many major and minor bugs...                               *
+*                                                                            *
+* 0.33    (4 Dec 2000)                                                       *
+*         - ADDED CyberGraphX VLayer support                                 *
+*         - ADDED support for more 15/16bit modes                            *
+*         - ADDED Experimental PicassoIV PlanarAssist and Accupak options    *
+*           (Great speedup, especially on Z2 machines!)                      *
+*         - ADDED ZOOM option for PIP/VLayer.                                *
+*         - ADDED PIP/VLayer on-the-fly zoom slection (1-6 and +/-)          *
+*         - ADDED Colour AGA support (AGA8 and AGA6)                         *
+*         - ADDED HALFHEIGHT option for faster AGA playback                  *
+*         - ADDED ASL File Requester                                         *
+*         - ADDED Workbench start support (no more shell-only usage)         *
+*         - ADDED on-the-fly half/full height selection (use SPACE bar)      *
+*           (Note this only works in AGA modes!)                             *
+*         - ADDED Workbench Argument reading. You can drag'n'drop files onto *
+*           the RiVA icon and RiVA will start playing them.                  *
+*         - ADDED Workbench tooltype parsing (RiVA can now be configured via *
+*           its icon's tooltypes)                                            *
+*                                                                            *
+* 0.34    (8 Dec 2000)                                                       *
+*         - CHANGED AsyncIO code (New AsyncIO rulez!)                        *
+*         - Re-implemented LOOP option (with new AsyncIO)                    *
+*         - ADDED Seek option (F1-F10 allows seeking into bigger files)      *
+*         - FIXED AGA dither selection (now defaults to AGA8)                *
+*                                                                            *
+* 0.35    (30 Dec 2000)                                                      *
+*         - FIXED bug in closedown code (buffers not freed, etc. LAME!)      *
+*         - ADDED experimental audio support!!!!                             *
+*                                                                            *
+* 0.36    (8 Feb 2001)                                                       *
+*         - FIXED FPS counter bug introduced in 0.34                         *
+*         - FIXED Seek bug in new AsyncIO                                    *
+*         - OPTIMIZED IDCT algorithm (a bit more speed... again... :)        *
+*         - ADDED NOAUDIO option (to disable experimental audio :)           *
+*                                                                            *
+* 0.37    (9 Feb 2001)                                                       *
+*         - IMPROVED Audio Support (PAL/NTSC autodetect, now supports any    *
+*           frequency (ie. 32kHz, 44.1kHz, 48kHz)                            *
+*         - FIXED lots of Audio bugs... :)                                   *
+*                                                                            *
+* 0.38    (10 Feb 2001)                                                      *
+*         - Temporarily removed F1-F10 seek and LOOP options (until Audio    *
+*           support is finalized... sorry guys :)                            *
+*         - Some cleanups (removed some old obsolete stuff...)               *
+*         - REMOVED NOIDCT switch (not really needed)                        *
+*                                                                            *
+* 0.39    (10 Feb 2001)                                                      *
+*         - Implemented Audio Scaling (audio is scaled to fit specified      *
+*           framerate)                                                       *
+*         - ADDED extra key input check (if video can't keep up)             *
+*                                                                            *
+* 0.40    (11 Feb 2001)                                                      *
+*         - ADDED NOVIDEO and SAVEAUDIO options                              *
+*         - IMPROVED Audio support (uses both left & right channels)         *
+*         - FIXED a bug introduced in 0.39 which caused crashes on streams   *
+*           with no audio                                                    *
+*         - ADDED MONOSURROUND option                                        *
+*         - Updated icon tooltype parsing                                    *
+*         - Changed 'DITHER' keyword to 'DISPLAY' in tooltype (both can be   *
+*           used as command-line argument)                                   *
+*         - FIXED VLayer ZOOM on Cgfx                                        *
+*         - CHANGED names of AGA6 and AGA8 display modes to DHAM6 and DHAM8  *
+*         - FIXED videodecoder bug (did not exit in certain cases!)          *
+*                                                                            *
+* 0.41    (22 Feb 2001)                                                      *
+*         - FIXED Enforcer Hits                                              *
+*         - ADDED PUBSCREEN option                                           *
+*                                                                            *
+* 0.42    (27 Mar 2001)                                                      *
+*         - ADDED B frame support                                            *
+*         - ADDED NOP and NOB options                                        *
+*         - Disabled custom intra/nonintra matrix loading (some MPEGs give   *
+*           custom matrix but are still encoded with default matrix)         *
+*         - IMPROVED timer and framerate calculators (now handles very large *
+*           values and is more accurate)                                     *
+*         - ADDED 'Displayed Framerate' calculation                          *
+*         - ADDED full-pixel vectors (Thanks to Pavel for sample MPEG file)  *
+*                                                                            *
+* 0.43    (6 May 2001)                                                       *
+*         - ADDED AUDIOQUALITY and AUDIOFREQDIV options/tooltypes            *
+*         - ADDED DEFAULTDIR command line option and tooltype                *
+*         - Made 'DITHER ?' work without filename                            *
+*         - FIXED NOVIDEO option (no video decoding done at all)             *
+*         - ADDED NORENDER option (decodes video but does not render)        *
+*                                                                            *
+* 0.44    (21 May 2001)                                                      *
+*         - FIXED a bug in system stream parser (László Török)               *
+*                                                                            *
+* 0.45    (29 Jan 2002)                                                      *
+*         - Improved compatibility with some buggy MPEGs                     *
+*         - FIXED a bug related to EOF indication                            *
+*                                                                            *
+* 0.46    (20 Mar 2002)                                                      *
+*         - FIXED Audio sync problems                                        *
+*                                                                            *
+* 0.47    (7 Aug 2002)                                                       *
+*         - ADDED Fullscreen borderless PIP/Vlayer (toggle with Enter)       *
+*         - ADDED FULLPIP command line option and tooltype                   *
+*         - Clicking mouse button will now exit in screen playback           *
+*                                                                            *
+* 0.48    (14 Apr 2004)                                                      *
+*         - ADDED AHI support                                                *
+*         - ADDED AHI tooltype and command line option                       *
+*         - FIXED a bug which caused riva to deadlock when audio was enabled *
+*           and the NOVIDEO option was used                                  *
+*         - FIXED a bug which caused timing problems on systems with very    *
+*           high EClock frequency (e.g. AmigaOne)                            *
+*                                                                            *
+* 0.49    (9 May 2004)                                                       *
+*         - OPTIMIZED motion vector code                                     *
+*         - OPTIMIZED PIP render routine                                     *
+*         - ADDED fast Accupak render routine (PicassoIV only)               *
+*         - Blank pointer when playing on screen                             *
+*         - IMPROVED verbose output                                          *
+*                                                                            *
+* 0.50    (30 May 2004)                                                      *
+*         - REMOVED GRAYPIP and GRAY24 modes (not really useful)             *
+*         - ADDED Window Playback ('DISPLAY=WINDOW' option) + toggle between *
+*           Window/Fullscreen with Enter key                                 *
+*         - ADDED BGRA32 TrueColor support (for GeForce, etc.)               *
+*                                                                            *
+* 0.52   (30 Jan 2017)                                                       *
+*         - AMMX usage in motion compensation, residual transform,           * 
+*           color conversion                                                 *
+*         - multibuffered SAGA YUV video output                              *
+*         - Stereo sound output                                              *
+*         - audio/video sync                                                 *
+*         - automatic enabling of 44/48 kHz sound output when P96            *
+*           with 31 kHz AmigaVideo                                           *
+*           environment variable and ECS denise are present                  *
+*         - relaxation of internal data paths, avoidance of                  *
+*           unnecessary data copies                                          *
+*         - 16 Bit windowed mode quality improvement, along with             *
+*           ordered dithering                                                *
+*         - borderless windowed mode (Flype)                                 *
+*         - 24 Bit RGB ordered windowed mode support (AMMX)                  *
+*         - you can use use SPACE as pause key                               *
+*         - correct cropping/centering in fullscreen mode (if needed)        *
+*                                                                            *
+* 0.54    (18 Oct 2019)                                                      *
+*   - fixed DHAM6 and DHAM8 modes in 68k build                               *
+*   - optimized DHAM8 as a little apology for breaking it in the first place *
+*     (significantly higher speed)                                           *
+*   - added 14 Bit audio output option (HQAUDIO)                             *
+*   - added 16 Bit PAMELA audio output on Vampire V4 (HQAUDIO)               *
+*   - fixed and improved A/V sync                                            *
+*   - moved video timing relevant flag handling to safer places              *
+*                                                                            *
+*                                                                            *
+*                                                                            *
+******************************************************************************
+
+@endnode
+
+@node Credits "Credits"
+@{b}---------------------------------------------------------------------------
+                                 Credits
+---------------------------------------------------------------------------@{ub}
+
+I would like to thank everyone who helped me in getting RiVA into its
+current state, everyone who helped with testing and all the people who
+have registered.
+
+I would like to especially thank the following people, without their help
+I would be lost :)
+
+László Török - (The author of the great movie player Moovid) for getting
+me into the world of Amiga assembly programming, providing me with
+examples and for helping with different parts of RiVA. Also for his
+efforts in testing and bug hunting.
+
+Gábor Nagy - For his continued efforts in testing, and for creating the
+great little RivaGUI launcher.
+
+Csaba Simon (Chip) - For endless hours of testing... :)
+
+Viktor Soponyai - For testing and for the tasty soups and beans :)
+
+Gregory Donner - Thank you for your testing, feedback and the gift CDs!
+
+Philippe Carpentier (Flype) - Code and table cleanups, borderless mode, 
+                              SAGA YUV support, better cleanup at exit
+
+Henryk Richter (bax) - heavy internal rework, AMMX support, audio improvements 
+
+Manuel Jesus (Crom)  - new icons
+
+@endnode
+
+@node Contact "Contact"
+@{b}---------------------------------------------------------------------------
+                                 Contact
+---------------------------------------------------------------------------@{ub}
+
+The latest release version of RiVA is available from Aminet. Test versions might
+be available occasionally in the Apollo Wiki.
+
+ http://www.apollo-accelerators.com
+
+A contact form is available on that page as well.
+
+@endnode
+
