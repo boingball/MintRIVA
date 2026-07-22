@@ -59,13 +59,15 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     int            w, h, frames = 0, paused = 0, quit = 0;
     unsigned long  period, clock_base = 0;
     long           ntick;
-    short          abuf[1152 * 2];
+    unsigned char *abuf;                         /* heap, not stack (4.6 KB)  */
     clock_t        t_dec = 0, t_show = 0;
     mr_frame       fr;
     double         pts, fps;
 
     mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len);
     if (!mp) { printf("cannot open MPEG-1 stream\n"); return 10; }
+    abuf = (unsigned char *)malloc(1152 * 4);    /* max: 1152 frames stereo16 */
+    if (!abuf) { mr_mpeg1_close(mp); return 10; }
     w = mr_mpeg1_width(mp); h = mr_mpeg1_height(mp);
     printf("mpeg1: %dx%d, opening display...\n", w, h);
     disp = display_open(w, h, "MintRIVA");
@@ -106,7 +108,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             /* ~2 MP2 frames per video frame keeps Paula just ahead; draining
              * everything here would stall video before the first frame shows. */
             while (k < 2 && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
-                audio_write(audio, (const unsigned char *)abuf, (unsigned)(n * 4));
+                audio_write(audio, abuf, (unsigned)(n * 4));
                 audio_service(audio);
                 k++;
             }
@@ -156,6 +158,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     if (audio) audio_close(audio);
     display_close(disp);
     mr_mpeg1_close(mp);
+    free(abuf);
     return 0;
 }
 

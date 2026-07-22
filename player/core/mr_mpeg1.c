@@ -17,6 +17,8 @@ struct mr_mpeg1 {
     plm_t   *plm;
     uint8_t *fb;                 /* persistent RGB24 output                 */
     int      w, h;
+    int      decim;              /* audio decimation (1 or 2) for Paula     */
+    unsigned rate_eff;           /* effective audio rate after decimation   */
 };
 
 int mr_mpeg1_probe(const uint8_t *buf, size_t len)
@@ -40,6 +42,12 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len)
     if (m->w <= 0 || m->h <= 0) { plm_destroy(m->plm); free(m); return NULL; }
     m->fb = (uint8_t *)calloc((size_t)m->w * m->h * 3, 1);
     if (!m->fb) { plm_destroy(m->plm); free(m); return NULL; }
+    { /* Paula tops out near ~28 kHz; halve higher rates (44.1/48) to fit. */
+        int raw = (plm_get_num_audio_streams(m->plm) > 0)
+                ? plm_get_samplerate(m->plm) : 0;
+        m->decim = (raw > 28000) ? 2 : 1;
+        m->rate_eff = (unsigned)(raw / m->decim);
+    }
     return m;
 }
 
@@ -49,8 +57,7 @@ double mr_mpeg1_framerate(mr_mpeg1 *m) { return m ? plm_get_framerate(m->plm) : 
 
 unsigned mr_mpeg1_samplerate(mr_mpeg1 *m)
 {
-    if (!m || plm_get_num_audio_streams(m->plm) <= 0) return 0;
-    return (unsigned)plm_get_samplerate(m->plm);
+    return m ? m->rate_eff : 0;
 }
 
 int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts)
@@ -71,21 +78,29 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts)
     return 1;
 }
 
-int mr_mpeg1_audio(mr_mpeg1 *m, short *dst)
+int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
 {
     plm_samples_t *s;
-    unsigned i, n;
+    unsigned j, out = 0;
+    int decim;
     if (!m) return 0;
     s = plm_decode_audio(m->plm);
     if (!s) return 0;
-    n = s->count;
-    for (i = 0; i < n * 2; i++) {              /* interleaved L,R floats     */
-        float f = s->interleaved[i];
-        int v = (int)(f * 32767.0f);
-        if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
-        dst[i] = (short)v;
+    decim = m->decim;
+    /* Take every `decim`-th stereo sample, emit little-endian signed-16 so it
+     * is correct on the big-endian 68k regardless of host byte order. */
+    for (j = 0; j < s->count; j += decim) {
+        int ch;
+        for (ch = 0; ch < 2; ch++) {
+            float f = s->interleaved[j * 2 + ch];
+            int v = (int)(f * 32767.0f);
+            if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+            *dst++ = (unsigned char)(v & 0xff);
+            *dst++ = (unsigned char)((v >> 8) & 0xff);
+        }
+        out++;
     }
-    return (int)n;
+    return (int)out;
 }
 
 void mr_mpeg1_rewind(mr_mpeg1 *m) { if (m) plm_rewind(m->plm); }

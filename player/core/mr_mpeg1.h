@@ -24,7 +24,9 @@ int        mr_mpeg1_width(mr_mpeg1 *m);
 int        mr_mpeg1_height(mr_mpeg1 *m);
 double     mr_mpeg1_framerate(mr_mpeg1 *m);
 
-/* Audio: sample rate (0 = no audio track). MP2 is decoded as stereo. */
+/* Audio: the effective output sample rate (0 = no audio track). MP2 is decoded
+ * as stereo; the rate is halved internally if the stream is above Paula's reach
+ * (~28 kHz), so this is the rate to open the audio backend with. */
 unsigned   mr_mpeg1_samplerate(mr_mpeg1 *m);
 
 /* Decode the next video frame into `out` (RGB24, owned by the source); *pts (if
@@ -32,10 +34,11 @@ unsigned   mr_mpeg1_samplerate(mr_mpeg1 *m);
  * end of stream. */
 int        mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts);
 
-/* Decode one audio frame into `dst` as signed-16 stereo interleaved (room for
- * 1152*2 shorts needed). Returns the sample-frame count, or 0 if none is
- * available right now. */
-int        mr_mpeg1_audio(mr_mpeg1 *m, short *dst);
+/* Decode one audio frame into `dst` as little-endian signed-16 stereo
+ * interleaved bytes (room for 1152*4 bytes needed; explicit LE so it is correct
+ * on the big-endian 68k). Returns the output sample-frame count, or 0 if none
+ * is available right now. */
+int        mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst);
 
 void       mr_mpeg1_rewind(mr_mpeg1 *m);
 void       mr_mpeg1_close(mr_mpeg1 *m);
