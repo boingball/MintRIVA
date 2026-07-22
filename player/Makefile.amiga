@@ -1,0 +1,45 @@
+# MintRIVA - AmigaOS (m68k) cross build.
+#
+# NOTE: this builds the portable decoder core + the `mr_decode` file->PPM test
+# harness, so you can verify decoding on REAL 68k hardware. It is a correctness
+# test tool, not a watchable player yet - the RTG/AGA display + MintAMP audio
+# layer is a later milestone. On the Amiga:
+#
+#     mr_decode test_cinepak.avi --ppm ram:frames
+#
+# decodes every frame to RAM:frames/fNNN.ppm.
+#
+# Two toolchains are supported. Pick one with  make -f Makefile.amiga TOOLCHAIN=gcc
+#   gcc  = Bebbo's amiga-gcc  (m68k-amigaos-gcc)   <- default, common on PiStorm
+#   vbcc = vbcc + vclib       (vc +aos68k)
+#
+# CPU baseline is 68020 so a single binary runs on 020/030/040/060 and PiStorm.
+# The core is integer-only; floating point appears only in the unused --check
+# path, so we build soft-float and require no FPU (runs on a bare 030 A600).
+
+TOOLCHAIN ?= gcc
+CORE  = core/mr_codec.c core/mr_avi.c core/mr_cinepak.c
+HARN  = tests/mr_decode.c
+OUT   = mr_decode
+
+ifeq ($(TOOLCHAIN),gcc)
+CC      = m68k-amigaos-gcc
+CFLAGS  = -O2 -std=c99 -m68020 -msoft-float -noixemul -fomit-frame-pointer \
+          -Wall -Wextra
+LDFLAGS = -noixemul
+$(OUT): $(HARN) $(CORE)
+	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE) $(LDFLAGS)
+endif
+
+ifeq ($(TOOLCHAIN),vbcc)
+# Requires VBCC + vc.config target 'aos68k', and VBCC/VLINK/... in PATH.
+CC      = vc
+CFLAGS  = +aos68k -c99 -O2 -cpu=68020 -softfloat
+$(OUT): $(HARN) $(CORE)
+	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE)
+endif
+
+clean:
+	rm -f $(OUT)
+
+.PHONY: clean
