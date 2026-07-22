@@ -5,7 +5,8 @@
 
 static const mr_codec *const g_codecs[] = {
     &mr_codec_cinepak,
-    /* more decoders slot in here: mjpeg, mpeg1, ... */
+    &mr_codec_mjpeg,
+    /* more decoders slot in here: mpeg1, ... */
 };
 
 const mr_codec *mr_codec_find(uint32_t fourcc)

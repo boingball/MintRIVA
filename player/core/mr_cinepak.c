@@ -39,6 +39,7 @@ typedef struct {
     int            stride;
     cvid_strip_cb *strips;      /* per-strip codebooks (persist for inter) */
     int            num_strip_cb;
+    int            dy0, dy1;    /* changed-row span this frame             */
 } cvid_ctx;
 
 /* Cinepak YUV->RGB. u,v are signed offsets stored in the codebook bytes.
@@ -170,6 +171,9 @@ static void decode_vectors(cvid_ctx *c, cvid_strip_cb *cb, int chunk_id,
             if (inter && !br_bit(&br))
                 continue;                    /* skipped MB: keep prev frame */
 
+            if (y < c->dy0) c->dy0 = y;      /* this MB row changes         */
+            if (y + 4 > c->dy1) c->dy1 = y + 4;
+
             is_v4 = v4only ? 1 : br_bit(&br);
 
             if (is_v4) {
@@ -202,6 +206,8 @@ static mr_status cvid_open(mr_decoder *dec)
     dec->frame.fmt    = MR_PIX_RGB24;
     dec->frame.stride = c->stride;
     dec->frame.data   = c->fb;
+    dec->frame.dirty_y0 = 0;
+    dec->frame.dirty_y1 = c->height;
     return MR_OK;
 }
 
@@ -224,6 +230,8 @@ static mr_status cvid_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
 {
     cvid_ctx *c = (cvid_ctx *)dec->priv;
     if (len < 10) return MR_EFORMAT;
+
+    c->dy0 = c->height; c->dy1 = 0;        /* empty until an MB is coded    */
 
     uint16_t num_strips = mr_rb16(data + 8);
     const uint8_t *p   = data + 10;
@@ -282,7 +290,10 @@ static mr_status cvid_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
         p += ssz;
     }
 
-    dec->frame.data = c->fb;
+    if (c->dy1 > c->height) c->dy1 = c->height;
+    dec->frame.data     = c->fb;
+    dec->frame.dirty_y0 = c->dy0;
+    dec->frame.dirty_y1 = c->dy1;
     return MR_OK;
 }
 

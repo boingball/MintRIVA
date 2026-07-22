@@ -1,20 +1,20 @@
 /*
- * MintRIVA - cybergraphics RTG window display backend.
+ * MintRIVA - cybergraphics RTG window backend.
  *
- * Opens a titled window on the default public screen (which on SAGA/P96/CGX is
- * a truecolour RTG screen) and blits RGB24 frames into it with WritePixelArray,
- * letting cybergraphics do the RGB->screen-depth conversion. Input (close
- * gadget, ESC) is read from the window's IDCMP port.
- *
- * This is deliberately the simple, portable-across-RTG path. A fullscreen
- * custom-screen backend and direct RGB565 output are follow-ups.
+ * Opens a titled window on the default public screen (truecolour RTG on
+ * SAGA/P96/CGX) and blits RGB24 frames with WritePixelArray, letting
+ * cybergraphics do the RGB->screen-depth conversion. Library bases are opened
+ * by display.c; this backend just needs CyberGfxBase to be present.
  */
 #include "amiga_display.h"
+#include "display_backend.h"
 
+#include <stddef.h>
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
+#include <graphics/displayinfo.h>
 #include <cybergraphx/cybergraphics.h>
 
 #include <proto/exec.h>
@@ -22,80 +22,99 @@
 #include <proto/graphics.h>
 #include <proto/cybergraphics.h>
 
-/* Library bases (opened here; SysBase/DOSBase are provided by the C startup). */
-struct Library     *CyberGfxBase = NULL;
-struct IntuitionBase *IntuitionBase = NULL;
-struct GfxBase       *GfxBase = NULL;
-
-struct amiga_display {
+typedef struct {
     struct Window *win;
-    int            bl, bt;   /* window border offsets (blit origin)         */
-    int            w, h;
+    int            bl, bt;   /* blit origin inside the window borders       */
     int            quit;
-};
+} cgx_state;
 
 #define ESC_RAWKEY 0x45
 
-amiga_display *display_open(int w, int h, const char *title)
+/* Having cybergraphics.library is not enough - the actual public screen we'd
+ * render into must be an RTG/truecolour mode. On an AGA (planar) Workbench,
+ * WritePixelArray can't draw, so report "not RTG" and let the dispatcher fall
+ * back to the AGA backend. */
+static int default_screen_is_rtg(void)
 {
-    amiga_display *d;
+    struct Screen *scr = LockPubScreen(NULL);
+    int rtg = 0;
+    if (scr) {
+        ULONG modeid = GetVPModeID(&scr->ViewPort);
+        if (modeid != (ULONG)INVALID_ID && IsCyberModeID(modeid))
+            rtg = 1;
+        UnlockPubScreen(NULL, scr);
+    }
+    return rtg;
+}
 
-    IntuitionBase = (struct IntuitionBase *)
-                    OpenLibrary((CONST_STRPTR)"intuition.library", 39);
-    GfxBase       = (struct GfxBase *)
-                    OpenLibrary((CONST_STRPTR)"graphics.library", 39);
-    CyberGfxBase  = OpenLibrary((CONST_STRPTR)"cybergraphics.library", 40);
-    if (!IntuitionBase || !GfxBase || !CyberGfxBase) { display_close(NULL); return NULL; }
+static void *cgx_open(int w, int h, const char *title)
+{
+    cgx_state *s;
+    if (!CyberGfxBase || !default_screen_is_rtg())
+        return NULL;                              /* not RTG -> try AGA      */
 
-    d = (amiga_display *)AllocVec(sizeof *d, MEMF_CLEAR);
-    if (!d) { display_close(NULL); return NULL; }
-    d->w = w; d->h = h;
+    s = (cgx_state *)AllocVec(sizeof *s, MEMF_CLEAR);
+    if (!s) return NULL;
 
-    d->win = OpenWindowTags(NULL,
-        WA_Title,        (ULONG)(title ? title : "MintRIVA"),
-        WA_InnerWidth,   (ULONG)w,
-        WA_InnerHeight,  (ULONG)h,
-        WA_Flags,        WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
-                         WFLG_ACTIVATE | WFLG_NOCAREREFRESH,
-        WA_IDCMP,        IDCMP_CLOSEWINDOW | IDCMP_RAWKEY,
+    s->win = OpenWindowTags(NULL,
+        WA_Title,       (ULONG)(title ? title : "MintRIVA"),
+        WA_InnerWidth,  (ULONG)w,
+        WA_InnerHeight, (ULONG)h,
+        WA_Flags,       WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
+                        WFLG_ACTIVATE | WFLG_NOCAREREFRESH,
+        WA_IDCMP,       IDCMP_CLOSEWINDOW | IDCMP_RAWKEY,
         TAG_END);
-    if (!d->win) { display_close(d); return NULL; }
+    if (!s->win) { FreeVec(s); return NULL; }
 
-    d->bl = d->win->BorderLeft;
-    d->bt = d->win->BorderTop;
-    return d;
+    s->bl = s->win->BorderLeft;
+    s->bt = s->win->BorderTop;
+    return s;
 }
 
-void display_show_rgb(amiga_display *d, const unsigned char *rgb,
-                      int w, int h, int stride)
+static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
+                     int stride, int dy0, int dy1)
 {
-    if (!d || !d->win) return;
-    WritePixelArray((APTR)rgb, 0, 0, (UWORD)stride,
-                    d->win->RPort, (UWORD)d->bl, (UWORD)d->bt,
-                    (UWORD)w, (UWORD)h, RECTFMT_RGB);
+    cgx_state *s = (cgx_state *)h;
+    if (!s || !s->win) return;
+    if (dy0 < 0) dy0 = 0;
+    if (dy1 > hh) dy1 = hh;
+    if (dy1 <= dy0) return;                       /* nothing changed         */
+    /* blit only the changed band, sourced from that row of the frame */
+    WritePixelArray((APTR)(rgb + (size_t)dy0 * stride), 0, 0, (UWORD)stride,
+                    s->win->RPort, (UWORD)s->bl, (UWORD)(s->bt + dy0),
+                    (UWORD)w, (UWORD)(dy1 - dy0), RECTFMT_RGB);
 }
 
-int display_poll_quit(amiga_display *d)
+static int cgx_poll(void *h)
 {
+    cgx_state *s = (cgx_state *)h;
     struct IntuiMessage *msg;
-    if (!d || !d->win) return 1;
-    while ((msg = (struct IntuiMessage *)GetMsg(d->win->UserPort))) {
-        ULONG  cls  = msg->Class;
-        UWORD  code = msg->Code;
+    int ev = MR_EV_NONE;
+    if (!s || !s->win) return MR_EV_QUIT;
+    while ((msg = (struct IntuiMessage *)GetMsg(s->win->UserPort))) {
+        ULONG cls = msg->Class; UWORD code = msg->Code;
         ReplyMsg((struct Message *)msg);
-        if (cls == IDCMP_CLOSEWINDOW) d->quit = 1;
-        else if (cls == IDCMP_RAWKEY && code == ESC_RAWKEY) d->quit = 1;
+        if (cls == IDCMP_CLOSEWINDOW) s->quit = 1;
+        else if (cls == IDCMP_RAWKEY && !(code & 0x80)) {  /* key down only  */
+            switch (code) {
+            case 0x45: s->quit = 1; break;             /* ESC              */
+            case 0x40: ev = MR_EV_PAUSE; break;        /* space            */
+            case 0x4E: ev = MR_EV_SEEK_FWD; break;     /* cursor right     */
+            case 0x4F: ev = MR_EV_SEEK_BACK; break;    /* cursor left      */
+            }
+        }
     }
-    return d->quit;
+    return s->quit ? MR_EV_QUIT : ev;
 }
 
-void display_close(amiga_display *d)
+static void cgx_close(void *h)
 {
-    if (d) {
-        if (d->win) CloseWindow(d->win);
-        FreeVec(d);
-    }
-    if (CyberGfxBase)  { CloseLibrary(CyberGfxBase);              CyberGfxBase = NULL; }
-    if (GfxBase)       { CloseLibrary((struct Library *)GfxBase); GfxBase = NULL; }
-    if (IntuitionBase) { CloseLibrary((struct Library *)IntuitionBase); IntuitionBase = NULL; }
+    cgx_state *s = (cgx_state *)h;
+    if (!s) return;
+    if (s->win) CloseWindow(s->win);
+    FreeVec(s);
 }
+
+const display_backend backend_cgx = {
+    "RTG (CGX)", cgx_open, cgx_show, cgx_poll, cgx_close
+};

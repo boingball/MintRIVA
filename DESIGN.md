@@ -95,6 +95,40 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 - [x] Amiga (m68k) build + verified decoding on real hardware
 - [x] `mrplay`: RTG window output via cybergraphics WritePixelArray
       (`player/amiga/`) - **video playing on real hardware**
+- [x] AGA fallback: custom screen via WritePixelArray8, auto RTG->AGA
+      selection by screenmode (`display.c`, `display_aga.c`) - on hardware
+- [x] AGA colour modes: 256-colour ordered dither (`mr_dither.c`) and
+      HAM8/HAM6 near-truecolour (`mr_ham.c`); 2x scaling (`mr_scale.c`).
+      Encoders host-validated (HAM8 round-trip MAE 2.05/255 vs dither 6.77)
+- [x] Encoder speed: divide-free dither/HAM via lookup tables (2fps -> 6fps
+      on 030); fast 2x by doubling the chunky, not the RGB (`mr_scale2x_u8`)
+- [~] AGA C2P: built-in 8x8-transpose chunky->planar straight to bitplanes
+      (`mr_c2p.c`), default over WritePixelArray8 (--wpa to compare). Transpose
+      + round-trip host-verified; on-hardware speed measured with --time
+- [x] Faster HAM encoder (divide-free, table-driven set error); --time splits
+      encode vs blit. Measured: for HAM8 the encode dominates, blit is minor
+- [x] Dirty-row rendering: the Cinepak decoder reports the changed-row span
+      (host-verified to cover every changed pixel); the display re-encodes and
+      re-blits only those rows, so mostly-static video skips most of the encode
+- [x] Playback controls: pause (space), loop (--loop), quit; input is now an
+      event stream (`display_poll_event`) so seek (cursor keys) can slot in
+- [ ] Seek (needs a keyframe index in the demuxers)
+- [ ] Optional asm C2P hot loop; CD32 Akiko hardware C2P path (--akiko)
+- [x] MJPEG decoder (picojpeg adapter, `mr_mjpeg.c`) - ffmpeg-validated
+      (worst MAE 0.5/255); proves the codec plugin design with a 2nd codec
+- [x] AGA auto-fit: oversized clips (e.g. 640x480) are integer box-downscaled
+      to fit a non-interlaced screen (`mr_scale_down_rgb24`); bad frames skip
+      instead of stopping playback
+- [x] MPEG-1 decode via pl_mpeg (`mr_mpeg1.c`, MIT single-file lib) -
+      ffmpeg-validated on host (worst MAE ~0.9/255). .mpg is a self-contained
+      stream so it gets a source wrapper, not the demux+codec split.
+- [x] MPEG-1 in the Amiga player: .mpg/.mpeg play through pl_mpeg (video + MP2
+      audio -> Paula), reusing the display/audio backends. The 68k build links
+      libm + soft-float for this (MPEG-1 is a fast-machine codec). pause/loop
+      apply. (Cinepak/MJPEG path stays integer.)
+- [ ] Modern codecs (Theora / H.264-baseline) gated to fast/PiStorm machines,
+      likely by wrapping a portable decoder library
+- [ ] Internet streaming (reuse MintAMP's radio_stream + AmiSSL HTTP stack)
 - [ ] Faster output: direct RGB565 / fullscreen RTG / port `RendererCGXInit.i`
 - [~] Paula audio backend + audio-master A/V sync (`audio_paula.c`) - PCM,
       pending on-hardware verification; MintAMP/Helix for MP2/MP3 later

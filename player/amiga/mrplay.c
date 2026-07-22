@@ -14,12 +14,15 @@
  */
 #include "../core/mr_demux.h"
 #include "../core/mr_codec.h"
+#include "../core/mr_mpeg1.h"
 #include "amiga_display.h"
 #include "mr_audio.h"
 
 #include <proto/dos.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 static unsigned char *slurp(const char *path, long *out_len)
 {
@@ -44,6 +47,118 @@ static long frame_ticks(unsigned long rate, unsigned long scale)
     return t < 1 ? 1 : t;
 }
 
+/* MPEG-1 program streams (.mpg/.mpeg) play through pl_mpeg (video + MP2 audio),
+ * reusing the display and Paula audio backends. Separate from the AVI/MOV +
+ * codec path because .mpg is a self-contained stream. */
+static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_time)
+{
+    mr_mpeg1      *mp;
+    amiga_display *disp;
+    mr_audio      *audio = NULL;
+    unsigned       sr;
+    int            w, h, frames = 0, paused = 0, quit = 0;
+    unsigned long  period, clock_base = 0;
+    long           ntick;
+    short          abuf[1152 * 2];
+    clock_t        t_dec = 0, t_show = 0;
+    mr_frame       fr;
+    double         pts, fps;
+
+    mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len);
+    if (!mp) { printf("cannot open MPEG-1 stream\n"); return 10; }
+    w = mr_mpeg1_width(mp); h = mr_mpeg1_height(mp);
+    printf("mpeg1: %dx%d, opening display...\n", w, h);
+    disp = display_open(w, h, "MintRIVA");
+    if (!disp) { printf("cannot open a display\n"); mr_mpeg1_close(mp); return 10; }
+    printf("display backend: %s\n", display_backend_name(disp));
+
+    sr = mr_mpeg1_samplerate(mp);
+    if (sr) {
+        audio = audio_open(sr, 2, 16);
+        printf(audio ? "audio: Paula out, %u Hz (MP2 stereo)\n"
+                     : "audio: Paula open failed, silent\n", sr);
+    }
+    fps    = mr_mpeg1_framerate(mp);
+    period = (fps > 0.0) ? (unsigned long)(1000.0 / fps + 0.5) : 40;
+    if (period < 1) period = 1;
+    ntick = (long)((period + 19) / 20);
+    if (ntick < 1) ntick = 1;
+
+    printf("playing: space=pause, ESC=quit%s...\n", loop ? ", loop on" : "");
+
+    while (!quit) {
+        int got;
+        while (paused && !quit) {
+            int ev = display_poll_event(disp);
+            if (ev == MR_EV_QUIT) quit = 1; else if (ev == MR_EV_PAUSE) paused = 0;
+            Delay(2);
+        }
+        if (quit) break;
+
+        { clock_t a = clock(); got = mr_mpeg1_next(mp, &fr, &pts); t_dec += clock() - a; }
+        if (!got) {
+            if (loop) { mr_mpeg1_rewind(mp); frames = 0;
+                        clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
+            break;
+        }
+        if (audio) {                             /* top up audio (bounded)    */
+            int n, k = 0;
+            /* ~2 MP2 frames per video frame keeps Paula just ahead; draining
+             * everything here would stall video before the first frame shows. */
+            while (k < 2 && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
+                audio_write(audio, (const unsigned char *)abuf, (unsigned)(n * 4));
+                audio_service(audio);
+                k++;
+            }
+        }
+
+        if (audio) {                             /* pace to the audio clock   */
+            unsigned long target = clock_base + (unsigned long)frames * period;
+            for (;;) {
+                int ev = display_poll_event(disp);
+                if (ev == MR_EV_QUIT)  { quit = 1; break; }
+                if (ev == MR_EV_PAUSE) { paused = 1; break; }
+                audio_service(audio);
+                if (audio_elapsed_ms(audio) >= target) break;
+                if (audio_starved(audio)) break;
+                Delay(1);
+            }
+        } else {
+            int ev = display_poll_event(disp);
+            if (ev == MR_EV_QUIT) quit = 1; else if (ev == MR_EV_PAUSE) paused = 1;
+            Delay(ntick);
+        }
+        if (quit) break;
+
+        { clock_t a = clock();
+          display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
+                           fr.dirty_y0, fr.dirty_y1);
+          t_show += clock() - a; }
+        frames++;
+        if (audio) audio_service(audio);
+        (void)pts;
+    }
+
+    if (want_time && frames > 0) {
+        unsigned long e = 0, bl = 0;
+        display_aga_timing(&e, &bl);
+        printf("timing/%d frames: decode=%lu ms, display=%lu ms (encode=%lu, blit=%lu)\n",
+               frames, (unsigned long)(t_dec * 1000 / CLOCKS_PER_SEC),
+               (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC), e, bl);
+    }
+    if (audio) { int g = 0; while (!audio_starved(audio) && g++ < 4000) {
+                    audio_service(audio); Delay(1); } }
+    printf("played %d frames - press ESC or close the window to exit\n", frames);
+    while (display_poll_event(disp) != MR_EV_QUIT) {
+        if (audio) audio_service(audio);
+        Delay(2);
+    }
+    if (audio) audio_close(audio);
+    display_close(disp);
+    mr_mpeg1_close(mp);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     long len;
@@ -57,20 +172,47 @@ int main(int argc, char **argv)
     mr_packet pkt;
     long ticks;
     int frames = 0;
+    int want_time = 0, loop = 0, paused = 0, quit = 0;
+    unsigned long clock_base = 0;
+    clock_t t_dec = 0, t_show = 0;
 
     /* Unbuffered so every diagnostic reaches the shell immediately, even if a
      * later step hangs or crashes (libnix stdout can otherwise block-buffer). */
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    if (argc < 2) { printf("usage: mrplay <file.avi|file.mov>\n"); return 5; }
+    if (argc < 2) {
+        printf("usage: mrplay <file.avi|file.mov> [--aga] [--ham] [--ham6] "
+               "[--2x] [--lace] [--loop] [--wpa|--c2p] [--time]\n");
+        return 5;
+    }
+    {   /* display options anywhere on the command line */
+        int i;
+        for (i = 1; i < argc; i++) {
+            if      (!strcmp(argv[i], "--aga"))  display_set_force_aga(1);
+            else if (!strcmp(argv[i], "--ham"))  display_set_ham(8);
+            else if (!strcmp(argv[i], "--ham6")) display_set_ham(6);
+            else if (!strcmp(argv[i], "--2x"))   display_set_scale(2);
+            else if (!strcmp(argv[i], "--wpa"))  display_set_c2p(0);
+            else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
+            else if (!strcmp(argv[i], "--loop")) loop = 1;
+            else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
+            else if (!strcmp(argv[i], "--time")) want_time = 1;
+        }
+    }
     printf("mrplay: opening %s\n", argv[1]);
 
     buf = slurp(argv[1], &len);
     if (!buf) { printf("cannot read %s\n", argv[1]); return 10; }
     printf("loaded %ld bytes\n", len);
 
+    if (mr_mpeg1_probe(buf, (size_t)len)) {      /* .mpg/.mpeg via pl_mpeg    */
+        int rc = play_mpeg1(buf, len, loop, want_time);
+        free(buf);
+        return rc;
+    }
+
     dx = mr_demux_open(buf, (size_t)len);
-    if (!dx) { printf("unsupported container (need AVI or MOV)\n");
+    if (!dx) { printf("unsupported container (need AVI, MOV or MPEG-1)\n");
                free(buf); return 10; }
 
     vi = mr_demux_video(dx);
@@ -83,11 +225,11 @@ int main(int argc, char **argv)
         mr_demux_close(dx); free(buf); return 10;
     }
 
-    printf("%dx%d, opening RTG window...\n", vi->width, vi->height);
+    printf("%dx%d, opening display...\n", vi->width, vi->height);
     disp = display_open(vi->width, vi->height, "MintRIVA");
-    if (!disp) { printf("cannot open display - need a truecolour RTG screen "
-                        "and cybergraphics.library\n");
+    if (!disp) { printf("cannot open a display (RTG or AGA)\n");
                  mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 10; }
+    printf("display backend: %s\n", display_backend_name(disp));
 
     /* Open Paula audio if the file has a PCM track we can convert. */
     {
@@ -102,42 +244,89 @@ int main(int argc, char **argv)
     }
 
     ticks = frame_ticks(vi->rate, vi->scale);
-    printf("playing (ESC or close gadget to quit)...\n");
+    {
+        unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
+                                           / vi->rate) : 83;
+        if (period < 1) period = 1;
 
-    while (mr_demux_next_packet(dx, &pkt) == MR_OK) {
+    printf("playing: space=pause, </>=seek, ESC=quit%s...\n",
+           loop ? ", loop on" : "");
+
+    while (!quit) {
+        /* Frozen while paused: keep taking input, do no work. */
+        while (paused && !quit) {
+            int ev = display_poll_event(disp);
+            if (ev == MR_EV_QUIT) quit = 1;
+            else if (ev == MR_EV_PAUSE) paused = 0;
+            Delay(2);
+        }
+        if (quit) break;
+
+        if (mr_demux_next_packet(dx, &pkt) != MR_OK) {   /* end of stream    */
+            if (loop) {
+                mr_demux_rewind(dx);
+                frames = 0;
+                clock_base = audio ? audio_elapsed_ms(audio) : 0;
+                continue;
+            }
+            break;
+        }
         if (!pkt.is_video) {
             if (audio) { audio_write(audio, pkt.data, pkt.len);
                          audio_service(audio); }
             continue;
         }
         if (pkt.len == 0) continue;
-        if (mr_decoder_decode(&dec, pkt.data, pkt.len) != MR_OK) break;
+        {
+            clock_t a = clock();
+            mr_status ds = mr_decoder_decode(&dec, pkt.data, pkt.len);
+            t_dec += clock() - a;
+            /* A bad frame skips, it does not stop playback (some clips have
+             * the odd frame a decoder can't handle). */
+            if (ds != MR_OK) { if (audio) audio_service(audio); continue; }
+        }
 
+        /* Pace this frame (audio-master, or frame-rate when silent), handling
+         * input while we wait. */
         if (audio) {
-            /* Audio-master: hold this frame until playback reaches its
-             * timestamp, but never hang if the audio clock has stalled. */
-            unsigned long target = (unsigned long)frames * 1000UL *
-                                   (vi->scale ? vi->scale : 1) /
-                                   (vi->rate ? vi->rate : 1);
+            unsigned long target = clock_base + (unsigned long)frames * period;
             for (;;) {
+                int ev = display_poll_event(disp);
+                if (ev == MR_EV_QUIT)  { quit = 1; break; }
+                if (ev == MR_EV_PAUSE) { paused = 1; break; }
                 audio_service(audio);
-                if (display_poll_quit(disp)) goto done;
                 if (audio_elapsed_ms(audio) >= target) break;
                 if (audio_starved(audio)) break;
                 Delay(1);
             }
         } else {
-            if (display_poll_quit(disp)) break;
+            int ev = display_poll_event(disp);
+            if (ev == MR_EV_QUIT)  quit = 1;
+            else if (ev == MR_EV_PAUSE) paused = 1;
             Delay(ticks);
         }
+        if (quit) break;
 
-        display_show_rgb(disp, dec.frame.data, dec.frame.width,
-                         dec.frame.height, dec.frame.stride);
+        {
+            clock_t a = clock();
+            display_show_rgb(disp, dec.frame.data, dec.frame.width,
+                             dec.frame.height, dec.frame.stride,
+                             dec.frame.dirty_y0, dec.frame.dirty_y1);
+            t_show += clock() - a;
+        }
         frames++;
         if (audio) audio_service(audio);
     }
-
-done:
+    }
+    if (want_time && frames > 0) {
+        unsigned long enc_ms = 0, blit_ms = 0;
+        display_aga_timing(&enc_ms, &blit_ms);
+        printf("timing/%d frames: decode=%lu ms, display=%lu ms"
+               " (encode=%lu ms, blit=%lu ms)\n", frames,
+               (unsigned long)(t_dec  * 1000 / CLOCKS_PER_SEC),
+               (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC),
+               enc_ms, blit_ms);
+    }
     /* Let any queued audio drain (bounded, so a wedged clock can't loop). */
     if (audio) {
         int guard = 0;
@@ -147,7 +336,7 @@ done:
     }
 
     printf("played %d frames - press ESC or close the window to exit\n", frames);
-    while (!display_poll_quit(disp)) {
+    while (display_poll_event(disp) != MR_EV_QUIT) {
         if (audio) audio_service(audio);
         Delay(2);
     }

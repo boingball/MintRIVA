@@ -17,6 +17,7 @@
 #include <exec/io.h>
 #include <devices/audio.h>
 #include <proto/exec.h>
+#include <clib/alib_protos.h>   /* BeginIO() prototype (amiga.lib helper) */
 
 #include <stdlib.h>
 #include <string.h>

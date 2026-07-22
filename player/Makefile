@@ -5,25 +5,33 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -g
 CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
-           core/mr_cinepak.c
+           core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
+           core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c
 TESTSRC  = tests/mr_decode.c
 HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
-           core/mr_types.h
+           core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
+           core/mr_mpeg1.h core/mr_types.h
 
 all: mr_decode
 
+# pl_mpeg (in mr_mpeg1.c) uses libm; MR_HAVE_MPEG1 enables the harness path.
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ $(TESTSRC) $(CORE)
+	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE) -lm
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
 check: mr_decode
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
+	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_mpeg1 \
 	    || sh tests/gen_assets.sh
-	@echo "[AVI]"
+	@echo "[Cinepak AVI]"
 	./mr_decode tests/assets/test_cinepak.avi --check tests/assets/ref_cinepak
-	@echo "[MOV]"
+	@echo "[Cinepak MOV]"
 	./mr_decode tests/assets/test_cinepak.mov --check tests/assets/ref_mov
+	@echo "[MJPEG AVI]"
+	./mr_decode tests/assets/test_mjpeg.avi --check tests/assets/ref_mjpeg
+	@echo "[MPEG-1 PS]"
+	./mr_decode tests/assets/test_mpeg1.mpg --check tests/assets/ref_mpeg1
 
 clean:
 	rm -f mr_decode

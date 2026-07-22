@@ -51,6 +51,11 @@ typedef struct {
     mr_pixfmt fmt;
     int       stride;   /* bytes per row of the primary plane              */
     uint8_t  *data;     /* owned by the decoder; valid until next decode    */
+    /* Rows [dirty_y0, dirty_y1) changed this frame (the rest are identical to
+     * the previous frame, since decoders patch a persistent buffer). A decoder
+     * may report the full frame; dirty_y1 <= dirty_y0 means nothing changed. */
+    int       dirty_y0;
+    int       dirty_y1;
 } mr_frame;
 
 #endif /* MR_TYPES_H */

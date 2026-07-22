@@ -10,6 +10,11 @@
  */
 #include "../core/mr_demux.h"
 #include "../core/mr_codec.h"
+#include "../core/mr_dither.h"
+#include "../core/mr_ham.h"
+#ifdef MR_HAVE_MPEG1               /* host only - pl_mpeg pulls in soft-float */
+#include "../core/mr_mpeg1.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +81,39 @@ static long check_ppm(const char *path, const mr_frame *fr, int *maxerr)
     return (long)((sum * 1000) / n);
 }
 
+#ifdef MR_HAVE_MPEG1
+/* MPEG-1 program streams use the pl_mpeg source, not the demux+codec path. */
+static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
+                     const char *dir)
+{
+    mr_mpeg1 *m = mr_mpeg1_open(buf, len);
+    if (!m) { fprintf(stderr, "not a decodable MPEG-1 stream\n"); return 2; }
+    printf("mpeg1: %dx%d\n", mr_mpeg1_width(m), mr_mpeg1_height(m));
+    int frame = 0, bad = 0; long worst = 0;
+    mr_frame fr;
+    while (mr_mpeg1_next(m, &fr, NULL)) {
+        frame++;
+        char path[512];
+        if (mode && !strcmp(mode, "--ppm") && dir) {
+            snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
+            write_ppm(path, &fr);
+        } else if (mode && !strcmp(mode, "--check") && dir) {
+            int mxe = 0;
+            snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
+            long mae = check_ppm(path, &fr, &mxe);
+            if (mae >= 0) { if (mae > worst) worst = mae;
+                            if (mae > 6000) bad++; }
+        }
+    }
+    printf("decoded %d frames\n", frame);
+    if (mode && !strcmp(mode, "--check"))
+        printf("worst per-frame MAE=%ld.%03ld, frames over threshold=%d\n",
+               worst / 1000, worst % 1000, bad);
+    mr_mpeg1_close(m);
+    return bad ? 1 : 0;
+}
+#endif /* MR_HAVE_MPEG1 */
+
 int main(int argc, char **argv)
 {
     if (argc < 2) { fprintf(stderr, "usage: mr_decode <file.avi> [--ppm dir|--check dir]\n"); return 2; }
@@ -85,6 +123,14 @@ int main(int argc, char **argv)
     size_t len;
     uint8_t *buf = slurp(argv[1], &len);
     if (!buf) { fprintf(stderr, "cannot read %s\n", argv[1]); return 2; }
+
+#ifdef MR_HAVE_MPEG1
+    if (mr_mpeg1_probe(buf, len)) {              /* .mpg -> pl_mpeg source   */
+        int rc = run_mpeg1(buf, len, mode, dir);
+        free(buf);
+        return rc;
+    }
+#endif
 
     mr_demux *dx = mr_demux_open(buf, len);
     if (!dx) {
@@ -123,6 +169,29 @@ int main(int argc, char **argv)
     int frame = 0, bad = 0;
     long worst_mae = 0;   /* MAE * 1000 */
     unsigned long audio_bytes = 0, audio_pkts = 0;
+
+    /* --dirty: verify the decoder's reported changed-row span actually covers
+     * every row that differs from the previous frame (safety of dirty-row
+     * rendering). */
+    int do_dirty = (mode && !strcmp(mode, "--dirty"));
+    uint8_t *prev = NULL; long dirty_viol = 0; unsigned long dirty_rows = 0, tot_rows = 0;
+    if (do_dirty) prev = calloc((size_t)vi->width * vi->height * 3, 1);
+
+    /* --dither: exercise the AGA 8-bit path on the host - dither each frame to
+     * palette indices, map back to RGB, write it out, and report the round-trip
+     * MAE (dithering trades per-pixel error for no banding, so this is bounded,
+     * not near-zero). */
+    int do_dither = (mode && !strcmp(mode, "--dither") && dir);
+    int do_ham    = (mode && !strcmp(mode, "--ham") && dir);
+    uint8_t *d_idx = NULL, *d_rgb = NULL, d_pal[256 * 3];
+    long dither_worst = 0, ham_worst = 0;
+    if (do_dither || do_ham) {
+        d_idx = malloc((size_t)vi->width * vi->height);
+        d_rgb = malloc((size_t)vi->width * vi->height * 3);
+        mr_dither_palette(d_pal);
+        if (!d_idx || !d_rgb) { fprintf(stderr, "oom\n"); return 1; }
+    }
+
     mr_packet pkt;
     while (mr_demux_next_packet(dx, &pkt) == MR_OK) {
         if (!pkt.is_video) { audio_bytes += pkt.len; audio_pkts++; continue; }
@@ -132,6 +201,26 @@ int main(int argc, char **argv)
         }
         frame++;
         char path[512];
+        if (do_dirty) {
+            int w = dec.frame.width, h = dec.frame.height, y, changed_lo = h, changed_hi = 0;
+            for (y = 0; y < h; y++) {
+                const uint8_t *cur = dec.frame.data + (size_t)y * dec.frame.stride;
+                const uint8_t *pv  = prev + (size_t)y * w * 3;
+                if (memcmp(cur, pv, (size_t)w * 3) != 0) {
+                    if (y < changed_lo) changed_lo = y;
+                    if (y + 1 > changed_hi) changed_hi = y + 1;
+                }
+                memcpy((void *)pv, cur, (size_t)w * 3);
+            }
+            tot_rows += h;
+            if (changed_hi > changed_lo) {
+                dirty_rows += (unsigned long)(dec.frame.dirty_y1 - dec.frame.dirty_y0);
+                /* every actually-changed row must fall inside the reported span */
+                if (changed_lo < dec.frame.dirty_y0 || changed_hi > dec.frame.dirty_y1)
+                    dirty_viol++;
+            }
+            continue;
+        }
         if (mode && !strcmp(mode, "--ppm") && dir) {
             snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
             write_ppm(path, &dec.frame);
@@ -145,9 +234,67 @@ int main(int argc, char **argv)
                     printf("  frame %3d: MAE=%ld.%03ld maxerr=%d  <-- high\n",
                            frame, mae / 1000, mae % 1000, mxe); }
             }
+        } else if (do_dither) {
+            int w = dec.frame.width, h = dec.frame.height, i;
+            long sum = 0;
+            mr_dither_rgb8(dec.frame.data, w, h, dec.frame.stride, d_idx, w, 0);
+            for (i = 0; i < w * h; i++) {
+                const uint8_t *pe = &d_pal[d_idx[i] * 3];
+                d_rgb[i * 3 + 0] = pe[0];
+                d_rgb[i * 3 + 1] = pe[1];
+                d_rgb[i * 3 + 2] = pe[2];
+            }
+            for (i = 0; i < w * h * 3; i++) {
+                int row = i / (w * 3), col = i % (w * 3);
+                int dv = (int)dec.frame.data[(size_t)row * dec.frame.stride + col]
+                       - (int)d_rgb[i];
+                sum += dv < 0 ? -dv : dv;
+            }
+            { long mae = (sum * 1000) / (w * h * 3);
+              if (mae > dither_worst) dither_worst = mae; }
+            { mr_frame fr; fr.width = w; fr.height = h; fr.fmt = MR_PIX_RGB24;
+              fr.stride = w * 3; fr.data = d_rgb;
+              snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
+              write_ppm(path, &fr); }
+        } else if (do_ham) {
+            int w = dec.frame.width, h = dec.frame.height, i;
+            uint8_t hpal[64 * 3]; long sum = 0;
+            mr_ham_palette(hpal, 8);
+            mr_ham_encode(dec.frame.data, w, h, dec.frame.stride, d_idx, w, 8);
+            mr_ham_decode(d_idx, w, h, w, hpal, d_rgb, w * 3, 8);
+            for (i = 0; i < w * h * 3; i++) {
+                int row = i / (w * 3), col = i % (w * 3);
+                int dv = (int)dec.frame.data[(size_t)row * dec.frame.stride + col]
+                       - (int)d_rgb[i];
+                sum += dv < 0 ? -dv : dv;
+            }
+            { long mae = (sum * 1000) / (w * h * 3);
+              if (mae > ham_worst) ham_worst = mae; }
+            { mr_frame fr; fr.width = w; fr.height = h; fr.fmt = MR_PIX_RGB24;
+              fr.stride = w * 3; fr.data = d_rgb;
+              snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
+              write_ppm(path, &fr); }
         }
     }
     printf("decoded %d frames\n", frame);
+    if (do_dirty) {
+        printf("dirty rows: %lu / %lu total (%lu%%), coverage violations=%ld\n",
+               dirty_rows, tot_rows,
+               tot_rows ? 100UL * dirty_rows / tot_rows : 0UL, dirty_viol);
+        free(prev);
+        mr_decoder_close(&dec); mr_demux_close(dx); free(buf);
+        return dirty_viol ? 1 : 0;
+    }
+    if (do_dither) {
+        printf("dither round-trip worst MAE=%ld.%03ld/255\n",
+               dither_worst / 1000, dither_worst % 1000);
+        free(d_idx); free(d_rgb);
+    }
+    if (do_ham) {
+        printf("HAM8 round-trip worst MAE=%ld.%03ld/255\n",
+               ham_worst / 1000, ham_worst % 1000);
+        free(d_idx); free(d_rgb);
+    }
     if (audio_pkts)
         printf("audio: %lu packets, %lu bytes\n", audio_pkts, audio_bytes);
     if (mode && !strcmp(mode, "--check")) {
