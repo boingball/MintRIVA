@@ -26,6 +26,7 @@ check: mr_decode
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
+	    && test -d tests/assets/ref_mp4v_qpel \
 	    || sh tests/gen_assets.sh
 	@echo "[Cinepak AVI]"
 	./mr_decode tests/assets/test_cinepak.avi --check tests/assets/ref_cinepak

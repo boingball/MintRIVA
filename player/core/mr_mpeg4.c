@@ -854,6 +854,70 @@ static void mc_block(const uint8_t *ref, int w, int h, int st, int px, int py,
         }
 }
 
+/* ---- quarter-pel MC (§7.6.2.2): 8-tap FIR + bilinear over a block-boundary-
+ * mirrored reference block (Figure 7-30). mb[] is the 15x15 mirror of the 9x9
+ * integer-pel interior; fetch is mb[3+y][3+x] in interior coordinates. */
+static int qfir8(const int s[8], int rc)
+{
+    int acc = 160*(s[3]+s[4]) - 48*(s[2]+s[5]) + 24*(s[1]+s[6]) - 8*(s[0]+s[7]);
+    int v = (acc + 128 - rc) / 256;
+    if (v < 0) v = 0; else if (v > 255) v = 255;
+    return v;
+}
+static int qbilin(int x, int y, int rc)
+{ int v = (x + y + 1 - rc) / 2; return v > 255 ? 255 : v; }
+#define QF(mb,x,y) ((int)(mb)[3+(y)][3+(x)])
+static int qhb(const uint8_t mb[15][15], int x, int y, int rc)   /* horiz half-pel */
+{ int s[8], k; for (k=0;k<8;k++) s[k]=QF(mb,x-3+k,y); return qfir8(s, rc); }
+static int qhc(const uint8_t mb[15][15], int x, int y, int rc)   /* vert half-pel  */
+{ int s[8], k; for (k=0;k<8;k++) s[k]=QF(mb,x,y-3+k); return qfir8(s, rc); }
+static int qhd(const uint8_t mb[15][15], int x, int y, int rc)   /* centre half-pel*/
+{ int s[8], k; for (k=0;k<8;k++) s[k]=qhb(mb,x,y-3+k,rc); return qfir8(s, rc); }
+static int qck(const uint8_t mb[15][15], int x, int y, int rc)   /* left quarter col*/
+{ int s[8], k; for (k=0;k<8;k++) s[k]=qbilin(QF(mb,x,y-3+k), qhb(mb,x,y-3+k,rc), rc);
+  return qfir8(s, rc); }
+static int qcl(const uint8_t mb[15][15], int x, int y, int rc)   /* right quarter col*/
+{ int s[8], k; for (k=0;k<8;k++) s[k]=qbilin(qhb(mb,x,y-3+k,rc), QF(mb,x+1,y-3+k), rc);
+  return qfir8(s, rc); }
+
+static int qpel_pixel(const uint8_t mb[15][15], int x, int y, int qx, int qy, int rc)
+{
+    switch (qy*4 + qx) {
+    case  0: return QF(mb,x,y);
+    case  1: return qbilin(QF(mb,x,y), qhb(mb,x,y,rc), rc);
+    case  2: return qhb(mb,x,y,rc);
+    case  3: return qbilin(qhb(mb,x,y,rc), QF(mb,x+1,y), rc);
+    case  4: return qbilin(QF(mb,x,y), qhc(mb,x,y,rc), rc);
+    case  5: return qbilin(qbilin(QF(mb,x,y),qhb(mb,x,y,rc),rc), qck(mb,x,y,rc), rc);
+    case  6: return qbilin(qhb(mb,x,y,rc), qhd(mb,x,y,rc), rc);
+    case  7: return qbilin(qcl(mb,x,y,rc), qbilin(qhb(mb,x,y,rc),QF(mb,x+1,y),rc), rc);
+    case  8: return qhc(mb,x,y,rc);
+    case  9: return qck(mb,x,y,rc);
+    case 10: return qhd(mb,x,y,rc);
+    case 11: return qcl(mb,x,y,rc);
+    case 12: return qbilin(qhc(mb,x,y,rc), QF(mb,x,y+1), rc);
+    case 13: return qbilin(qck(mb,x,y,rc), qbilin(QF(mb,x,y+1),qhb(mb,x,y+1,rc),rc), rc);
+    case 14: return qbilin(qhd(mb,x,y,rc), qhb(mb,x,y+1,rc), rc);
+    default: return qbilin(qcl(mb,x,y,rc), qbilin(qhb(mb,x,y+1,rc),QF(mb,x+1,y+1),rc), rc);
+    }
+}
+static void mc_block_qpel(const uint8_t *ref, int w, int h, int st, int bx, int by,
+                          int mvx, int mvy, int rc, int out[8][8])
+{
+    int ix = mvx >> 2, iy = mvy >> 2, qx = mvx & 3, qy = mvy & 3, r, c, ox, oy;
+    uint8_t mb[15][15];
+    for (r = 0; r < 15; r++) {
+        int sr = r-3; if (sr < 0) sr = -sr-1; else if (sr > 8) sr = 17-sr;
+        for (c = 0; c < 15; c++) {
+            int sc = c-3; if (sc < 0) sc = -sc-1; else if (sc > 8) sc = 17-sc;
+            mb[r][c] = (uint8_t)fetch_px(ref, w, h, st, bx+ix+sc, by+iy+sr);
+        }
+    }
+    for (oy = 0; oy < 8; oy++)
+        for (ox = 0; ox < 8; ox++)
+            out[oy][ox] = qpel_pixel(mb, ox, oy, qx, qy, rc);
+}
+
 /* Decode one inter block's residual (Table B.17, zigzag, method-2 dequant). */
 static int decode_inter_resid(bitreader *b, int coded, int q, int resid[8][8])
 {
@@ -895,7 +959,10 @@ static int inter_block(m4_ctx *c, bitreader *b, int i, int mbx, int mby,
     else { ref = (i==4) ? c->ref[1] : c->ref[2]; rw = c->cw>>1; rh = c->ch>>1;
            st = c->cstride; dst = (i==4) ? c->cur[1] : c->cur[2];
            px = mbx*8; py = mby*8; }
-    mc_block(ref, rw, rh, st, px, py, mvx, mvy, rc, pred);
+    if (!chroma && c->quarter_sample)              /* luma qpel; chroma half-pel */
+        mc_block_qpel(ref, rw, rh, st, px, py, mvx, mvy, rc, pred);
+    else
+        mc_block(ref, rw, rh, st, px, py, mvx, mvy, rc, pred);
     if (coded) { if (decode_inter_resid(b, coded, q, resid)) return -1; }
     else       { for (v=0;v<8;v++) for (u=0;u<8;u++) resid[v][u] = 0; }
     for (v = 0; v < 8; v++) {
@@ -988,7 +1055,12 @@ static int decode_pvop(m4_ctx *c, bitreader *b)
 
             /* luma blocks use per-block MV; chroma uses the reduced MV */
             { int sx = 0, sy = 0, k = (mbtype == 2) ? 4 : 1, cmx, cmy;
-              for (i = 0; i < k; i++) { sx += lx[i]; sy += ly[i]; }
+              /* §7.6.5: in quarter-sample mode the luma MVs are halved (toward
+               * zero) before summation, collapsing onto the half-pel grid. */
+              for (i = 0; i < k; i++) {
+                  sx += c->quarter_sample ? lx[i]/2 : lx[i];
+                  sy += c->quarter_sample ? ly[i]/2 : ly[i];
+              }
               cmx = reduce_chroma(sx, k); cmy = reduce_chroma(sy, k);
               for (i = 0; i < 4; i++)
                   if (inter_block(c, b, i, mbx, mby, coded[i], q, lx[i], ly[i], rc))

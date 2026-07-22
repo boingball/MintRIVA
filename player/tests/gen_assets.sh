@@ -25,6 +25,8 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=1 \
     -c:v mpeg4 -g 1 -qscale:v 4 test_mp4v_intra.avi -y
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v mpeg4 -bf 0 -flags +mv4 -qscale:v 4 test_mp4v_sp.avi -y
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=1 \
+    -c:v mpeg4 -bf 0 -flags +qpel -qscale:v 4 test_mp4v_qpel.avi -y
 
 # Ground-truth frames, decoded by ffmpeg's own Cinepak decoder (per container,
 # since ffmpeg re-encodes the Cinepak stream separately for each).
@@ -40,5 +42,7 @@ rm -rf ref_mp4v_intra && mkdir -p ref_mp4v_intra
 ffmpeg -v error -i test_mp4v_intra.avi ref_mp4v_intra/f%03d.ppm -y
 rm -rf ref_mp4v_sp && mkdir -p ref_mp4v_sp
 ffmpeg -v error -i test_mp4v_sp.avi ref_mp4v_sp/f%03d.ppm -y
+rm -rf ref_mp4v_qpel && mkdir -p ref_mp4v_qpel
+ffmpeg -v error -i test_mp4v_qpel.avi ref_mp4v_qpel/f%03d.ppm -y
 
 echo "fixtures regenerated in $(pwd)"
