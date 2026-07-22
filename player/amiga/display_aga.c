@@ -52,9 +52,45 @@ typedef struct {
     int             pw;          /* chunky row stride (>= dw)               */
     int             depth;
     int             x0, y0, x0byte;
-    int             ham, scale, down, use_c2p;
+    int             ham, scale, down, use_c2p, use_akiko;
     int             quit;
 } aga_state;
+
+/*
+ * CD32 Akiko hardware chunky->planar. The Akiko chip exposes a C2P port at
+ * 0xB80038: feed 8 chunky longwords (32 pixels), then read back 8 planar
+ * longwords (one 32-bit slice per bitplane), and store each into its plane.
+ * This offloads the transpose from the 020, which is the win on a stock CD32.
+ *
+ * pw must be a multiple of 32 and x0byte a multiple of 4 (aga_open enforces
+ * both when Akiko is active), so every plane store lands longword-aligned.
+ *
+ * NOTE: the plane/bit ordering of the Akiko handshake here is reconstructed
+ * from documentation - it needs verifying on real CD32 hardware and may need
+ * the read order (or a bit reversal) tweaked if the picture comes out garbled.
+ */
+#define AKIKO_C2P_REG 0xB80038
+static void akiko_c2p(const uint8_t *chunky, int pw, int h, int chunky_stride,
+                      int nplanes, uint8_t *const planes[], int bpr,
+                      int x0byte, int y0)
+{
+    volatile ULONG *ak = (volatile ULONG *)AKIKO_C2P_REG;
+    int nbatch = pw >> 5;                          /* 32 pixels per batch     */
+    int y;
+    for (y = 0; y < h; y++) {
+        const ULONG *src = (const ULONG *)(chunky + (size_t)y * chunky_stride);
+        int dstrow = (y0 + y) * bpr + x0byte;
+        int b;
+        for (b = 0; b < nbatch; b++) {
+            ULONG planeword[8];
+            int i, p;
+            for (i = 0; i < 8; i++) *ak = *src++;        /* feed 32 chunky px */
+            for (i = 0; i < 8; i++) planeword[i] = *ak;  /* 8 planar slices   */
+            for (p = 0; p < nplanes; p++)
+                *(ULONG *)(planes[p] + dstrow + b * 4) = planeword[p];
+        }
+    }
+}
 
 static void load_palette(struct Screen *scr, int ham)
 {
@@ -79,7 +115,8 @@ static void *aga_open(int w, int h, const char *title)
     aga_state *s;
     int   scale = (g_aga_scale == 2) ? 2 : 1;
     int   ham   = g_aga_ham;
-    int   c2p   = g_aga_c2p;
+    int   akiko = g_aga_akiko;
+    int   c2p   = g_aga_c2p && !akiko;   /* Akiko is its own blit path */
     int   down = 1, dw, dh, depth = (ham == 6) ? 6 : 8;
     int   sw, sh;
     ULONG modeid;
@@ -107,10 +144,12 @@ static void *aga_open(int w, int h, const char *title)
     if (!s) return NULL;
     s->w = w; s->h = h; s->dw = dw; s->dh = dh;
     s->ham = ham; s->scale = scale; s->down = down;
-    s->depth = depth; s->use_c2p = c2p;
-    /* C2P needs an 8-pixel-aligned x and an 8-multiple row stride. */
-    s->pw = c2p ? ((dw + 7) & ~7) : dw;
-    s->x0 = c2p ? (((sw - dw) / 2) & ~7) : ((sw - dw) / 2);
+    s->depth = depth; s->use_c2p = c2p; s->use_akiko = akiko;
+    /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
+     * a 32-multiple row stride; the built-in C2P only needs 8-pixel alignment. */
+    if (akiko)     { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
+    else if (c2p)  { s->pw = (dw + 7)  & ~7;  s->x0 = ((sw - dw) / 2) & ~7;  }
+    else           { s->pw = dw;              s->x0 = (sw - dw) / 2;         }
     if (s->x0 < 0) s->x0 = 0;
     s->y0 = (sh - dh) / 2;
     s->x0byte = s->x0 >> 3;
@@ -141,7 +180,7 @@ static void *aga_open(int w, int h, const char *title)
         s->scaled = (unsigned char *)malloc((size_t)dw * dh * 3);
         if (!s->scaled) goto fail;
     }
-    if (!c2p) {
+    if (!c2p && !akiko) {                          /* WritePixelArray8 path   */
         s->tempbm = AllocBitMap((ULONG)s->pw, 1, (ULONG)depth, 0,
                                 s->scr->RastPort.BitMap);
         if (!s->tempbm) goto fail;
@@ -204,7 +243,12 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
 
     { clock_t a = clock();
     const uint8_t *crow = s->chunky + (size_t)ddy0 * pw;
-    if (s->use_c2p) {
+    if (s->use_akiko) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        akiko_c2p(crow, pw, ddh, pw, s->depth,
+                  (uint8_t *const *)bm->Planes, bm->BytesPerRow,
+                  s->x0byte, s->y0 + ddy0);
+    } else if (s->use_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         mr_c2p8(crow, pw, ddh, pw, s->depth,
                 (uint8_t *const *)bm->Planes, bm->BytesPerRow,

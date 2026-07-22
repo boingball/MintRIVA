@@ -26,6 +26,7 @@ extern int g_aga_ham;    /* 0 = 256-colour dither, 6 = HAM6, 8 = HAM8       */
 extern int g_aga_scale;  /* 1 or 2 (pixel doubling)                        */
 extern int g_aga_c2p;    /* 1 = fast mr_c2p8 (default), 0 = WritePixelArray8 */
 extern int g_aga_lace;   /* 1 = allow interlaced screens (taller fit)       */
+extern int g_aga_akiko;  /* 1 = use CD32 Akiko hardware C2P                  */
 
 /* Library bases opened once by display.c and shared by the backends. */
 #include <exec/types.h>

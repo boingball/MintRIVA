@@ -33,6 +33,10 @@ void display_set_c2p(int on);
  * resolution instead of being downscaled. Off by default (interlace flickers). */
 void display_set_lace(int on);
 
+/* Use the CD32 Akiko chip's hardware chunky->planar instead of the CPU C2P.
+ * CD32 only; no effect (and unsafe) elsewhere, so gate it on --cd32. */
+void display_set_akiko(int on);
+
 /* Accumulated AGA encode / blit time in ms (0 if the AGA backend wasn't used). */
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms);
 

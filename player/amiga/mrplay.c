@@ -185,7 +185,7 @@ int main(int argc, char **argv)
 
     if (argc < 2) {
         printf("usage: mrplay <file.avi|file.mov> [--aga] [--ham] [--ham6] "
-               "[--2x] [--lace] [--loop] [--wpa|--c2p] [--time]\n");
+               "[--2x] [--lace] [--loop] [--wpa|--c2p] [--cd32] [--time]\n");
         return 5;
     }
     {   /* display options anywhere on the command line */
@@ -199,6 +199,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
+            else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
             else if (!strcmp(argv[i], "--time")) want_time = 1;
         }
     }
