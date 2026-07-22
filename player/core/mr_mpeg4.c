@@ -118,6 +118,7 @@ typedef struct {
 
     /* intra DC/AC predictor grids (per component, block granularity) */
     struct predblk *pl, *pcb, *pcr;   /* luma 2*mb_w x 2*mb_h; chroma mb_w x mb_h */
+    struct mvblk   *mv;               /* per luma sub-block MV (2*mb_w x 2*mb_h) */
 
     /* RGB output */
     uint8_t *rgb;
@@ -133,6 +134,9 @@ typedef struct predblk {
     int16_t row[8];       /* QF[0][1..7]                                      */
     int16_t col[8];       /* QF[1..7][0]                                      */
 } predblk;
+
+/* One luma sub-block's forward motion vector (half-pel units). */
+typedef struct mvblk { int x, y, valid, pkt; } mvblk;
 
 /* Default (JPEG/MPEG) quant matrices, in zigzag-natural order used by MPEG-4. */
 static const uint8_t default_intra_matrix[64] = {
@@ -311,6 +315,7 @@ typedef struct { uint16_t code; uint8_t len, last, run; int16_t level; } tcoef_t
 typedef struct { uint16_t code; uint8_t len, val; } vlc3_t;
 typedef struct { uint16_t code; uint8_t len, mbtype, cbpc; } mcbpc_t;
 typedef struct { uint16_t code; uint8_t len, intra, inter; } cbpy_t;
+typedef struct { uint16_t code; uint8_t len; int16_t data; } mvd_t;
 
 #include "mr_mpeg4_tables.inc"
 
@@ -485,6 +490,8 @@ static void idct_8x8(const int in[8][8], int out[8][8])
                 a += (v ? 1.0 : c0) * tmp[v][x] * idct_cos[v][y];
             { double r = s * a;
               int iv = (r >= 0) ? (int)(r + 0.5) : -(int)(-r + 0.5);
+              if (iv < -(1<<BPP)) iv = -(1<<BPP);            /* §7.4.5 clamp   */
+              else if (iv > (1<<BPP)-1) iv = (1<<BPP)-1;
               out[y][x] = iv; }
         }
 }
@@ -663,21 +670,27 @@ static int use_intra_dc_vlc(int thr, int q)
 static int maybe_resync(m4_ctx *c, bitreader *b, int *q, int *pkt)
 {
     int save = b->pos, mb_bits = 1, total = c->mb_w * c->mb_h;
+    int zeros = (c->coding_type == VOP_I) ? 16 : (15 + c->fcode_fwd);
     if (c->resync_disable) return 0;
     if (br_bit(b) != 0) { b->pos = save; return 0; }      /* stuffing starts 0 */
     while (b->pos & 7) if (br_bit(b) != 1) { b->pos = save; return 0; }
-    if (br_bits(b, 16) != 0 || br_bit(b) != 1) { b->pos = save; return 0; } /* 16z+1 */
+    /* resync marker: `zeros` zero bits then a 1 */
+    { int i; for (i = 0; i < zeros; i++) if (br_bit(b) != 0) { b->pos = save; return 0; } }
+    if (br_bit(b) != 1) { b->pos = save; return 0; }
     while ((1 << mb_bits) < total) mb_bits++;              /* macroblock_number */
     br_bits(b, mb_bits);
     *q = br_bits(b, c->quant_precision);                   /* quant_scale       */
     if (*q < 1) *q = 1;
     if (br_bit(b)) {                                       /* header_extension  */
+        int ct;
         while (br_bit(b)) { if (br_overrun(b)) break; }    /* modulo_time_base  */
         br_bit(b);                                         /* marker            */
         br_bits(b, c->time_inc_bits);                      /* vop_time_increment*/
         br_bit(b);                                         /* marker            */
-        br_bits(b, 2);                                     /* vop_coding_type   */
+        ct = br_bits(b, 2);                                /* vop_coding_type   */
         c->intra_dc_thr = br_bits(b, 3);                   /* intra_dc_vlc_thr  */
+        if (ct != VOP_I) c->fcode_fwd = br_bits(b, 3);     /* vop_fcode_forward */
+        if (ct == VOP_B) c->fcode_bwd = br_bits(b, 3);
     }
     (*pkt)++;
     return 1;
@@ -715,6 +728,275 @@ static int decode_ivop(m4_ctx *c, bitreader *b)
             for (i = 0; i < 6; i++)
                 if (decode_intra_block(c, b, i, mbx, mby, coded[i], use_dc, ac_pred, q, pkt))
                     return MR_EFORMAT;
+        }
+    }
+    return MR_OK;
+}
+
+/* ======================================================================== */
+/* Inter (P-VOP) macroblock decode: motion vectors + half-pel MC + residual. */
+/* ======================================================================== */
+
+static int median3(int a, int b, int c)
+{
+    int mx = a > b ? a : b, mn = a < b ? a : b;
+    if (c > mx) return mx;
+    if (c < mn) return mn;
+    return c;
+}
+static int floordiv(int a, int d)                /* d > 0, floor toward -inf  */
+{
+    int q = a / d, r = a % d;
+    if (r != 0 && r < 0) q--;
+    return q;
+}
+
+/* Motion-vector data VLC (Table B.12): returns 2*vector_difference, or the
+ * sentinel -999 on a bad code. */
+static int match_mvd(bitreader *b)
+{
+    unsigned w = br_peek(b, 13);
+    int i;
+    for (i = 0; i < 65; i++)
+        if ((w >> (13 - mvd_tab[i].len)) == mvd_tab[i].code) {
+            br_skip(b, mvd_tab[i].len);
+            return mvd_tab[i].data;
+        }
+    return -999;
+}
+static int recon_comp(int d, int res, int f)
+{
+    int m;
+    if (f == 1 || d == 0) return d;
+    m = (abs(d) - 1) * f + res + 1;
+    return d < 0 ? -m : m;
+}
+/* Decode one motion vector (§6.2.6.2 + §7.6.3) given predictor (px,py). */
+static int decode_mv(bitreader *b, int fcode, int px, int py, int *ox, int *oy)
+{
+    int f = 1 << (fcode - 1), rr = fcode - 1;
+    int hd, hres, vd, vres, dx, dy, low, high, range, x, y;
+    hd = match_mvd(b); if (hd == -999) return -1;
+    hres = (f != 1 && hd != 0) ? (int)br_bits(b, rr) : 0;
+    vd = match_mvd(b); if (vd == -999) return -1;
+    vres = (f != 1 && vd != 0) ? (int)br_bits(b, rr) : 0;
+    dx = recon_comp(hd, hres, f); dy = recon_comp(vd, vres, f);
+    low = -32*f; high = 32*f - 1; range = 64*f;
+    x = px + dx; if (x < low) x += range; if (x > high) x -= range;
+    y = py + dy; if (y < low) y += range; if (y > high) y -= range;
+    *ox = x; *oy = y;
+    return 0;
+}
+
+/* §7.6.5 median predictor for luma block `blk` (0..3) of MB (mbx,mby). */
+static void mv_predict(m4_ctx *c, int mbx, int mby, int blk, int pkt,
+                       int *px, int *py)
+{
+    int gw = c->mb_w*2, gh = c->mb_h*2, r = mby, cc = mbx;
+    int p[3][2], vx[3], vy[3], valid[3], nvalid = 0, i;
+    switch (blk) {
+    case 0: p[0][0]=2*r;   p[0][1]=2*cc-1; p[1][0]=2*r-1; p[1][1]=2*cc;
+            p[2][0]=2*r-1; p[2][1]=2*cc+2; break;
+    case 1: p[0][0]=2*r;   p[0][1]=2*cc;   p[1][0]=2*r-1; p[1][1]=2*cc+1;
+            p[2][0]=2*r-1; p[2][1]=2*cc+2; break;
+    case 2: p[0][0]=2*r+1; p[0][1]=2*cc-1; p[1][0]=2*r;   p[1][1]=2*cc;
+            p[2][0]=2*r;   p[2][1]=2*cc+1; break;
+    default:p[0][0]=2*r+1; p[0][1]=2*cc;   p[1][0]=2*r;   p[1][1]=2*cc;
+            p[2][0]=2*r;   p[2][1]=2*cc+1; break;
+    }
+    for (i = 0; i < 3; i++) {
+        int sr = p[i][0], sc = p[i][1];
+        valid[i] = 0;
+        if (sr < 0 || sc < 0 || sr >= gh || sc >= gw) continue;
+        { mvblk *m = &c->mv[sr*gw + sc];
+          if (m->valid && m->pkt == pkt) { vx[i]=m->x; vy[i]=m->y; valid[i]=1; nvalid++; } }
+    }
+    if (nvalid == 0) { *px = 0; *py = 0; return; }
+    if (nvalid == 1) { for (i=0;i<3;i++) if (valid[i]) { *px=vx[i]; *py=vy[i]; return; } }
+    for (i = 0; i < 3; i++) if (!valid[i]) { vx[i]=0; vy[i]=0; }
+    *px = median3(vx[0], vx[1], vx[2]);
+    *py = median3(vy[0], vy[1], vy[2]);
+}
+
+/* §7.6.5 chroma MV: sum the K luma MVs, reduce onto the half-pel grid. */
+static int reduce_chroma(int sum, int k)
+{
+    static const uint8_t t13[4]  = {0,1,1,1};
+    static const uint8_t t10[16] = {0,0,0,1,1,1,1,1,1,1,1,1,1,1,2,2};
+    int fourk = 4*k, wp = floordiv(sum, fourk), idx = sum - wp*fourk;
+    return 2*wp + ((k == 1) ? t13[idx] : t10[idx]);
+}
+
+/* §7.6.2 half-pel motion compensation of one 8x8 block from a reference plane
+ * (edge-clamped), into out[8][8]. */
+static int fetch_px(const uint8_t *p, int w, int h, int st, int x, int y)
+{
+    if (x < 0) x = 0; else if (x >= w) x = w - 1;
+    if (y < 0) y = 0; else if (y >= h) y = h - 1;
+    return p[(size_t)y*st + x];
+}
+static void mc_block(const uint8_t *ref, int w, int h, int st, int px, int py,
+                     int mvx, int mvy, int rc, int out[8][8])
+{
+    int ix = mvx >> 1, iy = mvy >> 1, hx = mvx & 1, hy = mvy & 1, yy, xx;
+    for (yy = 0; yy < 8; yy++)
+        for (xx = 0; xx < 8; xx++) {
+            int X = px + xx + ix, Y = py + yy + iy, val;
+            int A = fetch_px(ref, w, h, st, X,   Y);
+            int B = fetch_px(ref, w, h, st, X+1, Y);
+            int C = fetch_px(ref, w, h, st, X,   Y+1);
+            int D = fetch_px(ref, w, h, st, X+1, Y+1);
+            if (!hx && !hy)      val = A;
+            else if (hx && !hy)  val = (A + B + 1 - rc) / 2;
+            else if (!hx && hy)  val = (A + C + 1 - rc) / 2;
+            else                 val = (A + B + C + D + 2 - rc) / 4;
+            out[yy][xx] = val;
+        }
+}
+
+/* Decode one inter block's residual (Table B.17, zigzag, method-2 dequant). */
+static int decode_inter_resid(bitreader *b, int coded, int q, int resid[8][8])
+{
+    int qfs[64], pqf[8][8], f[8][8], u, v, pos, satlo, sathi;
+    for (pos = 0; pos < 64; pos++) qfs[pos] = 0;
+    if (coded) {
+        pos = 0;
+        for (;;) {
+            int last, run, level, tgt;
+            if (decode_ac_event(b, 0, &last, &run, &level)) return -1;
+            tgt = pos + run;
+            if (tgt >= 64) return -1;
+            qfs[tgt] = level;
+            pos = tgt + 1;
+            if (last) break;
+        }
+    }
+    for (v = 0; v < 8; v++) for (u = 0; u < 8; u++) pqf[v][u] = qfs[scan_zigzag[v][u]];
+    satlo = -(1 << (BPP + 3)); sathi = (1 << (BPP + 3)) - 1;
+    for (v = 0; v < 8; v++) for (u = 0; u < 8; u++) {
+        int val = deq2(pqf[v][u], q);
+        if (val < satlo) val = satlo; else if (val > sathi) val = sathi;
+        f[v][u] = val;
+    }
+    idct_8x8(f, resid);
+    return 0;
+}
+
+/* Reconstruct one inter/skip block: prediction + residual, clip to [0,255]. */
+static int inter_block(m4_ctx *c, bitreader *b, int i, int mbx, int mby,
+                       int coded, int q, int mvx, int mvy, int rc)
+{
+    int chroma = (i >= 4), pred[8][8], resid[8][8], u, v;
+    const uint8_t *ref;
+    uint8_t *dst;
+    int rw, rh, st, px, py;
+    if (!chroma) { ref = c->ref[0]; rw = c->cw; rh = c->ch; st = c->ystride;
+                   dst = c->cur[0]; px = mbx*16 + (i&1)*8; py = mby*16 + (i>>1)*8; }
+    else { ref = (i==4) ? c->ref[1] : c->ref[2]; rw = c->cw>>1; rh = c->ch>>1;
+           st = c->cstride; dst = (i==4) ? c->cur[1] : c->cur[2];
+           px = mbx*8; py = mby*8; }
+    mc_block(ref, rw, rh, st, px, py, mvx, mvy, rc, pred);
+    if (coded) { if (decode_inter_resid(b, coded, q, resid)) return -1; }
+    else       { for (v=0;v<8;v++) for (u=0;u<8;u++) resid[v][u] = 0; }
+    for (v = 0; v < 8; v++) {
+        uint8_t *d = dst + (size_t)(py + v)*st + px;
+        for (u = 0; u < 8; u++) {
+            int s = pred[v][u] + resid[v][u];
+            if (s < 0) s = 0; else if (s > 255) s = 255;
+            d[u] = (uint8_t)s;
+        }
+    }
+    return 0;
+}
+
+/* Record a MB's four luma sub-block MVs in the prediction grid. */
+static void store_mv(m4_ctx *c, int mbx, int mby, int pkt,
+                     const int lx[4], const int ly[4])
+{
+    int gw = c->mb_w*2, i;
+    for (i = 0; i < 4; i++) {
+        mvblk *m = &c->mv[(2*mby + (i>>1))*gw + (2*mbx + (i&1))];
+        m->x = lx[i]; m->y = ly[i]; m->valid = 1; m->pkt = pkt;
+    }
+}
+
+/* Decode a full P-VOP macroblock grid into c->cur (referencing c->ref). */
+static int decode_pvop(m4_ctx *c, bitreader *b)
+{
+    int mbx, mby, q = c->quant, pkt = 1, rc = c->rounding, i;
+    size_t nl = (size_t)(c->mb_w*2) * (c->mb_h*2), nc = (size_t)c->mb_w * c->mb_h;
+    memset(c->pl,  0, nl * sizeof(predblk));
+    memset(c->pcb, 0, nc * sizeof(predblk));
+    memset(c->pcr, 0, nc * sizeof(predblk));
+    memset(c->mv,  0, nl * sizeof(mvblk));
+
+    for (mby = 0; mby < c->mb_h; mby++) {
+        for (mbx = 0; mbx < c->mb_w; mbx++) {
+            const mcbpc_t *mc;
+            int cbpy, ac_pred, use_dc, coded[6], cbpc, mbtype;
+            int lx[4], ly[4];
+            maybe_resync(c, b, &q, &pkt);
+            if (br_bit(b)) {                       /* not_coded == 1: skip MB  */
+                for (i = 0; i < 4; i++) { lx[i]=0; ly[i]=0; }
+                for (i = 0; i < 6; i++)
+                    if (inter_block(c, b, i, mbx, mby, 0, q, 0, 0, rc)) return MR_EFORMAT;
+                store_mv(c, mbx, mby, pkt, lx, ly);
+                continue;
+            }
+            do { mc = match_mcbpc(b, mcbpc_p, 21); if (!mc) return MR_EFORMAT; }
+            while (mc->mbtype == 5);               /* stuffing                */
+            mbtype = mc->mbtype; cbpc = mc->cbpc;
+            ac_pred = (mbtype >= 3) ? br_bit(b) : 0;
+            cbpy = match_cbpy(b, mbtype >= 3);
+            if (cbpy < 0) return MR_EFORMAT;
+            if (mbtype == 1 || mbtype == 4) {      /* inter+q / intra+q dquant */
+                static const int dq[4] = { -1, -2, 1, 2 };
+                q += dq[br_bits(b, 2)];
+                if (q < 1) q = 1; else if (q > 31) q = 31;
+            }
+            coded[0]=(cbpy>>3)&1; coded[1]=(cbpy>>2)&1;
+            coded[2]=(cbpy>>1)&1; coded[3]=cbpy&1;
+            coded[4]=(cbpc>>1)&1; coded[5]=cbpc&1;
+
+            if (mbtype >= 3) {                     /* intra MB inside a P-VOP  */
+                use_dc = use_intra_dc_vlc(c->intra_dc_thr, q);
+                for (i = 0; i < 6; i++)
+                    if (decode_intra_block(c, b, i, mbx, mby, coded[i], use_dc, ac_pred, q, pkt))
+                        return MR_EFORMAT;
+                for (i = 0; i < 4; i++) { lx[i]=0; ly[i]=0; }
+                store_mv(c, mbx, mby, pkt, lx, ly);
+                continue;
+            }
+
+            /* inter MB: motion vectors (1 or 4), then MC + residual */
+            if (mbtype == 2) {                     /* inter4v: 4 MVs           */
+                for (i = 0; i < 4; i++) {
+                    int px, py;
+                    mv_predict(c, mbx, mby, i, pkt, &px, &py);
+                    if (decode_mv(b, c->fcode_fwd, px, py, &lx[i], &ly[i])) return MR_EFORMAT;
+                    /* store immediately so later blocks of this MB predict from it */
+                    { int gw=c->mb_w*2; mvblk *m=&c->mv[(2*mby+(i>>1))*gw+(2*mbx+(i&1))];
+                      m->x=lx[i]; m->y=ly[i]; m->valid=1; m->pkt=pkt; }
+                }
+            } else {                               /* 1 MV shared by 4 blocks  */
+                int px, py, mx, my;
+                mv_predict(c, mbx, mby, 0, pkt, &px, &py);
+                if (decode_mv(b, c->fcode_fwd, px, py, &mx, &my)) return MR_EFORMAT;
+                for (i = 0; i < 4; i++) { lx[i]=mx; ly[i]=my; }
+            }
+            store_mv(c, mbx, mby, pkt, lx, ly);
+
+            /* luma blocks use per-block MV; chroma uses the reduced MV */
+            { int sx = 0, sy = 0, k = (mbtype == 2) ? 4 : 1, cmx, cmy;
+              for (i = 0; i < k; i++) { sx += lx[i]; sy += ly[i]; }
+              cmx = reduce_chroma(sx, k); cmy = reduce_chroma(sy, k);
+              for (i = 0; i < 4; i++)
+                  if (inter_block(c, b, i, mbx, mby, coded[i], q, lx[i], ly[i], rc))
+                      return MR_EFORMAT;
+              for (i = 4; i < 6; i++)
+                  if (inter_block(c, b, i, mbx, mby, coded[i], q, cmx, cmy, rc))
+                      return MR_EFORMAT;
+            }
         }
     }
     return MR_OK;
@@ -775,10 +1057,12 @@ static int alloc_planes(m4_ctx *c)
         else        { memset(c->cur[i],128, sz); memset(c->ref[i],128, sz); }
     }
     if (!c->pl) {
-        c->pl  = (predblk *)malloc((size_t)(c->mb_w*2) * (c->mb_h*2) * sizeof(predblk));
+        size_t nl = (size_t)(c->mb_w*2) * (c->mb_h*2);
+        c->pl  = (predblk *)malloc(nl * sizeof(predblk));
         c->pcb = (predblk *)malloc((size_t)c->mb_w * c->mb_h * sizeof(predblk));
         c->pcr = (predblk *)malloc((size_t)c->mb_w * c->mb_h * sizeof(predblk));
-        if (!c->pl || !c->pcb || !c->pcr) return 0;
+        c->mv  = (mvblk *)malloc(nl * sizeof(mvblk));
+        if (!c->pl || !c->pcb || !c->pcr || !c->mv) return 0;
     }
     return 1;
 }
@@ -805,11 +1089,17 @@ static mr_status m4_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
             if (c->coding_type == VOP_I) {
                 rc = decode_ivop(c, &br);
                 if (rc != MR_OK) return rc;
+            } else if (c->coding_type == VOP_P) {
+                rc = decode_pvop(c, &br);
+                if (rc != MR_OK) return rc;
             } else {
-                /* P/B/S decode arrives in the next stages. */
+                /* B / S(GMC) decode arrives in the next stage. */
                 return MR_EUNSUPPORTED;
             }
             yuv_to_rgb(c);
+            /* this frame becomes the reference for the next P-VOP */
+            { int k; for (k = 0; k < 3; k++)
+                { uint8_t *t = c->cur[k]; c->cur[k] = c->ref[k]; c->ref[k] = t; } }
             decoded = 1;
             break;
         }
@@ -824,7 +1114,7 @@ static void m4_close(mr_decoder *dec)
     int i;
     if (!c) return;
     for (i = 0; i < 3; i++) { free(c->cur[i]); free(c->ref[i]); }
-    free(c->pl); free(c->pcb); free(c->pcr);
+    free(c->pl); free(c->pcb); free(c->pcr); free(c->mv);
     free(c->rgb);
     free(c);
     dec->priv = NULL;

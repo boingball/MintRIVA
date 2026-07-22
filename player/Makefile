@@ -11,7 +11,8 @@ CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
 TESTSRC  = tests/mr_decode.c
 HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
-           core/mr_mpeg1.h core/mr_mpeg4.h core/mr_types.h
+           core/mr_mpeg1.h core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
+           core/mr_types.h
 
 all: mr_decode
 
@@ -24,6 +25,7 @@ mr_decode: $(TESTSRC) $(CORE) $(HEADERS)
 check: mr_decode
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_mpeg1 \
+	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
 	    || sh tests/gen_assets.sh
 	@echo "[Cinepak AVI]"
 	./mr_decode tests/assets/test_cinepak.avi --check tests/assets/ref_cinepak
@@ -33,6 +35,10 @@ check: mr_decode
 	./mr_decode tests/assets/test_mjpeg.avi --check tests/assets/ref_mjpeg
 	@echo "[MPEG-1 PS]"
 	./mr_decode tests/assets/test_mpeg1.mpg --check tests/assets/ref_mpeg1
+	@echo "[MPEG-4 Part 2 intra]"
+	./mr_decode tests/assets/test_mp4v_intra.avi --check tests/assets/ref_mp4v_intra
+	@echo "[MPEG-4 Part 2 Simple Profile]"
+	./mr_decode tests/assets/test_mp4v_sp.avi --check tests/assets/ref_mp4v_sp
 
 clean:
 	rm -f mr_decode
