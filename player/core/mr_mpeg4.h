@@ -2,10 +2,14 @@
  * MintRIVA - MPEG-4 Part 2 (Visual) decoder, aka DivX/Xvid.
  *
  * A from-scratch, portable-C decoder (no libavcodec/xvid dependency) plugged in
- * behind mr_codec.h. Built and validated bottom-up against ffmpeg: I-VOP first,
- * then P-VOP (half-pel MC), then the Advanced Simple Profile tools (B-VOPs,
- * quarter-pel, GMC). Streams using tools not yet handled are rejected cleanly
- * (MR_EUNSUPPORTED) rather than decoded to garbage.
+ * behind mr_codec.h. Built and validated bottom-up against ffmpeg.
+ *
+ * Status:
+ *   done  - I-VOP (intra), P-VOP (half-pel MC, 1MV/4MV), quarter-pel MC,
+ *           video-packet resync. All validated in `make check`.
+ *   todo  - B-VOPs (needs display-order reordering + direct-mode co-located
+ *           P-VOP MVs + bidirectional prediction) and GMC (sprite). These VOP
+ *           types currently return MR_EUNSUPPORTED rather than decode garbage.
  *
  * One AVI/MP4 packet carries one coded VOP. State (reference frames, quant
  * matrices) persists across calls, like the other inter-frame decoders here.
