@@ -16,8 +16,9 @@ struct mov_sample;   /* opaque: {file offset, size} per video frame */
 typedef struct {
     const uint8_t     *buf;
     size_t             len;
-    struct mov_sample *samples;   /* flat video-frame index                */
-    uint32_t           nsamples;
+    struct mov_sample *samples;   /* interleaved video-frame + audio-chunk  */
+    uint32_t           nsamples;  /* index, sorted by file offset           */
+    uint32_t           cap;
     uint32_t           cursor;
     mr_video_info      video;
     mr_audio_info      audio;

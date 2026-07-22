@@ -122,9 +122,11 @@ int main(int argc, char **argv)
 
     int frame = 0, bad = 0;
     long worst_mae = 0;   /* MAE * 1000 */
+    unsigned long audio_bytes = 0, audio_pkts = 0;
     mr_packet pkt;
     while (mr_demux_next_packet(dx, &pkt) == MR_OK) {
-        if (!pkt.is_video || pkt.len == 0) continue;
+        if (!pkt.is_video) { audio_bytes += pkt.len; audio_pkts++; continue; }
+        if (pkt.len == 0) continue;
         if (mr_decoder_decode(&dec, pkt.data, pkt.len) != MR_OK) {
             fprintf(stderr, "decode error at frame %d\n", frame); break;
         }
@@ -146,6 +148,8 @@ int main(int argc, char **argv)
         }
     }
     printf("decoded %d frames\n", frame);
+    if (audio_pkts)
+        printf("audio: %lu packets, %lu bytes\n", audio_pkts, audio_bytes);
     if (mode && !strcmp(mode, "--check")) {
         printf("worst per-frame MAE=%ld.%03ld, frames over threshold=%d\n",
                worst_mae / 1000, worst_mae % 1000, bad);

@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct mov_sample { uint32_t off; uint32_t size; };
+struct mov_sample { uint32_t off; uint32_t size; uint8_t is_video; };
 
 static uint32_t rb32(const uint8_t *p){ return mr_rb32(p); }
 static uint16_t rb16(const uint8_t *p){ return mr_rb16(p); }
@@ -42,6 +42,18 @@ static const uint8_t *find_atom(const uint8_t *p, const uint8_t *end,
         p += asz;
     }
     return NULL;
+}
+
+static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
+                                    const uint8_t *end, int is_video,
+                                    int coalesce_chunks);
+
+/* sort interleaved segments by ascending file offset */
+static int cmp_off(const void *a, const void *b)
+{
+    uint32_t oa = ((const struct mov_sample *)a)->off;
+    uint32_t ob = ((const struct mov_sample *)b)->off;
+    return (oa > ob) - (oa < ob);
 }
 
 /* mdia/hdlr -> handler type ('vide' / 'soun'). */
@@ -80,7 +92,34 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         if (!m->video.scale) m->video.scale = m->video.rate ? m->video.rate : 1;
     }
 
-    /* sample sizes */
+    return read_stbl_segments(m, stbl, end, 1 /*video*/, 0 /*per-sample*/);
+}
+
+/* Append a segment to the growing interleaved index. */
+static mr_status push_seg(mr_mov *m, uint32_t off, uint32_t size, int is_video)
+{
+    if (!size) return MR_OK;
+    if (m->nsamples >= m->cap) {
+        uint32_t nc = m->cap ? m->cap * 2 : 256;
+        struct mov_sample *ns = (struct mov_sample *)
+            realloc(m->samples, (size_t)nc * sizeof *ns);
+        if (!ns) return MR_ENOMEM;
+        m->samples = ns; m->cap = nc;
+    }
+    m->samples[m->nsamples].off      = off;
+    m->samples[m->nsamples].size     = size;
+    m->samples[m->nsamples].is_video = (uint8_t)is_video;
+    m->nsamples++;
+    return MR_OK;
+}
+
+/* Flatten a track's stbl into the shared index. Video emits one segment per
+ * sample (frame); audio coalesces each chunk into a single PCM segment (far
+ * fewer, larger packets). */
+static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
+                                    const uint8_t *end, int is_video,
+                                    int coalesce_chunks)
+{
     uint32_t stsz_sz, stsc_sz, stco_sz;
     const uint8_t *stsz = find_atom(stbl, end, T('s','t','s','z'), &stsz_sz);
     const uint8_t *stsc = find_atom(stbl, end, T('s','t','s','c'), &stsc_sz);
@@ -90,18 +129,15 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
     if (!stsz || !stsc || !stco || stsz_sz < 12 || stsc_sz < 8 || stco_sz < 8)
         return MR_EFORMAT;
 
-    uint32_t uniform    = rb32(stsz + 4);
-    uint32_t nsamp      = rb32(stsz + 8);
-    uint32_t stsc_cnt   = rb32(stsc + 4);
-    uint32_t nchunks    = rb32(stco + 4);
+    uint32_t uniform  = rb32(stsz + 4);
+    uint32_t nsamp    = rb32(stsz + 8);
+    uint32_t stsc_cnt = rb32(stsc + 4);
+    uint32_t nchunks  = rb32(stco + 4);
     if (!nsamp || !nchunks) return MR_EFORMAT;
 
-    struct mov_sample *out = (struct mov_sample *)calloc(nsamp, sizeof *out);
-    if (!out) return MR_ENOMEM;
-
-    const uint8_t *sizes  = stsz + 12;          /* per-sample size table    */
-    const uint8_t *sc     = stsc + 8;           /* stsc entries (12 bytes)  */
-    const uint8_t *co     = stco + 8;           /* chunk offsets            */
+    const uint8_t *sizes = stsz + 12;
+    const uint8_t *sc    = stsc + 8;
+    const uint8_t *co    = stco + 8;
 
     uint32_t si = 0, e;
     for (e = 0; e < stsc_cnt && si < nsamp; e++) {
@@ -115,18 +151,26 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
             uint64_t off = co64 ? rb64(co + (uint64_t)(chunk - 1) * 8)
                                 : rb32(co + (uint64_t)(chunk - 1) * 4);
             uint32_t k;
-            for (k = 0; k < spc && si < nsamp; k++) {
-                uint32_t ssz = uniform ? uniform : rb32(sizes + (uint64_t)si * 4);
-                out[si].off  = (uint32_t)off;
-                out[si].size = ssz;
-                off += ssz;
-                si++;
+            if (coalesce_chunks) {
+                uint32_t start = (uint32_t)off, total = 0;
+                for (k = 0; k < spc && si < nsamp; k++) {
+                    total += uniform ? uniform : rb32(sizes + (uint64_t)si * 4);
+                    si++;
+                }
+                if (push_seg(m, start, total, is_video) != MR_OK)
+                    return MR_ENOMEM;
+            } else {
+                for (k = 0; k < spc && si < nsamp; k++) {
+                    uint32_t ssz = uniform ? uniform
+                                           : rb32(sizes + (uint64_t)si * 4);
+                    if (push_seg(m, (uint32_t)off, ssz, is_video) != MR_OK)
+                        return MR_ENOMEM;
+                    off += ssz;
+                    si++;
+                }
             }
         }
     }
-
-    m->samples  = out;
-    m->nsamples = si;
     return MR_OK;
 }
 
@@ -147,6 +191,9 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz)
         fmt == T('i','n','2','4') || fmt == T('i','n','3','2'))
         m->audio.format_tag = 0x0001;
     m->audio.valid = 1;
+
+    /* index the audio track's data too, coalesced per chunk */
+    read_stbl_segments(m, stbl, stbl + stbl_sz, 0 /*audio*/, 1 /*per-chunk*/);
 }
 
 static void parse_trak(mr_mov *m, const uint8_t *trak, uint32_t trak_sz)
@@ -191,6 +238,10 @@ mr_status mr_mov_open(mr_mov *m, const uint8_t *buf, size_t len)
     }
 
     if (!m->video.valid || !m->samples) return MR_EFORMAT;
+
+    /* Interleave audio and video by file offset so packets arrive in the order
+     * they sit in mdat - the natural order for streaming and A/V sync. */
+    qsort(m->samples, m->nsamples, sizeof *m->samples, cmp_off);
     return MR_OK;
 }
 
@@ -199,7 +250,7 @@ mr_status mr_mov_next_packet(mr_mov *m, mr_packet *pkt)
     while (m->cursor < m->nsamples) {
         struct mov_sample *s = &m->samples[m->cursor++];
         if ((size_t)s->off + s->size > m->len) continue;   /* guard */
-        pkt->is_video = 1;
+        pkt->is_video = s->is_video;
         pkt->data     = m->buf + s->off;
         pkt->len      = s->size;
         return MR_OK;
