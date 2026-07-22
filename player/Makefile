@@ -6,11 +6,12 @@ CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -g
 CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
-           core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c
+           core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
+           core/mr_mpeg4.c
 TESTSRC  = tests/mr_decode.c
 HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
-           core/mr_mpeg1.h core/mr_types.h
+           core/mr_mpeg1.h core/mr_mpeg4.h core/mr_types.h
 
 all: mr_decode
 

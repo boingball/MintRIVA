@@ -46,5 +46,6 @@ void      mr_decoder_close(mr_decoder *dec);
 /* Individual codec descriptors (defined in their .c files). */
 extern const mr_codec mr_codec_cinepak;
 extern const mr_codec mr_codec_mjpeg;
+extern const mr_codec mr_codec_mpeg4;
 
 #endif /* MR_CODEC_H */

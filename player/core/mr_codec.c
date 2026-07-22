@@ -6,6 +6,7 @@
 static const mr_codec *const g_codecs[] = {
     &mr_codec_cinepak,
     &mr_codec_mjpeg,
+    &mr_codec_mpeg4,
     /* more decoders slot in here: mpeg1, ... */
 };
 

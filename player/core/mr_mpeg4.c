@@ -1,0 +1,840 @@
+/*
+ * MintRIVA - MPEG-4 Part 2 (Visual) decoder.  See mr_mpeg4.h.
+ *
+ * Checkpoint 1: bitstream reader, start-code scanning, VOS/VO/VOL/GOV/VOP
+ * header parsing with a cached VOL config, and a YUV420->RGB output stage.
+ * Macroblock decoding is layered on top of this in subsequent stages
+ * (I-VOP intra first, then P-VOP, then the ASP tools).
+ */
+#include "mr_mpeg4.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <math.h>
+
+/* ---- start codes ------------------------------------------------------- */
+#define SC_VO_SEQ_START   0xB0   /* visual_object_sequence_start            */
+#define SC_VO_SEQ_END     0xB1
+#define SC_VISUAL_OBJ     0xB5
+#define SC_USER_DATA      0xB2
+#define SC_GOV            0xB3   /* group_of_vop                            */
+#define SC_VOP            0xB6   /* video_object_plane                      */
+/* video_object_start:        0x00..0x1F                                    */
+/* video_object_layer_start:  0x20..0x2F                                    */
+
+/* VOP coding types */
+enum { VOP_I = 0, VOP_P = 1, VOP_B = 2, VOP_S = 3 };
+
+/* ---- bit reader (MSB first) -------------------------------------------- */
+typedef struct {
+    const uint8_t *buf;
+    int            len;   /* bytes                                          */
+    int            pos;   /* bit position                                   */
+} bitreader;
+
+static void br_init(bitreader *b, const uint8_t *d, int len)
+{ b->buf = d; b->len = len; b->pos = 0; }
+
+static unsigned br_bit(bitreader *b)
+{
+    int byte = b->pos >> 3, off = 7 - (b->pos & 7);
+    b->pos++;
+    if (byte >= b->len) return 0;
+    return (b->buf[byte] >> off) & 1u;
+}
+
+static unsigned br_bits(bitreader *b, int n)
+{
+    unsigned v = 0;
+    while (n-- > 0) v = (v << 1) | br_bit(b);
+    return v;
+}
+
+static unsigned br_peek(bitreader *b, int n)
+{
+    int save = b->pos;
+    unsigned v = br_bits(b, n);
+    b->pos = save;
+    return v;
+}
+
+static void br_skip(bitreader *b, int n)  { b->pos += n; }
+static void br_align(bitreader *b)         { b->pos = (b->pos + 7) & ~7; }
+static int  br_overrun(bitreader *b)       { return b->pos > b->len * 8; }
+
+/* Byte-align, then scan forward to the next 00 00 01 start code. Positions the
+ * reader just after the 4-byte code and returns the id byte, or -1 at EOF. */
+static int next_start_code(bitreader *b)
+{
+    int i;
+    br_align(b);
+    i = b->pos >> 3;
+    for (; i + 3 < b->len; i++) {
+        if (b->buf[i] == 0 && b->buf[i+1] == 0 && b->buf[i+2] == 1) {
+            int id = b->buf[i+3];
+            b->pos = (i + 4) * 8;
+            return id;
+        }
+    }
+    b->pos = b->len * 8;
+    return -1;
+}
+
+/* ---- decoder state ----------------------------------------------------- */
+typedef struct {
+    /* geometry */
+    int      w, h;                  /* stream (display) size                */
+    int      mb_w, mb_h;            /* macroblocks across / down            */
+    int      cw, ch;               /* padded coded size (16*mb)            */
+
+    /* VOL config (cached across packets) */
+    int      have_vol;
+    int      verid;
+    int      shape;                 /* 0 = rectangular                      */
+    int      time_inc_bits;
+    int      interlaced;
+    int      sprite_enable;         /* 0 none, 1 static, 2 GMC              */
+    int      quant_type;            /* 0 = H.263, 1 = MPEG (matrices)       */
+    int      quarter_sample;
+    int      complexity_est_disable;
+    int      resync_disable;
+    int      data_partitioned;
+    int      quant_precision;
+    uint8_t  intra_matrix[64];
+    uint8_t  inter_matrix[64];
+
+    /* per-VOP */
+    int      coding_type;
+    int      rounding;
+    int      intra_dc_thr;
+    int      quant;
+    int      fcode_fwd, fcode_bwd;
+
+    /* planar YUV 4:2:0 working buffers (coded size), current + reference */
+    uint8_t *cur[3];
+    uint8_t *ref[3];
+    int      ystride, cstride;
+
+    /* intra DC/AC predictor grids (per component, block granularity) */
+    struct predblk *pl, *pcb, *pcr;   /* luma 2*mb_w x 2*mb_h; chroma mb_w x mb_h */
+
+    /* RGB output */
+    uint8_t *rgb;
+} m4_ctx;
+
+/* One block's stored intra predictors (§7.4.3): inverse-quant DC for the
+ * DC-direction test, and the quantised first row/column for AC prediction. */
+typedef struct predblk {
+    int     intra;        /* 0 = unavailable (edge / non-intra)               */
+    int     pkt;          /* video-packet id (prediction can't cross packets) */
+    int     dc;           /* inverse-quantised F[0][0]                        */
+    int     qp;           /* quantiser scale this block used                  */
+    int16_t row[8];       /* QF[0][1..7]                                      */
+    int16_t col[8];       /* QF[1..7][0]                                      */
+} predblk;
+
+/* Default (JPEG/MPEG) quant matrices, in zigzag-natural order used by MPEG-4. */
+static const uint8_t default_intra_matrix[64] = {
+     8,17,18,19,21,23,25,27, 17,18,19,21,23,25,27,28,
+    20,21,22,23,24,26,28,30, 21,22,23,24,26,28,30,32,
+    22,23,24,26,28,30,32,35, 23,24,26,28,30,32,35,38,
+    25,26,28,30,32,35,38,41, 27,28,30,32,35,38,41,45
+};
+static const uint8_t default_inter_matrix[64] = {
+    16,17,18,19,20,21,22,23, 17,18,19,20,21,22,23,24,
+    18,19,20,21,22,23,24,25, 19,20,21,22,23,24,26,27,
+    20,21,22,23,25,26,27,28, 21,22,23,24,26,27,28,30,
+    22,23,24,26,27,28,30,31, 23,24,25,27,28,30,31,33
+};
+
+/* zigzag scan (natural <- zigzag index) */
+static const uint8_t zigzag[64] = {
+     0, 1, 8,16, 9, 2, 3,10, 17,24,32,25,18,11, 4, 5,
+    12,19,26,33,40,48,41,34, 27,20,13, 6, 7,14,21,28,
+    35,42,49,56,57,50,43,36, 29,22,15,23,30,37,44,51,
+    58,59,52,45,38,31,39,46, 53,60,61,54,47,55,62,63
+};
+
+/* ---- debug ------------------------------------------------------------- */
+static int dbg(void) { static int v = -1; if (v < 0) v = getenv("MRDBG") ? 1 : 0; return v; }
+
+/* ---- quant matrix load ------------------------------------------------- */
+static void load_matrix(bitreader *b, uint8_t *m, const uint8_t *dflt)
+{
+    int i, last = 0;
+    for (i = 0; i < 64; i++) {
+        int v = br_bits(b, 8);
+        if (v == 0) break;         /* zero terminates: rest = last value    */
+        last = v;
+        m[zigzag[i]] = (uint8_t)v;
+    }
+    if (i == 0) { memcpy(m, dflt, 64); return; }
+    for (; i < 64; i++) m[zigzag[i]] = (uint8_t)last;
+}
+
+/* ---- VOL parse (id 0x20..0x2F already consumed) ------------------------ */
+static int parse_vol(m4_ctx *c, bitreader *b)
+{
+    int ar, verid = 1;
+    br_bits(b, 1);                                   /* random_accessible_vol */
+    br_bits(b, 8);                                   /* video_object_type_ind */
+    if (br_bits(b, 1)) {                             /* is_object_layer_id    */
+        verid = br_bits(b, 4);
+        br_bits(b, 3);                               /* priority              */
+    }
+    c->verid = verid;
+    ar = br_bits(b, 4);                              /* aspect_ratio_info     */
+    if (ar == 0xF) br_bits(b, 16);                   /* extended PAR w,h      */
+    if (br_bits(b, 1)) {                             /* vol_control_parameters*/
+        br_bits(b, 2);                               /* chroma_format         */
+        br_bits(b, 1);                               /* low_delay             */
+        if (br_bits(b, 1)) {                         /* vbv_parameters        */
+            br_bits(b,15); br_bits(b,1); br_bits(b,15); br_bits(b,1);
+            br_bits(b,15); br_bits(b,1); br_bits(b,3);
+            br_bits(b,11); br_bits(b,1); br_bits(b,15); br_bits(b,1);
+        }
+    }
+    c->shape = br_bits(b, 2);                        /* video_object_layer_shape */
+    if (c->shape != 0) return MR_EUNSUPPORTED;       /* rectangular only       */
+    br_bits(b, 1);                                   /* marker                 */
+    { unsigned res = br_bits(b, 16);                 /* time_increment_res     */
+      int nb = 1; while ((1 << nb) < (int)res) nb++;
+      c->time_inc_bits = nb; }
+    br_bits(b, 1);                                   /* marker                 */
+    if (br_bits(b, 1)) {                             /* fixed_vop_rate         */
+        br_bits(b, c->time_inc_bits);                /* fixed_vop_time_incr    */
+    }
+    /* rectangular shape: width/height */
+    br_bits(b, 1);                                   /* marker                 */
+    c->w = br_bits(b, 13);
+    br_bits(b, 1);                                   /* marker                 */
+    c->h = br_bits(b, 13);
+    br_bits(b, 1);                                   /* marker                 */
+    c->interlaced = br_bits(b, 1);
+    br_bits(b, 1);                                   /* obmc_disable           */
+    c->sprite_enable = (verid == 1) ? br_bits(b, 1) : br_bits(b, 2);
+    if (c->sprite_enable == 1 || c->sprite_enable == 2) {
+        if (c->sprite_enable != 2) {                 /* static needs geometry  */
+            br_bits(b,13);br_bits(b,1);br_bits(b,13);br_bits(b,1);
+            br_bits(b,13);br_bits(b,1);br_bits(b,13);br_bits(b,1);
+        }
+        br_bits(b, 6);                               /* no_of_warping_points   */
+        br_bits(b, 2);                               /* warping_accuracy       */
+        br_bits(b, 1);                               /* brightness_change      */
+        if (c->sprite_enable != 2) br_bits(b, 1);    /* low_latency_sprite     */
+    }
+    if (verid != 1 && c->shape != 0) br_bits(b, 1);  /* sadct_disable (n/a)    */
+    if (br_bits(b, 1)) {                             /* not_8_bit              */
+        c->quant_precision = br_bits(b, 4);
+        br_bits(b, 5);                               /* bits_per_pixel         */
+    } else {
+        c->quant_precision = 5;
+    }
+    c->quant_type = br_bits(b, 1);
+    if (c->quant_type) {
+        if (br_bits(b, 1)) load_matrix(b, c->intra_matrix, default_intra_matrix);
+        else               memcpy(c->intra_matrix, default_intra_matrix, 64);
+        if (br_bits(b, 1)) load_matrix(b, c->inter_matrix, default_inter_matrix);
+        else               memcpy(c->inter_matrix, default_inter_matrix, 64);
+    } else {
+        memcpy(c->intra_matrix, default_intra_matrix, 64);
+        memcpy(c->inter_matrix, default_inter_matrix, 64);
+    }
+    c->quarter_sample = (verid != 1) ? br_bits(b, 1) : 0;
+    c->complexity_est_disable = br_bits(b, 1);
+    if (!c->complexity_est_disable) return MR_EUNSUPPORTED;  /* rare; bail     */
+    c->resync_disable = br_bits(b, 1);
+    c->data_partitioned = br_bits(b, 1);
+    if (c->data_partitioned) br_bits(b, 1);          /* reversible_vlc         */
+    /* remaining VOL fields (newpred/scalability) are not needed: we rescan to
+     * the next start code before decoding. */
+
+    c->mb_w = (c->w + 15) >> 4;
+    c->mb_h = (c->h + 15) >> 4;
+    c->cw   = c->mb_w * 16;
+    c->ch   = c->mb_h * 16;
+    c->have_vol = 1;
+    if (dbg())
+        fprintf(stderr, "[mp4] VOL %dx%d ver%d shape%d tinc%d il%d spr%d "
+                "qtype%d qpel%d qp%d resync!%d dp%d\n",
+                c->w, c->h, verid, c->shape, c->time_inc_bits, c->interlaced,
+                c->sprite_enable, c->quant_type, c->quarter_sample,
+                c->quant_precision, c->resync_disable, c->data_partitioned);
+    return MR_OK;
+}
+
+/* ---- VOP header parse (id 0xB6 already consumed) ----------------------- */
+/* Returns MR_OK (coded), MR_EAGAIN (not coded / skip), or an error. */
+static int parse_vop(m4_ctx *c, bitreader *b)
+{
+    c->coding_type = br_bits(b, 2);
+    while (br_bits(b, 1)) { if (br_overrun(b)) return MR_EFORMAT; } /* modulo_time_base */
+    br_bits(b, 1);                                   /* marker                 */
+    br_bits(b, c->time_inc_bits);                    /* vop_time_increment     */
+    br_bits(b, 1);                                   /* marker                 */
+    if (!br_bits(b, 1)) return MR_EAGAIN;            /* vop_coded == 0         */
+
+    if (c->coding_type == VOP_P ||
+        (c->coding_type == VOP_S && c->sprite_enable == 2))
+        c->rounding = br_bits(b, 1);                 /* vop_rounding_type      */
+    else
+        c->rounding = 0;
+
+    c->intra_dc_thr = br_bits(b, 3);
+    if (c->interlaced) br_bits(b, 2);                /* tff + alt_vert_scan    */
+
+    c->quant = br_bits(b, c->quant_precision);
+    if (c->quant < 1) c->quant = 1;
+    if (c->coding_type != VOP_I) c->fcode_fwd = br_bits(b, 3);
+    if (c->coding_type == VOP_B) c->fcode_bwd = br_bits(b, 3);
+
+    if (dbg())
+        fprintf(stderr, "[mp4] VOP type%d q%d fwd%d dcthr%d\n",
+                c->coding_type, c->quant, c->fcode_fwd, c->intra_dc_thr);
+    return MR_OK;
+}
+
+/* ======================================================================== */
+/* Intra (I-VOP) macroblock decode.                                         */
+/*                                                                          */
+/* The VLC tables below are the numeric contents of ISO/IEC 14496-2         */
+/* Tables B.13/B.14 (DC size), B.6/B.7 (MCBPC), B.8 (CBPY) and B.16/B.17    */
+/* (Tcoef); they were generated from, and cross-checked against, the        */
+/* MIT-licensed OxideAV reference decoder. The reconstruction math (DC/AC   */
+/* prediction, dequant, scan, IDCT) follows ISO/IEC 14496-2 §7.4.           */
+/* ======================================================================== */
+
+#define BPP 8                                   /* not_8_bit == 0            */
+
+typedef struct { uint16_t code; uint8_t len, last, run; int16_t level; } tcoef_t;
+typedef struct { uint16_t code; uint8_t len, val; } vlc3_t;
+typedef struct { uint16_t code; uint8_t len, mbtype, cbpc; } mcbpc_t;
+typedef struct { uint16_t code; uint8_t len, intra, inter; } cbpy_t;
+
+#include "mr_mpeg4_tables.inc"
+
+/* 2-D scan grids: grid[v][u] = position in the 1-D coefficient stream. */
+static const uint8_t scan_zigzag[8][8] = {
+    { 0, 1, 5, 6,14,15,27,28},{ 2, 4, 7,13,16,26,29,42},
+    { 3, 8,12,17,25,30,41,43},{ 9,11,18,24,31,40,44,53},
+    {10,19,23,32,39,45,52,54},{20,22,33,38,46,51,55,60},
+    {21,34,37,47,50,56,59,61},{35,36,48,49,57,58,62,63}
+};
+static const uint8_t scan_alth[8][8] = {
+    { 0, 1, 2, 3,10,11,12,13},{ 4, 5, 8, 9,17,16,15,14},
+    { 6, 7,19,18,26,27,28,29},{20,21,24,25,30,31,32,33},
+    {22,23,34,35,42,43,44,45},{36,37,40,41,46,47,48,49},
+    {38,39,50,51,56,57,58,59},{52,53,54,55,60,61,62,63}
+};
+static const uint8_t scan_altv[8][8] = {
+    { 0, 4, 6,20,22,36,38,52},{ 1, 5, 7,21,23,37,39,53},
+    { 2, 8,19,24,34,40,50,54},{ 3, 9,18,25,35,41,51,55},
+    {10,17,26,30,42,46,56,60},{11,16,27,31,43,47,57,61},
+    {12,15,28,32,44,48,58,62},{13,14,29,33,45,49,59,63}
+};
+
+/* ---- VLC match helpers (peek max-length window, compare prefixes) ------ */
+static const tcoef_t *match_tcoef(bitreader *b, const tcoef_t *t, int n)
+{
+    unsigned w = br_peek(b, 12);
+    int i;
+    for (i = 0; i < n; i++)
+        if ((w >> (12 - t[i].len)) == t[i].code) return &t[i];
+    return NULL;
+}
+static int match_vlc3(bitreader *b, const vlc3_t *t, int n)   /* -> val, len via skip */
+{
+    unsigned w = br_peek(b, 12);
+    int i;
+    for (i = 0; i < n; i++)
+        if ((w >> (12 - t[i].len)) == t[i].code) { br_skip(b, t[i].len); return t[i].val; }
+    return -1;
+}
+static const mcbpc_t *match_mcbpc(bitreader *b, const mcbpc_t *t, int n)
+{
+    unsigned w = br_peek(b, 12);
+    int i;
+    for (i = 0; i < n; i++)
+        if ((w >> (12 - t[i].len)) == t[i].code) { br_skip(b, t[i].len); return &t[i]; }
+    return NULL;
+}
+static int match_cbpy(bitreader *b, int intra)   /* returns 4-bit pattern or -1 */
+{
+    unsigned w = br_peek(b, 6);
+    int i;
+    for (i = 0; i < 16; i++)
+        if ((w >> (6 - cbpy_tab[i].len)) == cbpy_tab[i].code) {
+            br_skip(b, cbpy_tab[i].len);
+            return intra ? cbpy_tab[i].intra : cbpy_tab[i].inter;
+        }
+    return -1;
+}
+
+/* ---- Tcoef AC EVENT decode (Table B.16/B.17 + §7.4.1.3 escapes) -------- */
+/* Look up a value by (threshold-upper-bound, value) pairs; -1 if none match. */
+static int range_lookup(int key, const int *tbl, int n)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        if (key <= tbl[i*2]) return tbl[i*2 + 1];
+    return -1;
+}
+static int lmax_intra(int last, int run)
+{
+    static const int nl[] = {0,27, 1,10, 2,5, 3,4, 7,3, 9,2, 14,1};
+    static const int yl[] = {0,8, 1,3, 6,2, 20,1};
+    return last ? range_lookup(run, yl, 4) : range_lookup(run, nl, 7);
+}
+static int lmax_inter(int last, int run)
+{
+    static const int nl[] = {0,12, 1,6, 2,4, 6,3, 10,2, 26,1};
+    static const int yl[] = {0,3, 1,2, 40,1};
+    return last ? range_lookup(run, yl, 3) : range_lookup(run, nl, 6);
+}
+static int rmax_intra(int last, int level)
+{
+    static const int nl[] = {1,14, 2,9, 3,7, 4,3, 5,2, 10,1, 27,0};
+    static const int yl[] = {1,20, 2,6, 3,1, 8,0};
+    return last ? range_lookup(level, yl, 4) : range_lookup(level, nl, 7);
+}
+static int rmax_inter(int last, int level)
+{
+    static const int nl[] = {1,26, 2,10, 3,6, 4,2, 6,1, 12,0};
+    static const int yl[] = {1,40, 2,1, 3,0};
+    return last ? range_lookup(level, yl, 3) : range_lookup(level, nl, 6);
+}
+
+/* Decode a plain Tcoef VLC + trailing sign: -> last,run,signed level. */
+static int decode_tcoef_vlc(bitreader *b, int intra, int *last, int *run, int *level)
+{
+    const tcoef_t *e = match_tcoef(b, intra ? tcoef_intra : tcoef_inter,
+                                   intra ? 102 : 102);
+    if (!e) return -1;
+    br_skip(b, e->len);
+    *last = e->last; *run = e->run; *level = e->level;
+    if (br_bit(b)) *level = -*level;
+    return 0;
+}
+
+/* One (LAST,RUN,LEVEL) EVENT. Returns 0 on success, -1 on error. */
+static int decode_ac_event(bitreader *b, int intra, int *last, int *run, int *level)
+{
+    if (br_peek(b, 7) != 0x03) {                 /* not the escape prefix    */
+        return decode_tcoef_vlc(b, intra, last, run, level);
+    }
+    br_skip(b, 7);                               /* consume ESC 0000011      */
+    if (!br_bit(b)) {                            /* Type 1: LEVEL += LMAX     */
+        int lm;
+        if (decode_tcoef_vlc(b, intra, last, run, level)) return -1;
+        lm = intra ? lmax_intra(*last, *run) : lmax_inter(*last, *run);
+        if (lm < 0) return -1;
+        if (*level < 0) *level = -((-*level) + lm); else *level = *level + lm;
+        return 0;
+    }
+    if (!br_bit(b)) {                            /* Type 2: RUN += RMAX + 1   */
+        int rm, av;
+        if (decode_tcoef_vlc(b, intra, last, run, level)) return -1;
+        av = *level < 0 ? -*level : *level;
+        rm = intra ? rmax_intra(*last, av) : rmax_inter(*last, av);
+        if (rm < 0) return -1;
+        *run += rm + 1;
+        return 0;
+    }
+    /* Type 3: LAST(1) RUN(6) marker LEVEL(12) marker */
+    *last = br_bit(b);
+    *run  = br_bits(b, 6);
+    if (!br_bit(b)) return -1;
+    { int v = br_bits(b, 12);
+      if (v >= 0x800) v -= 0x1000;
+      if (v == 0 || v == -2048) return -1;
+      *level = v; }
+    if (!br_bit(b)) return -1;
+    return 0;
+}
+
+/* ---- IDCT (Annex A, separable double-precision) ------------------------ */
+static double idct_cos[8][8];
+static int    idct_ready = 0;
+static void idct_init(void)
+{
+    int u, x;
+    for (u = 0; u < 8; u++)
+        for (x = 0; x < 8; x++)
+            idct_cos[u][x] = cos((2.0*x + 1.0) * u * 3.14159265358979323846 / 16.0);
+    idct_ready = 1;
+}
+static void idct_8x8(const int in[8][8], int out[8][8])
+{
+    double tmp[8][8];
+    const double s = 0.5;                        /* sqrt(2/8)                */
+    const double c0 = 0.70710678118654752440;    /* 1/sqrt(2)                */
+    int u, x, v, y;
+    if (!idct_ready) idct_init();
+    for (v = 0; v < 8; v++)                       /* rows                     */
+        for (x = 0; x < 8; x++) {
+            double a = 0;
+            for (u = 0; u < 8; u++)
+                a += (u ? 1.0 : c0) * in[v][u] * idct_cos[u][x];
+            tmp[v][x] = s * a;
+        }
+    for (x = 0; x < 8; x++)                       /* columns                  */
+        for (y = 0; y < 8; y++) {
+            double a = 0;
+            for (v = 0; v < 8; v++)
+                a += (v ? 1.0 : c0) * tmp[v][x] * idct_cos[v][y];
+            { double r = s * a;
+              int iv = (r >= 0) ? (int)(r + 0.5) : -(int)(-r + 0.5);
+              out[y][x] = iv; }
+        }
+}
+
+/* ---- dequant (method 2, H.263) + dc_scaler ----------------------------- */
+static int div_round(int n, int d)               /* §4.1 // : round half away */
+{
+    return (n >= 0) ? (n + d/2) / d : -(((-n) + d/2) / d);
+}
+static int dc_scaler(int chroma, int q)
+{
+    if (!chroma) {
+        if (q < 5)  return 8;
+        if (q < 9)  return 2*q;
+        if (q < 25) return q + 8;
+        return 2*q - 16;
+    }
+    if (q < 5)  return 8;
+    if (q < 25) return (q + 13) / 2;
+    return q - 6;
+}
+static int deq2(int qf, int q)                   /* non-DC coeff, method 2    */
+{
+    int a, m;
+    if (qf == 0) return 0;
+    a = qf < 0 ? -qf : qf;
+    m = (q & 1) ? (2*a + 1) * q : (2*a + 1) * q - 1;
+    return qf < 0 ? -m : m;
+}
+
+/* ---- predictor-grid access --------------------------------------------- */
+static predblk *pb_at(predblk *g, int gw, int gh, int x, int y)
+{
+    if (x < 0 || y < 0 || x >= gw || y >= gh) return NULL;
+    return &g[y * gw + x];
+}
+
+/* Decode one intra block (index i in 0..5) of MB (mbx,mby) into the current
+ * plane, updating that block's predictor grid entry. */
+static int decode_intra_block(m4_ctx *c, bitreader *b, int i, int mbx, int mby,
+                              int coded, int use_dc_vlc, int ac_pred, int q, int pkt)
+{
+    int chroma = (i >= 4);
+    int intra_dc_present = use_dc_vlc;
+    int qfs[64], pqf[8][8], qf[8][8], f[8][8], sp[8][8];
+    int fa, fb, fc, chosen, dir_above, satlo, sathi;
+    int u, v, pos, dcv = 0;
+    predblk *A, *B, *C, *self;
+    predblk *grid; int gw, gh, gx, gy;
+    uint8_t *plane; int stride, px, py;
+
+    /* select predictor grid + plane geometry for this block */
+    if (!chroma) { grid = c->pl;  gw = c->mb_w*2; gh = c->mb_h*2;
+                   gx = mbx*2 + (i&1); gy = mby*2 + (i>>1);
+                   plane = c->cur[0]; stride = c->ystride;
+                   px = mbx*16 + (i&1)*8; py = mby*16 + (i>>1)*8; }
+    else { grid = (i == 4) ? c->pcb : c->pcr; gw = c->mb_w; gh = c->mb_h;
+           gx = mbx; gy = mby;
+           plane = (i == 4) ? c->cur[1] : c->cur[2]; stride = c->cstride;
+           px = mbx*8; py = mby*8; }
+
+    /* intra DC (differential VLC) */
+    if (intra_dc_present) {
+        int size = match_vlc3(b, chroma ? dcsize_chrom : dcsize_lum, 13);
+        if (size < 0) return -1;
+        if (size == 0) dcv = 0;
+        else {
+            int add = br_bits(b, size), half = 1 << (size - 1);
+            dcv = (add >= half) ? add : (add + 1) - 2*half;
+            if (size > 8 && !br_bit(b)) return -1;      /* marker            */
+        }
+    }
+
+    /* AC EVENT loop -> qfs[] */
+    for (pos = 0; pos < 64; pos++) qfs[pos] = 0;
+    pos = 0;
+    if (intra_dc_present) { qfs[0] = dcv; pos = 1; }
+    if (coded) {
+        for (;;) {
+            int last, run, level, tgt;
+            if (decode_ac_event(b, 1, &last, &run, &level)) return -1;
+            tgt = pos + run;
+            if (tgt >= 64) return -1;
+            qfs[tgt] = level;
+            pos = tgt + 1;
+            if (last) break;
+        }
+    }
+
+    /* neighbours (§7.4.3.1) */
+    A = pb_at(grid, gw, gh, gx-1, gy);
+    B = pb_at(grid, gw, gh, gx-1, gy-1);
+    C = pb_at(grid, gw, gh, gx,   gy-1);
+    if (A && !(A->intra && A->pkt == pkt)) A = NULL;   /* not across packets   */
+    if (B && !(B->intra && B->pkt == pkt)) B = NULL;
+    if (C && !(C->intra && C->pkt == pkt)) C = NULL;
+    fa = A ? A->dc : 1024;
+    fb = B ? B->dc : 1024;
+    fc = C ? C->dc : 1024;
+    dir_above = (abs(fa - fb) < abs(fb - fc));    /* else -> from left        */
+    chosen = dir_above ? fc : fa;
+
+    /* inverse scan */
+    { const uint8_t (*g)[8] = ac_pred ? (dir_above ? scan_alth : scan_altv)
+                                      : scan_zigzag;
+      for (v = 0; v < 8; v++) for (u = 0; u < 8; u++) pqf[v][u] = qfs[g[v][u]]; }
+
+    /* DC + AC spatial prediction -> quantised qf[][] */
+    { int scl = dc_scaler(chroma, q);
+      for (v = 0; v < 8; v++) for (u = 0; u < 8; u++) qf[v][u] = pqf[v][u];
+      qf[0][0] = pqf[0][0] + div_round(chosen, scl);
+      if (ac_pred) {
+          if (!dir_above) {                       /* predict column from A    */
+              if (A)
+                  for (v = 1; v < 8; v++)
+                      qf[v][0] = pqf[v][0] + div_round(A->col[v] * A->qp, q);
+          } else {                                /* predict row from C       */
+              if (C)
+                  for (u = 1; u < 8; u++)
+                      qf[0][u] = pqf[0][u] + div_round(C->row[u] * C->qp, q);
+          }
+      }
+    }
+    /* saturate qf to [-2048,2047] (§7.4.3.4) */
+    for (v = 0; v < 8; v++) for (u = 0; u < 8; u++) {
+        if (qf[v][u] < -2048) qf[v][u] = -2048; else if (qf[v][u] > 2047) qf[v][u] = 2047;
+    }
+
+    /* store predictors for later neighbours (before dequant) */
+    self = &grid[gy * gw + gx];
+    self->intra = 1;
+    self->pkt = pkt;
+    self->qp = q;
+    self->dc = dc_scaler(chroma, q) * qf[0][0];    /* inverse-quant DC F[0][0] */
+    for (u = 1; u < 8; u++) self->row[u] = (int16_t)qf[0][u];
+    for (v = 1; v < 8; v++) self->col[v] = (int16_t)qf[v][0];
+
+    /* inverse quantisation (method 2) */
+    satlo = -(1 << (BPP + 3)); sathi = (1 << (BPP + 3)) - 1;
+    for (v = 0; v < 8; v++) for (u = 0; u < 8; u++) {
+        int val = (u == 0 && v == 0) ? dc_scaler(chroma, q) * qf[0][0]
+                                     : deq2(qf[v][u], q);
+        if (val < satlo) val = satlo; else if (val > sathi) val = sathi;
+        f[v][u] = val;
+    }
+
+    /* IDCT + clip to [0,255], write into the plane */
+    idct_8x8(f, sp);
+    for (v = 0; v < 8; v++) {
+        uint8_t *d = plane + (size_t)(py + v) * stride + px;
+        for (u = 0; u < 8; u++) {
+            int s = sp[v][u];
+            if (s < 0) s = 0; else if (s > 255) s = 255;
+            d[u] = (uint8_t)s;
+        }
+    }
+    return 0;
+}
+
+static int use_intra_dc_vlc(int thr, int q)
+{
+    int t;
+    switch (thr & 7) {
+        case 0: return 1;                          /* DC VLC for whole VOP     */
+        case 1: t = 13; break; case 2: t = 15; break; case 3: t = 17; break;
+        case 4: t = 19; break; case 5: t = 21; break; case 6: t = 23; break;
+        default: t = 1; break;                     /* AC VLC for whole VOP     */
+    }
+    return q < t;
+}
+
+/* If a video packet (§5.2.5 stuffing + resync marker + §6.2.5 header) begins
+ * at the current bit position, consume it, reset *q to the packet quant, bump
+ * the packet id, and return 1. Otherwise leave the reader untouched, return 0.
+ * I-VOP only (17-bit resync marker, no fcode fields). */
+static int maybe_resync(m4_ctx *c, bitreader *b, int *q, int *pkt)
+{
+    int save = b->pos, mb_bits = 1, total = c->mb_w * c->mb_h;
+    if (c->resync_disable) return 0;
+    if (br_bit(b) != 0) { b->pos = save; return 0; }      /* stuffing starts 0 */
+    while (b->pos & 7) if (br_bit(b) != 1) { b->pos = save; return 0; }
+    if (br_bits(b, 16) != 0 || br_bit(b) != 1) { b->pos = save; return 0; } /* 16z+1 */
+    while ((1 << mb_bits) < total) mb_bits++;              /* macroblock_number */
+    br_bits(b, mb_bits);
+    *q = br_bits(b, c->quant_precision);                   /* quant_scale       */
+    if (*q < 1) *q = 1;
+    if (br_bit(b)) {                                       /* header_extension  */
+        while (br_bit(b)) { if (br_overrun(b)) break; }    /* modulo_time_base  */
+        br_bit(b);                                         /* marker            */
+        br_bits(b, c->time_inc_bits);                      /* vop_time_increment*/
+        br_bit(b);                                         /* marker            */
+        br_bits(b, 2);                                     /* vop_coding_type   */
+        c->intra_dc_thr = br_bits(b, 3);                   /* intra_dc_vlc_thr  */
+    }
+    (*pkt)++;
+    return 1;
+}
+
+/* Decode a full I-VOP macroblock grid into c->cur. */
+static int decode_ivop(m4_ctx *c, bitreader *b)
+{
+    int mbx, mby, q = c->quant, pkt = 1;
+    size_t nl = (size_t)(c->mb_w*2) * (c->mb_h*2), nc = (size_t)c->mb_w * c->mb_h;
+    memset(c->pl,  0, nl * sizeof(predblk));
+    memset(c->pcb, 0, nc * sizeof(predblk));
+    memset(c->pcr, 0, nc * sizeof(predblk));
+
+    for (mby = 0; mby < c->mb_h; mby++) {
+        for (mbx = 0; mbx < c->mb_w; mbx++) {
+            const mcbpc_t *mc;
+            int cbpy, ac_pred, use_dc, i, coded[6], cbpc;
+            maybe_resync(c, b, &q, &pkt);          /* new video packet?        */
+            do { mc = match_mcbpc(b, mcbpc_i, 9); if (!mc) return MR_EFORMAT; }
+            while (mc->mbtype == 5);               /* stuffing                */
+            cbpc    = mc->cbpc;
+            ac_pred = br_bit(b);
+            cbpy    = match_cbpy(b, 1);
+            if (cbpy < 0) return MR_EFORMAT;
+            if (mc->mbtype == 4) {                 /* intra+q: dquant          */
+                static const int dq[4] = { -1, -2, 1, 2 };
+                q += dq[br_bits(b, 2)];
+                if (q < 1) q = 1; else if (q > 31) q = 31;
+            }
+            coded[0] = (cbpy>>3)&1; coded[1] = (cbpy>>2)&1;
+            coded[2] = (cbpy>>1)&1; coded[3] = cbpy&1;
+            coded[4] = (cbpc>>1)&1; coded[5] = cbpc&1;
+            use_dc = use_intra_dc_vlc(c->intra_dc_thr, q);
+            for (i = 0; i < 6; i++)
+                if (decode_intra_block(c, b, i, mbx, mby, coded[i], use_dc, ac_pred, q, pkt))
+                    return MR_EFORMAT;
+        }
+    }
+    return MR_OK;
+}
+
+/* ---- YUV420 -> RGB24 --------------------------------------------------- */
+static void yuv_to_rgb(m4_ctx *c)
+{
+    int x, y;
+    for (y = 0; y < c->h; y++) {
+        const uint8_t *yl = c->cur[0] + (size_t)y * c->ystride;
+        const uint8_t *cb = c->cur[1] + (size_t)(y >> 1) * c->cstride;
+        const uint8_t *cr = c->cur[2] + (size_t)(y >> 1) * c->cstride;
+        uint8_t *d = c->rgb + (size_t)y * c->w * 3;
+        for (x = 0; x < c->w; x++) {
+            int Y = yl[x] - 16, U = cb[x >> 1] - 128, V = cr[x >> 1] - 128;
+            int r = (298 * Y + 409 * V + 128) >> 8;
+            int g = (298 * Y - 100 * U - 208 * V + 128) >> 8;
+            int bb = (298 * Y + 516 * U + 128) >> 8;
+            if (r < 0) r = 0; else if (r > 255) r = 255;
+            if (g < 0) g = 0; else if (g > 255) g = 255;
+            if (bb < 0) bb = 0; else if (bb > 255) bb = 255;
+            *d++ = (uint8_t)r; *d++ = (uint8_t)g; *d++ = (uint8_t)bb;
+        }
+    }
+}
+
+/* ---- codec lifecycle --------------------------------------------------- */
+static mr_status m4_open(mr_decoder *dec)
+{
+    m4_ctx *c = (m4_ctx *)calloc(1, sizeof *c);
+    if (!c) return MR_ENOMEM;
+    c->w = dec->width; c->h = dec->height;
+    c->rgb = (uint8_t *)calloc((size_t)c->w * c->h * 3, 1);
+    if (!c->rgb) { free(c); return MR_ENOMEM; }
+    dec->priv = c;
+    dec->frame.width  = c->w;
+    dec->frame.height = c->h;
+    dec->frame.fmt    = MR_PIX_RGB24;
+    dec->frame.stride = c->w * 3;
+    dec->frame.data   = c->rgb;
+    dec->frame.dirty_y0 = 0;
+    dec->frame.dirty_y1 = c->h;
+    return MR_OK;
+}
+
+static int alloc_planes(m4_ctx *c)
+{
+    int i;
+    c->ystride = c->cw;
+    c->cstride = c->cw >> 1;
+    for (i = 0; i < 3; i++) {
+        int sz = (i == 0) ? c->ystride * c->ch : c->cstride * (c->ch >> 1);
+        if (!c->cur[i]) c->cur[i] = (uint8_t *)malloc(sz);
+        if (!c->ref[i]) c->ref[i] = (uint8_t *)malloc(sz);
+        if (!c->cur[i] || !c->ref[i]) return 0;
+        if (i == 0) { memset(c->cur[i], 16, sz); memset(c->ref[i], 16, sz); }
+        else        { memset(c->cur[i],128, sz); memset(c->ref[i],128, sz); }
+    }
+    if (!c->pl) {
+        c->pl  = (predblk *)malloc((size_t)(c->mb_w*2) * (c->mb_h*2) * sizeof(predblk));
+        c->pcb = (predblk *)malloc((size_t)c->mb_w * c->mb_h * sizeof(predblk));
+        c->pcr = (predblk *)malloc((size_t)c->mb_w * c->mb_h * sizeof(predblk));
+        if (!c->pl || !c->pcb || !c->pcr) return 0;
+    }
+    return 1;
+}
+
+static mr_status m4_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
+{
+    m4_ctx *c = (m4_ctx *)dec->priv;
+    bitreader br;
+    int id, rc, decoded = 0;
+
+    br_init(&br, data, (int)len);
+    for (;;) {
+        id = next_start_code(&br);
+        if (id < 0) break;
+        if (id >= 0x20 && id <= 0x2F) {              /* video_object_layer     */
+            rc = parse_vol(c, &br);
+            if (rc != MR_OK) return rc;
+            if (!alloc_planes(c)) return MR_ENOMEM;
+        } else if (id == SC_VOP) {
+            if (!c->have_vol) return MR_EFORMAT;
+            rc = parse_vop(c, &br);
+            if (rc == MR_EAGAIN) { decoded = 1; break; } /* not coded: repeat  */
+            if (rc != MR_OK) return rc;
+            if (c->coding_type == VOP_I) {
+                rc = decode_ivop(c, &br);
+                if (rc != MR_OK) return rc;
+            } else {
+                /* P/B/S decode arrives in the next stages. */
+                return MR_EUNSUPPORTED;
+            }
+            yuv_to_rgb(c);
+            decoded = 1;
+            break;
+        }
+        /* VOS / VO / user_data / GOV: nothing to extract, keep scanning. */
+    }
+    return decoded ? MR_OK : MR_EFORMAT;
+}
+
+static void m4_close(mr_decoder *dec)
+{
+    m4_ctx *c = (m4_ctx *)dec->priv;
+    int i;
+    if (!c) return;
+    for (i = 0; i < 3; i++) { free(c->cur[i]); free(c->ref[i]); }
+    free(c->pl); free(c->pcb); free(c->pcr);
+    free(c->rgb);
+    free(c);
+    dec->priv = NULL;
+}
+
+const mr_codec mr_codec_mpeg4 = {
+    "mpeg4",
+    { MR_FOURCC('F','M','P','4'), MR_FOURCC('X','V','I','D'),
+      MR_FOURCC('D','I','V','X'), MR_FOURCC('D','X','5','0') },
+    m4_open,
+    m4_decode,
+    m4_close,
+};
