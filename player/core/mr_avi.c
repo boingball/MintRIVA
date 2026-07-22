@@ -153,7 +153,7 @@ static int chunk_stream_index(uint32_t id, int *is_video)
     return d0 * 10 + d1;
 }
 
-mr_status mr_avi_next_packet(mr_avi *a, mr_avi_packet *pkt)
+mr_status mr_avi_next_packet(mr_avi *a, mr_packet *pkt)
 {
     const uint8_t *base = a->buf;
     while (a->cursor + 8 <= a->movi_end) {
@@ -178,9 +178,7 @@ mr_status mr_avi_next_packet(mr_avi *a, mr_avi_packet *pkt)
 
             if (idx < 0) continue;              /* skip idx1/junk/unknown   */
 
-            pkt->stream   = idx;
             pkt->is_video = (idx == a->video_stream);
-            pkt->keyframe = 0;                  /* container flags unused    */
             pkt->data     = base + body;
             pkt->len      = size;
             return MR_OK;

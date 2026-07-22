@@ -18,8 +18,10 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Component | State |
 |-----------|-------|
 | Decoder plugin interface + registry | ✅ |
-| AVI (RIFF) demuxer | ✅ |
-| Cinepak (CVID) decoder | ✅ ffmpeg-validated |
+| Container-agnostic demux (auto-detect) | ✅ |
+| AVI (RIFF) + QuickTime MOV demuxers | ✅ |
+| Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
+| Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 decoders | planned |
 | Amiga RTG / AGA output + MintAMP audio | planned |
 

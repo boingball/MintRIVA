@@ -50,8 +50,9 @@ the CPU, which usually means an older, decode-cheap codec.
   cross-compiled to 68k, gated to fast/PiStorm machines to see what is
   physically possible.
 
-Container: **AVI** first (simplest RIFF parse, carries all of the above),
-QuickTime `.mov` later. **Implemented:** `player/core/mr_avi.c`.
+Container: **AVI** (RIFF) and **QuickTime MOV** are both implemented behind one
+auto-detecting front end (`mr_demux.h`), so the player is container-blind —
+`mr_avi.c`, `mr_mov.c`. Adding a container is a backend, like adding a codec.
 
 ## Architecture
 
@@ -87,13 +88,17 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 ## Roadmap
 
 - [x] Decoder vtable + registry (`mr_codec.h`)
+- [x] Container-agnostic demux front end (`mr_demux.h`)
 - [x] AVI demuxer (video + audio stream discovery) (`mr_avi.c`)
-- [x] Cinepak decoder, ffmpeg-validated (`mr_cinepak.c`)
-- [ ] Amiga toolchain + build (vbcc or bebbo-gcc), hunk exe
-- [ ] RTG chunky output path (port from `RendererCGXInit.i`)
+- [x] QuickTime MOV demuxer (stbl sample-table frames) (`mr_mov.c`)
+- [x] Cinepak decoder, ffmpeg-validated on AVI + MOV (`mr_cinepak.c`)
+- [x] Amiga (m68k) build + verified decoding on real hardware
+- [x] `mrplay`: RTG window output via cybergraphics WritePixelArray
+      (`player/amiga/`) - **video playing on real hardware**
+- [ ] Faster output: direct RGB565 / fullscreen RTG / port `RendererCGXInit.i`
 - [ ] MintAMP audio backend + audio-master A/V sync
 - [ ] AGA C2P + dither output (port from `RendererAGAC2P.i`)
 - [ ] MJPEG decoder reusing RiVA's 68k IDCT
-- [ ] `.mov` container; seek/loop
+- [ ] seek/loop
 - [ ] Moon-shot heavier codec, gated to fast/PiStorm machines
 ```

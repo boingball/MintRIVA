@@ -1,0 +1,215 @@
+/*
+ * MintRIVA - minimal QuickTime (MOV) demuxer implementation.
+ *
+ * MOV is a tree of atoms [size:4][type:4][payload]. We locate the video track's
+ * sample tables and flatten them into a per-frame (offset,size) index into the
+ * file, so mr_mov_next_packet just walks that index. Only what the player needs
+ * is parsed - no edit lists, no fragmented MP4.
+ */
+#include "mr_mov.h"
+#include <stdlib.h>
+#include <string.h>
+
+struct mov_sample { uint32_t off; uint32_t size; };
+
+static uint32_t rb32(const uint8_t *p){ return mr_rb32(p); }
+static uint16_t rb16(const uint8_t *p){ return mr_rb16(p); }
+static uint64_t rb64(const uint8_t *p){
+    return ((uint64_t)mr_rb32(p) << 32) | mr_rb32(p + 4);
+}
+/* atom types compared as big-endian 4CC values */
+#define T(a,b,c,d) (((uint32_t)(a)<<24)|((uint32_t)(b)<<16)|((uint32_t)(c)<<8)|(uint32_t)(d))
+
+/* Find the first child atom of `type` within [p,end); returns payload pointer
+ * and sets *size to the payload length. */
+static const uint8_t *find_atom(const uint8_t *p, const uint8_t *end,
+                                uint32_t type, uint32_t *size)
+{
+    while (p + 8 <= end) {
+        uint64_t asz = rb32(p);
+        uint32_t t   = rb32(p + 4);
+        int hdr = 8;
+        if (asz == 1) {                 /* 64-bit extended size */
+            if (p + 16 > end) break;
+            asz = rb64(p + 8);
+            hdr = 16;
+        } else if (asz == 0) {          /* extends to end */
+            asz = (uint64_t)(end - p);
+        }
+        if (asz < (uint64_t)hdr) break;
+        if (p + asz > end) asz = (uint64_t)(end - p);
+        if (t == type) { *size = (uint32_t)(asz - hdr); return p + hdr; }
+        p += asz;
+    }
+    return NULL;
+}
+
+/* mdia/hdlr -> handler type ('vide' / 'soun'). */
+static uint32_t track_handler(const uint8_t *mdia, uint32_t mdia_sz)
+{
+    uint32_t sz;
+    const uint8_t *h = find_atom(mdia, mdia + mdia_sz, T('h','d','l','r'), &sz);
+    if (!h || sz < 12) return 0;
+    return rb32(h + 8);
+}
+
+/* Parse the video stbl into m->samples + m->video geometry/fourcc. */
+static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
+                             const uint8_t *mdia, uint32_t mdia_sz)
+{
+    const uint8_t *end = stbl + stbl_sz;
+    uint32_t sz;
+    const uint8_t *stsd = find_atom(stbl, end, T('s','t','s','d'), &sz);
+    if (stsd && sz >= 16) {
+        const uint8_t *e = stsd + 8;            /* skip ver/flags + count   */
+        /* codec 4CC is stored big-endian at entry+4; pack it the same way the
+         * registry does (MR_FOURCC), so 'cvid' matches mr_codec_cinepak. */
+        m->video.fourcc = MR_FOURCC(e[4], e[5], e[6], e[7]);
+        m->video.width  = rb16(e + 32);
+        m->video.height = rb16(e + 34);
+        m->video.valid  = 1;
+    }
+    /* frame rate: mdhd timescale over first stts delta */
+    {
+        uint32_t s2;
+        const uint8_t *mdhd = find_atom(mdia, mdia + mdia_sz,
+                                        T('m','d','h','d'), &s2);
+        if (mdhd && s2 >= 20) m->video.rate = rb32(mdhd + 12); /* timescale */
+        const uint8_t *stts = find_atom(stbl, end, T('s','t','t','s'), &s2);
+        if (stts && s2 >= 16) m->video.scale = rb32(stts + 12); /* 1st delta */
+        if (!m->video.scale) m->video.scale = m->video.rate ? m->video.rate : 1;
+    }
+
+    /* sample sizes */
+    uint32_t stsz_sz, stsc_sz, stco_sz;
+    const uint8_t *stsz = find_atom(stbl, end, T('s','t','s','z'), &stsz_sz);
+    const uint8_t *stsc = find_atom(stbl, end, T('s','t','s','c'), &stsc_sz);
+    const uint8_t *stco = find_atom(stbl, end, T('s','t','c','o'), &stco_sz);
+    int co64 = 0;
+    if (!stco) { stco = find_atom(stbl, end, T('c','o','6','4'), &stco_sz); co64 = 1; }
+    if (!stsz || !stsc || !stco || stsz_sz < 12 || stsc_sz < 8 || stco_sz < 8)
+        return MR_EFORMAT;
+
+    uint32_t uniform    = rb32(stsz + 4);
+    uint32_t nsamp      = rb32(stsz + 8);
+    uint32_t stsc_cnt   = rb32(stsc + 4);
+    uint32_t nchunks    = rb32(stco + 4);
+    if (!nsamp || !nchunks) return MR_EFORMAT;
+
+    struct mov_sample *out = (struct mov_sample *)calloc(nsamp, sizeof *out);
+    if (!out) return MR_ENOMEM;
+
+    const uint8_t *sizes  = stsz + 12;          /* per-sample size table    */
+    const uint8_t *sc     = stsc + 8;           /* stsc entries (12 bytes)  */
+    const uint8_t *co     = stco + 8;           /* chunk offsets            */
+
+    uint32_t si = 0, e;
+    for (e = 0; e < stsc_cnt && si < nsamp; e++) {
+        uint32_t first = rb32(sc + e * 12);
+        uint32_t spc   = rb32(sc + e * 12 + 4);
+        uint32_t last  = (e + 1 < stsc_cnt) ? rb32(sc + (e + 1) * 12) - 1
+                                            : nchunks;
+        uint32_t chunk;
+        for (chunk = first; chunk <= last && chunk <= nchunks && si < nsamp;
+             chunk++) {
+            uint64_t off = co64 ? rb64(co + (uint64_t)(chunk - 1) * 8)
+                                : rb32(co + (uint64_t)(chunk - 1) * 4);
+            uint32_t k;
+            for (k = 0; k < spc && si < nsamp; k++) {
+                uint32_t ssz = uniform ? uniform : rb32(sizes + (uint64_t)si * 4);
+                out[si].off  = (uint32_t)off;
+                out[si].size = ssz;
+                off += ssz;
+                si++;
+            }
+        }
+    }
+
+    m->samples  = out;
+    m->nsamples = si;
+    return MR_OK;
+}
+
+static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz)
+{
+    uint32_t sz;
+    const uint8_t *stsd = find_atom(stbl, stbl + stbl_sz,
+                                    T('s','t','s','d'), &sz);
+    if (!stsd || sz < 36) return;
+    const uint8_t *e = stsd + 8;                /* audio sample entry       */
+    uint32_t fmt = rb32(e + 4);
+    m->audio.channels    = rb16(e + 24);
+    m->audio.bits        = rb16(e + 26);
+    m->audio.sample_rate = rb32(e + 32) >> 16;  /* 16.16 fixed              */
+    /* map common uncompressed PCM 4CCs to the WAVE PCM tag */
+    if (fmt == T('s','o','w','t') || fmt == T('t','w','o','s') ||
+        fmt == T('r','a','w',' ') || fmt == T('l','p','c','m') ||
+        fmt == T('i','n','2','4') || fmt == T('i','n','3','2'))
+        m->audio.format_tag = 0x0001;
+    m->audio.valid = 1;
+}
+
+static void parse_trak(mr_mov *m, const uint8_t *trak, uint32_t trak_sz)
+{
+    uint32_t sz;
+    const uint8_t *mdia = find_atom(trak, trak + trak_sz,
+                                    T('m','d','i','a'), &sz);
+    if (!mdia) return;
+    uint32_t mdia_sz = sz, minf_sz, stbl_sz;
+    uint32_t htype = track_handler(mdia, mdia_sz);
+    const uint8_t *minf = find_atom(mdia, mdia + mdia_sz,
+                                    T('m','i','n','f'), &minf_sz);
+    if (!minf) return;
+    const uint8_t *stbl = find_atom(minf, minf + minf_sz,
+                                    T('s','t','b','l'), &stbl_sz);
+    if (!stbl) return;
+
+    if (htype == T('v','i','d','e') && !m->video.valid)
+        parse_video(m, stbl, stbl_sz, mdia, mdia_sz);
+    else if (htype == T('s','o','u','n') && !m->audio.valid)
+        parse_audio(m, stbl, stbl_sz);
+}
+
+mr_status mr_mov_open(mr_mov *m, const uint8_t *buf, size_t len)
+{
+    memset(m, 0, sizeof *m);
+    m->buf = buf;
+    m->len = len;
+
+    uint32_t sz;
+    const uint8_t *moov = find_atom(buf, buf + len, T('m','o','o','v'), &sz);
+    if (!moov) return MR_EFORMAT;
+
+    /* iterate every trak in moov */
+    const uint8_t *p = moov, *end = moov + sz;
+    for (;;) {
+        uint32_t tsz;
+        const uint8_t *trak = find_atom(p, end, T('t','r','a','k'), &tsz);
+        if (!trak) break;
+        parse_trak(m, trak, tsz);
+        p = trak + tsz;                         /* advance past this trak   */
+    }
+
+    if (!m->video.valid || !m->samples) return MR_EFORMAT;
+    return MR_OK;
+}
+
+mr_status mr_mov_next_packet(mr_mov *m, mr_packet *pkt)
+{
+    while (m->cursor < m->nsamples) {
+        struct mov_sample *s = &m->samples[m->cursor++];
+        if ((size_t)s->off + s->size > m->len) continue;   /* guard */
+        pkt->is_video = 1;
+        pkt->data     = m->buf + s->off;
+        pkt->len      = s->size;
+        return MR_OK;
+    }
+    return MR_EAGAIN;
+}
+
+void mr_mov_rewind(mr_mov *m) { m->cursor = 0; }
+
+void mr_mov_close(mr_mov *m)
+{
+    if (m && m->samples) { free(m->samples); m->samples = NULL; }
+}

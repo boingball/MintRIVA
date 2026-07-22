@@ -1,45 +1,78 @@
 # MintRIVA - AmigaOS (m68k) cross build.
 #
-# NOTE: this builds the portable decoder core + the `mr_decode` file->PPM test
-# harness, so you can verify decoding on REAL 68k hardware. It is a correctness
-# test tool, not a watchable player yet - the RTG/AGA display + MintAMP audio
-# layer is a later milestone. On the Amiga:
+# Two programs:
+#   mrplay    - the player: opens an RTG window and plays an AVI/MOV clip.
+#   mr_decode - decoder test harness: dumps frames to PPM (no display), used to
+#               verify decoding on real hardware.
 #
+#     mrplay    UHD:clips/movie.mov
 #     mr_decode test_cinepak.avi --ppm ram:frames
 #
-# decodes every frame to RAM:frames/fNNN.ppm.
+#   make -f Makefile.amiga                 # builds both (gcc, default)
+#   make -f Makefile.amiga mrplay          # just the player
+#   make -f Makefile.amiga TOOLCHAIN=vbcc  # mr_decode via vbcc + vclib
 #
-# Two toolchains are supported. Pick one with  make -f Makefile.amiga TOOLCHAIN=gcc
-#   gcc  = Bebbo's amiga-gcc  (m68k-amigaos-gcc)   <- default, common on PiStorm
-#   vbcc = vbcc + vclib       (vc +aos68k)
+# The compiler does NOT need to be on your PATH: this prefers whatever
+# m68k-amigaos-gcc is on PATH, then falls back to Bebbo's usual install
+# prefixes. Override if yours lives elsewhere:
+#
+#   make -f Makefile.amiga AMIGA_ROOT=/opt/amiga-gcc
+#   make -f Makefile.amiga AMIGA_GCC=/home/me/amiga/bin/m68k-amigaos-gcc
 #
 # CPU baseline is 68020 so a single binary runs on 020/030/040/060 and PiStorm.
-# The core is integer-only; floating point appears only in the unused --check
-# path, so we build soft-float and require no FPU (runs on a bare 030 A600).
+# The core is integer-only (no FPU, no soft-float): runs on a bare 030 A600.
 
 TOOLCHAIN ?= gcc
-CORE  = core/mr_codec.c core/mr_avi.c core/mr_cinepak.c
+CORE  = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
+        core/mr_cinepak.c
 HARN  = tests/mr_decode.c
-OUT   = mr_decode
+PLAY  = amiga/mrplay.c amiga/display_cgx.c
+
+# Prefer whatever m68k-amigaos-gcc is on PATH (your chosen default); only if
+# none is on PATH, fall back to Bebbo's usual install prefixes.
+AMIGA_ROOT ?= /opt/amiga
+AMIGA_GCC  ?= $(firstword \
+    $(shell command -v m68k-amigaos-gcc 2>/dev/null) \
+    $(wildcard $(AMIGA_ROOT)/bin/m68k-amigaos-gcc) \
+    $(wildcard /opt/amiga/bin/m68k-amigaos-gcc) \
+    $(wildcard /opt/amiga-gcc/bin/m68k-amigaos-gcc) \
+    $(wildcard /opt/m68k-amigaos/bin/m68k-amigaos-gcc) \
+    $(wildcard $(HOME)/amiga/bin/m68k-amigaos-gcc) \
+    $(wildcard $(HOME)/opt/amiga/bin/m68k-amigaos-gcc))
 
 ifeq ($(TOOLCHAIN),gcc)
-CC      = m68k-amigaos-gcc
-CFLAGS  = -O2 -std=c99 -m68020 -msoft-float -noixemul -fomit-frame-pointer \
-          -Wall -Wextra
+CC      = $(AMIGA_GCC)
+CFLAGS  = -O2 -std=c99 -m68020 -noixemul -fomit-frame-pointer -Wall -Wextra
 LDFLAGS = -noixemul
-$(OUT): $(HARN) $(CORE)
+
+all: mrplay mr_decode
+
+check-cc:
+	@test -n "$(CC)" && test -x "$(CC)" || { \
+	  echo "ERROR: m68k-amigaos-gcc not found."; \
+	  echo "  Set AMIGA_ROOT (install prefix) or AMIGA_GCC (full path), e.g."; \
+	  echo "  make -f Makefile.amiga AMIGA_ROOT=/opt/amiga"; \
+	  exit 1; }
+	@echo "using CC = $(CC)"
+
+mrplay: check-cc $(PLAY) $(CORE)
+	$(CC) $(CFLAGS) -o $@ $(PLAY) $(CORE) $(LDFLAGS)
+
+mr_decode: check-cc $(HARN) $(CORE)
 	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE) $(LDFLAGS)
 endif
 
 ifeq ($(TOOLCHAIN),vbcc)
-# Requires VBCC + vc.config target 'aos68k', and VBCC/VLINK/... in PATH.
-CC      = vc
+# Requires VBCC + vc.config target 'aos68k'. Override CC=... if not on PATH.
+CC      ?= vc
 CFLAGS  = +aos68k -c99 -O2 -cpu=68020 -softfloat
-$(OUT): $(HARN) $(CORE)
+
+all: mr_decode
+mr_decode: $(HARN) $(CORE)
 	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f $(OUT)
+	rm -f mrplay mr_decode
 
-.PHONY: clean
+.PHONY: all clean check-cc
