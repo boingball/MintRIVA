@@ -24,6 +24,7 @@
 
 TOOLCHAIN ?= gcc
 CORE  = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
+        core/mr_raw_mjpeg.c \
         core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
         core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
         core/mr_mpeg4.c

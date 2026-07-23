@@ -11,6 +11,9 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v cinepak test_cinepak.avi -y
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v mjpeg -q:v 5 test_mjpeg.avi -y
+# Raw MJPEG is a concatenated sequence of JPEG images with no container.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=1 \
+    -c:v mjpeg -q:v 5 -f mjpeg test_raw_mjpeg.mjpeg -y
 # MPEG-1 program stream (25 fps - MPEG-1 only allows standard rates).
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
     -c:v mpeg1video -b:v 800k -f mpeg test_mpeg1.mpg -y
@@ -41,6 +44,9 @@ rm -rf ref_mov && mkdir -p ref_mov
 ffmpeg -v error -i test_cinepak.mov ref_mov/f%03d.ppm -y
 rm -rf ref_mjpeg && mkdir -p ref_mjpeg
 ffmpeg -v error -i test_mjpeg.avi ref_mjpeg/f%03d.ppm -y
+rm -rf ref_raw_mjpeg && mkdir -p ref_raw_mjpeg
+ffmpeg -v error -f mjpeg -framerate 25 -i test_raw_mjpeg.mjpeg \
+    ref_raw_mjpeg/f%03d.ppm -y
 rm -rf ref_mpeg1 && mkdir -p ref_mpeg1
 ffmpeg -v error -i test_mpeg1.mpg ref_mpeg1/f%03d.ppm -y
 rm -rf ref_mp4v_intra && mkdir -p ref_mp4v_intra
