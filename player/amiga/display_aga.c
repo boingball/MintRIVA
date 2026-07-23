@@ -146,10 +146,14 @@ static void *aga_open(int w, int h, const char *title)
     s->ham = ham; s->scale = scale; s->down = down;
     s->depth = depth; s->use_c2p = c2p; s->use_akiko = akiko;
     /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
-     * a 32-multiple row stride; the built-in C2P only needs 8-pixel alignment. */
+     * a 32-multiple row stride; the built-in C2P only needs 8-pixel alignment.
+     * graphics.library WritePixelArray8 requires each source row rounded up to
+     * 16 pixels even though xstop names the unpadded visible width.  Packing an
+     * odd width tightly makes every following row start early (854 / 2 = 427
+     * exposed this as five-pixel diagonal wraps). */
     if (akiko)     { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
     else if (c2p)  { s->pw = (dw + 7)  & ~7;  s->x0 = ((sw - dw) / 2) & ~7;  }
-    else           { s->pw = dw;              s->x0 = (sw - dw) / 2;         }
+    else           { s->pw = (dw + 15) & ~15; s->x0 = (sw - dw) / 2;         }
     if (s->x0 < 0) s->x0 = 0;
     s->y0 = (sh - dh) / 2;
     s->x0byte = s->x0 >> 3;
