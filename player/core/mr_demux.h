@@ -21,11 +21,21 @@ typedef struct {
     int      valid;
 } mr_video_info;
 
+#define MR_AUDIO_CONFIG_MAX 16
+#define MR_AUDIO_FORMAT_PCM 0x0001
+#define MR_AUDIO_FORMAT_MP3 0x0055
+#define MR_AUDIO_FORMAT_AAC 0x00ff
+
 typedef struct {
     uint16_t format_tag;  /* WAVE tag (AVI) or mapped from MOV codec        */
     uint16_t channels;
     uint32_t sample_rate;
     uint16_t bits;
+    /* Container codec setup bytes.  MP4 AAC stores its AudioSpecificConfig
+     * here; packet decoders may ignore this for self-describing formats such
+     * as PCM, MP3 and ADTS AAC. */
+    uint8_t  config[MR_AUDIO_CONFIG_MAX];
+    uint8_t  config_len;
     int      valid;
 } mr_audio_info;
 
