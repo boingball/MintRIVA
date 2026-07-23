@@ -10,15 +10,14 @@
 #define MR_AVI_H
 
 #include "mr_demux.h"
+#include "mr_source.h"
 
 typedef struct {
     const uint8_t *buf;
     size_t         len;
-    void          *stream;      /* FILE *, opaque here for the public header */
+    mr_source     *source;      /* borrowed random-access compressed input  */
     uint8_t       *packet_buf;  /* reused by file-backed packet reads        */
     size_t         packet_cap;
-    size_t         stream_pos;  /* avoid redundant seeks during linear AVI  */
-    int            stream_pos_valid;
     int            file_backed;
 
     size_t         movi_off;   /* start of 'movi' payload                   */
@@ -33,7 +32,7 @@ typedef struct {
 } mr_avi;
 
 mr_status mr_avi_open(mr_avi *a, const uint8_t *buf, size_t len);
-mr_status mr_avi_open_file(mr_avi *a, void *stream, size_t len);
+mr_status mr_avi_open_source(mr_avi *a, mr_source *source, size_t len);
 mr_status mr_avi_next_packet(mr_avi *a, mr_packet *pkt);
 void      mr_avi_rewind(mr_avi *a);
 void      mr_avi_close(mr_avi *a);

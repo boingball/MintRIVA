@@ -241,10 +241,12 @@ int main(int argc, char **argv)
 
     dx = mr_demux_open_file(argv[1]);
     if (dx) {
-        printf("streaming %s from disk\n", mr_demux_container_name(dx));
+        printf("streaming %s from %s\n", mr_demux_container_name(dx),
+               !strncmp(argv[1], "http://", 7) ||
+               !strncmp(argv[1], "https://", 8) ? "network" : "disk");
     } else {
         if (mr_demux_is_file_backed_container(argv[1])) {
-            printf("unsupported or malformed AVI/MOV/MPEG-TS stream\n");
+            printf("cannot open stream: %s\n", mr_demux_last_open_error());
             return 10;
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input

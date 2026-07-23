@@ -7,7 +7,6 @@
  * is parsed - no edit lists, no fragmented MP4.
  */
 #include "mr_mov.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -376,30 +375,16 @@ mr_status mr_mov_open(mr_mov *m, const uint8_t *buf, size_t len)
 
 static int file_read_at(mr_mov *m, size_t off, void *dst, size_t len)
 {
-    FILE *f = (FILE *)m->stream;
-    if (!m->stream_pos_valid || m->stream_pos != off) {
-        if (off > 0x7fffffffUL || fseek(f, (long)off, SEEK_SET) != 0) {
-            m->stream_pos_valid = 0;
-            return 0;
-        }
-    }
-    if (fread(dst, 1, len, f) != len) {
-        m->stream_pos_valid = 0;
-        return 0;
-    }
-    m->stream_pos = off + len;
-    m->stream_pos_valid = 1;
-    return 1;
+    return mr_source_read_at(m->source, off, dst, len);
 }
 
-mr_status mr_mov_open_file(mr_mov *m, void *stream, size_t len)
+mr_status mr_mov_open_source(mr_mov *m, mr_source *source, size_t len)
 {
-    FILE *f = (FILE *)stream;
     size_t pos = 0;
 
     memset(m, 0, sizeof *m);
-    if (!f || len < 8) return MR_EFORMAT;
-    m->stream = stream;
+    if (!source || len < 8) return MR_EFORMAT;
+    m->source = source;
     m->len = len;
     m->file_backed = 1;
 

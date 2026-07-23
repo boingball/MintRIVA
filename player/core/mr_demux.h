@@ -65,15 +65,16 @@ typedef struct mr_demux mr_demux;
 /* Auto-detect container and open over an in-memory buffer (borrowed, must
  * outlive the demux). Returns NULL if unrecognised/malformed. */
 mr_demux    *mr_demux_open(const uint8_t *buf, size_t len);
-/* File-backed AVI/MOV/TS opener. Container metadata is retained in memory, but
- * compressed packets are read into reusable buffers on demand, so file size no
- * longer dictates the player's RAM requirement. Raw streams and MPEG-1 remain
- * on the memory path. */
+/* Path-backed AVI/MOV/TS opener. path may be a local filename or an http(s)
+ * URL. Container metadata is retained in memory, while compressed packets are
+ * read into reusable buffers on demand. HTTP seeking uses byte ranges. Raw
+ * streams and MPEG-1 remain on the memory path. */
 mr_demux    *mr_demux_open_file(const char *path);
 /* True when the file signature is one of the file-backed containers. Useful
  * after an open failure so callers do not try to slurp a huge but unsupported
  * or malformed AVI/MOV/TS into memory as a raw stream. */
 int          mr_demux_is_file_backed_container(const char *path);
+const char  *mr_demux_last_open_error(void);
 mr_status    mr_demux_next_packet(mr_demux *d, mr_packet *pkt);
 void         mr_demux_rewind(mr_demux *d);
 void         mr_demux_close(mr_demux *d);

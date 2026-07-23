@@ -19,7 +19,8 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 |-----------|-------|
 | Decoder plugin interface + registry | ✅ |
 | Container-agnostic demux (auto-detect) | ✅ |
-| File-backed AVI, QuickTime MOV/MP4 and MPEG-TS/M2TS demuxers | ✅ packet-streamed; no whole-file allocation |
+| AVI, QuickTime MOV/MP4 and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
+| HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
@@ -48,6 +49,8 @@ cd player
 make            # builds ./mr_decode
 make check      # decodes a Cinepak clip and diffs against ffmpeg (needs ffmpeg)
 make check-audio # decodes MP3-in-AVI and AAC-LC-in-MP4 through MintAMP/Helix
+make check-http # local HTTP range/redirect integration tests
+make check-https # the same tests over TLS (needs OpenSSL development files)
 ```
 
 Inspect or dump any AVI/MOV/MP4/TS/M2TS:
@@ -57,12 +60,37 @@ Inspect or dump any AVI/MOV/MP4/TS/M2TS:
 ./mr_decode file.avi --ppm outdir    # write decoded frames as PPM
 ```
 
-`mrplay` streams AVI, MOV/MP4 and MPEG-TS/M2TS packets from disk. Its RAM use is
-therefore set by container metadata, the largest compressed packet, and the
-active decoder/display buffers rather than by the media file size. TS currently
-supports MPEG-1/2 or AVC/H.264 video with ADTS AAC audio; AC3 is not decoded.
-Raw MJPEG/M4V and MPEG-1 program streams still use the original whole-file
-input path.
+`mrplay` streams AVI, MOV/MP4 and MPEG-TS/M2TS packets from disk or a direct
+`http://`/`https://` file URL. Its RAM use is therefore set by container
+metadata, the largest compressed packet, a 256 KiB network rewind cache, and
+the active decoder/display buffers rather than by the media file size. HTTP
+redirects and byte-range seeking are supported:
+
+```sh
+mrplay "http://example.net/video.avi"
+mrplay "https://example.net/video.mp4"
+```
+
+Plain HTTP is present in the normal Amiga build. HTTPS uses
+`amisslmaster.library`/AmiSSL v5 and must be enabled when compiling:
+
+```sh
+make -f Makefile.amiga mrplay SSL=1
+```
+
+For compatibility with typical classic Amiga AmiSSL installations, that mode
+uses TLS and SNI but does not verify the server certificate by default. Build
+with `SSL=1 SSLCERTS=1` to enable the default CA roots and hostname
+verification.
+
+URL input currently means a finite, directly addressable media file: the
+server must supply `Content-Length` or `Content-Range`, and must honour byte
+ranges when the container seeks. Chunked live streams, HLS playlists and
+fragmented MP4 are not supported yet.
+
+TS currently supports MPEG-1/2 or AVC/H.264 video with ADTS AAC audio; AC3 is
+not decoded. Raw MJPEG/M4V and MPEG-1 program streams still use the original
+whole-file input path and therefore do not accept URLs.
 
 ## Layout
 

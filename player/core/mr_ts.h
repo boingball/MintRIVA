@@ -9,6 +9,7 @@
 #define MR_TS_H
 
 #include "mr_demux.h"
+#include "mr_source.h"
 
 typedef struct {
     uint8_t *data;
@@ -22,9 +23,7 @@ typedef struct {
 typedef struct {
     const uint8_t *buf;
     size_t         len;
-    void          *stream;      /* FILE *, opaque in the public header      */
-    size_t         stream_pos;
-    int            stream_pos_valid;
+    mr_source     *source;      /* borrowed random-access compressed input  */
     int            file_backed;
     int            packet_size; /* 188 for TS, 192 for M2TS                 */
     int            sync_off;    /* 0 for TS, 4 for M2TS                     */
@@ -47,7 +46,7 @@ typedef struct {
 } mr_ts;
 
 mr_status mr_ts_open(mr_ts *t, const uint8_t *buf, size_t len);
-mr_status mr_ts_open_file(mr_ts *t, void *stream, size_t len);
+mr_status mr_ts_open_source(mr_ts *t, mr_source *source, size_t len);
 mr_status mr_ts_next_packet(mr_ts *t, mr_packet *pkt);
 void      mr_ts_rewind(mr_ts *t);
 void      mr_ts_close(mr_ts *t);
