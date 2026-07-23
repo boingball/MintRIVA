@@ -119,6 +119,14 @@ mr_demux *mr_demux_open_file(const char *path)
         mr_source_close(source);
         return NULL;
     }
+    /* AVI/MOV rely on seeking a sample index, which needs a known length. Only
+     * MPEG-TS plays forward from a length-less stream. */
+    if (mr_source_is_streaming(source) && kind != MR_CONTAINER_TS) {
+        mr_source_set_error(
+            "streamed AVI/MOV needs a seekable server (Content-Length)");
+        mr_source_close(source);
+        return NULL;
+    }
 
     d = (mr_demux *)calloc(1, sizeof *d);
     if (!d) {

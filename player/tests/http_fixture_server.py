@@ -20,6 +20,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         chunked = False
         head_length = False
+        streaming = False
         if path.startswith("/chunked-head/"):
             chunked = True
             head_length = True
@@ -27,7 +28,13 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         elif path.startswith("/chunked/"):
             chunked = True
             path = path[len("/chunked"):]
-        return path, chunked, head_length
+        elif path.startswith("/stream/"):
+            # Length-less forward-only stream: chunked, no Content-Length, and
+            # Range is ignored (always 200). Models a CDN serving live-style TS.
+            chunked = True
+            streaming = True
+            path = path[len("/stream"):]
+        return path, chunked, head_length, streaming
 
     def _candidate(self, path):
         if not path.startswith("/media/"):
@@ -45,7 +52,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         return candidate
 
     def do_HEAD(self):
-        path, _chunked, _head_length = self._route()
+        path, _chunked, _head_length, streaming = self._route()
         if path.startswith("/redirect/"):
             self.send_response(302)
             self.send_header("Location", "/media/" + path[len("/redirect/"):])
@@ -59,17 +66,24 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(candidate.stat().st_size))
+        if streaming:
+            # No Content-Length and no Accept-Ranges: HEAD reveals no length,
+            # so the client must fall back to forward-only streaming.
+            self.send_header("Transfer-Encoding", "chunked")
+        else:
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(candidate.stat().st_size))
         self.send_header("Connection", "close")
         self.end_headers()
 
     def do_GET(self):
-        path, chunked, head_length = self._route()
+        path, chunked, head_length, streaming = self._route()
         if path.startswith("/redirect/"):
             location = "/media/" + path[len("/redirect/"):]
             if head_length:
                 location = "/chunked-head" + location
+            elif streaming:
+                location = "/stream" + location
             elif chunked:
                 location = "/chunked" + location
             self.send_response(302)
@@ -87,7 +101,10 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         start = 0
         status = 200
         range_header = self.headers.get("Range")
-        ignore_zero_open_range = head_length and range_header == "bytes=0-"
+        # A streaming endpoint ignores Range entirely and always sends the whole
+        # body with 200 + chunked, so the client can never learn a length.
+        ignore_zero_open_range = streaming or (head_length and
+                                               range_header == "bytes=0-")
         if range_header and not ignore_zero_open_range:
             if not range_header.startswith("bytes=") or "," in range_header:
                 self.send_error(416)
@@ -111,7 +128,8 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         length = size - start
         self.send_response(status)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Accept-Ranges", "bytes")
+        if not streaming:
+            self.send_header("Accept-Ranges", "bytes")
         if chunked:
             self.send_header("Transfer-Encoding", "chunked")
         else:

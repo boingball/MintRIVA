@@ -65,5 +65,12 @@ base="$scheme://127.0.0.1:$port"
 "$decoder" "$base/chunked-head/media/test_h264_high.mp4" \
     --check tests/assets/ref_h264_high
 
+# Length-less forward-only stream: no Content-Length, Range ignored. Only the
+# sequential MPEG-TS path can play this; the frames must still match exactly.
+"$decoder" "$base/stream/media/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+"$decoder" "$base/stream/redirect/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+
 test -f "$tmpdir/range-used"
 echo "$mode URL checks passed"

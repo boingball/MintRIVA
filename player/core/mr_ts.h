@@ -25,6 +25,7 @@ typedef struct {
     size_t         len;
     mr_source     *source;      /* borrowed random-access compressed input  */
     int            file_backed;
+    int            streaming;   /* forward-only source with unknown length   */
     int            packet_size; /* 188 for TS, 192 for M2TS                 */
     int            sync_off;    /* 0 for TS, 4 for M2TS                     */
     size_t         cursor;

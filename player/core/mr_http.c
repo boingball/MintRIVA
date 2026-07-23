@@ -90,6 +90,7 @@ typedef struct {
     size_t body_pos;
     size_t response_left;
     int response_left_known;
+    int streaming;              /* forward-only: no length, no range seeking  */
     int chunked;
     size_t chunk_left;
     int chunk_need_crlf;
@@ -921,10 +922,19 @@ static int begin_response(http_source *h, size_t offset)
                 if (chunked && h->total_len) {
                     total = h->total_len;
                     response_len = total;
-                } else if (chunked) {
+                } else if (chunked && !h->streaming) {
+                    /* No length in the response. Try to discover one (HEAD or a
+                     * range probe) so the media stays seekable; if the server
+                     * offers neither, fall back to forward-only streaming. */
                     close_connection(h, 1);
-                    if (!probe_total_length(h)) return 0;
+                    if (!probe_total_length(h))
+                        h->streaming = 1;
                     return begin_response(h, offset);
+                } else if (chunked) {
+                    /* Streaming re-entry: length stays unknown and EOF is
+                     * signalled by the terminating zero-size chunk. */
+                    total = 0;
+                    response_len = 0;
                 } else {
                     mr_source_set_error(
                         "HTTP media requires Content-Length or Content-Range");
@@ -934,6 +944,24 @@ static int begin_response(http_source *h, size_t offset)
             } else {
                 total = response_len;
             }
+        }
+        if (h->streaming) {
+            /* A length-less stream can only be read from the start; a nonzero
+             * offset would mean a seek the server cannot honour. */
+            if (offset != 0) {
+                mr_source_set_error("cannot seek a length-less HTTP stream");
+                close_connection(h, 1);
+                return 0;
+            }
+            h->total_len = 0;
+            h->body_pos = 0;
+            h->response_left_known = 0;
+            h->response_left = 0;
+            h->chunked = 1;
+            h->chunk_left = 0;
+            h->chunk_need_crlf = 0;
+            h->chunk_done = 0;
+            return 1;
         }
         if (!total || !response_len) {
             mr_source_set_error(
@@ -1147,7 +1175,8 @@ mr_source *mr_http_source_open(const char *url)
         http_close(h);
         return NULL;
     }
-    source = mr_source_create(h, h->total_len,
+    source = mr_source_create(h,
+                              h->streaming ? MR_SOURCE_LEN_UNKNOWN : h->total_len,
                               http_read_at, http_close, h->url);
     return source;
 }

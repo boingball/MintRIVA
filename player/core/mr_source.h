@@ -11,10 +11,16 @@
 
 typedef struct mr_source mr_source;
 
+/* Sentinel length for a forward-only (non-seekable) stream whose total size
+ * is unknown up front — e.g. length-less chunked HTTP media. Callers must not
+ * treat it as a real byte count; use mr_source_is_streaming() to detect it. */
+#define MR_SOURCE_LEN_UNKNOWN ((size_t)-1)
+
 int        mr_source_is_url(const char *path);
 mr_source *mr_source_open(const char *path);
 int        mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len);
 size_t     mr_source_length(const mr_source *s);
+int        mr_source_is_streaming(const mr_source *s);
 const char *mr_source_final_name(const mr_source *s);
 void       mr_source_close(mr_source *s);
 

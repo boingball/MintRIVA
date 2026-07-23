@@ -66,6 +66,8 @@ mr_source *mr_source_create(void *ctx, size_t len,
 {
     mr_source *s;
     size_t n;
+    /* len == MR_SOURCE_LEN_UNKNOWN marks a forward-only stream; only a truly
+     * zero-length source is rejected. */
     if (!ctx || !read_at || !close || !len) return NULL;
     s = (mr_source *)calloc(1, sizeof *s);
     if (!s) {
@@ -155,7 +157,11 @@ mr_source *mr_source_open(const char *path)
 
 int mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len)
 {
-    if (!s || (!dst && len) || off > s->len || len > s->len - off)
+    if (!s || (!dst && len)) return 0;
+    /* Seekable sources are bounds-checked against their known size. A streaming
+     * source has no known end, so the backend reports EOF via a short read. */
+    if (s->len != MR_SOURCE_LEN_UNKNOWN &&
+        (off > s->len || len > s->len - off))
         return 0;
     return s->read_at(s->ctx, off, dst, len);
 }
@@ -163,6 +169,11 @@ int mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len)
 size_t mr_source_length(const mr_source *s)
 {
     return s ? s->len : 0;
+}
+
+int mr_source_is_streaming(const mr_source *s)
+{
+    return s && s->len == MR_SOURCE_LEN_UNKNOWN;
 }
 
 const char *mr_source_final_name(const mr_source *s)

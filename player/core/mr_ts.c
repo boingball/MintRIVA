@@ -571,6 +571,7 @@ mr_status mr_ts_open_source(mr_ts *t, mr_source *source, size_t len)
     t->source = source;
     t->len = len;
     t->file_backed = 1;
+    t->streaming = (len == MR_SOURCE_LEN_UNKNOWN);
     return ts_open_common(t);
 }
 
@@ -647,8 +648,12 @@ mr_status mr_ts_next_packet(mr_ts *t, mr_packet *pkt)
         mr_ts_pes *a;
         int video;
 
-        if (!ts_read_at(t, t->cursor, packet, (size_t)t->packet_size))
+        if (!ts_read_at(t, t->cursor, packet, (size_t)t->packet_size)) {
+            /* A streaming source has no known end: a short/failed read is the
+             * end of the stream, so fall through to flush any pending PES. */
+            if (t->streaming) break;
             return MR_EFORMAT;
+        }
         p = payload(packet + t->sync_off, &n, &pusi, &pid);
         if (!p || (pid != t->video_pid && pid != t->audio_pid)) {
             t->cursor += (size_t)t->packet_size;
