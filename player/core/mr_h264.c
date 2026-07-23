@@ -31,6 +31,8 @@ typedef struct {
     uint8_t  *rgb;
     uint8_t   nal_length_size;
     uint32_t  timestamp;
+    int       flushing;
+    int       flush_done;
 } h264_state;
 
 static void *h264_aligned_alloc(void *context, WORD32 alignment, WORD32 size)
@@ -376,6 +378,8 @@ static mr_status h264_decode(mr_decoder *dec,
     uint32_t annexb_len;
     mr_status st;
     if (!s || !data || !len) return MR_EFORMAT;
+    s->flushing = 0;
+    s->flush_done = 0;
     st = avcc_sample_to_annexb(s, data, len, &annexb_len);
     if (st != MR_OK) return st;
     ret = decode_annexb(s, s->packet, annexb_len, &out);
@@ -402,18 +406,25 @@ static mr_status h264_flush(mr_decoder *dec)
     ivd_ctl_flush_op_t flush_out;
     ih264d_video_decode_op_t out;
     IV_API_CALL_STATUS_T ret;
-    if (!s) return MR_EAGAIN;
-    memset(&flush_in, 0, sizeof flush_in);
-    memset(&flush_out, 0, sizeof flush_out);
-    flush_in.u4_size = sizeof flush_in;
-    flush_in.e_cmd = IVD_CMD_VIDEO_CTL;
-    flush_in.e_sub_cmd = IVD_CMD_CTL_FLUSH;
-    flush_out.u4_size = sizeof flush_out;
-    ret = ih264d_api_function(s->handle, &flush_in, &flush_out);
-    if (ret != IV_SUCCESS) return MR_EAGAIN;
+    if (!s || s->flush_done) return MR_EAGAIN;
+    if (!s->flushing) {
+        memset(&flush_in, 0, sizeof flush_in);
+        memset(&flush_out, 0, sizeof flush_out);
+        flush_in.u4_size = sizeof flush_in;
+        flush_in.e_cmd = IVD_CMD_VIDEO_CTL;
+        flush_in.e_sub_cmd = IVD_CMD_CTL_FLUSH;
+        flush_out.u4_size = sizeof flush_out;
+        ret = ih264d_api_function(s->handle, &flush_in, &flush_out);
+        if (ret != IV_SUCCESS) {
+            s->flush_done = 1;
+            return MR_EAGAIN;
+        }
+        s->flushing = 1;
+    }
     ret = decode_annexb(s, s->packet, 0, &out);
     if (out.s_ivd_video_decode_op_t.u4_output_present)
         return emit_rgb(dec, &out.s_ivd_video_decode_op_t);
+    s->flush_done = 1;
     return MR_EAGAIN;
 }
 
