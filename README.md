@@ -36,6 +36,10 @@ is validated on a normal machine before it ever meets a 68k toolchain.
 The H.264 tier uses GCC (including the m68k GCC build); the legacy vbcc target
 continues to build the lighter codecs without libavc.
 
+`mrplay` carries a `$STACK:320000` AmigaOS stack cookie because libavc needs
+substantially more stack than the classic Shell default. On systems that do
+not honour stack cookies, run `Stack 320000` before starting the player.
+
 ```sh
 git submodule update --init --recursive
 cd player
