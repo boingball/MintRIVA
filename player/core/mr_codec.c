@@ -15,7 +15,7 @@ const mr_codec *mr_codec_find(uint32_t fourcc)
     size_t i, j;
     for (i = 0; i < sizeof(g_codecs) / sizeof(g_codecs[0]); i++) {
         const mr_codec *c = g_codecs[i];
-        for (j = 0; j < 4; j++) {
+        for (j = 0; j < 8; j++) {
             if (c->fourcc[j] && c->fourcc[j] == fourcc)
                 return c;
         }

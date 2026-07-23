@@ -1195,7 +1195,9 @@ static void m4_close(mr_decoder *dec)
 const mr_codec mr_codec_mpeg4 = {
     "mpeg4",
     { MR_FOURCC('F','M','P','4'), MR_FOURCC('X','V','I','D'),
-      MR_FOURCC('D','I','V','X'), MR_FOURCC('D','X','5','0') },
+      MR_FOURCC('D','I','V','X'), MR_FOURCC('D','X','5','0'),
+      MR_FOURCC('m','p','4','v'), MR_FOURCC('M','P','4','V'),
+      MR_FOURCC('x','v','i','d'), MR_FOURCC('d','i','v','x') },
     m4_open,
     m4_decode,
     m4_close,
