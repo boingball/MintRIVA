@@ -164,6 +164,24 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
                 m->video.config = avcc;
                 m->video.config_len = avcc_sz;
             }
+        } else if ((m->video.fourcc == MR_FOURCC('m','p','4','v') ||
+                    m->video.fourcc == MR_FOURCC('M','P','4','V')) &&
+                   entry_sz >= 86 && entry_sz <= sz - 8) {
+            /* MPEG-4 Part 2 keeps its VOL only in the esds decoder config
+             * (VOS/VO/VOL) - the frames carry bare VOPs. Hand the borrowed
+             * DecoderSpecificInfo to the decoder so it parses the real VOL
+             * instead of guessing. */
+            uint32_t esds_sz;
+            const uint8_t *cfg;
+            uint32_t cfg_len;
+            const uint8_t *esds = find_atom(e + 86, e + entry_sz,
+                                            T('e','s','d','s'), &esds_sz);
+            if (esds && esds_sz >= 4 &&
+                find_decoder_config(esds + 4, esds + esds_sz,
+                                    &cfg, &cfg_len, 0) && cfg_len) {
+                m->video.config = cfg;
+                m->video.config_len = cfg_len;
+            }
         }
     }
     /* frame rate: mdhd timescale over first stts delta */

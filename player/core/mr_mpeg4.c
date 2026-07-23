@@ -1369,11 +1369,35 @@ static void yuv_to_rgb(m4_ctx *c, uint8_t *const pl[3])
 }
 
 /* ---- codec lifecycle --------------------------------------------------- */
+/* Parse the VOL from a container decoder-config. MP4/MOV keeps MPEG-4 Part 2
+ * setup in the esds DecoderSpecificInfo (VOS/VO/VOL start codes) while the
+ * frames carry bare VOPs, so without this the decoder would never see a VOL
+ * and would fall back to the legacy guess. On success have_vol is set and the
+ * real stream parameters are used; on anything unsupported it stays clear and
+ * the caller keeps the fallback path. */
+static void m4_config_vol(m4_ctx *c, const uint8_t *cfg, uint32_t len)
+{
+    bitreader br;
+    int id;
+    if (!cfg || len < 5 || len > 0x7fffffffUL) return;
+    br_init(&br, cfg, (int)len);
+    for (;;) {
+        id = next_start_code(&br);
+        if (id < 0) return;
+        if (id >= 0x20 && id <= 0x2F) {          /* video_object_layer_start  */
+            parse_vol(c, &br);                    /* sets have_vol on success  */
+            return;
+        }
+    }
+}
+
 static mr_status m4_open(mr_decoder *dec)
 {
     m4_ctx *c = (m4_ctx *)calloc(1, sizeof *c);
     if (!c) return MR_ENOMEM;
     c->w = dec->width; c->h = dec->height;
+    if (dec->config && dec->config_len)
+        m4_config_vol(c, dec->config, dec->config_len);
     c->rgb = (uint8_t *)calloc((size_t)c->w * c->h * 3, 1);
     if (!c->rgb) { free(c); return MR_ENOMEM; }
     dec->priv = c;
@@ -1441,8 +1465,10 @@ static mr_status m4_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
                 init_legacy_vol(c);
                 if ((tib = detect_time_inc_bits(&br)) != 0)
                     c->time_inc_bits = tib;
-                if (!alloc_planes(c)) return MR_ENOMEM;
             }
+            /* Allocate on the first VOP whether the VOL came from an inline
+             * header, the container config (m4_open), or the legacy guess. */
+            if (!c->cur[0] && !alloc_planes(c)) return MR_ENOMEM;
             rc = parse_vop(c, &br);
             if (rc == MR_EAGAIN) { decoded = 1; break; } /* not coded: repeat  */
             if (rc != MR_OK) return rc;
