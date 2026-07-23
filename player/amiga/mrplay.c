@@ -184,7 +184,8 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
 
     if (argc < 2) {
-        printf("usage: mrplay <file.avi|file.mov|file.mjpeg> [--aga] [--ham] [--ham6] "
+        printf("usage: mrplay <file.avi|file.mov|file.mjpeg|file.m4v> "
+               "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p] [--cd32] [--time]\n");
         return 5;
     }
@@ -216,7 +217,7 @@ int main(int argc, char **argv)
     }
 
     dx = mr_demux_open(buf, (size_t)len);
-    if (!dx) { printf("unsupported container (need AVI, MOV, raw MJPEG or MPEG-1)\n");
+    if (!dx) { printf("unsupported container (need AVI, MOV, raw MJPEG/M4V or MPEG-1)\n");
                free(buf); return 10; }
 
     vi = mr_demux_video(dx);
@@ -320,6 +321,39 @@ int main(int argc, char **argv)
         }
         frames++;
         if (audio) audio_service(audio);
+    }
+
+    /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.
+     * Drain it through the same pacing and display path so the player does not
+     * silently finish one frame short (e.g. 129/130 on legacy OpenDivX). */
+    while (!quit) {
+        clock_t a = clock();
+        mr_status ds = mr_decoder_flush(&dec);
+        t_dec += clock() - a;
+        if (ds != MR_OK) break;
+
+        if (audio) {
+            unsigned long target = clock_base + (unsigned long)frames * period;
+            while (audio_elapsed_ms(audio) < target &&
+                   !audio_starved(audio)) {
+                int ev = display_poll_event(disp);
+                if (ev == MR_EV_QUIT) { quit = 1; break; }
+                audio_service(audio);
+                Delay(1);
+            }
+        } else {
+            int ev = display_poll_event(disp);
+            if (ev == MR_EV_QUIT) quit = 1;
+            Delay(ticks);
+        }
+        if (quit) break;
+
+        a = clock();
+        display_show_rgb(disp, dec.frame.data, dec.frame.width,
+                         dec.frame.height, dec.frame.stride,
+                         dec.frame.dirty_y0, dec.frame.dirty_y1);
+        t_show += clock() - a;
+        frames++;
     }
     }
     if (want_time && frames > 0) {

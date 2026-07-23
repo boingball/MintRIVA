@@ -39,7 +39,8 @@ typedef enum {
     MR_CONTAINER_NONE = 0,
     MR_CONTAINER_AVI,
     MR_CONTAINER_MOV,
-    MR_CONTAINER_RAW_MJPEG
+    MR_CONTAINER_RAW_MJPEG,
+    MR_CONTAINER_RAW_MPEG4
 } mr_container;
 
 typedef struct mr_demux mr_demux;
