@@ -282,6 +282,32 @@ static int parse_vol(m4_ctx *c, bitreader *b)
     return MR_OK;
 }
 
+/* Early OpenDivX/DivX4 AVI files may omit the VOL header entirely and start
+ * each chunk with a VOP.  Their implied baseline matches MPEG-4 Simple
+ * Profile; the AVI header still supplies the display geometry. */
+static void init_legacy_vol(m4_ctx *c)
+{
+    c->verid = 1;
+    c->shape = 0;
+    c->time_inc_bits = 4;
+    c->time_res = 1;
+    c->interlaced = 0;
+    c->sprite_enable = 0;
+    c->quant_type = 0;
+    c->quarter_sample = 0;
+    c->complexity_est_disable = 1;
+    c->resync_disable = 0;
+    c->data_partitioned = 0;
+    c->quant_precision = 5;
+    memcpy(c->intra_matrix, default_intra_matrix, 64);
+    memcpy(c->inter_matrix, default_inter_matrix, 64);
+    c->mb_w = (c->w + 15) >> 4;
+    c->mb_h = (c->h + 15) >> 4;
+    c->cw = c->mb_w * 16;
+    c->ch = c->mb_h * 16;
+    c->have_vol = 1;
+}
+
 /* ---- VOP header parse (id 0xB6 already consumed) ----------------------- */
 /* Returns MR_OK (coded), MR_EAGAIN (not coded / skip), or an error. */
 static int parse_vop(m4_ctx *c, bitreader *b)
@@ -1345,7 +1371,10 @@ static mr_status m4_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
             if (rc != MR_OK) return rc;
             if (!alloc_planes(c)) return MR_ENOMEM;
         } else if (id == SC_VOP) {
-            if (!c->have_vol) return MR_EFORMAT;
+            if (!c->have_vol) {
+                init_legacy_vol(c);
+                if (!alloc_planes(c)) return MR_ENOMEM;
+            }
             rc = parse_vop(c, &br);
             if (rc == MR_EAGAIN) { decoded = 1; break; } /* not coded: repeat  */
             if (rc != MR_OK) return rc;
