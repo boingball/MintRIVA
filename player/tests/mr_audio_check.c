@@ -7,31 +7,12 @@
 #include "../audio/mr_audio_decode.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 struct pcm_stats {
     unsigned long frames;
     unsigned long nonzero;
 };
-
-static unsigned char *slurp(const char *path, size_t *len)
-{
-    FILE *f = fopen(path, "rb");
-    unsigned char *buf;
-    long n;
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    buf = (unsigned char *)malloc((size_t)n);
-    if (buf && fread(buf, 1, (size_t)n, f) != (size_t)n) {
-        free(buf); buf = NULL;
-    }
-    fclose(f);
-    if (len) *len = (size_t)n;
-    return buf;
-}
 
 static void count_pcm(void *user, const int16_t *pcm,
                       unsigned frames, unsigned channels)
@@ -45,8 +26,6 @@ static void count_pcm(void *user, const int16_t *pcm,
 
 int main(int argc, char **argv)
 {
-    size_t len;
-    unsigned char *buf;
     mr_demux *dx;
     const mr_audio_info *ai;
     mr_audio_decoder *dec;
@@ -58,23 +37,21 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: mr_audio_check <avi-or-mp4> <mp3|aac>\n");
         return 2;
     }
-    buf = slurp(argv[1], &len);
-    if (!buf) return 2;
-    dx = mr_demux_open(buf, len);
-    if (!dx) { free(buf); return 2; }
+    dx = mr_demux_open_file(argv[1]);
+    if (!dx) return 2;
     ai = mr_demux_audio(dx);
     if ((!strcmp(argv[2], "mp3") && ai->format_tag != MR_AUDIO_FORMAT_MP3) ||
         (!strcmp(argv[2], "aac") &&
          (ai->format_tag != MR_AUDIO_FORMAT_AAC || ai->config_len < 2))) {
         fprintf(stderr, "wrong demuxed audio setup: tag=0x%04x config=%u\n",
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
-        mr_demux_close(dx); free(buf); return 1;
+        mr_demux_close(dx); return 1;
     }
     dec = mr_audio_decoder_open(ai);
     if (!dec) {
         fprintf(stderr, "unsupported audio setup: tag=0x%04x config=%u\n",
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
-        mr_demux_close(dx); free(buf); return 1;
+        mr_demux_close(dx); return 1;
     }
     while (mr_demux_next_packet(dx, &pkt) == MR_OK) {
         if (!pkt.is_video) {
@@ -89,7 +66,7 @@ int main(int argc, char **argv)
                                           count_pcm, &stats) < 0) {
                     fprintf(stderr, "fatal audio decode error\n");
                     mr_audio_decoder_close(dec);
-                    mr_demux_close(dx); free(buf); return 1;
+                    mr_demux_close(dx); return 1;
                 }
                 pos += n;
             } while (pos < pkt.len);
@@ -104,7 +81,6 @@ int main(int argc, char **argv)
            mr_audio_decoder_rate(dec), stats.nonzero);
     mr_audio_decoder_close(dec);
     mr_demux_close(dx);
-    free(buf);
     if (packets < 50 || stats.frames < 40000 || stats.frames > 50000 ||
         stats.nonzero < 40000)
         return 1;

@@ -9,6 +9,7 @@
 #include "mr_mov.h"
 #include "mr_raw_mjpeg.h"
 #include "mr_raw_mpeg4.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,6 +21,7 @@ struct mr_demux {
         mr_raw_mjpeg raw_mjpeg;
         mr_raw_mpeg4 raw_mpeg4;
     } u;
+    FILE *owned_file;
 };
 
 /* AVI  = 'RIFF' .... 'AVI '   ;  MOV = an early 'ftyp'/'moov'/'mdat' atom;
@@ -74,6 +76,53 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
     return d;
 }
 
+mr_demux *mr_demux_open_file(const char *path)
+{
+    uint8_t head[16];
+    size_t got;
+    long end;
+    mr_container kind;
+    mr_demux *d;
+    mr_status st;
+    FILE *f;
+
+    if (!path) return NULL;
+    f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0 || (end = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    got = fread(head, 1, sizeof head, f);
+    kind = sniff(head, got);
+    if (kind != MR_CONTAINER_AVI && kind != MR_CONTAINER_MOV) {
+        fclose(f);
+        return NULL;
+    }
+
+    d = (mr_demux *)calloc(1, sizeof *d);
+    if (!d) {
+        fclose(f);
+        return NULL;
+    }
+    d->kind = kind;
+    d->owned_file = f;
+
+    if (kind == MR_CONTAINER_AVI)
+        st = mr_avi_open_file(&d->u.avi, f, (size_t)end);
+    else
+        st = mr_mov_open_file(&d->u.mov, f, (size_t)end);
+    if (st != MR_OK) {
+        if (kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
+        else mr_mov_close(&d->u.mov);
+        fclose(f);
+        free(d);
+        return NULL;
+    }
+    return d;
+}
+
 mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
 {
     if (d->kind == MR_CONTAINER_AVI)
@@ -97,7 +146,9 @@ void mr_demux_rewind(mr_demux *d)
 void mr_demux_close(mr_demux *d)
 {
     if (!d) return;
-    if (d->kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
+    if (d->kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
+    else if (d->kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
+    if (d->owned_file) fclose(d->owned_file);
     free(d);
 }
 

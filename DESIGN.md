@@ -53,7 +53,9 @@ the CPU, which usually means an older, decode-cheap codec.
 
 Container: **AVI** (RIFF) and **QuickTime MOV** are both implemented behind one
 auto-detecting front end (`mr_demux.h`), so the player is container-blind —
-`mr_avi.c`, `mr_mov.c`. Adding a container is a backend, like adding a codec.
+`mr_avi.c`, `mr_mov.c`. Their file-backed path retains only headers/sample
+tables plus one reusable compressed-packet buffer, allowing media much larger
+than available RAM. Adding a container is a backend, like adding a codec.
 
 ## Architecture
 
@@ -72,9 +74,8 @@ auto-detecting front end (`mr_demux.h`), so the player is container-blind —
 
 - **Portable core** (`player/core/`): demux, decoder registry + decoders, pixel
   formats. Builds and is tested on the dev host; no Amiga dependencies.
-- **Platform layer** (planned, `player/amiga/`): screen/RTG setup and chunky
-  blit, AGA C2P + dither (port RiVA's renderers), file/async IO, and the
-  MintAMP audio backend.
+- **Platform layer** (`player/amiga/`): screen/RTG setup and chunky blit, AGA
+  C2P + dither, file-backed packet IO, and the MintAMP audio backend.
 - **Sync**: audio is the master clock (MintAMP drives playback rate); video
   drops/‌repeats frames to track it — same principle RiVA settled on.
 
@@ -92,6 +93,8 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 - [x] Container-agnostic demux front end (`mr_demux.h`)
 - [x] AVI demuxer (video + audio stream discovery) (`mr_avi.c`)
 - [x] QuickTime MOV demuxer (stbl sample-table frames) (`mr_mov.c`)
+- [x] File-backed AVI/MOV packet streaming: metadata + one compressed packet
+      in RAM instead of loading the complete media file
 - [x] Cinepak decoder, ffmpeg-validated on AVI + MOV (`mr_cinepak.c`)
 - [x] Amiga (m68k) build + verified decoding on real hardware
 - [x] `mrplay`: RTG window output via cybergraphics WritePixelArray

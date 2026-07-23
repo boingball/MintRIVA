@@ -7,6 +7,7 @@
  * is parsed - no edit lists, no fragmented MP4.
  */
 #include "mr_mov.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -340,16 +341,8 @@ static void parse_trak(mr_mov *m, const uint8_t *trak, uint32_t trak_sz)
         parse_audio(m, stbl, stbl_sz);
 }
 
-mr_status mr_mov_open(mr_mov *m, const uint8_t *buf, size_t len)
+static mr_status parse_moov(mr_mov *m, const uint8_t *moov, uint32_t sz)
 {
-    memset(m, 0, sizeof *m);
-    m->buf = buf;
-    m->len = len;
-
-    uint32_t sz;
-    const uint8_t *moov = find_atom(buf, buf + len, T('m','o','o','v'), &sz);
-    if (!moov) return MR_EFORMAT;
-
     /* iterate every trak in moov */
     const uint8_t *p = moov, *end = moov + sz;
     for (;;) {
@@ -368,13 +361,111 @@ mr_status mr_mov_open(mr_mov *m, const uint8_t *buf, size_t len)
     return MR_OK;
 }
 
+mr_status mr_mov_open(mr_mov *m, const uint8_t *buf, size_t len)
+{
+    uint32_t sz;
+    const uint8_t *moov;
+    memset(m, 0, sizeof *m);
+    m->buf = buf;
+    m->len = len;
+
+    moov = find_atom(buf, buf + len, T('m','o','o','v'), &sz);
+    if (!moov) return MR_EFORMAT;
+    return parse_moov(m, moov, sz);
+}
+
+static int file_read_at(mr_mov *m, size_t off, void *dst, size_t len)
+{
+    FILE *f = (FILE *)m->stream;
+    if (!m->stream_pos_valid || m->stream_pos != off) {
+        if (off > 0x7fffffffUL || fseek(f, (long)off, SEEK_SET) != 0) {
+            m->stream_pos_valid = 0;
+            return 0;
+        }
+    }
+    if (fread(dst, 1, len, f) != len) {
+        m->stream_pos_valid = 0;
+        return 0;
+    }
+    m->stream_pos = off + len;
+    m->stream_pos_valid = 1;
+    return 1;
+}
+
+mr_status mr_mov_open_file(mr_mov *m, void *stream, size_t len)
+{
+    FILE *f = (FILE *)stream;
+    size_t pos = 0;
+
+    memset(m, 0, sizeof *m);
+    if (!f || len < 8) return MR_EFORMAT;
+    m->stream = stream;
+    m->len = len;
+    m->file_backed = 1;
+
+    /* Locate moov without reading mdat.  Fast-start MP4 has moov near the
+     * front; regular files often place it at EOF, which is still one seek per
+     * top-level atom rather than a read of the intervening media payload. */
+    while (pos + 8 <= len) {
+        uint8_t head[16];
+        uint64_t atom_size;
+        uint32_t type;
+        size_t hdr = 8;
+
+        if (!file_read_at(m, pos, head, 8)) return MR_EFORMAT;
+        atom_size = rb32(head);
+        type = rb32(head + 4);
+        if (atom_size == 1) {
+            if (pos + 16 > len || !file_read_at(m, pos + 8, head + 8, 8))
+                return MR_EFORMAT;
+            atom_size = rb64(head + 8);
+            hdr = 16;
+        } else if (atom_size == 0) {
+            atom_size = (uint64_t)(len - pos);
+        }
+        if (atom_size < hdr || atom_size > (uint64_t)(len - pos))
+            return MR_EFORMAT;
+
+        if (type == T('m','o','o','v')) {
+            uint64_t payload64 = atom_size - hdr;
+            uint32_t payload;
+            mr_status st;
+            if (payload64 > 32UL * 1024 * 1024) return MR_EFORMAT;
+            payload = (uint32_t)payload64;
+            m->metadata = (uint8_t *)malloc(payload);
+            if (!m->metadata) return MR_ENOMEM;
+            if (!file_read_at(m, pos + hdr, m->metadata, payload))
+                return MR_EFORMAT;
+            st = parse_moov(m, m->metadata, payload);
+            return st;
+        }
+        pos += (size_t)atom_size;
+    }
+    return MR_EFORMAT;
+}
+
 mr_status mr_mov_next_packet(mr_mov *m, mr_packet *pkt)
 {
     while (m->cursor < m->nsamples) {
         struct mov_sample *s = &m->samples[m->cursor++];
-        if ((size_t)s->off + s->size > m->len) continue;   /* guard */
+        if ((size_t)s->off > m->len ||
+            (size_t)s->size > m->len - (size_t)s->off)
+            continue;
         pkt->is_video = s->is_video;
-        pkt->data     = m->buf + s->off;
+        if (m->file_backed) {
+            if (m->packet_cap < s->size) {
+                uint8_t *nb = (uint8_t *)realloc(m->packet_buf, s->size);
+                if (!nb) return MR_ENOMEM;
+                m->packet_buf = nb;
+                m->packet_cap = s->size;
+            }
+            if (s->size &&
+                !file_read_at(m, (size_t)s->off, m->packet_buf, s->size))
+                return MR_EFORMAT;
+            pkt->data = m->packet_buf;
+        } else {
+            pkt->data = m->buf + s->off;
+        }
         pkt->len      = s->size;
         return MR_OK;
     }
@@ -385,5 +476,12 @@ void mr_mov_rewind(mr_mov *m) { m->cursor = 0; }
 
 void mr_mov_close(mr_mov *m)
 {
-    if (m && m->samples) { free(m->samples); m->samples = NULL; }
+    if (!m) return;
+    free(m->samples);
+    free(m->metadata);
+    free(m->packet_buf);
+    m->samples = NULL;
+    m->metadata = NULL;
+    m->packet_buf = NULL;
+    m->packet_cap = 0;
 }

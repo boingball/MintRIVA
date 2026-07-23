@@ -45,6 +45,8 @@ typedef struct {
 
 typedef struct {
     int            is_video;
+    /* Borrowed until the next mr_demux_next_packet call.  Memory-backed
+     * demuxers point into their input; file-backed demuxers reuse one buffer. */
     const uint8_t *data;
     uint32_t       len;
 } mr_packet;
@@ -62,6 +64,11 @@ typedef struct mr_demux mr_demux;
 /* Auto-detect container and open over an in-memory buffer (borrowed, must
  * outlive the demux). Returns NULL if unrecognised/malformed. */
 mr_demux    *mr_demux_open(const uint8_t *buf, size_t len);
+/* File-backed AVI/MOV opener.  Container metadata is retained in memory, but
+ * compressed packets are read into a reusable buffer on demand, so file size
+ * no longer dictates the player's RAM requirement.  Raw streams and MPEG-1
+ * remain on the memory path. */
+mr_demux    *mr_demux_open_file(const char *path);
 mr_status    mr_demux_next_packet(mr_demux *d, mr_packet *pkt);
 void         mr_demux_rewind(mr_demux *d);
 void         mr_demux_close(mr_demux *d);
