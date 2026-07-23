@@ -38,6 +38,10 @@ all: mr_decode
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
 	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE) -lm
 
+mr_scale_check: tests/mr_scale_check.c core/mr_scale.c core/mr_scale.h \
+                core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_scale_check.c core/mr_scale.c
+
 mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c \
                 audio/mr_audio_decode.h $(CORE)
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
@@ -56,7 +60,8 @@ check-libavc:
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
-check: mr_decode
+check: mr_decode mr_scale_check
+	./mr_scale_check
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
@@ -103,6 +108,6 @@ check-audio: mr_audio_check
 	./mr_audio_check tests/assets/test_aac.mp4 aac
 
 clean:
-	rm -f mr_decode mr_audio_check
+	rm -f mr_decode mr_audio_check mr_scale_check
 
 .PHONY: all check check-audio check-libavc clean

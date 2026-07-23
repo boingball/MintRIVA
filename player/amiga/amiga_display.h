@@ -29,8 +29,9 @@ void display_set_scale(int n);
 /* AGA blit path: 0 = graphics WritePixelArray8 (default), 1 = built-in C2P. */
 void display_set_c2p(int on);
 
-/* Allow interlaced AGA screens (up to ~640x512), so tall clips fit at full
- * resolution instead of being downscaled. Off by default (interlace flickers). */
+/* Allow interlaced AGA screens (up to ~640x512). The AGA fitter compensates
+ * for the doubled vertical resolution, preserving the video's physical aspect
+ * ratio. Off by default because interlace flickers on native displays. */
 void display_set_lace(int on);
 
 /* Use the CD32 Akiko chip's hardware chunky->planar instead of the CPU C2P.
