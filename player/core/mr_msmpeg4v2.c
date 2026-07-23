@@ -978,7 +978,8 @@ static void mp42_close(mr_decoder *dec)
 
 const mr_codec mr_codec_msmpeg4v2 = {
     "msmpeg4v2",
-    { MR_FOURCC('M','P','4','2'), MR_FOURCC('m','p','4','2'), 0, 0,
+    { MR_FOURCC('M','P','4','2'), MR_FOURCC('m','p','4','2'),
+      MR_FOURCC('D','I','V','2'), MR_FOURCC('d','i','v','2'),
       0, 0, 0, 0 },
     mp42_open,
     mp42_decode,

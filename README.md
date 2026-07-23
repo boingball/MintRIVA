@@ -22,7 +22,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | AVI (RIFF) + QuickTime MOV demuxers | ✅ |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Runs on real 68k hardware | ✅ decode verified |
-| MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42 decoders | ✅ ffmpeg-validated |
+| MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
 | H.264 High Profile (`avc1`, CABAC, B-frames) | ✅ libavc; ffmpeg-validated |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
