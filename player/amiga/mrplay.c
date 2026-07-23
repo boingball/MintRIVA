@@ -25,6 +25,16 @@
 #include <string.h>
 #include <time.h>
 
+/*
+ * libavc's P/B-slice reference-list setup has stack frames above 20 KiB
+ * before its callers and the AmigaOS libraries are accounted for.  Classic
+ * Shells commonly provide only 4 KiB, which corrupts memory during H.264
+ * playback and makes the eventual EOF/ESC teardown appear to crash.  AmigaOS
+ * versions with stack-cookie support raise the process stack to this minimum;
+ * older systems can use "Stack 320000" before launching mrplay.
+ */
+static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
+
 static unsigned char *slurp(const char *path, long *out_len)
 {
     FILE *f = fopen(path, "rb");
