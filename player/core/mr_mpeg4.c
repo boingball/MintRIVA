@@ -315,6 +315,38 @@ int mr_mpeg4_probe(const uint8_t *data, size_t len, int *width, int *height,
     return 0;
 }
 
+/* Recover vop_time_increment's bit width for a VOL-less stream.
+ *
+ * Some MPEG-4 files (e.g. mdat-first MP4s whose esds carries no
+ * DecoderSpecificInfo) contain only GOV/VOP start codes and never a VOL, so
+ * time_inc_bits is unknown and the legacy default of 4 misaligns every VOP
+ * header. The width is recoverable from the first VOP: §6.3.5 mandates a
+ * marker_bit == 1 on both sides of vop_time_increment, and the first coded VOP
+ * after a GOV is an I-VOP, so the width in [1,16] that makes both markers 1
+ * with vop_coding_type == I and vop_coded == 1 is the true one. `b` is
+ * positioned at the VOP header (just past the start code) and is left
+ * untouched — the probe runs on a copy. Returns 0 when nothing matches, so the
+ * caller keeps the legacy default. */
+static int detect_time_inc_bits(const bitreader *b)
+{
+    int tib;
+    for (tib = 1; tib <= 16; tib++) {
+        bitreader t = *b;
+        int ct, m1, m2, coded;
+        ct = br_bits(&t, 2);                 /* vop_coding_type               */
+        while (br_bit(&t)) {                  /* modulo_time_base ones         */
+            if (br_overrun(&t)) break;
+        }
+        m1    = br_bit(&t);                   /* marker_bit                    */
+        br_skip(&t, tib);                     /* vop_time_increment            */
+        m2    = br_bit(&t);                   /* marker_bit                    */
+        coded = br_bit(&t);                   /* vop_coded                     */
+        if (ct == 0 && m1 == 1 && m2 == 1 && coded == 1 && !br_overrun(&t))
+            return tib;
+    }
+    return 0;
+}
+
 /* Early OpenDivX/DivX4 AVI files may omit the VOL header entirely and start
  * each chunk with a VOP.  Their implied baseline matches MPEG-4 Simple
  * Profile; the AVI header still supplies the display geometry. */
@@ -1405,7 +1437,10 @@ static mr_status m4_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
             if (!alloc_planes(c)) return MR_ENOMEM;
         } else if (id == SC_VOP) {
             if (!c->have_vol) {
+                int tib;
                 init_legacy_vol(c);
+                if ((tib = detect_time_inc_bits(&br)) != 0)
+                    c->time_inc_bits = tib;
                 if (!alloc_planes(c)) return MR_ENOMEM;
             }
             rc = parse_vop(c, &br);
