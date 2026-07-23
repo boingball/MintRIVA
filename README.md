@@ -23,8 +23,9 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
+| MPEG-2 Main Profile video | ✅ libmpeg2; TS + B-frames ffmpeg-validated |
 | H.264 High Profile (`avc1`, CABAC, B-frames) | ✅ libavc; ffmpeg-validated |
-| MPEG-TS/M2TS H.264 + ADTS AAC | ✅ 188/192-byte packets; ffmpeg-validated |
+| MPEG-TS/M2TS MPEG-1/2 or H.264 + ADTS AAC | ✅ 188/192-byte packets; ffmpeg-validated |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
 | PCM / MP2 / MP3 / AAC-LC audio to Paula | ✅ host-validated; hardware test pending for MP3/AAC |
@@ -59,9 +60,9 @@ Inspect or dump any AVI/MOV/MP4/TS/M2TS:
 `mrplay` streams AVI, MOV/MP4 and MPEG-TS/M2TS packets from disk. Its RAM use is
 therefore set by container metadata, the largest compressed packet, and the
 active decoder/display buffers rather than by the media file size. TS currently
-supports AVC/H.264 video with ADTS AAC audio; MPEG-2 video and AC3 are not
-decoded. Raw MJPEG/M4V and MPEG-1 program streams still use the original
-whole-file input path.
+supports MPEG-1/2 or AVC/H.264 video with ADTS AAC audio; AC3 is not decoded.
+Raw MJPEG/M4V and MPEG-1 program streams still use the original whole-file
+input path.
 
 ## Layout
 
@@ -73,13 +74,13 @@ player/core/         portable C core: demux + video decoders
 player/audio/        packet adapter for MintAMP's MP3/AAC Helix decoders
 player/amiga/        RTG/AGA display, Paula output and player frontend
 player/tests/        host test harness + fixtures
-player/vendor/       pinned build dependencies (git submodules)
+player/vendor/       pinned/vendored build dependencies
 ```
 
 ## Licensing
 
 RiVA is GPL-2.0 (`src/gpl-2.0.txt`); its AGA/CGX renderers are dual GPL/MIT. New
 MintRIVA code inherits GPL-2.0 to stay compatible with the RiVA reference it
-draws on. MintAMP/Helix and Apache-2.0 Ittiam libavc remain separately licensed
-in their pinned submodules; retain their notices when distributing source or
-binaries.
+draws on. The vendored VideoLAN libmpeg2 core is GPL-2.0-or-later. MintAMP/Helix
+and Apache-2.0 Ittiam libavc remain separately licensed in their pinned
+submodules; retain their notices when distributing source or binaries.
