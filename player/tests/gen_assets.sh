@@ -31,6 +31,9 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
 # Microsoft MPEG-4 v2 in AVI: separate H.263-derived MP42 bitstream.
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v msmpeg4v2 -g 12 -qscale:v 4 test_mp42.avi -y
+# DIV2 is an alternate AVI FourCC for the same Microsoft v2 bitstream. Remux
+# the identical packets so both codec tags share one ffmpeg reference set.
+ffmpeg -v error -i test_mp42.avi -c copy -tag:v DIV2 test_div2.avi -y
 # H.264 High Profile in MP4: CABAC, 8x8 transform-capable profile, B-frame
 # reordering and avcC/length-prefixed NAL handling. AAC-LC exercises the same
 # container's interleaved compressed-audio samples.

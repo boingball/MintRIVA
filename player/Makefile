@@ -61,7 +61,7 @@ check: mr_decode
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
-	    && test -d tests/assets/ref_mp42 \
+	    && test -d tests/assets/ref_mp42 && test -f tests/assets/test_div2.avi \
 	    && test -d tests/assets/ref_h264_high \
 	    && test -d tests/assets/ref_opendivx_legacy \
 	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
@@ -83,6 +83,8 @@ check: mr_decode
 	./mr_decode tests/assets/test_mp4v_sp.avi --check tests/assets/ref_mp4v_sp
 	@echo "[Microsoft MPEG-4 v2 / MP42]"
 	./mr_decode tests/assets/test_mp42.avi --check tests/assets/ref_mp42
+	@echo "[Microsoft MPEG-4 v2 / DIV2]"
+	./mr_decode tests/assets/test_div2.avi --check tests/assets/ref_mp42
 	@echo "[H.264 High Profile avc1 + B-frames]"
 	./mr_decode tests/assets/test_h264_high.mp4 --check tests/assets/ref_h264_high
 	@echo "[MPEG-4 Part 2 legacy OpenDivX AVI]"
