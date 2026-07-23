@@ -184,7 +184,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
 
     if (argc < 2) {
-        printf("usage: mrplay <file.avi|file.mov> [--aga] [--ham] [--ham6] "
+        printf("usage: mrplay <file.avi|file.mov|file.mjpeg> [--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p] [--cd32] [--time]\n");
         return 5;
     }
@@ -216,7 +216,7 @@ int main(int argc, char **argv)
     }
 
     dx = mr_demux_open(buf, (size_t)len);
-    if (!dx) { printf("unsupported container (need AVI, MOV or MPEG-1)\n");
+    if (!dx) { printf("unsupported container (need AVI, MOV, raw MJPEG or MPEG-1)\n");
                free(buf); return 10; }
 
     vi = mr_demux_video(dx);

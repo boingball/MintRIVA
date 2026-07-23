@@ -7,15 +7,17 @@
 #include "mr_demux.h"
 #include "mr_avi.h"
 #include "mr_mov.h"
+#include "mr_raw_mjpeg.h"
 #include <stdlib.h>
 #include <string.h>
 
 struct mr_demux {
     mr_container kind;
-    union { mr_avi avi; mr_mov mov; } u;
+    union { mr_avi avi; mr_mov mov; mr_raw_mjpeg raw_mjpeg; } u;
 };
 
-/* AVI  = 'RIFF' .... 'AVI '   ;  MOV = an early 'ftyp'/'moov'/'mdat' atom. */
+/* AVI  = 'RIFF' .... 'AVI '   ;  MOV = an early 'ftyp'/'moov'/'mdat' atom;
+ * raw MJPEG begins directly with a JPEG SOI marker. */
 static mr_container sniff(const uint8_t *b, size_t len)
 {
     if (len >= 12 &&
@@ -36,6 +38,8 @@ static mr_container sniff(const uint8_t *b, size_t len)
             return MR_CONTAINER_MOV;
         #undef BE4
     }
+    if (len >= 2 && b[0] == 0xff && b[1] == 0xd8)
+        return MR_CONTAINER_RAW_MJPEG;
     return MR_CONTAINER_NONE;
 }
 
@@ -48,24 +52,31 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
     if (!d) return NULL;
     d->kind = kind;
 
-    mr_status st = (kind == MR_CONTAINER_AVI)
-                 ? mr_avi_open(&d->u.avi, buf, len)
-                 : mr_mov_open(&d->u.mov, buf, len);
+    mr_status st;
+    if (kind == MR_CONTAINER_AVI)
+        st = mr_avi_open(&d->u.avi, buf, len);
+    else if (kind == MR_CONTAINER_MOV)
+        st = mr_mov_open(&d->u.mov, buf, len);
+    else
+        st = mr_raw_mjpeg_open(&d->u.raw_mjpeg, buf, len);
     if (st != MR_OK) { free(d); return NULL; }
     return d;
 }
 
 mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
 {
-    return d->kind == MR_CONTAINER_AVI
-         ? mr_avi_next_packet(&d->u.avi, pkt)
-         : mr_mov_next_packet(&d->u.mov, pkt);
+    if (d->kind == MR_CONTAINER_AVI)
+        return mr_avi_next_packet(&d->u.avi, pkt);
+    if (d->kind == MR_CONTAINER_MOV)
+        return mr_mov_next_packet(&d->u.mov, pkt);
+    return mr_raw_mjpeg_next_packet(&d->u.raw_mjpeg, pkt);
 }
 
 void mr_demux_rewind(mr_demux *d)
 {
     if (d->kind == MR_CONTAINER_AVI) mr_avi_rewind(&d->u.avi);
-    else                             mr_mov_rewind(&d->u.mov);
+    else if (d->kind == MR_CONTAINER_MOV) mr_mov_rewind(&d->u.mov);
+    else mr_raw_mjpeg_rewind(&d->u.raw_mjpeg);
 }
 
 void mr_demux_close(mr_demux *d)
@@ -77,16 +88,21 @@ void mr_demux_close(mr_demux *d)
 
 const mr_video_info *mr_demux_video(const mr_demux *d)
 {
-    return d->kind == MR_CONTAINER_AVI ? &d->u.avi.video : &d->u.mov.video;
+    if (d->kind == MR_CONTAINER_AVI) return &d->u.avi.video;
+    if (d->kind == MR_CONTAINER_MOV) return &d->u.mov.video;
+    return &d->u.raw_mjpeg.video;
 }
 
 const mr_audio_info *mr_demux_audio(const mr_demux *d)
 {
-    return d->kind == MR_CONTAINER_AVI ? &d->u.avi.audio : &d->u.mov.audio;
+    if (d->kind == MR_CONTAINER_AVI) return &d->u.avi.audio;
+    if (d->kind == MR_CONTAINER_MOV) return &d->u.mov.audio;
+    return &d->u.raw_mjpeg.audio;
 }
 
 const char *mr_demux_container_name(const mr_demux *d)
 {
     return d->kind == MR_CONTAINER_AVI ? "AVI"
-         : d->kind == MR_CONTAINER_MOV ? "MOV" : "?";
+         : d->kind == MR_CONTAINER_MOV ? "MOV"
+         : d->kind == MR_CONTAINER_RAW_MJPEG ? "raw MJPEG" : "?";
 }
