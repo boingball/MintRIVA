@@ -17,6 +17,20 @@
 #define CC_vids CC('v','i','d','s')
 #define CC_auds CC('a','u','d','s')
 
+/* AVI normally stores a codec fourcc in both fccHandler and biCompression,
+ * but some old OpenDivX files put a numeric BITMAPINFOHEADER compression
+ * constant in biCompression (notably 4) while fccHandler carries 'divx'.
+ * A codec fourcc is four printable bytes; numeric BI_* values are not. */
+static int is_printable_fourcc(uint32_t fourcc)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        unsigned int c = (unsigned int)((fourcc >> (i * 8)) & 0xff);
+        if (c < 0x20 || c > 0x7e) return 0;
+    }
+    return 1;
+}
+
 /* Parse one strl LIST (the strh + strf pair for a single stream) and record
  * it against stream index `idx` - the index by which 'NNxx' movi chunk ids
  * reference this stream. */
@@ -45,10 +59,13 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
                 /* BITMAPINFOHEADER */
                 a->video.width  = (int)mr_rl32(body + 4);
                 a->video.height = (int)mr_rl32(body + 8);
-                /* biCompression at offset 16 overrides handler if present. */
+                /* Prefer a fourcc in biCompression, but keep fccHandler when
+                 * biCompression is a numeric BI_* constant. */
                 {
                     uint32_t comp = mr_rl32(body + 16);
-                    if (comp) a->video.fourcc = comp;
+                    if (comp && (is_printable_fourcc(comp) ||
+                                 !a->video.fourcc))
+                        a->video.fourcc = comp;
                 }
                 a->video.valid = 1;
             } else if (cur_type == CC_auds && size >= 16) {
