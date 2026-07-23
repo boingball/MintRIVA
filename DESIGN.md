@@ -46,9 +46,10 @@ the CPU, which usually means an older, decode-cheap codec.
   hot path. Better quality, heavier than Cinepak.
 - **MPEG-1** — mid tier. Could wrap a portable decoder, or bridge to RiVA's
   engine as reference.
-- **Moon-shot** — a portable decoder (e.g. Theora, or a minimal H.264-baseline)
-  cross-compiled to 68k, gated to fast/PiStorm machines to see what is
-  physically possible.
+- **Moon-shot** — H.264 Baseline/Main/High through Ittiam libavc's portable
+  integer C decoder, gated to fast/PiStorm machines. MP4 `avc1`, avcC setup,
+  CABAC, B-frames and display reordering are implemented; m68k/PiStorm
+  performance is the remaining experiment.
 
 Container: **AVI** (RIFF) and **QuickTime MOV** are both implemented behind one
 auto-detecting front end (`mr_demux.h`), so the player is container-blind —
@@ -130,8 +131,11 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       plugin with I/P pictures, slice/DC/AC prediction, skip macroblocks and
       half-pel motion compensation. Host-validated against ffmpeg on the full
       1,983-frame BFHL sample (worst per-frame RGB MAE 1.83/255).
-- [ ] Modern codecs (Theora / H.264-baseline) gated to fast/PiStorm machines,
-      likely by wrapping a portable decoder library
+- [x] H.264/AVC Baseline/Main/High (`avc1`) via pinned Apache-2.0 Ittiam
+      libavc, using its generic integer C backend: avcC/AVCC conversion, CABAC,
+      B-slices and DPB display reordering. Exact 640x360 High Profile/B-frame
+      sample decodes 171/171 frames and matches ffmpeg at worst MAE 1.06/255.
+      Gated in practice to PiStorm/Emu68-class machines; m68k timing pending.
 - [ ] Internet streaming (reuse MintAMP's radio_stream + AmiSSL HTTP stack)
 - [ ] Faster output: direct RGB565 / fullscreen RTG / port `RendererCGXInit.i`
 - [~] Paula audio backend + audio-master A/V sync (`audio_paula.c`) - PCM,

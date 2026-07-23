@@ -31,6 +31,14 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
 # Microsoft MPEG-4 v2 in AVI: separate H.263-derived MP42 bitstream.
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v msmpeg4v2 -g 12 -qscale:v 4 test_mp42.avi -y
+# H.264 High Profile in MP4: CABAC, 8x8 transform-capable profile, B-frame
+# reordering and avcC/length-prefixed NAL handling. AAC-LC exercises the same
+# container's interleaved compressed-audio samples.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -f lavfi -i sine=frequency=660:sample_rate=22050:duration=2 \
+    -c:v libx264 -profile:v high -level:v 2.0 -pix_fmt yuv420p \
+    -g 12 -bf 2 -refs 1 -crf 22 \
+    -c:a aac -profile:a aac_low -b:a 64k -shortest test_h264_high.mp4 -y
 # Early OpenDivX AVI variant: numeric biCompression=4, 'divx' handler, and no
 # VOL header in the bitstream. This reproduces Xmen-OpenDivX-200-slow.avi.
 python3 ../make_legacy_opendivx.py test_mp4v_sp.avi test_opendivx_legacy.avi
@@ -61,6 +69,8 @@ rm -rf ref_mp4v_sp && mkdir -p ref_mp4v_sp
 ffmpeg -v error -i test_mp4v_sp.avi ref_mp4v_sp/f%03d.ppm -y
 rm -rf ref_mp42 && mkdir -p ref_mp42
 ffmpeg -v error -i test_mp42.avi ref_mp42/f%03d.ppm -y
+rm -rf ref_h264_high && mkdir -p ref_h264_high
+ffmpeg -v error -i test_h264_high.mp4 ref_h264_high/f%03d.ppm -y
 rm -rf ref_opendivx_legacy && mkdir -p ref_opendivx_legacy
 ffmpeg -v error -i test_opendivx_legacy.avi ref_opendivx_legacy/f%03d.ppm -y
 rm -rf ref_mp4v_qpel && mkdir -p ref_mp4v_qpel

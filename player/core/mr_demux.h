@@ -18,6 +18,10 @@ typedef struct {
     int      height;
     uint32_t rate;        /* fps = rate / scale                             */
     uint32_t scale;
+    /* Borrowed container decoder setup.  For avc1 this is the avcC payload,
+     * including SPS/PPS and the AVCC NAL length size. */
+    const uint8_t *config;
+    uint32_t config_len;
     int      valid;
 } mr_video_info;
 

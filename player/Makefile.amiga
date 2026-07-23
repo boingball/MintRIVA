@@ -23,6 +23,7 @@
 # The core is integer-only (no FPU, no soft-float): runs on a bare 030 A600.
 
 TOOLCHAIN ?= gcc
+include vendor/libavc_port/libavc.mk
 CORE  = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
         core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
         core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
@@ -55,11 +56,15 @@ AMIGA_GCC  ?= $(firstword \
     $(wildcard $(HOME)/opt/amiga/bin/m68k-amigaos-gcc))
 
 ifeq ($(TOOLCHAIN),gcc)
+CORE   += core/mr_h264.c $(LIBAVC_SRC)
 CC      = $(AMIGA_GCC)
 # MPEG-1 (pl_mpeg in mr_mpeg1.c) uses floating point, so this build links libm
 # and the compiler soft-float runtime. MR_HAVE_MPEG1 enables the .mpg paths.
 CFLAGS  = -O2 -std=c99 -m68020 -noixemul -fomit-frame-pointer -Wall -Wextra \
-          -DMR_HAVE_MPEG1
+          -DMR_HAVE_MPEG1 -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
+          -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
+          -Wno-unused-but-set-variable -Wno-sign-compare \
+          -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 LDFLAGS = -noixemul -lm -lgcc
 
 all: mrplay mr_decode
@@ -72,7 +77,7 @@ check-cc:
 	  exit 1; }
 	@echo "using CC = $(CC)"
 
-mrplay: check-cc check-mintamp $(PLAY) $(CORE)
+mrplay: check-cc check-mintamp $(PLAY) $(CORE) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ $(PLAY) $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LDFLAGS)
 
@@ -82,7 +87,12 @@ check-mintamp:
 	  echo "ERROR: initialise the MintAMP submodule first:"; \
 	  echo "  git submodule update --init --recursive"; exit 1; }
 
-mr_decode: check-cc $(HARN) $(CORE)
+check-libavc:
+	@test -f $(LIBAVC_ROOT)/decoder/ih264d.h || { \
+	  echo "ERROR: initialise the libavc submodule first:"; \
+	  echo "  git submodule update --init --recursive"; exit 1; }
+
+mr_decode: check-cc $(HARN) $(CORE) | check-libavc
 	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE) $(LDFLAGS)
 endif
 
@@ -99,4 +109,4 @@ endif
 clean:
 	rm -f mrplay mr_decode
 
-.PHONY: all clean check-cc check-mintamp
+.PHONY: all clean check-cc check-mintamp check-libavc
