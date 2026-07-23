@@ -7,9 +7,9 @@
  * Paula playback reaches their timestamp). Falls back to frame-rate pacing when
  * there is no audio. ESC or the close gadget quits.
  *
- * AVI and MOV/MP4 containers are file-backed: only metadata and the current
- * compressed packet live in RAM. Raw elementary streams and MPEG-1 retain the
- * original whole-file fallback.
+ * AVI, MOV/MP4 and MPEG-TS containers are file-backed: only metadata and the
+ * current compressed packet live in RAM. Raw elementary streams and MPEG-1
+ * retain the original whole-file fallback.
  *
  *   mrplay <file.avi|file.mov>
  */
@@ -216,7 +216,8 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
 
     if (argc < 2) {
-        printf("usage: mrplay <file.avi|file.mov|file.mjpeg|file.m4v> "
+        printf("usage: mrplay <file.avi|file.mov|file.ts|file.m2ts|"
+               "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p] [--cd32] [--time]\n");
         return 5;
@@ -242,6 +243,10 @@ int main(int argc, char **argv)
     if (dx) {
         printf("streaming %s from disk\n", mr_demux_container_name(dx));
     } else {
+        if (mr_demux_is_file_backed_container(argv[1])) {
+            printf("unsupported or malformed AVI/MOV/MPEG-TS stream\n");
+            return 10;
+        }
         /* MPEG-1 and raw elementary streams still require a contiguous input
          * buffer because their current decoders parse directly from it. */
         buf = slurp(argv[1], &len);
@@ -256,7 +261,8 @@ int main(int argc, char **argv)
 
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {
-            printf("unsupported container (need AVI, MOV, raw MJPEG/M4V or MPEG-1)\n");
+            printf("unsupported container (need AVI, MOV/MP4, MPEG-TS, "
+                   "raw MJPEG/M4V or MPEG-1)\n");
             free(buf);
             return 10;
         }

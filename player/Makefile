@@ -10,6 +10,7 @@ CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
            -Wno-unused-but-set-variable -Wno-sign-compare \
            -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
+           core/mr_ts.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
@@ -27,6 +28,7 @@ MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/decoders/aac \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
 HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
+           core/mr_ts.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
            core/mr_mpeg1.h core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
@@ -68,6 +70,8 @@ check: mr_decode mr_scale_check
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
 	    && test -d tests/assets/ref_mp42 && test -f tests/assets/test_div2.avi \
 	    && test -d tests/assets/ref_h264_high \
+	    && test -f tests/assets/test_h264_aac.ts \
+	    && test -f tests/assets/test_h264_aac.m2ts \
 	    && test -d tests/assets/ref_opendivx_legacy \
 	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
 	    && test -d tests/assets/ref_raw_mpeg4 \
@@ -92,6 +96,10 @@ check: mr_decode mr_scale_check
 	./mr_decode tests/assets/test_div2.avi --check tests/assets/ref_mp42
 	@echo "[H.264 High Profile avc1 + B-frames]"
 	./mr_decode tests/assets/test_h264_high.mp4 --check tests/assets/ref_h264_high
+	@echo "[MPEG-TS: H.264 High Profile + ADTS AAC]"
+	./mr_decode tests/assets/test_h264_aac.ts --check tests/assets/ref_h264_high
+	@echo "[M2TS: H.264 High Profile + ADTS AAC]"
+	./mr_decode tests/assets/test_h264_aac.m2ts --check tests/assets/ref_h264_high
 	@echo "[MPEG-4 Part 2 legacy OpenDivX AVI]"
 	./mr_decode tests/assets/test_opendivx_legacy.avi --check tests/assets/ref_opendivx_legacy
 	@echo "[MPEG-4 Part 2 quarter-pel]"
@@ -104,8 +112,10 @@ check: mr_decode mr_scale_check
 check-audio: mr_audio_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    || sh tests/gen_audio_assets.sh
+	@test -f tests/assets/test_h264_aac.ts || sh tests/gen_assets.sh
 	./mr_audio_check tests/assets/test_mp3.avi mp3
 	./mr_audio_check tests/assets/test_aac.mp4 aac
+	./mr_audio_check tests/assets/test_h264_aac.ts aac
 
 clean:
 	rm -f mr_decode mr_audio_check mr_scale_check

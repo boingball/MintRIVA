@@ -136,6 +136,10 @@ int main(int argc, char **argv)
     mr_demux *dx = force_memory ? NULL : mr_demux_open_file(argv[1]);
 
     if (!dx) {
+        if (!force_memory && mr_demux_is_file_backed_container(argv[1])) {
+            fprintf(stderr, "unsupported or malformed file-backed container\n");
+            return 2;
+        }
         buf = slurp(argv[1], &len);
         if (!buf) { fprintf(stderr, "cannot read %s\n", argv[1]); return 2; }
 
@@ -149,7 +153,8 @@ int main(int argc, char **argv)
 
         dx = mr_demux_open(buf, len);
         if (!dx) {
-            fprintf(stderr, "not a supported container (need AVI or MOV)\n");
+            fprintf(stderr, "not a supported container "
+                            "(need AVI, MOV/MP4 or MPEG-TS)\n");
             free(buf);
             return 2;
         }
