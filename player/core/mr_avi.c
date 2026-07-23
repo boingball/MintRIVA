@@ -2,6 +2,9 @@
  * MintRIVA - minimal AVI (RIFF) demuxer implementation.
  */
 #include "mr_avi.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* RIFF/AVI chunk & list fourccs (little-endian on disk; compare as LE u32). */
 #define CC(a,b,c,d) MR_FOURCC(a,b,c,d)
@@ -44,7 +47,7 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
         const uint8_t *body = p + 8;
         if (body + size > end) break;
 
-        if (id == CC_strh) {
+        if (id == CC_strh && size >= 28) {
             cur_type = mr_rl32(body);           /* fccType                  */
             if (cur_type == CC_vids) {
                 a->video_stream = idx;
@@ -94,7 +97,7 @@ static void parse_hdrl(mr_avi *a, const uint8_t *p, const uint8_t *end)
         const uint8_t *body = p + 8;
         if (body + size > end) break;
 
-        if (id == CC_LIST && mr_rl32(body) == CC_strl) {
+        if (id == CC_LIST && size >= 4 && mr_rl32(body) == CC_strl) {
             stream_index++;
             parse_strl(a, stream_index, body + 4, body + size);
         }
@@ -108,7 +111,12 @@ static void parse_hdrl(mr_avi *a, const uint8_t *p, const uint8_t *end)
 static mr_status scan_top(mr_avi *a)
 {
     const uint8_t *p   = a->buf + 12;         /* skip RIFF/size/'AVI '      */
-    const uint8_t *end = a->buf + a->len;
+    uint32_t declared = mr_rl32(a->buf + 4);
+    size_t riff_len = declared > a->len - 8 ? a->len
+                                             : (size_t)declared + 8;
+    const uint8_t *end;
+
+    end = a->buf + riff_len;
 
     while (p + 8 <= end) {
         uint32_t id   = mr_rl32(p);
@@ -116,7 +124,7 @@ static mr_status scan_top(mr_avi *a)
         const uint8_t *body = p + 8;
         if (body > end) break;
 
-        if (id == CC_LIST) {
+        if (id == CC_LIST && size >= 4) {
             uint32_t ltype = mr_rl32(body);
             const uint8_t *lend = body + size;
             if (lend > end) lend = end;
@@ -135,12 +143,16 @@ static mr_status scan_top(mr_avi *a)
     return MR_OK;
 }
 
-mr_status mr_avi_open(mr_avi *a, const uint8_t *buf, size_t len)
+static void avi_init(mr_avi *a)
 {
-    size_t i;
-    for (i = 0; i < sizeof(*a); i++) ((uint8_t *)a)[i] = 0;
+    memset(a, 0, sizeof *a);
     a->video_stream = -1;
     a->audio_stream = -1;
+}
+
+mr_status mr_avi_open(mr_avi *a, const uint8_t *buf, size_t len)
+{
+    avi_init(a);
 
     if (!buf || len < 12) return MR_EFORMAT;
     if (mr_rl32(buf) != CC_RIFF)      return MR_EFORMAT;
@@ -153,6 +165,96 @@ mr_status mr_avi_open(mr_avi *a, const uint8_t *buf, size_t len)
         mr_status st = scan_top(a);
         if (st != MR_OK) return st;
     }
+    a->cursor = a->movi_off;
+    return MR_OK;
+}
+
+static int file_read_at(mr_avi *a, size_t off, void *dst, size_t len)
+{
+    FILE *f = (FILE *)a->stream;
+    if (!a->stream_pos_valid || a->stream_pos != off) {
+        if (off > 0x7fffffffUL || fseek(f, (long)off, SEEK_SET) != 0) {
+            a->stream_pos_valid = 0;
+            return 0;
+        }
+    }
+    if (fread(dst, 1, len, f) != len) {
+        a->stream_pos_valid = 0;
+        return 0;
+    }
+    a->stream_pos = off + len;
+    a->stream_pos_valid = 1;
+    return 1;
+}
+
+/* Scan only the AVI headers.  The potentially huge movi LIST is skipped by
+ * its RIFF length and compressed packets are read later, one at a time. */
+static mr_status scan_top_file(mr_avi *a)
+{
+    uint8_t head[12];
+    size_t riff_end, pos;
+
+    if (!file_read_at(a, 0, head, sizeof head)) return MR_EFORMAT;
+    if (mr_rl32(head) != CC_RIFF || mr_rl32(head + 8) != CC_AVI)
+        return MR_EFORMAT;
+    {
+        uint32_t declared = mr_rl32(head + 4);
+        riff_end = declared > a->len - 8 ? a->len
+                                         : (size_t)declared + 8;
+    }
+
+    pos = 12;
+    while (pos + 8 <= riff_end) {
+        uint8_t ch[12];
+        uint32_t id, size, ltype;
+        size_t body, next;
+
+        if (!file_read_at(a, pos, ch, 8)) break;
+        id = mr_rl32(ch);
+        size = mr_rl32(ch + 4);
+        body = pos + 8;
+        if ((size_t)size > riff_end - body) size = (uint32_t)(riff_end - body);
+        next = body + (size_t)size + (size & 1);
+        if (next <= pos) return MR_EFORMAT;
+
+        if (id == CC_LIST && size >= 4) {
+            uint8_t *list_data;
+            if (!file_read_at(a, body, ch + 8, 4)) return MR_EFORMAT;
+            ltype = mr_rl32(ch + 8);
+            if (ltype == CC_hdrl) {
+                /* AVI stream headers are normally only a few KiB.  Refuse a
+                 * bogus header large enough to recreate the whole-file RAM
+                 * problem this path is designed to avoid. */
+                if (size > 16UL * 1024 * 1024) return MR_EFORMAT;
+                list_data = (uint8_t *)malloc(size);
+                if (!list_data) return MR_ENOMEM;
+                if (!file_read_at(a, body, list_data, size)) {
+                    free(list_data);
+                    return MR_EFORMAT;
+                }
+                parse_hdrl(a, list_data + 4, list_data + size);
+                free(list_data);
+            } else if (ltype == CC_movi) {
+                a->movi_off = body + 4;
+                a->movi_end = body + size;
+            }
+        }
+        pos = next;
+    }
+    if (!a->video.valid || !a->movi_off) return MR_EFORMAT;
+    return MR_OK;
+}
+
+mr_status mr_avi_open_file(mr_avi *a, void *stream, size_t len)
+{
+    mr_status st;
+    avi_init(a);
+    if (!stream || len < 12) return MR_EFORMAT;
+    a->stream = stream;
+    a->len = len;
+    a->file_backed = 1;
+    st = scan_top_file(a);
+    if (st != MR_OK) return st;
     a->cursor = a->movi_off;
     return MR_OK;
 }
@@ -172,6 +274,47 @@ static int chunk_stream_index(uint32_t id, int *is_video)
 
 mr_status mr_avi_next_packet(mr_avi *a, mr_packet *pkt)
 {
+    if (a->file_backed) {
+        while (a->cursor + 8 <= a->movi_end) {
+            uint8_t ch[8];
+            uint32_t id, size;
+            size_t body, adv;
+            int is_video = 0;
+            int idx;
+
+            if (!file_read_at(a, a->cursor, ch, sizeof ch))
+                return MR_EFORMAT;
+            id = mr_rl32(ch);
+            size = mr_rl32(ch + 4);
+            body = a->cursor + 8;
+
+            if (id == CC_LIST) {
+                if (size < 4 || body + 4 > a->movi_end) return MR_EFORMAT;
+                a->cursor = body + 4;           /* descend into 'rec '      */
+                continue;
+            }
+            adv = (size_t)size + (size & 1);
+            if ((size_t)size > a->movi_end - body) return MR_EFORMAT;
+            a->cursor = body + adv;
+
+            idx = chunk_stream_index(id, &is_video);
+            if (idx < 0) continue;
+            if (a->packet_cap < size) {
+                uint8_t *nb = (uint8_t *)realloc(a->packet_buf, size);
+                if (!nb) return MR_ENOMEM;
+                a->packet_buf = nb;
+                a->packet_cap = size;
+            }
+            if (size && !file_read_at(a, body, a->packet_buf, size))
+                return MR_EFORMAT;
+            pkt->is_video = is_video && (idx == a->video_stream);
+            pkt->data = a->packet_buf;
+            pkt->len = size;
+            return MR_OK;
+        }
+        return MR_EAGAIN;
+    }
+
     const uint8_t *base = a->buf;
     while (a->cursor + 8 <= a->movi_end) {
         const uint8_t *p = base + a->cursor;
@@ -195,7 +338,7 @@ mr_status mr_avi_next_packet(mr_avi *a, mr_packet *pkt)
 
             if (idx < 0) continue;              /* skip idx1/junk/unknown   */
 
-            pkt->is_video = (idx == a->video_stream);
+            pkt->is_video = is_video && (idx == a->video_stream);
             pkt->data     = base + body;
             pkt->len      = size;
             return MR_OK;
@@ -207,4 +350,12 @@ mr_status mr_avi_next_packet(mr_avi *a, mr_packet *pkt)
 void mr_avi_rewind(mr_avi *a)
 {
     a->cursor = a->movi_off;
+}
+
+void mr_avi_close(mr_avi *a)
+{
+    if (!a) return;
+    free(a->packet_buf);
+    a->packet_buf = NULL;
+    a->packet_cap = 0;
 }

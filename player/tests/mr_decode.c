@@ -116,26 +116,43 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) { fprintf(stderr, "usage: mr_decode <file.avi> [--ppm dir|--check dir]\n"); return 2; }
-    const char *mode = argc > 2 ? argv[2] : NULL;
-    const char *dir  = argc > 3 ? argv[3] : NULL;
+    int argi = 2, force_memory = 0;
+    const char *mode;
+    const char *dir;
+    if (argc < 2) {
+        fprintf(stderr, "usage: mr_decode <file> [--memory] "
+                        "[--ppm dir|--check dir]\n");
+        return 2;
+    }
+    if (argc > argi && !strcmp(argv[argi], "--memory")) {
+        force_memory = 1;
+        argi++;
+    }
+    mode = argc > argi ? argv[argi] : NULL;
+    dir  = argc > argi + 1 ? argv[argi + 1] : NULL;
 
-    size_t len;
-    uint8_t *buf = slurp(argv[1], &len);
-    if (!buf) { fprintf(stderr, "cannot read %s\n", argv[1]); return 2; }
+    size_t len = 0;
+    uint8_t *buf = NULL;
+    mr_demux *dx = force_memory ? NULL : mr_demux_open_file(argv[1]);
+
+    if (!dx) {
+        buf = slurp(argv[1], &len);
+        if (!buf) { fprintf(stderr, "cannot read %s\n", argv[1]); return 2; }
 
 #ifdef MR_HAVE_MPEG1
-    if (mr_mpeg1_probe(buf, len)) {              /* .mpg -> pl_mpeg source   */
-        int rc = run_mpeg1(buf, len, mode, dir);
-        free(buf);
-        return rc;
-    }
+        if (mr_mpeg1_probe(buf, len)) {          /* .mpg -> pl_mpeg source   */
+            int rc = run_mpeg1(buf, len, mode, dir);
+            free(buf);
+            return rc;
+        }
 #endif
 
-    mr_demux *dx = mr_demux_open(buf, len);
-    if (!dx) {
-        fprintf(stderr, "not a supported container (need AVI or MOV)\n");
-        free(buf); return 2;
+        dx = mr_demux_open(buf, len);
+        if (!dx) {
+            fprintf(stderr, "not a supported container (need AVI or MOV)\n");
+            free(buf);
+            return 2;
+        }
     }
     const mr_video_info *vi = mr_demux_video(dx);
     const mr_audio_info *ai = mr_demux_audio(dx);

@@ -19,7 +19,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 |-----------|-------|
 | Decoder plugin interface + registry | ✅ |
 | Container-agnostic demux (auto-detect) | ✅ |
-| AVI (RIFF) + QuickTime MOV demuxers | ✅ |
+| File-backed AVI (RIFF) + QuickTime MOV/MP4 demuxers | ✅ packet-streamed; no whole-file allocation |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
@@ -54,6 +54,11 @@ Inspect or dump any AVI/MOV/MP4:
 ./mr_decode file.avi                 # stream info + frame count
 ./mr_decode file.avi --ppm outdir    # write decoded frames as PPM
 ```
+
+`mrplay` streams AVI and MOV/MP4 packets from disk. Its RAM use is therefore
+set by container metadata, the largest compressed packet, and the active
+decoder/display buffers rather than by the media file size. Raw MJPEG/M4V and
+MPEG-1 program streams still use the original whole-file input path.
 
 ## Layout
 

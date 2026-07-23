@@ -7,8 +7,9 @@
  * Paula playback reaches their timestamp). Falls back to frame-rate pacing when
  * there is no audio. ESC or the close gadget quits.
  *
- * This first version loads the whole file into RAM. Async streaming from disk
- * is a later step.
+ * AVI and MOV/MP4 containers are file-backed: only metadata and the current
+ * compressed packet live in RAM. Raw elementary streams and MPEG-1 retain the
+ * original whole-file fallback.
  *
  *   mrplay <file.avi|file.mov>
  */
@@ -194,8 +195,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
 
 int main(int argc, char **argv)
 {
-    long len;
-    unsigned char *buf;
+    long len = 0;
+    unsigned char *buf = NULL;
     mr_demux *dx;
     const mr_video_info *vi;
     const mr_codec *codec;
@@ -237,19 +238,29 @@ int main(int argc, char **argv)
     }
     printf("mrplay: opening %s\n", argv[1]);
 
-    buf = slurp(argv[1], &len);
-    if (!buf) { printf("cannot read %s\n", argv[1]); return 10; }
-    printf("loaded %ld bytes\n", len);
+    dx = mr_demux_open_file(argv[1]);
+    if (dx) {
+        printf("streaming %s from disk\n", mr_demux_container_name(dx));
+    } else {
+        /* MPEG-1 and raw elementary streams still require a contiguous input
+         * buffer because their current decoders parse directly from it. */
+        buf = slurp(argv[1], &len);
+        if (!buf) { printf("cannot read %s\n", argv[1]); return 10; }
+        printf("loaded %ld bytes\n", len);
 
-    if (mr_mpeg1_probe(buf, (size_t)len)) {      /* .mpg/.mpeg via pl_mpeg    */
-        int rc = play_mpeg1(buf, len, loop, want_time);
-        free(buf);
-        return rc;
+        if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
+            int rc = play_mpeg1(buf, len, loop, want_time);
+            free(buf);
+            return rc;
+        }
+
+        dx = mr_demux_open(buf, (size_t)len);
+        if (!dx) {
+            printf("unsupported container (need AVI, MOV, raw MJPEG/M4V or MPEG-1)\n");
+            free(buf);
+            return 10;
+        }
     }
-
-    dx = mr_demux_open(buf, (size_t)len);
-    if (!dx) { printf("unsupported container (need AVI, MOV, raw MJPEG/M4V or MPEG-1)\n");
-               free(buf); return 10; }
 
     vi = mr_demux_video(dx);
     codec = mr_codec_find(vi->fourcc);
