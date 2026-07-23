@@ -196,8 +196,12 @@ int main(int argc, char **argv)
     while (mr_demux_next_packet(dx, &pkt) == MR_OK) {
         if (!pkt.is_video) { audio_bytes += pkt.len; audio_pkts++; continue; }
         if (pkt.len == 0) continue;
-        if (mr_decoder_decode(&dec, pkt.data, pkt.len) != MR_OK) {
-            fprintf(stderr, "decode error at frame %d\n", frame); break;
+        {
+            mr_status ds = mr_decoder_decode(&dec, pkt.data, pkt.len);
+            if (ds == MR_EAGAIN) continue;   /* reorder delay: no frame yet   */
+            if (ds != MR_OK) {
+                fprintf(stderr, "decode error at frame %d\n", frame); break;
+            }
         }
         frame++;
         char path[512];
@@ -274,6 +278,23 @@ int main(int argc, char **argv)
               fr.stride = w * 3; fr.data = d_rgb;
               snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
               write_ppm(path, &fr); }
+        }
+    }
+    /* Drain any reordered frames held by the decoder (MPEG-4 B-VOPs). */
+    while (mr_decoder_flush(&dec) == MR_OK) {
+        char path[512];
+        frame++;
+        if (mode && !strcmp(mode, "--ppm") && dir) {
+            snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
+            write_ppm(path, &dec.frame);
+        } else if (mode && !strcmp(mode, "--check") && dir) {
+            snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
+            int mxe = 0; long mae = check_ppm(path, &dec.frame, &mxe);
+            if (mae < 0) printf("  frame %3d: no reference\n", frame);
+            else { if (mae > worst_mae) worst_mae = mae;
+                   if (mae > 6000) { bad++;
+                       printf("  frame %3d: MAE=%ld.%03ld maxerr=%d  <-- high\n",
+                              frame, mae / 1000, mae % 1000, mxe); } }
         }
     }
     printf("decoded %d frames\n", frame);

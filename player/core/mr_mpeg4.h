@@ -6,10 +6,11 @@
  *
  * Status:
  *   done  - I-VOP (intra), P-VOP (half-pel MC, 1MV/4MV), quarter-pel MC,
+ *           B-VOPs (display-order reorder + direct/forward/backward/interp
+ *           prediction + co-located MV scaling + skipped-MB handling),
  *           video-packet resync. All validated in `make check`.
- *   todo  - B-VOPs (needs display-order reordering + direct-mode co-located
- *           P-VOP MVs + bidirectional prediction) and GMC (sprite). These VOP
- *           types currently return MR_EUNSUPPORTED rather than decode garbage.
+ *   todo  - GMC (sprite). S(GMC)-VOPs return MR_EUNSUPPORTED rather than
+ *           decode garbage.
  *
  * One AVI/MP4 packet carries one coded VOP. State (reference frames, quant
  * matrices) persists across calls, like the other inter-frame decoders here.

@@ -120,4 +120,5 @@ const mr_codec mr_codec_mjpeg = {
     mjpeg_open,
     mjpeg_decode,
     mjpeg_close,
+    NULL,                    /* no reordering */
 };

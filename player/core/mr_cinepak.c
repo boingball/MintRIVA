@@ -313,4 +313,5 @@ const mr_codec mr_codec_cinepak = {
     cvid_open,
     cvid_decode,
     cvid_close,
+    NULL,                    /* no reordering */
 };

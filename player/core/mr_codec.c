@@ -43,6 +43,13 @@ mr_status mr_decoder_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
     return dec->codec->decode(dec, data, len);
 }
 
+mr_status mr_decoder_flush(mr_decoder *dec)
+{
+    if (!dec || !dec->codec || !dec->codec->flush)
+        return MR_EAGAIN;
+    return dec->codec->flush(dec);
+}
+
 void mr_decoder_close(mr_decoder *dec)
 {
     if (dec && dec->codec && dec->codec->close)

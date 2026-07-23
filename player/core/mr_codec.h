@@ -26,6 +26,10 @@ typedef struct mr_codec {
      * calls until close(). */
     mr_status (*decode)(mr_decoder *dec, const uint8_t *data, uint32_t len);
     void      (*close)(mr_decoder *dec);
+    /* Optional (may be NULL): emit one buffered/reordered frame at end of
+     * stream. Returns MR_OK while frames remain, MR_EAGAIN when drained.
+     * Used by codecs with display reordering (MPEG-4 B-VOPs). */
+    mr_status (*flush)(mr_decoder *dec);
 } mr_codec;
 
 struct mr_decoder {
@@ -42,6 +46,8 @@ const mr_codec *mr_codec_find(uint32_t fourcc);
 mr_status mr_decoder_open(mr_decoder *dec, const mr_codec *codec,
                           int width, int height);
 mr_status mr_decoder_decode(mr_decoder *dec, const uint8_t *data, uint32_t len);
+/* Drain one reordered frame at end of stream (MR_EAGAIN when none left). */
+mr_status mr_decoder_flush(mr_decoder *dec);
 void      mr_decoder_close(mr_decoder *dec);
 
 /* Individual codec descriptors (defined in their .c files). */

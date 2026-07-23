@@ -26,7 +26,7 @@ check: mr_decode
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
-	    && test -d tests/assets/ref_mp4v_qpel \
+	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
 	    || sh tests/gen_assets.sh
 	@echo "[Cinepak AVI]"
 	./mr_decode tests/assets/test_cinepak.avi --check tests/assets/ref_cinepak
@@ -40,6 +40,10 @@ check: mr_decode
 	./mr_decode tests/assets/test_mp4v_intra.avi --check tests/assets/ref_mp4v_intra
 	@echo "[MPEG-4 Part 2 Simple Profile]"
 	./mr_decode tests/assets/test_mp4v_sp.avi --check tests/assets/ref_mp4v_sp
+	@echo "[MPEG-4 Part 2 quarter-pel]"
+	./mr_decode tests/assets/test_mp4v_qpel.avi --check tests/assets/ref_mp4v_qpel
+	@echo "[MPEG-4 Part 2 B-VOPs]"
+	./mr_decode tests/assets/test_mp4v_b.avi --check tests/assets/ref_mp4v_b
 
 clean:
 	rm -f mr_decode

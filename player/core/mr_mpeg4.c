@@ -93,6 +93,7 @@ typedef struct {
     int      verid;
     int      shape;                 /* 0 = rectangular                      */
     int      time_inc_bits;
+    unsigned time_res;              /* vop_time_increment_resolution         */
     int      interlaced;
     int      sprite_enable;         /* 0 none, 1 static, 2 GMC              */
     int      quant_type;            /* 0 = H.263, 1 = MPEG (matrices)       */
@@ -111,14 +112,27 @@ typedef struct {
     int      quant;
     int      fcode_fwd, fcode_bwd;
 
-    /* planar YUV 4:2:0 working buffers (coded size), current + reference */
+    /* B-VOP temporal references (§6.3.5 / §7.6.9): absolute display ticks */
+    int      time_base, last_time_base; /* running second base (ticks/res)   */
+    int      cur_time;                  /* this VOP's absolute tick          */
+    int      fwd_time, bwd_time;        /* forward/backward anchor ticks     */
+    int      trb, trd;                  /* B temporal distances              */
+    int      anchors;                   /* anchors decoded so far            */
+
+    /* planar YUV 4:2:0 working buffers (coded size). cur/ref rotate for I/P
+     * (ref = forward anchor). For B-VOPs cur = forward anchor, ref = backward
+     * anchor, and the B frame is decoded into bwork. */
     uint8_t *cur[3];
     uint8_t *ref[3];
+    uint8_t *bwork[3];
     int      ystride, cstride;
 
     /* intra DC/AC predictor grids (per component, block granularity) */
     struct predblk *pl, *pcb, *pcr;   /* luma 2*mb_w x 2*mb_h; chroma mb_w x mb_h */
     struct mvblk   *mv;               /* per luma sub-block MV (2*mb_w x 2*mb_h) */
+    struct mvblk   *bwd_mv;           /* backward anchor's MV field (direct mode) */
+    uint8_t        *p_skip;           /* this anchor: MB not_coded (mb_w x mb_h) */
+    uint8_t        *bwd_skip;         /* backward anchor's skip flags            */
 
     /* RGB output */
     uint8_t *rgb;
@@ -204,7 +218,7 @@ static int parse_vol(m4_ctx *c, bitreader *b)
     br_bits(b, 1);                                   /* marker                 */
     { unsigned res = br_bits(b, 16);                 /* time_increment_res     */
       int nb = 1; while ((1 << nb) < (int)res) nb++;
-      c->time_inc_bits = nb; }
+      c->time_inc_bits = nb; c->time_res = res ? res : 1; }
     br_bits(b, 1);                                   /* marker                 */
     if (br_bits(b, 1)) {                             /* fixed_vop_rate         */
         br_bits(b, c->time_inc_bits);                /* fixed_vop_time_incr    */
@@ -272,10 +286,20 @@ static int parse_vol(m4_ctx *c, bitreader *b)
 /* Returns MR_OK (coded), MR_EAGAIN (not coded / skip), or an error. */
 static int parse_vop(m4_ctx *c, bitreader *b)
 {
+    int modulo = 0, tinc;
     c->coding_type = br_bits(b, 2);
-    while (br_bits(b, 1)) { if (br_overrun(b)) return MR_EFORMAT; } /* modulo_time_base */
+    while (br_bits(b, 1)) { modulo++; if (br_overrun(b)) return MR_EFORMAT; } /* modulo_time_base */
     br_bits(b, 1);                                   /* marker                 */
-    br_bits(b, c->time_inc_bits);                    /* vop_time_increment     */
+    tinc = br_bits(b, c->time_inc_bits);             /* vop_time_increment     */
+    /* Absolute display tick (§6.3.5). B-VOPs use the second base from before
+     * the most recent anchor advanced it, so they land in the right interval. */
+    if (c->coding_type != VOP_B) {
+        c->last_time_base = c->time_base;
+        c->time_base += modulo;
+        c->cur_time = c->time_base * (int)c->time_res + tinc;
+    } else {
+        c->cur_time = (c->last_time_base + modulo) * (int)c->time_res + tinc;
+    }
     br_bits(b, 1);                                   /* marker                 */
     if (!br_bits(b, 1)) return MR_EAGAIN;            /* vop_coded == 0         */
 
@@ -670,7 +694,12 @@ static int use_intra_dc_vlc(int thr, int q)
 static int maybe_resync(m4_ctx *c, bitreader *b, int *q, int *pkt)
 {
     int save = b->pos, mb_bits = 1, total = c->mb_w * c->mb_h;
-    int zeros = (c->coding_type == VOP_I) ? 16 : (15 + c->fcode_fwd);
+    int zeros;
+    if (c->coding_type == VOP_I) zeros = 16;
+    else if (c->coding_type == VOP_B) {          /* §6.3.3: max(15+max fcode,17) */
+        int f = c->fcode_fwd > c->fcode_bwd ? c->fcode_fwd : c->fcode_bwd;
+        zeros = (15 + f > 17) ? 15 + f : 17;
+    } else zeros = 15 + c->fcode_fwd;
     if (c->resync_disable) return 0;
     if (br_bit(b) != 0) { b->pos = save; return 0; }      /* stuffing starts 0 */
     while (b->pos & 7) if (br_bit(b) != 1) { b->pos = save; return 0; }
@@ -704,6 +733,8 @@ static int decode_ivop(m4_ctx *c, bitreader *b)
     memset(c->pl,  0, nl * sizeof(predblk));
     memset(c->pcb, 0, nc * sizeof(predblk));
     memset(c->pcr, 0, nc * sizeof(predblk));
+    memset(c->mv,  0, nl * sizeof(mvblk));      /* intra: zero co-located MVs */
+    memset(c->p_skip, 0, nc);                   /* intra: no skipped MBs      */
 
     for (mby = 0; mby < c->mb_h; mby++) {
         for (mbx = 0; mbx < c->mb_w; mbx++) {
@@ -996,6 +1027,7 @@ static int decode_pvop(m4_ctx *c, bitreader *b)
     memset(c->pcb, 0, nc * sizeof(predblk));
     memset(c->pcr, 0, nc * sizeof(predblk));
     memset(c->mv,  0, nl * sizeof(mvblk));
+    memset(c->p_skip, 0, nc);
 
     for (mby = 0; mby < c->mb_h; mby++) {
         for (mbx = 0; mbx < c->mb_w; mbx++) {
@@ -1004,6 +1036,7 @@ static int decode_pvop(m4_ctx *c, bitreader *b)
             int lx[4], ly[4];
             maybe_resync(c, b, &q, &pkt);
             if (br_bit(b)) {                       /* not_coded == 1: skip MB  */
+                c->p_skip[mby * c->mb_w + mbx] = 1;
                 for (i = 0; i < 4; i++) { lx[i]=0; ly[i]=0; }
                 for (i = 0; i < 6; i++)
                     if (inter_block(c, b, i, mbx, mby, 0, q, 0, 0, rc)) return MR_EFORMAT;
@@ -1074,14 +1107,162 @@ static int decode_pvop(m4_ctx *c, bitreader *b)
     return MR_OK;
 }
 
+/* ======================================================================== */
+/* B-VOP decode: bidirectional / direct prediction, display-order reordered  */
+/* by the caller.  forward ref = c->cur, backward ref = c->ref.              */
+/* ======================================================================== */
+
+/* B-VOP mb_type (Table B.4): 0=direct 1=interpolated 2=backward 3=forward. */
+enum { BMB_DIRECT = 0, BMB_INTERP = 1, BMB_BACKWARD = 2, BMB_FORWARD = 3 };
+
+static int b_modb(bitreader *b)            /* 0='1', 1='01', 2='00'          */
+{
+    if (br_bit(b)) return 0;
+    if (br_bit(b)) return 1;
+    return 2;
+}
+static int b_mbtype(bitreader *b)
+{
+    if (br_bit(b)) return BMB_DIRECT;
+    if (br_bit(b)) return BMB_INTERP;
+    if (br_bit(b)) return BMB_BACKWARD;
+    if (br_bit(b)) return BMB_FORWARD;
+    return -1;
+}
+static int b_dbquant(bitreader *b)         /* 0->0, 10->-2, 11->+2           */
+{ if (!br_bit(b)) return 0; return br_bit(b) ? 2 : -2; }
+
+/* Motion-compensate one 8x8 block, forward and/or backward, and combine. */
+static void b_predict(m4_ctx *c, int chroma, int idx, int px, int py,
+                      int use_f, int mvfx, int mvfy,
+                      int use_b, int mvbx, int mvby, int out[8][8])
+{
+    int fp[8][8], bp[8][8], u, v, rw, rh, st;
+    const uint8_t *fref, *bref;
+    if (!chroma) { fref = c->cur[0]; bref = c->ref[0]; rw = c->cw; rh = c->ch; st = c->ystride; }
+    else { fref = (idx==4)?c->cur[1]:c->cur[2]; bref = (idx==4)?c->ref[1]:c->ref[2];
+           rw = c->cw>>1; rh = c->ch>>1; st = c->cstride; }
+    if (use_f) {
+        if (!chroma && c->quarter_sample) mc_block_qpel(fref, rw, rh, st, px, py, mvfx, mvfy, 0, fp);
+        else                              mc_block(fref, rw, rh, st, px, py, mvfx, mvfy, 0, fp);
+    }
+    if (use_b) {
+        if (!chroma && c->quarter_sample) mc_block_qpel(bref, rw, rh, st, px, py, mvbx, mvby, 0, bp);
+        else                              mc_block(bref, rw, rh, st, px, py, mvbx, mvby, 0, bp);
+    }
+    for (v = 0; v < 8; v++) for (u = 0; u < 8; u++)
+        out[v][u] = (use_f && use_b) ? (fp[v][u] + bp[v][u] + 1) >> 1
+                  : (use_f ? fp[v][u] : bp[v][u]);
+}
+
+/* Write prediction + residual (if coded) into c->bwork, clipped. */
+static int b_block(m4_ctx *c, bitreader *b, int idx, int mbx, int mby, int coded, int q,
+                   int use_f, int mvfx, int mvfy, int use_b, int mvbx, int mvby)
+{
+    int chroma = (idx >= 4), pred[8][8], resid[8][8], u, v, st, px, py;
+    uint8_t *dst;
+    if (!chroma) { dst = c->bwork[0]; st = c->ystride; px = mbx*16 + (idx&1)*8; py = mby*16 + (idx>>1)*8; }
+    else { dst = (idx==4)?c->bwork[1]:c->bwork[2]; st = c->cstride; px = mbx*8; py = mby*8; }
+    b_predict(c, chroma, idx, px, py, use_f, mvfx, mvfy, use_b, mvbx, mvby, pred);
+    if (coded) { if (decode_inter_resid(b, coded, q, resid)) return -1; }
+    else       { for (v=0;v<8;v++) for (u=0;u<8;u++) resid[v][u] = 0; }
+    for (v = 0; v < 8; v++) {
+        uint8_t *d = dst + (size_t)(py + v)*st + px;
+        for (u = 0; u < 8; u++) {
+            int s = pred[v][u] + resid[v][u];
+            if (s < 0) s = 0; else if (s > 255) s = 255;
+            d[u] = (uint8_t)s;
+        }
+    }
+    return 0;
+}
+
+static int decode_bvop(m4_ctx *c, bitreader *b)
+{
+    int mbx, mby, q = c->quant, gw = c->mb_w*2, i;
+    int trb = c->trb, trd = c->trd;
+    for (mby = 0; mby < c->mb_h; mby++) {
+        int pfx = 0, pfy = 0, pbx = 0, pby = 0;   /* running MV predictors    */
+        for (mbx = 0; mbx < c->mb_w; mbx++) {
+            int modb, type, cbpb = 0, coded[6];
+            int mvfx=0,mvfy=0,mvbx=0,mvby=0, dfx=0,dfy=0;
+            int use_f, use_b, direct, mvf4[4][2], mvb4[4][2];
+            int pkt = 1;
+            if (maybe_resync(c, b, &q, &pkt)) { pfx=pfy=pbx=pby=0; }  /* new packet */
+
+            /* §7.6.9.6: co-located anchor MB skipped -> this B MB is skipped
+             * too (no bits): direct mode, zero motion, no residual. */
+            if (c->bwd_skip[mby * c->mb_w + mbx]) {
+                for (i = 0; i < 6; i++)
+                    if (b_block(c, b, i, mbx, mby, 0, q, 1, 0, 0, 1, 0, 0))
+                        return MR_EFORMAT;
+                continue;
+            }
+            modb = b_modb(b);
+            type = (modb == 0) ? BMB_DIRECT : b_mbtype(b);
+            if (type < 0) return MR_EFORMAT;
+            if (modb == 2) cbpb = br_bits(b, 6);
+            direct = (type == BMB_DIRECT);
+            if (!direct && (type==BMB_FORWARD||type==BMB_BACKWARD||type==BMB_INTERP) && cbpb)
+                { q += b_dbquant(b); if (q < 1) q = 1; else if (q > 31) q = 31; }
+            /* motion */
+            if (type==BMB_FORWARD || type==BMB_INTERP) {
+                if (decode_mv(b, c->fcode_fwd, pfx, pfy, &mvfx, &mvfy)) return MR_EFORMAT;
+                pfx = mvfx; pfy = mvfy;
+            }
+            if (type==BMB_BACKWARD || type==BMB_INTERP) {
+                if (decode_mv(b, c->fcode_bwd, pbx, pby, &mvbx, &mvby)) return MR_EFORMAT;
+                pbx = mvbx; pby = mvby;
+            }
+            if (direct && modb != 0) {
+                if (decode_mv(b, 1, 0, 0, &dfx, &dfy)) return MR_EFORMAT;
+            }
+            coded[0]=(cbpb>>5)&1; coded[1]=(cbpb>>4)&1; coded[2]=(cbpb>>3)&1;
+            coded[3]=(cbpb>>2)&1; coded[4]=(cbpb>>1)&1; coded[5]=cbpb&1;
+
+            use_f = (type==BMB_FORWARD || type==BMB_INTERP || direct);
+            use_b = (type==BMB_BACKWARD || type==BMB_INTERP || direct);
+
+            if (direct) {                          /* per-block co-located MVs */
+                for (i = 0; i < 4; i++) {
+                    mvblk *m = &c->bwd_mv[(2*mby+(i>>1))*gw + (2*mbx+(i&1))];
+                    int mx = m->x, my = m->y;      /* co-located P forward MV  */
+                    mvf4[i][0] = (trb*mx)/trd + dfx;
+                    mvf4[i][1] = (trb*my)/trd + dfy;
+                    mvb4[i][0] = (dfx==0) ? ((trb-trd)*mx)/trd : mvf4[i][0]-mx;
+                    mvb4[i][1] = (dfy==0) ? ((trb-trd)*my)/trd : mvf4[i][1]-my;
+                }
+            }
+            /* luma */
+            for (i = 0; i < 4; i++) {
+                int fx = direct ? mvf4[i][0] : mvfx, fy = direct ? mvf4[i][1] : mvfy;
+                int bx = direct ? mvb4[i][0] : mvbx, by = direct ? mvb4[i][1] : mvby;
+                if (b_block(c, b, i, mbx, mby, coded[i], q, use_f, fx, fy, use_b, bx, by))
+                    return MR_EFORMAT;
+            }
+            /* chroma: derive from the luma MVs (§7.6.5) */
+            { int sfx=0,sfy=0,sbx=0,sby=0,k = direct?4:1, cfx,cfy,cbx,cby;
+              if (direct) { for (i=0;i<4;i++){ sfx+=mvf4[i][0];sfy+=mvf4[i][1];sbx+=mvb4[i][0];sby+=mvb4[i][1]; } }
+              else        { sfx=mvfx;sfy=mvfy;sbx=mvbx;sby=mvby; }
+              cfx=reduce_chroma(sfx,k); cfy=reduce_chroma(sfy,k);
+              cbx=reduce_chroma(sbx,k); cby=reduce_chroma(sby,k);
+              for (i = 4; i < 6; i++)
+                  if (b_block(c, b, i, mbx, mby, coded[i], q, use_f, cfx, cfy, use_b, cbx, cby))
+                      return MR_EFORMAT;
+            }
+        }
+    }
+    return MR_OK;
+}
+
 /* ---- YUV420 -> RGB24 --------------------------------------------------- */
-static void yuv_to_rgb(m4_ctx *c)
+static void yuv_to_rgb(m4_ctx *c, uint8_t *const pl[3])
 {
     int x, y;
     for (y = 0; y < c->h; y++) {
-        const uint8_t *yl = c->cur[0] + (size_t)y * c->ystride;
-        const uint8_t *cb = c->cur[1] + (size_t)(y >> 1) * c->cstride;
-        const uint8_t *cr = c->cur[2] + (size_t)(y >> 1) * c->cstride;
+        const uint8_t *yl = pl[0] + (size_t)y * c->ystride;
+        const uint8_t *cb = pl[1] + (size_t)(y >> 1) * c->cstride;
+        const uint8_t *cr = pl[2] + (size_t)(y >> 1) * c->cstride;
         uint8_t *d = c->rgb + (size_t)y * c->w * 3;
         for (x = 0; x < c->w; x++) {
             int Y = yl[x] - 16, U = cb[x >> 1] - 128, V = cr[x >> 1] - 128;
@@ -1122,19 +1303,29 @@ static int alloc_planes(m4_ctx *c)
     c->cstride = c->cw >> 1;
     for (i = 0; i < 3; i++) {
         int sz = (i == 0) ? c->ystride * c->ch : c->cstride * (c->ch >> 1);
-        if (!c->cur[i]) c->cur[i] = (uint8_t *)malloc(sz);
-        if (!c->ref[i]) c->ref[i] = (uint8_t *)malloc(sz);
-        if (!c->cur[i] || !c->ref[i]) return 0;
-        if (i == 0) { memset(c->cur[i], 16, sz); memset(c->ref[i], 16, sz); }
-        else        { memset(c->cur[i],128, sz); memset(c->ref[i],128, sz); }
+        int fresh = !c->cur[i];
+        if (!c->cur[i])   c->cur[i]   = (uint8_t *)malloc(sz);
+        if (!c->ref[i])   c->ref[i]   = (uint8_t *)malloc(sz);
+        if (!c->bwork[i]) c->bwork[i] = (uint8_t *)malloc(sz);
+        if (!c->cur[i] || !c->ref[i] || !c->bwork[i]) return 0;
+        /* Only clear on first allocation - a repeated VOL header (each GOP)
+         * must not wipe the reference frames a B-VOP still needs. */
+        if (fresh) {
+            if (i == 0) { memset(c->cur[i], 16, sz); memset(c->ref[i], 16, sz); }
+            else        { memset(c->cur[i],128, sz); memset(c->ref[i],128, sz); }
+        }
     }
     if (!c->pl) {
         size_t nl = (size_t)(c->mb_w*2) * (c->mb_h*2);
         c->pl  = (predblk *)malloc(nl * sizeof(predblk));
         c->pcb = (predblk *)malloc((size_t)c->mb_w * c->mb_h * sizeof(predblk));
         c->pcr = (predblk *)malloc((size_t)c->mb_w * c->mb_h * sizeof(predblk));
-        c->mv  = (mvblk *)malloc(nl * sizeof(mvblk));
-        if (!c->pl || !c->pcb || !c->pcr || !c->mv) return 0;
+        c->mv       = (mvblk *)malloc(nl * sizeof(mvblk));
+        c->bwd_mv   = (mvblk *)calloc(nl, sizeof(mvblk));
+        c->p_skip   = (uint8_t *)calloc((size_t)c->mb_w * c->mb_h, 1);
+        c->bwd_skip = (uint8_t *)calloc((size_t)c->mb_w * c->mb_h, 1);
+        if (!c->pl || !c->pcb || !c->pcr || !c->mv || !c->bwd_mv ||
+            !c->p_skip || !c->bwd_skip) return 0;
     }
     return 1;
 }
@@ -1158,26 +1349,53 @@ static mr_status m4_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
             rc = parse_vop(c, &br);
             if (rc == MR_EAGAIN) { decoded = 1; break; } /* not coded: repeat  */
             if (rc != MR_OK) return rc;
-            if (c->coding_type == VOP_I) {
-                rc = decode_ivop(c, &br);
-                if (rc != MR_OK) return rc;
-            } else if (c->coding_type == VOP_P) {
-                rc = decode_pvop(c, &br);
-                if (rc != MR_OK) return rc;
-            } else {
-                /* B / S(GMC) decode arrives in the next stage. */
-                return MR_EUNSUPPORTED;
+
+            if (c->coding_type == VOP_B) {
+                /* B-VOP: forward = cur (previous anchor), backward = ref
+                 * (current anchor). Emitted immediately, in display order. */
+                if (c->anchors < 2) { decoded = 1; break; }   /* no ref pair   */
+                c->trd = c->bwd_time - c->fwd_time;
+                c->trb = c->cur_time - c->fwd_time;
+                if (c->trd <= 0) c->trd = 1;
+                rc = decode_bvop(c, &br);                if (rc != MR_OK) return rc;
+                yuv_to_rgb(c, c->bwork);
+                decoded = 1;
+                break;
             }
-            yuv_to_rgb(c);
-            /* this frame becomes the reference for the next P-VOP */
+
+            /* I / P anchor */
+            if (c->coding_type == VOP_I) rc = decode_ivop(c, &br);
+            else if (c->coding_type == VOP_P) rc = decode_pvop(c, &br);
+            else return MR_EUNSUPPORTED;                      /* S(GMC): later */
+            if (rc != MR_OK) return rc;
+
+            /* rotate: the just-decoded anchor becomes the backward ref, the
+             * old backward becomes the forward ref. */
             { int k; for (k = 0; k < 3; k++)
                 { uint8_t *t = c->cur[k]; c->cur[k] = c->ref[k]; c->ref[k] = t; } }
+            { size_t nl = (size_t)(c->mb_w*2) * (c->mb_h*2);
+              memcpy(c->bwd_mv, c->mv, nl * sizeof(mvblk)); }
+            memcpy(c->bwd_skip, c->p_skip, (size_t)c->mb_w * c->mb_h);
+            c->fwd_time = c->bwd_time; c->bwd_time = c->cur_time;
+            c->anchors++;
+            if (c->anchors == 1) { decoded = 0; break; }      /* nothing yet   */
+            yuv_to_rgb(c, c->cur);          /* display the previous anchor      */
             decoded = 1;
             break;
         }
         /* VOS / VO / user_data / GOV: nothing to extract, keep scanning. */
     }
-    return decoded ? MR_OK : MR_EFORMAT;
+    return decoded ? MR_OK : MR_EAGAIN;
+}
+
+/* Flush: emit the last held backward anchor (in ref) at end of stream. */
+static mr_status m4_flush(mr_decoder *dec)
+{
+    m4_ctx *c = (m4_ctx *)dec->priv;
+    if (!c || c->anchors < 1) return MR_EAGAIN;
+    c->anchors = -1;                    /* one-shot: only the final anchor    */
+    yuv_to_rgb(c, c->ref);
+    return MR_OK;
 }
 
 static void m4_close(mr_decoder *dec)
@@ -1185,8 +1403,9 @@ static void m4_close(mr_decoder *dec)
     m4_ctx *c = (m4_ctx *)dec->priv;
     int i;
     if (!c) return;
-    for (i = 0; i < 3; i++) { free(c->cur[i]); free(c->ref[i]); }
-    free(c->pl); free(c->pcb); free(c->pcr); free(c->mv);
+    for (i = 0; i < 3; i++) { free(c->cur[i]); free(c->ref[i]); free(c->bwork[i]); }
+    free(c->pl); free(c->pcb); free(c->pcr); free(c->mv); free(c->bwd_mv);
+    free(c->p_skip); free(c->bwd_skip);
     free(c->rgb);
     free(c);
     dec->priv = NULL;
@@ -1201,4 +1420,5 @@ const mr_codec mr_codec_mpeg4 = {
     m4_open,
     m4_decode,
     m4_close,
+    m4_flush,
 };
