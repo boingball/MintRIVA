@@ -141,8 +141,9 @@ static void parse_pmt(mr_ts *t, const uint8_t *p, size_t len, int pusi)
         size_t es_info_len =
             (size_t)(((p[pos + 3] & 0x0f) << 8) | p[pos + 4]);
         if (pos + 5 + es_info_len > end) break;
-        if (type == 0x1b && t->video_pid == TS_PID_NONE) {
-            t->video_pid = pid;                  /* AVC/H.264                */
+        if ((type == 0x01 || type == 0x02 || type == 0x1b) &&
+            t->video_pid == TS_PID_NONE) {
+            t->video_pid = pid;                  /* MPEG-1/2 or AVC/H.264    */
             t->video_type = type;
         } else if ((type == 0x0f || type == 0x06) &&
                    t->audio_pid == TS_PID_NONE) {
@@ -387,6 +388,33 @@ static int make_avcc_config(mr_ts *t, const uint8_t *p, size_t len)
     return 1;
 }
 
+static int parse_mpeg_video_sequence(mr_ts *t, const uint8_t *p, size_t len)
+{
+    static const uint32_t rates[9] = {
+        0, 24000, 24, 25, 30000, 30, 50, 60000, 60
+    };
+    static const uint32_t scales[9] = {
+        0, 1001, 1, 1, 1001, 1, 1, 1001, 1
+    };
+    size_t i;
+    for (i = 0; i + 8 <= len; i++) {
+        unsigned code, width, height;
+        if (p[i] != 0 || p[i + 1] != 0 || p[i + 2] != 1 ||
+            p[i + 3] != 0xb3)
+            continue;
+        width = ((unsigned)p[i + 4] << 4) | (p[i + 5] >> 4);
+        height = ((unsigned)(p[i + 5] & 0x0f) << 8) | p[i + 6];
+        code = p[i + 7] & 0x0f;
+        if (!width || !height || code == 0 || code > 8) return 0;
+        t->video.width = (int)width;
+        t->video.height = (int)height;
+        t->video.rate = rates[code];
+        t->video.scale = scales[code];
+        return 1;
+    }
+    return 0;
+}
+
 static void parse_adts_info(mr_ts *t, const uint8_t *p, size_t len)
 {
     static const uint32_t rates[13] = {
@@ -480,21 +508,43 @@ static mr_status probe_stream(mr_ts *t)
             }
             parse_adts_info(t, es, es_len);
         }
-        if (t->video_pid != TS_PID_NONE && video_len &&
-            t->audio_pid != TS_PID_NONE && t->audio.valid &&
-            make_avcc_config(t, video_probe, video_len))
-            break;
+        if (t->video_pid != TS_PID_NONE && video_len) {
+            int video_ready =
+                t->video_type == 0x1b
+                    ? (t->config != NULL ||
+                       make_avcc_config(t, video_probe, video_len))
+                    : parse_mpeg_video_sequence(t, video_probe, video_len);
+            int audio_ready =
+                t->audio_pid == TS_PID_NONE || t->audio.valid;
+            if (video_ready && audio_ready && have_last_pts && pts_step)
+                break;
+        }
     }
-    if (!t->config && video_len)
+    if (t->video_type == 0x1b && !t->config && video_len)
         make_avcc_config(t, video_probe, video_len);
+    else if ((t->video_type == 0x01 || t->video_type == 0x02) && video_len)
+        parse_mpeg_video_sequence(t, video_probe, video_len);
     free(video_probe);
 
-    if (t->video_pid == TS_PID_NONE || t->video_type != 0x1b ||
-        !t->config || t->video.width <= 0 || t->video.height <= 0)
+    if (t->video_pid == TS_PID_NONE ||
+        (t->video_type != 0x01 && t->video_type != 0x02 &&
+         t->video_type != 0x1b) ||
+        (t->video_type == 0x1b && !t->config) ||
+        t->video.width <= 0 || t->video.height <= 0)
         return MR_EUNSUPPORTED;
-    t->video.fourcc = MR_FOURCC('a','v','c','1');
-    t->video.rate = 90000;
-    t->video.scale = pts_step >= 300 ? pts_step : 3600; /* default 25 fps */
+    if (t->video_type == 0x1b)
+        t->video.fourcc = MR_FOURCC('a','v','c','1');
+    else
+        t->video.fourcc = t->video_type == 0x02
+                        ? MR_FOURCC('m','p','g','2')
+                        : MR_FOURCC('m','p','g','1');
+    if (t->video_type == 0x1b && pts_step >= 300) {
+        t->video.rate = 90000;
+        t->video.scale = pts_step;
+    } else if (!t->video.rate || !t->video.scale) {
+        t->video.rate = 25;
+        t->video.scale = 1;
+    }
     t->video.valid = 1;
     return MR_OK;
 }
@@ -584,10 +634,10 @@ static mr_status annexb_to_avcc(mr_ts *t, const uint8_t *p, size_t len,
 static mr_status emit_pes(mr_ts *t, mr_ts_pes *p, int video, mr_packet *pkt)
 {
     mr_status st;
-    if (video) {
+    if (video && t->video_type == 0x1b) {
         st = annexb_to_avcc(t, p->data, p->len, pkt);
     } else {
-        pkt->is_video = 0;
+        pkt->is_video = video;
         pkt->data = p->data;
         pkt->len = (uint32_t)p->len;
         st = p->len ? MR_OK : MR_EAGAIN;

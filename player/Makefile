@@ -5,7 +5,19 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -g
 include vendor/libavc_port/libavc.mk
+LIBMPEG2_ROOT = vendor/libmpeg2
+LIBMPEG2_FLAGS = -I$(LIBMPEG2_ROOT) -I$(LIBMPEG2_ROOT)/include \
+                 -I$(LIBMPEG2_ROOT)/libmpeg2
+LIBMPEG2_SRC = $(LIBMPEG2_ROOT)/libmpeg2/alloc.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/cpu_accel.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/cpu_state.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/decode.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/header.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/idct.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/motion_comp.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/slice.c
 CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
+           $(LIBMPEG2_FLAGS) \
            -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
            -Wno-unused-but-set-variable -Wno-sign-compare \
            -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
@@ -14,6 +26,7 @@ CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
+           core/mr_mpeg2.c $(LIBMPEG2_SRC) \
            core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h264.c \
            $(LIBAVC_SRC)
 TESTSRC  = tests/mr_decode.c
@@ -31,7 +44,8 @@ HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_ts.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
-           core/mr_mpeg1.h core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
+           core/mr_mpeg1.h core/mr_mpeg2.h \
+           core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
            core/mr_msmpeg4v2.h core/mr_h264.h core/mr_types.h
 
 all: mr_decode
@@ -72,6 +86,8 @@ check: mr_decode mr_scale_check
 	    && test -d tests/assets/ref_h264_high \
 	    && test -f tests/assets/test_h264_aac.ts \
 	    && test -f tests/assets/test_h264_aac.m2ts \
+	    && test -f tests/assets/test_mpeg2.ts \
+	    && test -d tests/assets/ref_mpeg2_ts \
 	    && test -d tests/assets/ref_opendivx_legacy \
 	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
 	    && test -d tests/assets/ref_raw_mpeg4 \
@@ -100,6 +116,8 @@ check: mr_decode mr_scale_check
 	./mr_decode tests/assets/test_h264_aac.ts --check tests/assets/ref_h264_high
 	@echo "[M2TS: H.264 High Profile + ADTS AAC]"
 	./mr_decode tests/assets/test_h264_aac.m2ts --check tests/assets/ref_h264_high
+	@echo "[MPEG-TS: MPEG-2 Main Profile + B-frames]"
+	./mr_decode tests/assets/test_mpeg2.ts --check tests/assets/ref_mpeg2_ts
 	@echo "[MPEG-4 Part 2 legacy OpenDivX AVI]"
 	./mr_decode tests/assets/test_opendivx_legacy.avi --check tests/assets/ref_opendivx_legacy
 	@echo "[MPEG-4 Part 2 quarter-pel]"

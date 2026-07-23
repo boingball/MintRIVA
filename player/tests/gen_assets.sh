@@ -49,6 +49,11 @@ ffmpeg -v error -i test_h264_high.mp4 -c copy \
     -f mpegts test_h264_aac.ts -y
 ffmpeg -v error -i test_h264_high.mp4 -c copy -mpegts_m2ts_mode 1 \
     -f mpegts test_h264_aac.m2ts -y
+# MPEG-2 Main Profile with B-frame reordering in a transport stream. This also
+# verifies that the decoder drains both delayed reference pictures at EOF.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
+    -c:v mpeg2video -profile:v main -pix_fmt yuv420p \
+    -g 12 -bf 2 -qscale:v 4 -an -f mpegts test_mpeg2.ts -y
 # Early OpenDivX AVI variant: numeric biCompression=4, 'divx' handler, and no
 # VOL header in the bitstream. This reproduces Xmen-OpenDivX-200-slow.avi.
 python3 ../make_legacy_opendivx.py test_mp4v_sp.avi test_opendivx_legacy.avi
@@ -81,6 +86,8 @@ rm -rf ref_mp42 && mkdir -p ref_mp42
 ffmpeg -v error -i test_mp42.avi ref_mp42/f%03d.ppm -y
 rm -rf ref_h264_high && mkdir -p ref_h264_high
 ffmpeg -v error -i test_h264_high.mp4 ref_h264_high/f%03d.ppm -y
+rm -rf ref_mpeg2_ts && mkdir -p ref_mpeg2_ts
+ffmpeg -v error -i test_mpeg2.ts ref_mpeg2_ts/f%03d.ppm -y
 rm -rf ref_opendivx_legacy && mkdir -p ref_opendivx_legacy
 ffmpeg -v error -i test_opendivx_legacy.avi ref_opendivx_legacy/f%03d.ppm -y
 rm -rf ref_mp4v_qpel && mkdir -p ref_mp4v_qpel

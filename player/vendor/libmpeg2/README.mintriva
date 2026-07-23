@@ -1,0 +1,13 @@
+MintRIVA libmpeg2 import
+========================
+
+This directory contains the portable decoding core from VideoLAN libmpeg2
+0.5.1. MintRIVA builds only the generic C allocation, parser, IDCT, motion
+compensation and slice sources. Unix frontends, output plugins and
+architecture-specific assembly are intentionally omitted.
+
+Upstream: https://code.videolan.org/videolan/libmpeg2
+License: GNU GPL version 2 or later; see COPYING and the source headers.
+
+config.h is MintRIVA-specific. It selects portable C and declares the Amiga
+m68k target big-endian for both GCC and vbcc builds.
