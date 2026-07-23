@@ -10,40 +10,85 @@ import urllib.parse
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
     server_version = "MintRIVATestHTTP/1.0"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         if self.server.verbose:
             super().log_message(fmt, *args)
 
-    def do_GET(self):
-        parsed = urllib.parse.urlsplit(self.path)
-        path = parsed.path
-        if path.startswith("/redirect/"):
-            self.send_response(302)
-            self.send_header("Location", "/media/" + path[len("/redirect/"):])
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
-        if not path.startswith("/media/"):
-            self.send_error(404)
-            return
+    def _route(self):
+        path = urllib.parse.urlsplit(self.path).path
+        chunked = False
+        head_length = False
+        if path.startswith("/chunked-head/"):
+            chunked = True
+            head_length = True
+            path = path[len("/chunked-head"):]
+        elif path.startswith("/chunked/"):
+            chunked = True
+            path = path[len("/chunked"):]
+        return path, chunked, head_length
 
+    def _candidate(self, path):
+        if not path.startswith("/media/"):
+            return None
         relative = urllib.parse.unquote(path[len("/media/"):])
         candidate = (self.server.root / relative).resolve()
         try:
             candidate.relative_to(self.server.root)
         except ValueError:
             self.send_error(403)
-            return
+            return None
         if not candidate.is_file():
             self.send_error(404)
+            return None
+        return candidate
+
+    def do_HEAD(self):
+        path, _chunked, _head_length = self._route()
+        if path.startswith("/redirect/"):
+            self.send_response(302)
+            self.send_header("Location", "/media/" + path[len("/redirect/"):])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        candidate = self._candidate(path)
+        if candidate is None:
+            if not self.wfile.closed and not path.startswith("/media/"):
+                self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(candidate.stat().st_size))
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def do_GET(self):
+        path, chunked, head_length = self._route()
+        if path.startswith("/redirect/"):
+            location = "/media/" + path[len("/redirect/"):]
+            if head_length:
+                location = "/chunked-head" + location
+            elif chunked:
+                location = "/chunked" + location
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        candidate = self._candidate(path)
+        if candidate is None:
+            if not path.startswith("/media/"):
+                self.send_error(404)
             return
 
         size = candidate.stat().st_size
         start = 0
         status = 200
         range_header = self.headers.get("Range")
-        if range_header:
+        ignore_zero_open_range = head_length and range_header == "bytes=0-"
+        if range_header and not ignore_zero_open_range:
             if not range_header.startswith("bytes=") or "," in range_header:
                 self.send_error(416)
                 return
@@ -67,7 +112,10 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(length))
+        if chunked:
+            self.send_header("Transfer-Encoding", "chunked")
+        else:
+            self.send_header("Content-Length", str(length))
         if status == 206:
             self.send_header("Content-Range",
                              f"bytes {start}-{size - 1}/{size}")
@@ -78,14 +126,25 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             source.seek(start)
             remaining = length
             while remaining:
-                block = source.read(min(64 * 1024, remaining))
+                block = source.read(min(8191 if chunked else 64 * 1024,
+                                        remaining))
                 if not block:
                     break
                 try:
+                    if chunked:
+                        self.wfile.write(
+                            f"{len(block):X};fixture=yes\r\n".encode("ascii"))
                     self.wfile.write(block)
+                    if chunked:
+                        self.wfile.write(b"\r\n")
                 except (BrokenPipeError, ConnectionResetError):
                     break
                 remaining -= len(block)
+            if chunked and not remaining:
+                try:
+                    self.wfile.write(b"0\r\nX-Fixture: done\r\n\r\n")
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
 
 def main():

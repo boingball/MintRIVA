@@ -51,6 +51,7 @@
 #define HTTP_PATH_MAX       768
 #define HTTP_HEADER_MAX   16384
 #define HTTP_REQUEST_MAX   1536
+#define HTTP_CHUNK_LINE_MAX 128
 #ifndef HTTP_CACHE_SIZE
 #define HTTP_CACHE_SIZE  (256UL * 1024)
 #endif
@@ -89,6 +90,10 @@ typedef struct {
     size_t body_pos;
     size_t response_left;
     int response_left_known;
+    int chunked;
+    size_t chunk_left;
+    int chunk_need_crlf;
+    int chunk_done;
     unsigned char header[HTTP_HEADER_MAX];
     size_t prefetch_pos;
     size_t prefetch_len;
@@ -365,6 +370,10 @@ static void close_connection(http_source *h, int healthy)
     close_socket_only(h);
     h->using_tls = 0;
     h->response_left_known = 0;
+    h->chunked = 0;
+    h->chunk_left = 0;
+    h->chunk_need_crlf = 0;
+    h->chunk_done = 0;
     h->prefetch_pos = h->prefetch_len = 0;
 }
 
@@ -478,6 +487,115 @@ static int net_read_some(http_source *h, void *buf, size_t len)
     return n;
 }
 
+static int raw_read_some(http_source *h, void *buf, size_t len)
+{
+    if (h->prefetch_pos < h->prefetch_len) {
+        size_t n = h->prefetch_len - h->prefetch_pos;
+        if (n > len) n = len;
+        memcpy(buf, h->header + h->prefetch_pos, n);
+        h->prefetch_pos += n;
+        return (int)n;
+    }
+    return net_read_some(h, buf, len);
+}
+
+static int raw_read_exact(http_source *h, void *buf, size_t len)
+{
+    unsigned char *out = (unsigned char *)buf;
+    size_t done = 0;
+    while (done < len) {
+        int n = raw_read_some(h, out + done, len - done);
+        if (n <= 0) return 0;
+        done += (size_t)n;
+    }
+    return 1;
+}
+
+static int raw_read_line(http_source *h, char *line, size_t line_size)
+{
+    size_t used = 0;
+    if (!line_size) return 0;
+    while (used + 1 < line_size) {
+        unsigned char c;
+        if (!raw_read_exact(h, &c, 1)) return 0;
+        if (c == '\n') {
+            if (used && line[used - 1] == '\r') used--;
+            line[used] = '\0';
+            return 1;
+        }
+        line[used++] = (char)c;
+    }
+    line[0] = '\0';
+    mr_source_set_error("HTTP chunk header is too large");
+    return 0;
+}
+
+static int hex_value(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int parse_chunk_size(const char *line, size_t *size)
+{
+    size_t value = 0;
+    int have = 0;
+    while (*line == ' ' || *line == '\t') line++;
+    while (*line) {
+        int digit = hex_value((unsigned char)*line);
+        if (digit < 0) break;
+        if (value > (SIZE_MAX - (unsigned)digit) / 16u) return 0;
+        value = value * 16u + (unsigned)digit;
+        line++;
+        have = 1;
+    }
+    if (!have) return 0;
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line && *line != ';') return 0;
+    *size = value;
+    return 1;
+}
+
+static int begin_chunk(http_source *h)
+{
+    char line[HTTP_CHUNK_LINE_MAX];
+    if (h->chunk_done) return 0;
+    if (h->chunk_need_crlf) {
+        unsigned char crlf[2];
+        if (!raw_read_exact(h, crlf, sizeof crlf) ||
+            crlf[0] != '\r' || crlf[1] != '\n') {
+            mr_source_set_error("invalid HTTP chunk delimiter");
+            return 0;
+        }
+        h->chunk_need_crlf = 0;
+    }
+    if (!raw_read_line(h, line, sizeof line) ||
+        !parse_chunk_size(line, &h->chunk_left)) {
+        mr_source_set_error("invalid HTTP chunk size");
+        return 0;
+    }
+    if (!h->chunk_left) {
+        size_t trailer_bytes = 0;
+        do {
+            if (!raw_read_line(h, line, sizeof line)) return 0;
+            trailer_bytes += strlen(line) + 2;
+            if (trailer_bytes > HTTP_HEADER_MAX) {
+                mr_source_set_error("HTTP chunk trailers are too large");
+                return 0;
+            }
+        } while (line[0]);
+        h->chunk_done = 1;
+        return 0;
+    }
+    if (h->response_left_known && h->chunk_left > h->response_left) {
+        mr_source_set_error("HTTP chunk exceeds response length");
+        return 0;
+    }
+    return 1;
+}
+
 static int find_header_end(const unsigned char *buf, size_t len)
 {
     size_t i;
@@ -541,21 +659,21 @@ static int response_status(const unsigned char *headers, size_t len)
     return (p[0] - '0') * 100 + (p[1] - '0') * 10 + (p[2] - '0');
 }
 
-static int parse_content_range(const char *value,
-                               size_t *start, size_t *total)
+static int parse_content_range(const char *value, size_t *start,
+                               size_t *last, size_t *total)
 {
     const char *p = value, *end;
-    size_t ignored;
     while (*p == ' ' || *p == '\t') p++;
     if (ascii_ncasecmp(p, "bytes", 5) != 0) return 0;
     p += 5;
     while (*p == ' ' || *p == '\t') p++;
     if (!parse_decimal(p, &end, start) || *end != '-') return 0;
     p = end + 1;
-    if (!parse_decimal(p, &end, &ignored) || *end != '/') return 0;
+    if (!parse_decimal(p, &end, last) || *end != '/') return 0;
     p = end + 1;
-    if (*p == '*') return 0;
-    return parse_decimal(p, &end, total);
+    if (*p == '*' || !parse_decimal(p, &end, total)) return 0;
+    while (*end == ' ' || *end == '\t') end++;
+    return !*end && *last >= *start && *last < *total;
 }
 
 static int read_headers(http_source *h, size_t *header_len)
@@ -582,6 +700,103 @@ static int read_headers(http_source *h, size_t *header_len)
     return 1;
 }
 
+static int probe_request_length(http_source *h, const char *method,
+                                int one_byte_range, size_t *total_out)
+{
+    int redirects;
+    for (redirects = 0; redirects <= HTTP_REDIRECT_MAX; redirects++) {
+        http_url url;
+        char request[HTTP_REQUEST_MAX];
+        char host_header[HTTP_HOST_MAX + 16];
+        char content_length[64], content_range[128];
+        char location[HTTP_URL_MAX], next_url[HTTP_URL_MAX];
+        size_t header_len, length = 0;
+        size_t range_start = 0, range_last = 0, total = 0;
+        int status, n, default_port;
+
+        if (!parse_url(h->url, &url)) return 0;
+        close_connection(h, 1);
+        if (!connect_socket(h, &url)) return 0;
+        default_port = (!url.tls && url.port == 80) ||
+                       (url.tls && url.port == 443);
+        if (default_port)
+            snprintf(host_header, sizeof host_header, "%s", url.host);
+        else
+            snprintf(host_header, sizeof host_header, "%s:%u",
+                     url.host, (unsigned)url.port);
+        n = snprintf(request, sizeof request,
+                     "%s %s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "User-Agent: MintRIVA/0.1 AmigaOS\r\n"
+                     "Accept: */*\r\n"
+                     "Accept-Encoding: identity\r\n"
+                     "%s"
+                     "Connection: close\r\n"
+                     "\r\n",
+                     method, url.path, host_header,
+                     one_byte_range ? "Range: bytes=0-0\r\n" : "");
+        if (n <= 0 || (size_t)n >= sizeof request ||
+            !net_write_all(h, request, (size_t)n) ||
+            !read_headers(h, &header_len)) {
+            close_connection(h, 0);
+            return 0;
+        }
+        status = response_status(h->header, header_len);
+        if (status == 301 || status == 302 || status == 303 ||
+            status == 307 || status == 308) {
+            if (redirects == HTTP_REDIRECT_MAX ||
+                !header_value(h->header, header_len, "Location",
+                              location, sizeof location) ||
+                !resolve_redirect(h->url, location,
+                                  next_url, sizeof next_url)) {
+                close_connection(h, 1);
+                return 0;
+            }
+            strcpy(h->url, next_url);
+            close_connection(h, 1);
+            continue;
+        }
+        if (status == 206 &&
+            header_value(h->header, header_len, "Content-Range",
+                         content_range, sizeof content_range) &&
+            parse_content_range(content_range, &range_start,
+                                &range_last, &total) &&
+            range_start == 0 && total) {
+            close_connection(h, 1);
+            *total_out = total;
+            return 1;
+        }
+        if (status == 200 &&
+            header_value(h->header, header_len, "Content-Length",
+                         content_length, sizeof content_length)) {
+            const char *end;
+            if (parse_decimal(content_length, &end, &length)) {
+                while (*end == ' ' || *end == '\t') end++;
+                if (!*end && length) {
+                    close_connection(h, 1);
+                    *total_out = length;
+                    return 1;
+                }
+            }
+        }
+        close_connection(h, 1);
+        return 0;
+    }
+    return 0;
+}
+
+static int probe_total_length(http_source *h)
+{
+    size_t total = 0;
+    if (probe_request_length(h, "HEAD", 0, &total) ||
+        probe_request_length(h, "GET", 1, &total)) {
+        h->total_len = total;
+        return 1;
+    }
+    mr_source_set_error("chunked HTTP media omitted a seekable file length");
+    return 0;
+}
+
 static int begin_response(http_source *h, size_t offset)
 {
     int redirects;
@@ -591,8 +806,9 @@ static int begin_response(http_source *h, size_t offset)
         char host_header[HTTP_HOST_MAX + 16];
         char content_length[64], content_range[128], transfer[64];
         char location[HTTP_URL_MAX], next_url[HTTP_URL_MAX];
-        size_t header_len, response_len = 0, range_start = 0, total = 0;
-        int status, n, default_port;
+        size_t header_len, response_len = 0, content_length_value = 0;
+        size_t range_start = 0, range_last = 0, total = 0;
+        int status, n, default_port, have_content_length, chunked;
 
         if (!parse_url(h->url, &url)) {
             mr_source_set_error("invalid HTTP/HTTPS URL");
@@ -659,40 +875,67 @@ static int begin_response(http_source *h, size_t offset)
             close_connection(h, 1);
             return 0;
         }
-        if (header_value(h->header, header_len, "Transfer-Encoding",
-                         transfer, sizeof transfer) &&
-            contains_nocase(transfer, "chunked")) {
-            mr_source_set_error(
-                "chunked HTTP media has no seekable file length");
-            close_connection(h, 1);
-            return 0;
-        }
-        if (header_value(h->header, header_len, "Content-Length",
-                         content_length, sizeof content_length)) {
+
+        chunked = header_value(h->header, header_len, "Transfer-Encoding",
+                               transfer, sizeof transfer) &&
+                  contains_nocase(transfer, "chunked");
+        have_content_length = header_value(h->header, header_len,
+                                           "Content-Length",
+                                           content_length,
+                                           sizeof content_length);
+        if (have_content_length) {
             const char *end;
             if (!parse_decimal(content_length, &end, &response_len)) {
                 mr_source_set_error("invalid HTTP Content-Length");
                 close_connection(h, 1);
                 return 0;
             }
-            h->response_left_known = 1;
-            h->response_left = response_len;
-        } else {
-            h->response_left_known = 0;
+            while (*end == ' ' || *end == '\t') end++;
+            if (*end) {
+                mr_source_set_error("invalid HTTP Content-Length");
+                close_connection(h, 1);
+                return 0;
+            }
+            content_length_value = response_len;
         }
+
         if (status == 206) {
             if (!header_value(h->header, header_len, "Content-Range",
                               content_range, sizeof content_range) ||
-                !parse_content_range(content_range, &range_start, &total) ||
+                !parse_content_range(content_range, &range_start,
+                                     &range_last, &total) ||
                 range_start != offset || !total) {
                 mr_source_set_error("invalid HTTP Content-Range");
                 close_connection(h, 1);
                 return 0;
             }
+            response_len = range_last - range_start + 1;
+            if (!chunked && have_content_length &&
+                response_len != content_length_value) {
+                mr_source_set_error("HTTP range length mismatch");
+                close_connection(h, 1);
+                return 0;
+            }
         } else {
-            total = response_len;
+            if (!have_content_length) {
+                if (chunked && h->total_len) {
+                    total = h->total_len;
+                    response_len = total;
+                } else if (chunked) {
+                    close_connection(h, 1);
+                    if (!probe_total_length(h)) return 0;
+                    return begin_response(h, offset);
+                } else {
+                    mr_source_set_error(
+                        "HTTP media requires Content-Length or Content-Range");
+                    close_connection(h, 1);
+                    return 0;
+                }
+            } else {
+                total = response_len;
+            }
         }
-        if (!total) {
+        if (!total || !response_len) {
             mr_source_set_error(
                 "HTTP media requires Content-Length or Content-Range");
             close_connection(h, 1);
@@ -705,42 +948,41 @@ static int begin_response(http_source *h, size_t offset)
         }
         h->total_len = total;
         h->body_pos = offset;
+        h->response_left_known = 1;
+        h->response_left = response_len;
+        h->chunked = chunked;
+        h->chunk_left = 0;
+        h->chunk_need_crlf = 0;
+        h->chunk_done = 0;
         return 1;
     }
     return 0;
 }
 
-static int copy_response_bytes(http_source *h, unsigned char *dst,
-                               size_t len, size_t *copied)
+static int copy_response_bytes(http_source *h, unsigned char *dst, size_t len)
 {
     size_t done = 0;
     while (done < len) {
-        if (h->prefetch_pos < h->prefetch_len) {
-            size_t n = h->prefetch_len - h->prefetch_pos;
-            if (n > len - done) n = len - done;
-            if (h->response_left_known && n > h->response_left)
-                n = h->response_left;
-            if (!n) break;
-            memcpy(dst + done, h->header + h->prefetch_pos, n);
-            h->prefetch_pos += n;
-            done += n;
-        } else {
-            int n;
-            if (h->response_left_known && !h->response_left) break;
-            n = net_read_some(h, dst + done, len - done);
-            if (n <= 0) break;
-            done += (size_t)n;
-        }
+        size_t want = len - done;
+        int n;
         if (h->response_left_known) {
-            size_t newly = done - *copied;
-            if (newly > h->response_left) newly = h->response_left;
-            h->response_left -= newly;
-            *copied += newly;
-        } else {
-            *copied = done;
+            if (!h->response_left) break;
+            if (want > h->response_left) want = h->response_left;
+        }
+        if (h->chunked) {
+            if (!h->chunk_left && !begin_chunk(h)) break;
+            if (want > h->chunk_left) want = h->chunk_left;
+        }
+        n = raw_read_some(h, dst + done, want);
+        if (n <= 0) break;
+        done += (size_t)n;
+        h->body_pos += (size_t)n;
+        if (h->response_left_known) h->response_left -= (size_t)n;
+        if (h->chunked) {
+            h->chunk_left -= (size_t)n;
+            if (!h->chunk_left) h->chunk_need_crlf = 1;
         }
     }
-    h->body_pos += done;
     return (int)done;
 }
 
@@ -821,8 +1063,7 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
         if (!begin_response(h, off)) return 0;
     }
     while (done < len) {
-        size_t accounted = 0;
-        int n = copy_response_bytes(h, out + done, len - done, &accounted);
+        int n = copy_response_bytes(h, out + done, len - done);
         if (n > 0) {
             done += (size_t)n;
             continue;

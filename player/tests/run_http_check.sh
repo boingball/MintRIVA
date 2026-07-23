@@ -51,6 +51,19 @@ base="$scheme://127.0.0.1:$port"
     --check tests/assets/ref_h264_high
 "$decoder" "$base/media/test_mp42.avi" \
     --check tests/assets/ref_mp42
+"$decoder" "$base/chunked/media/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+"$decoder" "$base/chunked/redirect/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+"$decoder" "$base/chunked/media/test_h264_high.mp4" \
+    --check tests/assets/ref_h264_high
+"$decoder" "$base/chunked/media/test_mp42.avi" \
+    --check tests/assets/ref_mp42
+
+"$decoder" "$base/chunked-head/media/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+"$decoder" "$base/chunked-head/media/test_h264_high.mp4" \
+    --check tests/assets/ref_h264_high
 
 test -f "$tmpdir/range-used"
 echo "$mode URL checks passed"
