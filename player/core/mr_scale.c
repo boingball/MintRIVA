@@ -60,3 +60,81 @@ void mr_scale_down_rgb24(const uint8_t *src, int w, int h, int src_stride,
         }
     }
 }
+
+void mr_scale_fit_rect(int w, int h, int max_w, int max_h,
+                       int *dst_w, int *dst_h)
+{
+    int dw = w, dh = h;
+
+    if (w > 0 && h > 0 && max_w > 0 && max_h > 0 &&
+        (w > max_w || h > max_h)) {
+        /* Video dimensions are small enough that these products stay within
+         * 32 bits; avoiding 64-bit division matters on a 68020/68030. */
+        if ((uint32_t)w * (uint32_t)max_h >
+            (uint32_t)max_w * (uint32_t)h) {
+            dw = max_w;
+            dh = (int)(((uint32_t)h * (uint32_t)max_w +
+                        (uint32_t)w / 2) / (uint32_t)w);
+        } else {
+            dh = max_h;
+            dw = (int)(((uint32_t)w * (uint32_t)max_h +
+                        (uint32_t)h / 2) / (uint32_t)h);
+        }
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
+    }
+    if (dst_w) *dst_w = dw;
+    if (dst_h) *dst_h = dh;
+}
+
+void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
+                           uint8_t *dst, int dst_w, int dst_h, int dst_stride)
+{
+    int y, sy, yq, yr, yerr;
+    int xq, xr, sx0, xerr0;
+
+    if (!src || !dst || w <= 0 || h <= 0 || dst_w <= 0 || dst_h <= 0)
+        return;
+
+    /*
+     * Sample at destination pixel centres:
+     *   source = floor(((2 * destination + 1) * source_size) /
+     *                  (2 * destination_size))
+     * Quotient/remainder stepping turns that into additions and an occasional
+     * carry in the hot loop.
+     */
+    xq = w / dst_w;
+    xr = w % dst_w;
+    sx0 = (w / 2) / dst_w;
+    xerr0 = (w / 2) % dst_w;
+    yq = h / dst_h;
+    yr = h % dst_h;
+    sy = (h / 2) / dst_h;
+    yerr = (h / 2) % dst_h;
+
+    for (y = 0; y < dst_h; y++) {
+        const uint8_t *sr = src + (size_t)sy * src_stride;
+        uint8_t *dr = dst + (size_t)y * dst_stride;
+        int x, sx = sx0, xerr = xerr0;
+
+        for (x = 0; x < dst_w; x++) {
+            const uint8_t *sp = sr + (size_t)sx * 3;
+            dr[x * 3 + 0] = sp[0];
+            dr[x * 3 + 1] = sp[1];
+            dr[x * 3 + 2] = sp[2];
+            sx += xq;
+            xerr += xr;
+            if (xerr >= dst_w) {
+                xerr -= dst_w;
+                sx++;
+            }
+        }
+
+        sy += yq;
+        yerr += yr;
+        if (yerr >= dst_h) {
+            yerr -= dst_h;
+            sy++;
+        }
+    }
+}

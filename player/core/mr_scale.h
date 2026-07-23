@@ -1,9 +1,9 @@
 /*
- * MintRIVA - simple integer upscaling (portable).
+ * MintRIVA - simple portable image scaling.
  *
- * Nearest-neighbour 2x pixel doubling, so small clips fill more of an AGA
- * screen. Cheap and deterministic; the AGA backend scales RGB before dither/HAM
- * encoding.
+ * The AGA backend uses the fixed 2x path for small clips and the arbitrary
+ * nearest-neighbour path when compensating for HIRES/interlace pixel aspect.
+ * Everything is integer-only and deterministic.
  */
 #ifndef MR_SCALE_H
 #define MR_SCALE_H
@@ -25,5 +25,15 @@ void mr_scale2x_u8(const uint8_t *src, int w, int h, int src_stride,
  * oversized clip fits a small (AGA) screen. Output is (w/factor)x(h/factor). */
 void mr_scale_down_rgb24(const uint8_t *src, int w, int h, int src_stride,
                          uint8_t *dst, int dst_stride, int factor);
+
+/* Fit a rectangle inside max_w x max_h without changing its aspect ratio or
+ * enlarging it.  Dimensions are rounded to the nearest whole pixel. */
+void mr_scale_fit_rect(int w, int h, int max_w, int max_h,
+                       int *dst_w, int *dst_h);
+
+/* Resize RGB24 with nearest-neighbour sampling.  The inner loop uses an integer
+ * DDA: there is no floating point and no division per pixel. */
+void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
+                           uint8_t *dst, int dst_w, int dst_h, int dst_stride);
 
 #endif /* MR_SCALE_H */

@@ -46,13 +46,13 @@ typedef struct {
     struct BitMap  *tempbm;
     unsigned char  *enc;         /* 1x encode buffer (scale==2 only)        */
     unsigned char  *chunky;      /* pw*dh pixels to blit                     */
-    unsigned char  *scaled;      /* downscaled RGB (down>1 only)            */
+    unsigned char  *scaled;      /* resized RGB (resize only)                */
     int             w, h;
     int             dw, dh;      /* displayed size                          */
     int             pw;          /* chunky row stride (>= dw)               */
     int             depth;
     int             x0, y0, x0byte;
-    int             ham, scale, down, use_c2p, use_akiko;
+    int             ham, scale, resize, use_c2p, use_akiko;
     int             quit;
 } aga_state;
 
@@ -117,33 +117,49 @@ static void *aga_open(int w, int h, const char *title)
     int   ham   = g_aga_ham;
     int   akiko = g_aga_akiko;
     int   c2p   = g_aga_c2p && !akiko;   /* Akiko is its own blit path */
-    int   down = 1, dw, dh, depth = (ham == 6) ? 6 : 8;
-    int   sw, sh;
+    int   dw, dh, depth = (ham == 6) ? 6 : 8;
+    int   sw, sh, physical_w, physical_h, hires, lace, resize;
     ULONG modeid;
 
-    /* Fit an AGA screen (max 640 wide; 256 tall, or 512 interlaced with
-     * --lace). Oversized clips are integer-downscaled to fit; small clips may
-     * 2x. */
-    { int maxh = g_aga_lace ? 512 : 256;
-      if (w > 640 || h > maxh) {
-          while (w / down > 640 || h / down > maxh) down++;
-          dw = w / down; dh = h / down; scale = 1;
-      } else {
-          dw = w * scale; dh = h * scale;
-          if (dw > 640 || dh > maxh) { scale = 1; dw = w; dh = h; }
-      }
+    /*
+     * AGA raster pixels are not square: HIRES doubles horizontal resolution
+     * and interlace doubles vertical resolution without changing the physical
+     * display size.  Fit in a 320x256 "physical pixel" canvas first, then
+     * multiply the corresponding raster axis.  Thus 854x480 becomes 640x180
+     * in non-laced HIRES, or 640x360 with --lace, instead of the squeezed
+     * 427x240 image produced by treating HIRES pixels as square.
+     */
+    hires = w * scale > 320;
+    lace = g_aga_lace && h * scale > 256;
+    physical_w = w * scale;
+    physical_h = h * scale;
+    mr_scale_fit_rect(physical_w, physical_h, 320, 256,
+                      &physical_w, &physical_h);
+    dw = physical_w * (hires ? 2 : 1);
+    dh = physical_h * (lace ? 2 : 1);
+
+    /* Preserve the cheap encoded-chunky 2x path when the geometry is exactly
+     * 2x.  All aspect compensation goes through the general RGB resizer. */
+    if (dw == w * 2 && dh == h * 2) {
+        scale = 2;
+        resize = 0;
+    } else {
+        scale = 1;
+        resize = (dw != w || dh != h);
     }
-    sw = (dw <= 320) ? 320 : 640;
-    sh = (dh <= 256) ? 256 : ((dh + 15) & ~15);
-    modeid = (dw <= 320) ? LORES_KEY : HIRES_KEY;
-    if (sh > 256) modeid |= LACE;              /* interlaced when tall       */
+
+    sw = hires ? 640 : 320;
+    sh = lace ? ((dh + 15) & ~15) : 256;
+    if (sh < 256) sh = 256;
+    modeid = hires ? HIRES_KEY : LORES_KEY;
+    if (lace) modeid |= LACE;
     if (ham) modeid |= HAM;
     (void)title;
 
     s = (aga_state *)calloc(1, sizeof *s);
     if (!s) return NULL;
     s->w = w; s->h = h; s->dw = dw; s->dh = dh;
-    s->ham = ham; s->scale = scale; s->down = down;
+    s->ham = ham; s->scale = scale; s->resize = resize;
     s->depth = depth; s->use_c2p = c2p; s->use_akiko = akiko;
     /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
      * a 32-multiple row stride; the built-in C2P only needs 8-pixel alignment.
@@ -180,7 +196,7 @@ static void *aga_open(int w, int h, const char *title)
         s->enc = (unsigned char *)malloc((size_t)w * h);
         if (!s->enc) goto fail;
     }
-    if (down > 1) {
+    if (resize) {
         s->scaled = (unsigned char *)malloc((size_t)dw * dh * 3);
         if (!s->scaled) goto fail;
     }
@@ -213,11 +229,11 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     if (!s || !s->scr) return;
 
     { clock_t a = clock();
-    if (s->down > 1) {
-        /* Downscale the whole frame, then encode it (full frame - dirty rows
-         * don't map cleanly through a downscale, and the small image is cheap
-         * to encode). */
-        mr_scale_down_rgb24(rgb, w, h, stride, s->scaled, dw * 3, s->down);
+    if (s->resize) {
+        /* Resize the whole frame, then encode it. Dirty rows do not map
+         * cleanly through arbitrary scaling, and the fitted image is small. */
+        mr_scale_resize_rgb24(rgb, w, h, stride, s->scaled,
+                              dw, s->dh, dw * 3);
         if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, s->chunky, pw, s->ham);
         else        mr_dither_rgb8(s->scaled, dw, s->dh, dw * 3, s->chunky, pw, 0);
         ddy0 = 0; ddh = s->dh;
