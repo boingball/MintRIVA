@@ -21,7 +21,8 @@ CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
            -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
            -Wno-unused-but-set-variable -Wno-sign-compare \
            -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
-CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
+CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c \
+           core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_ts.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
@@ -40,7 +41,8 @@ MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
                 -I$(MINTAMP_ROOT)/decoders/aac \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
-HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
+HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h \
+           core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_ts.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
@@ -53,6 +55,13 @@ all: mr_decode
 # pl_mpeg (in mr_mpeg1.c) uses libm; MR_HAVE_MPEG1 enables the harness path.
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
 	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE) -lm
+
+# Optional host HTTPS build used by the local TLS integration test. The Amiga
+# build uses AmiSSL instead; this only validates the shared HTTP/TLS parser and
+# response lifecycle on the development host.
+mr_decode_ssl: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
+	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -DMR_HTTP_HAVE_OPENSSL \
+	    -o $@ $(TESTSRC) $(CORE) -lm -lssl -lcrypto
 
 mr_scale_check: tests/mr_scale_check.c core/mr_scale.c core/mr_scale.h \
                 core/mr_types.h
@@ -135,7 +144,21 @@ check-audio: mr_audio_check
 	./mr_audio_check tests/assets/test_aac.mp4 aac
 	./mr_audio_check tests/assets/test_h264_aac.ts aac
 
-clean:
-	rm -f mr_decode mr_audio_check mr_scale_check
+check-http: mr_decode
+	@test -d tests/assets/ref_mpeg2_ts \
+	    && test -d tests/assets/ref_h264_high \
+	    && test -d tests/assets/ref_mp42 \
+	    || sh tests/gen_assets.sh
+	sh tests/run_http_check.sh ./mr_decode http
 
-.PHONY: all check check-audio check-libavc clean
+check-https: mr_decode_ssl
+	@test -d tests/assets/ref_mpeg2_ts \
+	    && test -d tests/assets/ref_h264_high \
+	    && test -d tests/assets/ref_mp42 \
+	    || sh tests/gen_assets.sh
+	sh tests/run_http_check.sh ./mr_decode_ssl https
+
+clean:
+	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check
+
+.PHONY: all check check-audio check-http check-https check-libavc clean

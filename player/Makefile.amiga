@@ -10,6 +10,8 @@
 #
 #   make -f Makefile.amiga                 # builds both (gcc, default)
 #   make -f Makefile.amiga mrplay          # just the player
+#   make -f Makefile.amiga mrplay SSL=1    # add HTTPS via AmiSSL v5
+#   make -f Makefile.amiga mrplay SSL=1 SSLCERTS=1 # verify certificates
 #   make -f Makefile.amiga TOOLCHAIN=vbcc  # mr_decode via vbcc + vclib
 #
 # The compiler does NOT need to be on your PATH: this prefers whatever
@@ -24,6 +26,15 @@
 
 TOOLCHAIN ?= gcc
 include vendor/libavc_port/libavc.mk
+SSL ?= 0
+SSLCERTS ?= 0
+HTTP_SSL_FLAGS =
+ifneq ($(filter 1 yes true on,$(SSL)),)
+HTTP_SSL_FLAGS += -DHAVE_AMISSL
+endif
+ifneq ($(filter 1 yes true on,$(SSLCERTS)),)
+HTTP_SSL_FLAGS += -DMR_HTTP_SSL_VERIFY_PEER
+endif
 LIBMPEG2_ROOT = vendor/libmpeg2
 LIBMPEG2_FLAGS = -I$(LIBMPEG2_ROOT) -I$(LIBMPEG2_ROOT)/include \
                  -I$(LIBMPEG2_ROOT)/libmpeg2
@@ -35,7 +46,8 @@ LIBMPEG2_SRC = $(LIBMPEG2_ROOT)/libmpeg2/alloc.c \
                $(LIBMPEG2_ROOT)/libmpeg2/idct.c \
                $(LIBMPEG2_ROOT)/libmpeg2/motion_comp.c \
                $(LIBMPEG2_ROOT)/libmpeg2/slice.c
-CORE  = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
+CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c \
+        core/mr_demux.c core/mr_avi.c core/mr_mov.c \
         core/mr_ts.c \
         core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
         core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
@@ -74,7 +86,8 @@ CC      = $(AMIGA_GCC)
 # MPEG-1 (pl_mpeg in mr_mpeg1.c) uses floating point, so this build links libm
 # and the compiler soft-float runtime. MR_HAVE_MPEG1 enables the .mpg paths.
 CFLAGS  = -O2 -std=c99 -m68020 -noixemul -fomit-frame-pointer -Wall -Wextra \
-          -DMR_HAVE_MPEG1 -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
+          -DAMIGA_M68K -DMR_HAVE_MPEG1 -DMR_HAVE_H264 \
+          $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
           $(LIBMPEG2_FLAGS) \
           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
           -Wno-unused-but-set-variable -Wno-sign-compare \
@@ -113,7 +126,8 @@ endif
 ifeq ($(TOOLCHAIN),vbcc)
 # Requires VBCC + vc.config target 'aos68k'. Override CC=... if not on PATH.
 CC      ?= vc
-CFLAGS  = +aos68k -c99 -O2 -cpu=68020 -softfloat $(LIBMPEG2_FLAGS)
+CFLAGS  = +aos68k -c99 -O2 -cpu=68020 -softfloat -DAMIGA_M68K \
+          $(HTTP_SSL_FLAGS) $(LIBMPEG2_FLAGS)
 
 all: mr_decode
 mr_decode: $(HARN) $(CORE)

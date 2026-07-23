@@ -3,7 +3,6 @@
  */
 #include "mr_ts.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,20 +44,7 @@ static int ts_read_at(mr_ts *t, size_t off, void *dst, size_t len)
         memcpy(dst, t->buf + off, len);
         return 1;
     } else {
-        FILE *f = (FILE *)t->stream;
-        if (!t->stream_pos_valid || t->stream_pos != off) {
-            if (off > 0x7fffffffUL || fseek(f, (long)off, SEEK_SET) != 0) {
-                t->stream_pos_valid = 0;
-                return 0;
-            }
-        }
-        if (fread(dst, 1, len, f) != len) {
-            t->stream_pos_valid = 0;
-            return 0;
-        }
-        t->stream_pos = off + len;
-        t->stream_pos_valid = 1;
-        return 1;
+        return mr_source_read_at(t->source, off, dst, len);
     }
 }
 
@@ -579,10 +565,10 @@ mr_status mr_ts_open(mr_ts *t, const uint8_t *buf, size_t len)
     return ts_open_common(t);
 }
 
-mr_status mr_ts_open_file(mr_ts *t, void *stream, size_t len)
+mr_status mr_ts_open_source(mr_ts *t, mr_source *source, size_t len)
 {
     ts_init(t);
-    t->stream = stream;
+    t->source = source;
     t->len = len;
     t->file_backed = 1;
     return ts_open_common(t);

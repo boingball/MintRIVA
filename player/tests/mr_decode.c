@@ -137,7 +137,8 @@ int main(int argc, char **argv)
 
     if (!dx) {
         if (!force_memory && mr_demux_is_file_backed_container(argv[1])) {
-            fprintf(stderr, "unsupported or malformed file-backed container\n");
+            fprintf(stderr, "cannot open stream: %s\n",
+                    mr_demux_last_open_error());
             return 2;
         }
         buf = slurp(argv[1], &len);

@@ -2,7 +2,6 @@
  * MintRIVA - minimal AVI (RIFF) demuxer implementation.
  */
 #include "mr_avi.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -171,20 +170,7 @@ mr_status mr_avi_open(mr_avi *a, const uint8_t *buf, size_t len)
 
 static int file_read_at(mr_avi *a, size_t off, void *dst, size_t len)
 {
-    FILE *f = (FILE *)a->stream;
-    if (!a->stream_pos_valid || a->stream_pos != off) {
-        if (off > 0x7fffffffUL || fseek(f, (long)off, SEEK_SET) != 0) {
-            a->stream_pos_valid = 0;
-            return 0;
-        }
-    }
-    if (fread(dst, 1, len, f) != len) {
-        a->stream_pos_valid = 0;
-        return 0;
-    }
-    a->stream_pos = off + len;
-    a->stream_pos_valid = 1;
-    return 1;
+    return mr_source_read_at(a->source, off, dst, len);
 }
 
 /* Scan only the AVI headers.  The potentially huge movi LIST is skipped by
@@ -245,12 +231,12 @@ static mr_status scan_top_file(mr_avi *a)
     return MR_OK;
 }
 
-mr_status mr_avi_open_file(mr_avi *a, void *stream, size_t len)
+mr_status mr_avi_open_source(mr_avi *a, mr_source *source, size_t len)
 {
     mr_status st;
     avi_init(a);
-    if (!stream || len < 12) return MR_EFORMAT;
-    a->stream = stream;
+    if (!source || len < 12) return MR_EFORMAT;
+    a->source = source;
     a->len = len;
     a->file_backed = 1;
     st = scan_top_file(a);

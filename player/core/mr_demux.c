@@ -8,9 +8,9 @@
 #include "mr_avi.h"
 #include "mr_mov.h"
 #include "mr_ts.h"
+#include "mr_source.h"
 #include "mr_raw_mjpeg.h"
 #include "mr_raw_mpeg4.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,7 +23,7 @@ struct mr_demux {
         mr_raw_mjpeg raw_mjpeg;
         mr_raw_mpeg4 raw_mpeg4;
     } u;
-    FILE *owned_file;
+    mr_source *owned_source;
 };
 
 /* AVI  = 'RIFF' .... 'AVI '   ;  MOV = an early 'ftyp'/'moov'/'mdat' atom;
@@ -95,47 +95,52 @@ mr_demux *mr_demux_open_file(const char *path)
 {
     uint8_t head[512];
     size_t got;
-    long end;
+    size_t end;
     mr_container kind;
     mr_demux *d;
     mr_status st;
-    FILE *f;
+    mr_source *source;
 
     if (!path) return NULL;
-    f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0 || (end = ftell(f)) < 0 ||
-        fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
+    source = mr_source_open(path);
+    if (!source) return NULL;
+    end = mr_source_length(source);
+    got = end < sizeof head ? end : sizeof head;
+    if (!mr_source_read_at(source, 0, head, got)) {
+        mr_source_set_error("cannot read media response body");
+        mr_source_close(source);
         return NULL;
     }
-    got = fread(head, 1, sizeof head, f);
     kind = sniff(head, got);
     if (kind != MR_CONTAINER_AVI && kind != MR_CONTAINER_MOV &&
         kind != MR_CONTAINER_TS) {
-        fclose(f);
+        mr_source_set_error(
+            "network/file source is not a supported AVI, MOV/MP4 or MPEG-TS");
+        mr_source_close(source);
         return NULL;
     }
 
     d = (mr_demux *)calloc(1, sizeof *d);
     if (!d) {
-        fclose(f);
+        mr_source_set_error("not enough memory for demuxer");
+        mr_source_close(source);
         return NULL;
     }
     d->kind = kind;
-    d->owned_file = f;
+    d->owned_source = source;
 
     if (kind == MR_CONTAINER_AVI)
-        st = mr_avi_open_file(&d->u.avi, f, (size_t)end);
+        st = mr_avi_open_source(&d->u.avi, source, end);
     else if (kind == MR_CONTAINER_MOV)
-        st = mr_mov_open_file(&d->u.mov, f, (size_t)end);
+        st = mr_mov_open_source(&d->u.mov, source, end);
     else
-        st = mr_ts_open_file(&d->u.ts, f, (size_t)end);
+        st = mr_ts_open_source(&d->u.ts, source, end);
     if (st != MR_OK) {
         if (kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
         else if (kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
         else mr_ts_close(&d->u.ts);
-        fclose(f);
+        mr_source_set_error("unsupported or malformed streamed container");
+        mr_source_close(source);
         free(d);
         return NULL;
     }
@@ -147,15 +152,23 @@ int mr_demux_is_file_backed_container(const char *path)
     uint8_t head[512];
     size_t got;
     mr_container kind;
-    FILE *f;
+    mr_source *source;
     if (!path) return 0;
-    f = fopen(path, "rb");
-    if (!f) return 0;
-    got = fread(head, 1, sizeof head, f);
-    fclose(f);
+    if (mr_source_is_url(path)) return 1;
+    source = mr_source_open(path);
+    if (!source) return 0;
+    got = mr_source_length(source) < sizeof head
+        ? mr_source_length(source) : sizeof head;
+    if (!mr_source_read_at(source, 0, head, got)) got = 0;
+    mr_source_close(source);
     kind = sniff(head, got);
     return kind == MR_CONTAINER_AVI || kind == MR_CONTAINER_MOV ||
            kind == MR_CONTAINER_TS;
+}
+
+const char *mr_demux_last_open_error(void)
+{
+    return mr_source_last_error();
 }
 
 mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
@@ -187,7 +200,7 @@ void mr_demux_close(mr_demux *d)
     if (d->kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
     else if (d->kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
     else if (d->kind == MR_CONTAINER_TS) mr_ts_close(&d->u.ts);
-    if (d->owned_file) fclose(d->owned_file);
+    if (d->owned_source) mr_source_close(d->owned_source);
     free(d);
 }
 
