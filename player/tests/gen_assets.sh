@@ -28,6 +28,9 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=1 \
     -c:v mpeg4 -g 1 -qscale:v 4 test_mp4v_intra.avi -y
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v mpeg4 -bf 0 -flags +mv4 -qscale:v 4 test_mp4v_sp.avi -y
+# Microsoft MPEG-4 v2 in AVI: separate H.263-derived MP42 bitstream.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -c:v msmpeg4v2 -g 12 -qscale:v 4 test_mp42.avi -y
 # Early OpenDivX AVI variant: numeric biCompression=4, 'divx' handler, and no
 # VOL header in the bitstream. This reproduces Xmen-OpenDivX-200-slow.avi.
 python3 ../make_legacy_opendivx.py test_mp4v_sp.avi test_opendivx_legacy.avi
@@ -56,6 +59,8 @@ rm -rf ref_mp4v_intra && mkdir -p ref_mp4v_intra
 ffmpeg -v error -i test_mp4v_intra.avi ref_mp4v_intra/f%03d.ppm -y
 rm -rf ref_mp4v_sp && mkdir -p ref_mp4v_sp
 ffmpeg -v error -i test_mp4v_sp.avi ref_mp4v_sp/f%03d.ppm -y
+rm -rf ref_mp42 && mkdir -p ref_mp42
+ffmpeg -v error -i test_mp42.avi ref_mp42/f%03d.ppm -y
 rm -rf ref_opendivx_legacy && mkdir -p ref_opendivx_legacy
 ffmpeg -v error -i test_opendivx_legacy.avi ref_opendivx_legacy/f%03d.ppm -y
 rm -rf ref_mp4v_qpel && mkdir -p ref_mp4v_qpel

@@ -8,7 +8,7 @@ CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
-           core/mr_mpeg4.c
+           core/mr_mpeg4.c core/mr_msmpeg4v2.c
 TESTSRC  = tests/mr_decode.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
@@ -24,7 +24,7 @@ HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
            core/mr_mpeg1.h core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
-           core/mr_types.h
+           core/mr_msmpeg4v2.h core/mr_types.h
 
 all: mr_decode
 
@@ -49,6 +49,7 @@ check: mr_decode
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
+	    && test -d tests/assets/ref_mp42 \
 	    && test -d tests/assets/ref_opendivx_legacy \
 	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
 	    && test -d tests/assets/ref_raw_mpeg4 \
@@ -67,6 +68,8 @@ check: mr_decode
 	./mr_decode tests/assets/test_mp4v_intra.avi --check tests/assets/ref_mp4v_intra
 	@echo "[MPEG-4 Part 2 Simple Profile]"
 	./mr_decode tests/assets/test_mp4v_sp.avi --check tests/assets/ref_mp4v_sp
+	@echo "[Microsoft MPEG-4 v2 / MP42]"
+	./mr_decode tests/assets/test_mp42.avi --check tests/assets/ref_mp42
 	@echo "[MPEG-4 Part 2 legacy OpenDivX AVI]"
 	./mr_decode tests/assets/test_opendivx_legacy.avi --check tests/assets/ref_opendivx_legacy
 	@echo "[MPEG-4 Part 2 quarter-pel]"

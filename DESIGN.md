@@ -126,6 +126,10 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       audio -> Paula), reusing the display/audio backends. The 68k build links
       libm + soft-float for this (MPEG-1 is a fast-machine codec). pause/loop
       apply. (Cinepak/MJPEG path stays integer.)
+- [x] Microsoft MPEG-4 v2 (`MP42`) in AVI: separate H.263-derived decoder
+      plugin with I/P pictures, slice/DC/AC prediction, skip macroblocks and
+      half-pel motion compensation. Host-validated against ffmpeg on the full
+      1,983-frame BFHL sample (worst per-frame RGB MAE 1.83/255).
 - [ ] Modern codecs (Theora / H.264-baseline) gated to fast/PiStorm machines,
       likely by wrapping a portable decoder library
 - [ ] Internet streaming (reuse MintAMP's radio_stream + AmiSSL HTTP stack)
