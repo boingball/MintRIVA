@@ -180,14 +180,40 @@ static int match_mvd(bitreader *b)
     return 999;
 }
 
+/* The run/level VLC is decoded 12 bits at a time.  A flat 4096-entry prefix
+ * table maps that window straight to the matching table index, replacing the
+ * per-coefficient linear scan over 102 entries (the single most-called routine
+ * in the decoder).  It is byte-for-byte equivalent: each entry covers exactly
+ * the prefix range the linear "(w >> (12-len)) == code" test accepted, and the
+ * ranges are filled in reverse so the lowest index still wins on any overlap. */
+static int16_t tcoef_lut_intra[4096];
+static int16_t tcoef_lut_inter[4096];
+static int tcoef_lut_ready;
+
+static void build_tcoef_lut(int16_t *lut, const tcoef_t *tab)
+{
+    int i, j;
+    for (j = 0; j < 4096; j++)
+        lut[j] = -1;
+    for (i = 101; i >= 0; i--) {
+        unsigned base = (unsigned)tab[i].code << (12 - tab[i].len);
+        unsigned span = 1u << (12 - tab[i].len), k;
+        for (k = 0; k < span; k++)
+            lut[base + k] = (int16_t)i;
+    }
+}
+
 static const tcoef_t *match_tcoef(bitreader *b, const tcoef_t *tab)
 {
     unsigned w = br_peek(b, 12);
     int i;
-    for (i = 0; i < 102; i++)
-        if ((w >> (12 - tab[i].len)) == tab[i].code)
-            return &tab[i];
-    return NULL;
+    if (!tcoef_lut_ready) {
+        build_tcoef_lut(tcoef_lut_intra, tcoef_intra);
+        build_tcoef_lut(tcoef_lut_inter, tcoef_inter);
+        tcoef_lut_ready = 1;
+    }
+    i = (tab == tcoef_intra ? tcoef_lut_intra : tcoef_lut_inter)[w];
+    return i < 0 ? NULL : &tab[i];
 }
 
 /* Decode Microsoft's inverted H.263 DC differential VLC. */
@@ -317,44 +343,86 @@ static int decode_rl_event(bitreader *b, int intra,
 }
 
 /* ---- transform and pixel helpers ------------------------------------- */
-static double idct_cos[8][8];
+/* Separable integer IDCT.  The original transform used a double-precision
+ * cosine sum, which is fine on the dev host but pins the m68k target on its
+ * (optional, slow) FPU for the single hottest routine in the decoder.  This
+ * replacement uses a scaled-integer cosine matrix -- no floating point in the
+ * per-block path at all -- and sparse fast paths that skip the many all-zero
+ * rows typical of coded blocks.  The rounding matches the float reference to
+ * within +/-1 on the conformance fixture, which itself sits well inside the
+ * ffmpeg tolerance. */
+#define IDCT_P 13                        /* cosine-matrix fractional bits    */
+#define IDCT_SHIFT (2 * IDCT_P + 2)      /* two passes + the 1/4 IDCT norm    */
+static int32_t idct_tab[8][8];           /* idct_tab[u][x] = c(u)cos()*2^P    */
 static int idct_ready;
 
 static void idct_init(void)
 {
     int u, x;
     for (u = 0; u < 8; u++)
-        for (x = 0; x < 8; x++)
-            idct_cos[u][x] =
-                cos((2.0 * x + 1.0) * u * 3.14159265358979323846 / 16.0);
+        for (x = 0; x < 8; x++) {
+            double c = u ? 1.0 : 0.70710678118654752440;
+            double v = c * cos((2.0 * x + 1.0) * u *
+                               3.14159265358979323846 / 16.0);
+            idct_tab[u][x] = (int32_t)(v * (double)(1 << IDCT_P) +
+                                       (v >= 0 ? 0.5 : -0.5));
+        }
     idct_ready = 1;
+}
+
+/* Round acc / 2^IDCT_SHIFT half-away-from-zero, matching the old float path. */
+static int idct_round(int64_t acc)
+{
+    int64_t half = (int64_t)1 << (IDCT_SHIFT - 1);
+    return acc >= 0 ? (int)((acc + half) >> IDCT_SHIFT)
+                    : -(int)((-acc + half) >> IDCT_SHIFT);
 }
 
 static void idct_8x8(const int in[8][8], int out[8][8])
 {
-    double tmp[8][8];
-    const double s = 0.5;
-    const double c0 = 0.70710678118654752440;
+    int32_t tmp[8][8];
+    int rowmask = 0;                     /* bit v set => tmp row v nonzero    */
     int u, x, v, y;
 
     if (!idct_ready)
         idct_init();
+
+    /* Pass 1: horizontal transform of each nonzero input row. */
     for (v = 0; v < 8; v++) {
+        const int *ir = in[v];
+        if (!(ir[0] | ir[1] | ir[2] | ir[3] |
+              ir[4] | ir[5] | ir[6] | ir[7]))
+            continue;                    /* tmp row stays implicitly zero     */
+        rowmask |= 1 << v;
         for (x = 0; x < 8; x++) {
-            double a = 0;
+            int32_t a = 0;
             for (u = 0; u < 8; u++)
-                a += (u ? 1.0 : c0) * in[v][u] * idct_cos[u][x];
-            tmp[v][x] = s * a;
+                a += ir[u] * idct_tab[u][x];
+            tmp[v][x] = a;
         }
     }
+
+    if (rowmask == 0) {                  /* wholly zero block                 */
+        for (y = 0; y < 8; y++)
+            for (x = 0; x < 8; x++)
+                out[y][x] = 0;
+        return;
+    }
+    if (rowmask == 1) {                  /* only row 0 (DC / horizontal) set  */
+        for (x = 0; x < 8; x++)
+            for (y = 0; y < 8; y++)
+                out[y][x] = idct_round((int64_t)tmp[0][x] * idct_tab[0][y]);
+        return;
+    }
+
+    /* Pass 2: vertical transform, accumulating over nonzero rows only. */
     for (x = 0; x < 8; x++) {
         for (y = 0; y < 8; y++) {
-            double a = 0;
-            double r;
+            int64_t a = 0;
             for (v = 0; v < 8; v++)
-                a += (v ? 1.0 : c0) * tmp[v][x] * idct_cos[v][y];
-            r = s * a;
-            out[y][x] = r >= 0 ? (int)(r + 0.5) : -(int)(-r + 0.5);
+                if (rowmask & (1 << v))
+                    a += (int64_t)tmp[v][x] * idct_tab[v][y];
+            out[y][x] = idct_round(a);
         }
     }
 }
@@ -396,7 +464,30 @@ static void mc_block(const uint8_t *ref, int w, int h, int stride,
 {
     int ix = floor_div(mvx, 2), iy = floor_div(mvy, 2);
     int hx = mvx - ix * 2, hy = mvy - iy * 2;
+    int bx = px + ix, by = py + iy;
     int y, x;
+
+    /* Fast path: the whole 8x8 fetch window (plus the +1 half-pel neighbour)
+     * lands inside the frame, so no per-pixel edge clamp is needed. */
+    if (bx >= 0 && by >= 0 &&
+        bx + 8 + (hx ? 1 : 0) <= w && by + 8 + (hy ? 1 : 0) <= h) {
+        const uint8_t *base = ref + (size_t)by * stride + bx;
+        for (y = 0; y < 8; y++) {
+            const uint8_t *r = base + (size_t)y * stride;
+            if (!hx && !hy)
+                for (x = 0; x < 8; x++) out[y][x] = r[x];
+            else if (hx && !hy)
+                for (x = 0; x < 8; x++) out[y][x] = (r[x] + r[x + 1] + 1) >> 1;
+            else if (!hx && hy)
+                for (x = 0; x < 8; x++)
+                    out[y][x] = (r[x] + r[x + stride] + 1) >> 1;
+            else
+                for (x = 0; x < 8; x++)
+                    out[y][x] = (r[x] + r[x + 1] +
+                                 r[x + stride] + r[x + stride + 1] + 2) >> 2;
+        }
+        return;
+    }
 
     for (y = 0; y < 8; y++) {
         for (x = 0; x < 8; x++) {
