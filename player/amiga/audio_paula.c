@@ -185,6 +185,19 @@ void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
     }
 }
 
+void audio_write_s16(mr_audio *a, const short *pcm,
+                     unsigned frames, int channels)
+{
+    unsigned k;
+    if (!a || !pcm || channels < 1) return;
+    for (k = 0; k < frames; k++) {
+        int s = pcm[(size_t)k * channels];
+        if (channels >= 2)
+            s = (s + pcm[(size_t)k * channels + 1]) / 2;
+        fifo_push(a, (signed char)(s >> 8));
+    }
+}
+
 void audio_service(mr_audio *a)
 {
     int i;

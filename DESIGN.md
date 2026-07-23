@@ -131,7 +131,9 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 - [ ] Internet streaming (reuse MintAMP's radio_stream + AmiSSL HTTP stack)
 - [ ] Faster output: direct RGB565 / fullscreen RTG / port `RendererCGXInit.i`
 - [~] Paula audio backend + audio-master A/V sync (`audio_paula.c`) - PCM,
-      pending on-hardware verification; MintAMP/Helix for MP2/MP3 later
+      MP2, MP3-in-AVI and AAC-LC-in-MP4. MP3/AAC use the pinned MintAMP/Helix
+      sources through `player/audio/mr_audio_decode.c`; host regression tests
+      pass, pending on-hardware verification.
 - [ ] AGA C2P + dither output (port from `RendererAGAC2P.i`)
 - [ ] MJPEG decoder reusing RiVA's 68k IDCT
 - [ ] seek/loop

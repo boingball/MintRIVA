@@ -1,0 +1,3 @@
+[submodule "player/vendor/MintAMP"]
+	path = player/vendor/MintAMP
+	url = https://github.com/boingball/MintAMP.git

@@ -15,6 +15,7 @@
 #include "../core/mr_demux.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_mpeg1.h"
+#include "../audio/mr_audio_decode.h"
 #include "amiga_display.h"
 #include "mr_audio.h"
 
@@ -45,6 +46,13 @@ static long frame_ticks(unsigned long rate, unsigned long scale)
     if (!rate) return 4;
     t = (long)((50UL * scale + rate / 2) / rate);
     return t < 1 ? 1 : t;
+}
+
+static void decoded_audio_sink(void *user, const int16_t *pcm,
+                               unsigned frames, unsigned channels)
+{
+    audio_write_s16((mr_audio *)user, (const short *)pcm, frames,
+                    (int)channels);
 }
 
 /* MPEG-1 program streams (.mpg/.mpeg) play through pl_mpeg (video + MP2 audio),
@@ -172,6 +180,7 @@ int main(int argc, char **argv)
     mr_decoder dec;
     amiga_display *disp;
     mr_audio *audio = NULL;
+    mr_audio_decoder *audio_dec = NULL;
     mr_packet pkt;
     long ticks;
     int frames = 0;
@@ -236,15 +245,38 @@ int main(int argc, char **argv)
                  mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
 
-    /* Open Paula audio if the file has a PCM track we can convert. */
+    /* PCM feeds Paula directly. MP3/AAC packets go through MintAMP's fixed-
+     * point Helix decoders first; AAC-LC mp4a setup comes from the demuxed ASC. */
     {
         const mr_audio_info *ai = mr_demux_audio(dx);
-        if (ai->valid && (ai->bits == 8 || ai->bits == 16)) {
+        if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM &&
+            (ai->bits == 8 || ai->bits == 16)) {
             audio = audio_open(ai->sample_rate, ai->channels, ai->bits);
             if (audio) printf("audio: Paula out, %lu Hz (src %u-bit %u ch)\n",
                               (unsigned long)ai->sample_rate,
                               (unsigned)ai->bits, (unsigned)ai->channels);
             else       printf("audio: Paula open failed, playing silent\n");
+        } else if (ai->valid &&
+                   (ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
+                    ai->format_tag == MR_AUDIO_FORMAT_AAC)) {
+            audio_dec = mr_audio_decoder_open(ai);
+            if (audio_dec)
+                audio = audio_open(mr_audio_decoder_rate(audio_dec),
+                                   (int)mr_audio_decoder_channels(audio_dec), 16);
+            if (audio && audio_dec)
+                printf("audio: Paula out, %u Hz (%s, %u ch)\n",
+                       mr_audio_decoder_rate(audio_dec),
+                       mr_audio_decoder_name(audio_dec),
+                       mr_audio_decoder_channels(audio_dec));
+            else {
+                printf("audio: unsupported %s setup or Paula open failed, "
+                       "playing silent\n",
+                       ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" : "AAC");
+                if (audio_dec) {
+                    mr_audio_decoder_close(audio_dec);
+                    audio_dec = NULL;
+                }
+            }
         }
     }
 
@@ -270,6 +302,7 @@ int main(int argc, char **argv)
         if (mr_demux_next_packet(dx, &pkt) != MR_OK) {   /* end of stream    */
             if (loop) {
                 mr_demux_rewind(dx);
+                if (audio_dec) mr_audio_decoder_reset(audio_dec);
                 frames = 0;
                 clock_base = audio ? audio_elapsed_ms(audio) : 0;
                 continue;
@@ -277,8 +310,14 @@ int main(int argc, char **argv)
             break;
         }
         if (!pkt.is_video) {
-            if (audio) { audio_write(audio, pkt.data, pkt.len);
-                         audio_service(audio); }
+            if (audio) {
+                if (audio_dec)
+                    mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
+                                          decoded_audio_sink, audio);
+                else
+                    audio_write(audio, pkt.data, pkt.len);
+                audio_service(audio);
+            }
             continue;
         }
         if (pkt.len == 0) continue;
@@ -379,6 +418,7 @@ int main(int argc, char **argv)
         Delay(2);
     }
 
+    if (audio_dec) mr_audio_decoder_close(audio_dec);
     if (audio) audio_close(audio);
     display_close(disp);
     mr_decoder_close(&dec);

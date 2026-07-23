@@ -48,6 +48,78 @@ static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
                                     const uint8_t *end, int is_video,
                                     int coalesce_chunks);
 
+/* ISO/IEC 14496 descriptor lengths use up to four base-128 bytes. */
+static int descriptor_header(const uint8_t *p, const uint8_t *end,
+                             uint8_t *tag, const uint8_t **body,
+                             const uint8_t **body_end)
+{
+    uint32_t n = 0;
+    int i;
+    if (p >= end) return 0;
+    *tag = *p++;
+    for (i = 0; i < 4; i++) {
+        uint8_t b;
+        if (p >= end) return 0;
+        b = *p++;
+        n = (n << 7) | (uint32_t)(b & 0x7f);
+        if (!(b & 0x80)) {
+            if ((uint64_t)(end - p) < n) return 0;
+            *body = p;
+            *body_end = p + n;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Find DecoderSpecificInfo (tag 0x05) inside an ESDS descriptor tree. */
+static int find_decoder_config(const uint8_t *p, const uint8_t *end,
+                               const uint8_t **cfg, uint32_t *cfg_len,
+                               int depth)
+{
+    while (p < end && depth < 4) {
+        uint8_t tag;
+        const uint8_t *body, *body_end, *child;
+        if (!descriptor_header(p, end, &tag, &body, &body_end)) return 0;
+        if (tag == 0x05) {
+            *cfg = body;
+            *cfg_len = (uint32_t)(body_end - body);
+            return 1;
+        }
+
+        child = body;
+        if (tag == 0x03) {              /* ES_Descriptor */
+            uint8_t flags;
+            if (child + 3 > body_end) goto next;
+            child += 2; flags = *child++;
+            if (flags & 0x80) {                 /* dependsOn_ES_ID */
+                if (body_end - child < 2) goto next;
+                child += 2;
+            }
+            if (flags & 0x40) {                 /* URL */
+                uint8_t url_len;
+                if (child >= body_end) goto next;
+                url_len = *child++;
+                if (body_end - child < url_len) goto next;
+                child += url_len;
+            }
+            if (flags & 0x20) {                 /* OCR_ES_ID */
+                if (body_end - child < 2) goto next;
+                child += 2;
+            }
+        } else if (tag == 0x04) {       /* DecoderConfigDescriptor */
+            if (body_end - child < 13) goto next;
+            child += 13;
+        }
+        if (child <= body_end &&
+            find_decoder_config(child, body_end, cfg, cfg_len, depth + 1))
+            return 1;
+next:
+        p = body_end;
+    }
+    return 0;
+}
+
 /* sort interleaved segments by ascending file offset */
 static int cmp_off(const void *a, const void *b)
 {
@@ -179,9 +251,12 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz)
     uint32_t sz;
     const uint8_t *stsd = find_atom(stbl, stbl + stbl_sz,
                                     T('s','t','s','d'), &sz);
-    if (!stsd || sz < 36) return;
+    if (!stsd || sz < 44) return;
     const uint8_t *e = stsd + 8;                /* audio sample entry       */
+    uint32_t entry_sz = rb32(e);
     uint32_t fmt = rb32(e + 4);
+    uint16_t version = rb16(e + 16);
+    if (entry_sz < 36 || entry_sz > sz - 8) return;
     m->audio.channels    = rb16(e + 24);
     m->audio.bits        = rb16(e + 26);
     m->audio.sample_rate = rb32(e + 32) >> 16;  /* 16.16 fixed              */
@@ -189,11 +264,46 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz)
     if (fmt == T('s','o','w','t') || fmt == T('t','w','o','s') ||
         fmt == T('r','a','w',' ') || fmt == T('l','p','c','m') ||
         fmt == T('i','n','2','4') || fmt == T('i','n','3','2'))
-        m->audio.format_tag = 0x0001;
+        m->audio.format_tag = MR_AUDIO_FORMAT_PCM;
+    else if (fmt == T('.','m','p','3'))
+        m->audio.format_tag = MR_AUDIO_FORMAT_MP3;
+    else if (fmt == T('m','p','4','a')) {
+        const uint8_t *entry_end;
+        const uint8_t *child;
+        const uint8_t *esds, *cfg;
+        uint32_t esds_sz, cfg_len;
+        m->audio.format_tag = MR_AUDIO_FORMAT_AAC;
+
+        entry_end = e + entry_sz;
+        child = e + 36;
+        if (version == 1) child += 16;
+        else if (version == 2) child += 36;
+        esds = child <= entry_end
+             ? find_atom(child, entry_end, T('e','s','d','s'), &esds_sz)
+             : NULL;
+        if (!esds && child <= entry_end) {
+            uint32_t wave_sz;
+            const uint8_t *wave = find_atom(child, entry_end,
+                                            T('w','a','v','e'), &wave_sz);
+            if (wave)
+                esds = find_atom(wave, wave + wave_sz,
+                                 T('e','s','d','s'), &esds_sz);
+        }
+        /* esds starts with version/flags, followed by MPEG-4 descriptors. */
+        if (esds && esds_sz >= 4 &&
+            find_decoder_config(esds + 4, esds + esds_sz,
+                                &cfg, &cfg_len, 0)) {
+            if (cfg_len > MR_AUDIO_CONFIG_MAX) cfg_len = MR_AUDIO_CONFIG_MAX;
+            memcpy(m->audio.config, cfg, cfg_len);
+            m->audio.config_len = (uint8_t)cfg_len;
+        }
+    }
     m->audio.valid = 1;
 
-    /* index the audio track's data too, coalesced per chunk */
-    read_stbl_segments(m, stbl, stbl + stbl_sz, 0 /*audio*/, 1 /*per-chunk*/);
+    /* Compressed access units must keep their sample boundaries.  PCM remains
+     * coalesced per chunk to avoid flooding the player with tiny packets. */
+    read_stbl_segments(m, stbl, stbl + stbl_sz, 0 /*audio*/,
+                       m->audio.format_tag == MR_AUDIO_FORMAT_PCM);
 }
 
 static void parse_trak(mr_mov *m, const uint8_t *trak, uint32_t trak_sz)

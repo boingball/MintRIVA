@@ -10,6 +10,16 @@ CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
            core/mr_mpeg4.c
 TESTSRC  = tests/mr_decode.c
+MINTAMP_ROOT ?= vendor/MintAMP
+MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
+              $(wildcard $(MINTAMP_ROOT)/real/*.c)
+MINTAMP_AAC_ALL = $(wildcard $(MINTAMP_ROOT)/decoders/aac/*.c)
+MINTAMP_AAC = $(filter-out $(wildcard $(MINTAMP_ROOT)/decoders/aac/sbr*.c), \
+                           $(MINTAMP_AAC_ALL))
+MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
+                -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
+                -I$(MINTAMP_ROOT)/decoders/aac \
+                -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
 HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
@@ -21,6 +31,16 @@ all: mr_decode
 # pl_mpeg (in mr_mpeg1.c) uses libm; MR_HAVE_MPEG1 enables the harness path.
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS)
 	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE) -lm
+
+mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c \
+                audio/mr_audio_decode.h $(CORE)
+	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
+	      -f $(MINTAMP_ROOT)/decoders/aac/aacdec.h || { \
+	  echo "ERROR: initialise the MintAMP submodule first:"; \
+	  echo "  git submodule update --init --recursive"; exit 1; }
+	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ \
+	    tests/mr_audio_check.c audio/mr_audio_decode.c $(CORE) \
+	    $(MINTAMP_MP3) $(MINTAMP_AAC) -lm
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
@@ -56,7 +76,13 @@ check: mr_decode
 	@echo "[raw MPEG-4 Part 2]"
 	./mr_decode tests/assets/test_raw_mpeg4.m4v --check tests/assets/ref_raw_mpeg4
 
-clean:
-	rm -f mr_decode
+check-audio: mr_audio_check
+	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
+	    || sh tests/gen_audio_assets.sh
+	./mr_audio_check tests/assets/test_mp3.avi mp3
+	./mr_audio_check tests/assets/test_aac.mp4 aac
 
-.PHONY: all check clean
+clean:
+	rm -f mr_decode mr_audio_check
+
+.PHONY: all check check-audio clean

@@ -7,8 +7,8 @@
  * 8-bit mono and double-buffers it out. Its played-milliseconds counter is the
  * A/V master clock.
  *
- * Compressed audio (MP2/MP3) will decode via MintAMP/libhelix to PCM and feed
- * this same sink; today's files are PCM so no decode is needed.
+ * MP2, MP3 and AAC decode to PCM before feeding this same sink.  MP3/AAC use
+ * MintAMP/libhelix through the packet adapter in player/audio/.
  */
 #ifndef MR_AUDIO_H
 #define MR_AUDIO_H
@@ -21,6 +21,10 @@ mr_audio     *audio_open(unsigned rate, int channels, int bits);
 
 /* Convert and enqueue a source-PCM buffer (a demuxer audio packet). */
 void          audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes);
+
+/* Enqueue native-endian signed 16-bit PCM produced by MintAMP/Helix. */
+void          audio_write_s16(mr_audio *a, const short *pcm,
+                              unsigned frames, int channels);
 
 /* Pump the double buffer: reap finished writes, submit new ones from the FIFO.
  * Must be called frequently (the player calls it while pacing video). */
