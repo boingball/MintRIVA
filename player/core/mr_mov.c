@@ -146,12 +146,25 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
     const uint8_t *stsd = find_atom(stbl, end, T('s','t','s','d'), &sz);
     if (stsd && sz >= 16) {
         const uint8_t *e = stsd + 8;            /* skip ver/flags + count   */
+        uint32_t entry_sz = rb32(e);
         /* codec 4CC is stored big-endian at entry+4; pack it the same way the
          * registry does (MR_FOURCC), so 'cvid' matches mr_codec_cinepak. */
         m->video.fourcc = MR_FOURCC(e[4], e[5], e[6], e[7]);
         m->video.width  = rb16(e + 32);
         m->video.height = rb16(e + 34);
         m->video.valid  = 1;
+        /* VisualSampleEntry is 86 bytes including size/type.  H.264 stores
+         * DecoderConfigurationRecord as a child avcC atom after it. */
+        if (m->video.fourcc == MR_FOURCC('a','v','c','1') &&
+            entry_sz >= 94 && entry_sz <= sz - 8) {
+            uint32_t avcc_sz;
+            const uint8_t *avcc = find_atom(e + 86, e + entry_sz,
+                                            T('a','v','c','C'), &avcc_sz);
+            if (avcc && avcc_sz >= 7) {
+                m->video.config = avcc;
+                m->video.config_len = avcc_sz;
+            }
+        }
     }
     /* frame rate: mdhd timescale over first stts delta */
     {

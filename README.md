@@ -23,6 +23,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42 decoders | ✅ ffmpeg-validated |
+| H.264 High Profile (`avc1`, CABAC, B-frames) | ✅ libavc; ffmpeg-validated |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
 | PCM / MP2 / MP3 / AAC-LC audio to Paula | ✅ host-validated; hardware test pending for MP3/AAC |
@@ -32,6 +33,9 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 The `player/core` code is plain C99 with no Amiga dependencies, so it builds and
 is validated on a normal machine before it ever meets a 68k toolchain.
 
+The H.264 tier uses GCC (including the m68k GCC build); the legacy vbcc target
+continues to build the lighter codecs without libavc.
+
 ```sh
 git submodule update --init --recursive
 cd player
@@ -40,7 +44,7 @@ make check      # decodes a Cinepak clip and diffs against ffmpeg (needs ffmpeg)
 make check-audio # decodes MP3-in-AVI and AAC-LC-in-MP4 through MintAMP/Helix
 ```
 
-Inspect or dump any AVI:
+Inspect or dump any AVI/MOV/MP4:
 
 ```sh
 ./mr_decode file.avi                 # stream info + frame count
@@ -64,5 +68,6 @@ player/vendor/       pinned build dependencies (git submodules)
 
 RiVA is GPL-2.0 (`src/gpl-2.0.txt`); its AGA/CGX renderers are dual GPL/MIT. New
 MintRIVA code inherits GPL-2.0 to stay compatible with the RiVA reference it
-draws on. MintAMP/Helix remains separately licensed in its pinned submodule;
-retain its notices when distributing source or binaries.
+draws on. MintAMP/Helix and Apache-2.0 Ittiam libavc remain separately licensed
+in their pinned submodules; retain their notices when distributing source or
+binaries.

@@ -234,7 +234,8 @@ int main(int argc, char **argv)
     if (!codec) { printf("no decoder for this video codec\n");
                   mr_demux_close(dx); free(buf); return 10; }
 
-    if (mr_decoder_open(&dec, codec, vi->width, vi->height) != MR_OK) {
+    if (mr_decoder_open_config(&dec, codec, vi->width, vi->height,
+                               vi->config, vi->config_len) != MR_OK) {
         printf("decoder init failed\n");
         mr_demux_close(dx); free(buf); return 10;
     }

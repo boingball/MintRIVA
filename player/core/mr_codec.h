@@ -36,6 +36,8 @@ struct mr_decoder {
     const mr_codec *codec;
     int             width;
     int             height;
+    const uint8_t  *config;  /* borrowed container decoder setup (e.g. avcC) */
+    uint32_t        config_len;
     mr_frame        frame;   /* filled in by decode()                       */
     void           *priv;    /* decoder-private state                       */
 };
@@ -45,6 +47,9 @@ const mr_codec *mr_codec_find(uint32_t fourcc);
 
 mr_status mr_decoder_open(mr_decoder *dec, const mr_codec *codec,
                           int width, int height);
+mr_status mr_decoder_open_config(mr_decoder *dec, const mr_codec *codec,
+                                 int width, int height,
+                                 const uint8_t *config, uint32_t config_len);
 mr_status mr_decoder_decode(mr_decoder *dec, const uint8_t *data, uint32_t len);
 /* Drain one reordered frame at end of stream (MR_EAGAIN when none left). */
 mr_status mr_decoder_flush(mr_decoder *dec);
@@ -55,5 +60,8 @@ extern const mr_codec mr_codec_cinepak;
 extern const mr_codec mr_codec_mjpeg;
 extern const mr_codec mr_codec_mpeg4;
 extern const mr_codec mr_codec_msmpeg4v2;
+#ifdef MR_HAVE_H264
+extern const mr_codec mr_codec_h264;
+#endif
 
 #endif /* MR_CODEC_H */

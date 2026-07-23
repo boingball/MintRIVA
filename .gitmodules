@@ -1,3 +1,6 @@
 [submodule "player/vendor/MintAMP"]
 	path = player/vendor/MintAMP
 	url = https://github.com/boingball/MintAMP.git
+[submodule "player/vendor/libavc"]
+	path = player/vendor/libavc
+	url = https://github.com/ittiam-systems/libavc.git

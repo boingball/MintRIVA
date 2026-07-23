@@ -4,11 +4,17 @@
 
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -g
+include vendor/libavc_port/libavc.mk
+CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
+           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
+           -Wno-unused-but-set-variable -Wno-sign-compare \
+           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
-           core/mr_mpeg4.c core/mr_msmpeg4v2.c
+           core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h264.c \
+           $(LIBAVC_SRC)
 TESTSRC  = tests/mr_decode.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
@@ -24,12 +30,12 @@ HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
            core/mr_mpeg1.h core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
-           core/mr_msmpeg4v2.h core/mr_types.h
+           core/mr_msmpeg4v2.h core/mr_h264.h core/mr_types.h
 
 all: mr_decode
 
 # pl_mpeg (in mr_mpeg1.c) uses libm; MR_HAVE_MPEG1 enables the harness path.
-mr_decode: $(TESTSRC) $(CORE) $(HEADERS)
+mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
 	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE) -lm
 
 mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c \
@@ -41,6 +47,12 @@ mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c \
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ \
 	    tests/mr_audio_check.c audio/mr_audio_decode.c $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) -lm
+mr_audio_check: | check-libavc
+
+check-libavc:
+	@test -f $(LIBAVC_ROOT)/decoder/ih264d.h || { \
+	  echo "ERROR: initialise the libavc submodule first:"; \
+	  echo "  git submodule update --init --recursive"; exit 1; }
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
@@ -50,6 +62,7 @@ check: mr_decode
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
 	    && test -d tests/assets/ref_mp42 \
+	    && test -d tests/assets/ref_h264_high \
 	    && test -d tests/assets/ref_opendivx_legacy \
 	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
 	    && test -d tests/assets/ref_raw_mpeg4 \
@@ -70,6 +83,8 @@ check: mr_decode
 	./mr_decode tests/assets/test_mp4v_sp.avi --check tests/assets/ref_mp4v_sp
 	@echo "[Microsoft MPEG-4 v2 / MP42]"
 	./mr_decode tests/assets/test_mp42.avi --check tests/assets/ref_mp42
+	@echo "[H.264 High Profile avc1 + B-frames]"
+	./mr_decode tests/assets/test_h264_high.mp4 --check tests/assets/ref_h264_high
 	@echo "[MPEG-4 Part 2 legacy OpenDivX AVI]"
 	./mr_decode tests/assets/test_opendivx_legacy.avi --check tests/assets/ref_opendivx_legacy
 	@echo "[MPEG-4 Part 2 quarter-pel]"
@@ -88,4 +103,4 @@ check-audio: mr_audio_check
 clean:
 	rm -f mr_decode mr_audio_check
 
-.PHONY: all check check-audio clean
+.PHONY: all check check-audio check-libavc clean

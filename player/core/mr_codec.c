@@ -8,6 +8,9 @@ static const mr_codec *const g_codecs[] = {
     &mr_codec_mjpeg,
     &mr_codec_mpeg4,
     &mr_codec_msmpeg4v2,
+#ifdef MR_HAVE_H264
+    &mr_codec_h264,
+#endif
     /* more decoders slot in here: mpeg1, ... */
 };
 
@@ -27,11 +30,20 @@ const mr_codec *mr_codec_find(uint32_t fourcc)
 mr_status mr_decoder_open(mr_decoder *dec, const mr_codec *codec,
                           int width, int height)
 {
+    return mr_decoder_open_config(dec, codec, width, height, NULL, 0);
+}
+
+mr_status mr_decoder_open_config(mr_decoder *dec, const mr_codec *codec,
+                                 int width, int height,
+                                 const uint8_t *config, uint32_t config_len)
+{
     if (!dec || !codec || width <= 0 || height <= 0)
         return MR_ERR;
     dec->codec  = codec;
     dec->width  = width;
     dec->height = height;
+    dec->config = config;
+    dec->config_len = config_len;
     dec->priv   = NULL;
     dec->frame.data = NULL;
     return codec->open(dec);

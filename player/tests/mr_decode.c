@@ -161,7 +161,8 @@ int main(int argc, char **argv)
                   mr_demux_close(dx); free(buf); return 1; }
 
     mr_decoder dec;
-    if (mr_decoder_open(&dec, codec, vi->width, vi->height) != MR_OK) {
+    if (mr_decoder_open_config(&dec, codec, vi->width, vi->height,
+                               vi->config, vi->config_len) != MR_OK) {
         fprintf(stderr, "decoder open failed\n");
         mr_demux_close(dx); free(buf); return 1;
     }
