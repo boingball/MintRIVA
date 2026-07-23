@@ -19,11 +19,12 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 |-----------|-------|
 | Decoder plugin interface + registry | ✅ |
 | Container-agnostic demux (auto-detect) | ✅ |
-| File-backed AVI (RIFF) + QuickTime MOV/MP4 demuxers | ✅ packet-streamed; no whole-file allocation |
+| File-backed AVI, QuickTime MOV/MP4 and MPEG-TS/M2TS demuxers | ✅ packet-streamed; no whole-file allocation |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
 | H.264 High Profile (`avc1`, CABAC, B-frames) | ✅ libavc; ffmpeg-validated |
+| MPEG-TS/M2TS H.264 + ADTS AAC | ✅ 188/192-byte packets; ffmpeg-validated |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
 | PCM / MP2 / MP3 / AAC-LC audio to Paula | ✅ host-validated; hardware test pending for MP3/AAC |
@@ -48,17 +49,19 @@ make check      # decodes a Cinepak clip and diffs against ffmpeg (needs ffmpeg)
 make check-audio # decodes MP3-in-AVI and AAC-LC-in-MP4 through MintAMP/Helix
 ```
 
-Inspect or dump any AVI/MOV/MP4:
+Inspect or dump any AVI/MOV/MP4/TS/M2TS:
 
 ```sh
 ./mr_decode file.avi                 # stream info + frame count
 ./mr_decode file.avi --ppm outdir    # write decoded frames as PPM
 ```
 
-`mrplay` streams AVI and MOV/MP4 packets from disk. Its RAM use is therefore
-set by container metadata, the largest compressed packet, and the active
-decoder/display buffers rather than by the media file size. Raw MJPEG/M4V and
-MPEG-1 program streams still use the original whole-file input path.
+`mrplay` streams AVI, MOV/MP4 and MPEG-TS/M2TS packets from disk. Its RAM use is
+therefore set by container metadata, the largest compressed packet, and the
+active decoder/display buffers rather than by the media file size. TS currently
+supports AVC/H.264 video with ADTS AAC audio; MPEG-2 video and AC3 are not
+decoded. Raw MJPEG/M4V and MPEG-1 program streams still use the original
+whole-file input path.
 
 ## Layout
 

@@ -42,6 +42,13 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v libx264 -profile:v high -level:v 2.0 -pix_fmt yuv420p \
     -g 12 -bf 2 -refs 1 -crf 22 \
     -c:a aac -profile:a aac_low -b:a 64k -shortest test_h264_high.mp4 -y
+# Remux the exact H.264/AAC packets into 188-byte broadcast TS and 192-byte
+# Blu-ray-style M2TS. These exercise Annex-B/PES assembly and ADTS AAC without
+# introducing another encoder reference.
+ffmpeg -v error -i test_h264_high.mp4 -c copy \
+    -f mpegts test_h264_aac.ts -y
+ffmpeg -v error -i test_h264_high.mp4 -c copy -mpegts_m2ts_mode 1 \
+    -f mpegts test_h264_aac.m2ts -y
 # Early OpenDivX AVI variant: numeric biCompression=4, 'divx' handler, and no
 # VOL header in the bitstream. This reproduces Xmen-OpenDivX-200-slow.avi.
 python3 ../make_legacy_opendivx.py test_mp4v_sp.avi test_opendivx_legacy.avi

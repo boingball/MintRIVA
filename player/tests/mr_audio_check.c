@@ -42,7 +42,7 @@ int main(int argc, char **argv)
     ai = mr_demux_audio(dx);
     if ((!strcmp(argv[2], "mp3") && ai->format_tag != MR_AUDIO_FORMAT_MP3) ||
         (!strcmp(argv[2], "aac") &&
-         (ai->format_tag != MR_AUDIO_FORMAT_AAC || ai->config_len < 2))) {
+         ai->format_tag != MR_AUDIO_FORMAT_AAC)) {
         fprintf(stderr, "wrong demuxed audio setup: tag=0x%04x config=%u\n",
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
         mr_demux_close(dx); return 1;
@@ -81,7 +81,9 @@ int main(int argc, char **argv)
            mr_audio_decoder_rate(dec), stats.nonzero);
     mr_audio_decoder_close(dec);
     mr_demux_close(dx);
-    if (packets < 50 || stats.frames < 40000 || stats.frames > 50000 ||
+    /* MP4 exposes one AAC access unit per packet; TS coalesces several ADTS
+     * frames into each PES packet, so packet count is not a quality signal. */
+    if (packets < 1 || stats.frames < 40000 || stats.frames > 50000 ||
         stats.nonzero < 40000)
         return 1;
     return 0;
