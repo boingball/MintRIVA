@@ -5,13 +5,13 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -g
 CORE     = core/mr_codec.c core/mr_demux.c core/mr_avi.c core/mr_mov.c \
-           core/mr_raw_mjpeg.c \
+           core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
            core/mr_mpeg4.c
 TESTSRC  = tests/mr_decode.c
 HEADERS  = core/mr_codec.h core/mr_demux.h core/mr_avi.h core/mr_mov.h \
-           core/mr_raw_mjpeg.h \
+           core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
            core/mr_mpeg1.h core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
            core/mr_types.h
@@ -31,6 +31,7 @@ check: mr_decode
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
 	    && test -d tests/assets/ref_opendivx_legacy \
 	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
+	    && test -d tests/assets/ref_raw_mpeg4 \
 	    || sh tests/gen_assets.sh
 	@echo "[Cinepak AVI]"
 	./mr_decode tests/assets/test_cinepak.avi --check tests/assets/ref_cinepak
@@ -52,6 +53,8 @@ check: mr_decode
 	./mr_decode tests/assets/test_mp4v_qpel.avi --check tests/assets/ref_mp4v_qpel
 	@echo "[MPEG-4 Part 2 B-VOPs]"
 	./mr_decode tests/assets/test_mp4v_b.avi --check tests/assets/ref_mp4v_b
+	@echo "[raw MPEG-4 Part 2]"
+	./mr_decode tests/assets/test_raw_mpeg4.m4v --check tests/assets/ref_raw_mpeg4
 
 clean:
 	rm -f mr_decode

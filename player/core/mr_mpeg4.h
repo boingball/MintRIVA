@@ -20,6 +20,12 @@
 
 #include "mr_codec.h"
 
+/* Probe a raw MPEG-4 Visual elementary stream's VOL header. Returns non-zero
+ * and fills geometry/timing when the stream uses features this decoder can
+ * parse. Raw streams without fixed timing default to 25 fps. */
+int mr_mpeg4_probe(const uint8_t *data, size_t len, int *width, int *height,
+                   uint32_t *rate, uint32_t *scale);
+
 extern const mr_codec mr_codec_mpeg4;
 
 #endif /* MR_MPEG4_H */

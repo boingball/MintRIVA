@@ -94,6 +94,7 @@ typedef struct {
     int      shape;                 /* 0 = rectangular                      */
     int      time_inc_bits;
     unsigned time_res;              /* vop_time_increment_resolution         */
+    unsigned fixed_vop_inc;         /* 0 for variable-rate streams           */
     int      interlaced;
     int      sprite_enable;         /* 0 none, 1 static, 2 GMC              */
     int      quant_type;            /* 0 = H.263, 1 = MPEG (matrices)       */
@@ -220,9 +221,9 @@ static int parse_vol(m4_ctx *c, bitreader *b)
       int nb = 1; while ((1 << nb) < (int)res) nb++;
       c->time_inc_bits = nb; c->time_res = res ? res : 1; }
     br_bits(b, 1);                                   /* marker                 */
-    if (br_bits(b, 1)) {                             /* fixed_vop_rate         */
-        br_bits(b, c->time_inc_bits);                /* fixed_vop_time_incr    */
-    }
+    c->fixed_vop_inc = 0;
+    if (br_bits(b, 1))                              /* fixed_vop_rate         */
+        c->fixed_vop_inc = br_bits(b, c->time_inc_bits);
     /* rectangular shape: width/height */
     br_bits(b, 1);                                   /* marker                 */
     c->w = br_bits(b, 13);
@@ -280,6 +281,38 @@ static int parse_vol(m4_ctx *c, bitreader *b)
                 c->sprite_enable, c->quant_type, c->quarter_sample,
                 c->quant_precision, c->resync_disable, c->data_partitioned);
     return MR_OK;
+}
+
+int mr_mpeg4_probe(const uint8_t *data, size_t len, int *width, int *height,
+                   uint32_t *rate, uint32_t *scale)
+{
+    m4_ctx c;
+    bitreader br;
+    int id;
+
+    if (!data || !width || !height || !rate || !scale ||
+        len < 8 || len > 0x7fffffffUL)
+        return 0;
+    memset(&c, 0, sizeof c);
+    br_init(&br, data, (int)len);
+
+    while ((id = next_start_code(&br)) >= 0) {
+        if (id >= 0x20 && id <= 0x2f) {
+            if (parse_vol(&c, &br) != MR_OK || !c.have_vol)
+                return 0;
+            *width = c.w;
+            *height = c.h;
+            if (c.fixed_vop_inc) {
+                *rate = c.time_res;
+                *scale = c.fixed_vop_inc;
+            } else {
+                *rate = 25;            /* raw stream carries no other clock */
+                *scale = 1;
+            }
+            return c.w > 0 && c.h > 0;
+        }
+    }
+    return 0;
 }
 
 /* Early OpenDivX/DivX4 AVI files may omit the VOL header entirely and start

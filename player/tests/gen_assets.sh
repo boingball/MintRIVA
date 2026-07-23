@@ -35,6 +35,9 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=1 \
     -c:v mpeg4 -bf 0 -flags +qpel -qscale:v 4 test_mp4v_qpel.avi -y
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v mpeg4 -bf 2 -qscale:v 4 test_mp4v_b.avi -y
+# Raw MPEG-4 Visual elementary stream: VOL + one VOP sequence, no container.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=1 \
+    -c:v mpeg4 -bf 2 -qscale:v 4 -f m4v test_raw_mpeg4.m4v -y
 
 # Ground-truth frames, decoded by ffmpeg's own Cinepak decoder (per container,
 # since ffmpeg re-encodes the Cinepak stream separately for each).
@@ -59,5 +62,8 @@ rm -rf ref_mp4v_qpel && mkdir -p ref_mp4v_qpel
 ffmpeg -v error -i test_mp4v_qpel.avi ref_mp4v_qpel/f%03d.ppm -y
 rm -rf ref_mp4v_b && mkdir -p ref_mp4v_b
 ffmpeg -v error -i test_mp4v_b.avi ref_mp4v_b/f%03d.ppm -y
+rm -rf ref_raw_mpeg4 && mkdir -p ref_raw_mpeg4
+ffmpeg -v error -f m4v -framerate 25 -i test_raw_mpeg4.m4v \
+    ref_raw_mpeg4/f%03d.ppm -y
 
 echo "fixtures regenerated in $(pwd)"
