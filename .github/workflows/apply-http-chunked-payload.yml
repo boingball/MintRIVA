@@ -1,0 +1,32 @@
+name: Apply HTTP chunked payload
+
+on:
+  push:
+    branches:
+      - fix/http-chunked-range
+    paths:
+      - .patch-payload/ready
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct and commit HTTP changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .patch-payload/mr_http.* | base64 -d | gzip -d > player/core/mr_http.c
+          cat .patch-payload/http_fixture_server.* | base64 -d | gzip -d > player/tests/http_fixture_server.py
+          cat .patch-payload/run_http_check.* | base64 -d | gzip -d > player/tests/run_http_check.sh
+          chmod +x player/tests/http_fixture_server.py player/tests/run_http_check.sh
+          rm -rf .patch-payload
+          rm -f .github/workflows/apply-http-chunked-payload.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add player/core/mr_http.c player/tests/http_fixture_server.py player/tests/run_http_check.sh .github/workflows/apply-http-chunked-payload.yml .patch-payload
+          git commit -m "Support chunked HTTP range responses"
+          git push
