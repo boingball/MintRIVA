@@ -156,12 +156,24 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                frames, (unsigned long)(t_dec * 1000 / CLOCKS_PER_SEC),
                (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC), e, bl);
     }
-    if (audio) { int g = 0; while (!audio_starved(audio) && g++ < 4000) {
-                    audio_service(audio); Delay(1); } }
-    printf("played %d frames - press ESC or close the window to exit\n", frames);
-    while (display_poll_event(disp) != MR_EV_QUIT) {
-        if (audio) audio_service(audio);
-        Delay(2);
+    if (audio) {
+        int g = 0;
+        while (!audio_starved(audio) && g++ < 4000) {
+            if (display_poll_event(disp) == MR_EV_QUIT) {
+                quit = 1;
+                break;
+            }
+            audio_service(audio);
+            Delay(1);
+        }
+    }
+    if (!quit) {
+        printf("played %d frames - press ESC or close the window to exit\n",
+               frames);
+        while (display_poll_event(disp) != MR_EV_QUIT) {
+            if (audio) audio_service(audio);
+            Delay(2);
+        }
     }
     if (audio) audio_close(audio);
     display_close(disp);
@@ -409,14 +421,22 @@ int main(int argc, char **argv)
     if (audio) {
         int guard = 0;
         while (!audio_starved(audio) && guard++ < 4000) {
-            audio_service(audio); Delay(1);
+            if (display_poll_event(disp) == MR_EV_QUIT) {
+                quit = 1;
+                break;
+            }
+            audio_service(audio);
+            Delay(1);
         }
     }
 
-    printf("played %d frames - press ESC or close the window to exit\n", frames);
-    while (display_poll_event(disp) != MR_EV_QUIT) {
-        if (audio) audio_service(audio);
-        Delay(2);
+    if (!quit) {
+        printf("played %d frames - press ESC or close the window to exit\n",
+               frames);
+        while (display_poll_event(disp) != MR_EV_QUIT) {
+            if (audio) audio_service(audio);
+            Delay(2);
+        }
     }
 
     if (audio_dec) mr_audio_decoder_close(audio_dec);
