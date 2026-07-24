@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #endif
@@ -52,18 +53,31 @@
 #define HTTP_HEADER_MAX   16384
 #define HTTP_REQUEST_MAX   1536
 #define HTTP_CHUNK_LINE_MAX 128
+/* Read-ahead / rewind window. Presentation-order delivery makes streaming
+ * alternate reads between a file's video-chunk and audio-chunk regions, and the
+ * proactive drain below keeps this window filled forward so playback runs from
+ * RAM instead of blocking on the network. Bigger = more cushion against network
+ * jitter; override with -DHTTP_CACHE_SIZE for memory-tight or streaming-heavy
+ * builds (e.g. 8 MB on a big-memory machine). */
 #ifndef HTTP_CACHE_SIZE
-/* Read-ahead / rewind window. The demuxer delivers samples in presentation
- * order (fine A/V interleave), so streaming alternates reads between a file's
- * video-chunk region and its time-matched audio-chunk region. This window must
- * comfortably span the lag between them; the read-ahead below keeps it filled
- * forward so those alternating reads hit RAM instead of reconnecting. */
-#define HTTP_CACHE_SIZE  (1024UL * 1024)
+#define HTTP_CACHE_SIZE  (4096UL * 1024)
 #endif
-/* How far ahead of the caller's request each network read pulls, so a burst of
- * interleaved reads is served from one contiguous fetch rather than many. */
-#ifndef HTTP_READAHEAD
-#define HTTP_READAHEAD   (256UL * 1024)
+/* Minimum forward window kept ahead of the caller by a (blocking) read, enough
+ * to span the video/audio chunk lag so interleaved reads never reconnect. */
+#ifndef HTTP_MIN_WINDOW
+#define HTTP_MIN_WINDOW  (512UL * 1024)
+#endif
+/* Keep at least this much already-read data behind the newest request so the
+ * trailing (video) read still hits the window after the leading (audio) read
+ * has advanced; must exceed the chunk lag. */
+#ifndef HTTP_BACK_WINDOW
+#define HTTP_BACK_WINDOW (512UL * 1024)
+#endif
+/* Only compact the cache once this much can be dropped, so the memmove that
+ * slides the linear buffer runs rarely (a few times a second at most) instead
+ * of per packet - important on 68k where memory bandwidth is scarce. */
+#ifndef HTTP_TRIM_MIN
+#define HTTP_TRIM_MIN    (512UL * 1024)
 #endif
 #define HTTP_REDIRECT_MAX     5
 #define HTTP_IO_RETRIES        2
@@ -111,6 +125,7 @@ typedef struct {
     unsigned char *cache;
     size_t cache_start;
     size_t cache_len;
+    size_t max_read;            /* highest byte the demuxer has asked for      */
 } http_source;
 
 static int ascii_tolower(int c)
@@ -410,6 +425,12 @@ static int connect_socket(http_source *h, const http_url *url)
                (const char *)&timeout, sizeof timeout);
     setsockopt(h->sock, SOL_SOCKET, SO_SNDTIMEO,
                (const char *)&timeout, sizeof timeout);
+    /* Ask the stack to buffer a big chunk of stream while the player is off
+     * decoding/pacing, so the proactive drain has plenty to pull in without
+     * blocking. Best-effort: the stack may clamp it. */
+    { int rcv = 1 << 20;
+      setsockopt(h->sock, SOL_SOCKET, SO_RCVBUF,
+                 (const char *)&rcv, sizeof rcv); }
     memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET;
     sa.sin_port = htons(url->port);
@@ -1079,26 +1100,72 @@ static void cache_store(http_source *h, size_t off,
     h->cache_len = keep;
 }
 
-/* After a network read, keep pulling the open response forward into the cache
- * so the demuxer's presentation-order reads - which hop between a file's video
- * and audio chunk regions - are served from RAM. Without this each hop lands
- * outside the last small read and forces an HTTP range re-request per packet
- * (the "frame - pause - frame - pause" seen when streaming coarsely chunked
- * MP4s). Reads only forward from the current position; cache_store slides the
- * window and drops the oldest bytes once it is full. */
-static void http_readahead(http_source *h)
+/* Is there data to read without blocking? SSL may hold already-decrypted bytes
+ * that select() cannot see, so check that first. */
+static int http_readable(http_source *h)
 {
-    size_t got = 0;
+    fd_set rf;
+    struct timeval tv;
+    if (!h->socket_ready || h->sock < 0) return 0;
+#if MR_HTTP_HAVE_TLS
+    if (h->using_tls && h->ssl && SSL_pending(h->ssl) > 0) return 1;
+#endif
+    FD_ZERO(&rf);
+    FD_SET(h->sock, &rf);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+#if MR_HTTP_AMIGA
+    return WaitSelect(h->sock + 1, &rf, NULL, NULL, &tv, NULL) > 0;
+#else
+    return select(h->sock + 1, &rf, NULL, NULL, &tv) > 0;
+#endif
+}
+
+/* Drop already-consumed bytes off the front of the linear cache, keeping
+ * HTTP_BACK_WINDOW behind the newest request so a trailing (video) read still
+ * hits after the leading (audio) read has moved on. This frees room for the
+ * drain to keep filling forward. */
+static void http_cache_trim(http_source *h)
+{
+    size_t keep_from, drop;
+    if (!h->cache || h->max_read <= HTTP_BACK_WINDOW) return;
+    keep_from = h->max_read - HTTP_BACK_WINDOW;
+    if (keep_from <= h->cache_start) return;
+    drop = keep_from - h->cache_start;
+    if (drop < HTTP_TRIM_MIN) return;              /* batch: rare memmove       */
+    if (drop >= h->cache_len) return;              /* never drop live data     */
+    memmove(h->cache, h->cache + drop, h->cache_len - drop);
+    h->cache_start += drop;
+    h->cache_len   -= drop;
+}
+
+/* Pull the open response forward into the cache. `min_only` fills just up to
+ * HTTP_MIN_WINDOW with blocking reads (so presentation-order reads never fall
+ * outside the window and reconnect); otherwise it also drains whatever the
+ * socket already has - data the OS received while the player was decoding or
+ * pacing - up to the full buffer, without blocking. Reads only forward and
+ * stays contiguous with body_pos. */
+static void http_readahead(http_source *h, int min_only)
+{
     if (!h->socket_ready || !h->cache) return;
     if (h->cache_start + h->cache_len != h->body_pos) return; /* not contiguous */
-    while (got < HTTP_READAHEAD && h->cache_len < HTTP_CACHE_SIZE) {
+    http_cache_trim(h);
+    /* Bootstrap: guarantee a minimum forward window with blocking reads. */
+    while (h->cache_len < HTTP_MIN_WINDOW && h->cache_len < HTTP_CACHE_SIZE) {
         size_t room = HTTP_CACHE_SIZE - h->cache_len;
-        size_t want = HTTP_READAHEAD - got;
-        int n;
-        if (want > room) want = room;
-        n = copy_response_bytes(h, h->cache + h->cache_len, want);
+        int n = copy_response_bytes(h, h->cache + h->cache_len,
+                                    room < 65536 ? room : 65536);
+        if (n <= 0) return;
+        h->cache_len += (size_t)n;
+    }
+    if (min_only) return;
+    /* Proactive: absorb whatever is already waiting on the socket, no block. */
+    while (h->cache_len < HTTP_CACHE_SIZE && http_readable(h)) {
+        size_t room = HTTP_CACHE_SIZE - h->cache_len;
+        int n = copy_response_bytes(h, h->cache + h->cache_len,
+                                    room < 65536 ? room : 65536);
         if (n <= 0) break;
-        h->cache_len += (size_t)n;   /* copy_response_bytes advanced body_pos */
+        h->cache_len += (size_t)n;
     }
 }
 
@@ -1109,7 +1176,13 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
     size_t done = 0;
     int retries = 0;
     if (!len) return 1;
-    if (cache_copy(h, off, out, len)) return 1;
+    if (off + len > h->max_read) h->max_read = off + len;
+    if (cache_copy(h, off, out, len)) {
+        /* Served from RAM: still top up from any socket data that arrived while
+         * the player was busy, so the window stays ahead of playback. */
+        http_readahead(h, 0);
+        return 1;
+    }
 
     /* A demuxer may reread a header that overlaps the current network
      * position (TS's 512-byte sniff versus 188-byte packets). Reuse the cached
@@ -1136,7 +1209,7 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
             return 0;
     }
     cache_store(h, off, out, len);
-    http_readahead(h);
+    http_readahead(h, 0);
     return 1;
 }
 
