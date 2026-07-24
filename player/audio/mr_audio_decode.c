@@ -152,6 +152,10 @@ static int parse_aac_asc(const mr_audio_info *info,
          * but this fixed-point LC path intentionally rejects them cleanly. */
         return 0;
     }
+    /* channelConfiguration 0 defers the channel count to an in-band program
+     * config element; the container's audio entry already carries it (e.g. MOV
+     * stsd), so fall back to that instead of rejecting the stream. */
+    if (*channels == 0) *channels = info->channels;
     if (sf_index >= 13 || *channels < 1 || *channels > 2) return 0;
     *sample_rate = rates[sf_index];
     return 1;
