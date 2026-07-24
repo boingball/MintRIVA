@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct mov_sample { uint32_t off; uint32_t size; uint8_t is_video; };
+struct mov_sample { uint32_t off; uint32_t size; uint32_t t_ms; uint8_t is_video; };
 
 static uint32_t rb32(const uint8_t *p){ return mr_rb32(p); }
 static uint16_t rb16(const uint8_t *p){ return mr_rb16(p); }
@@ -46,7 +46,7 @@ static const uint8_t *find_atom(const uint8_t *p, const uint8_t *end,
 
 static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
                                     const uint8_t *end, int is_video,
-                                    int coalesce_chunks);
+                                    int coalesce_chunks, uint32_t timescale);
 
 /* ISO/IEC 14496 descriptor lengths use up to four base-128 bytes. */
 static int descriptor_header(const uint8_t *p, const uint8_t *end,
@@ -120,12 +120,18 @@ next:
     return 0;
 }
 
-/* sort interleaved segments by ascending file offset */
-static int cmp_off(const void *a, const void *b)
+/* Order for delivery: ascending presentation time, so audio and video stay
+ * finely interleaved even when the file stores them in coarse per-track chunks
+ * (which otherwise starve the single-threaded player's A/V pacing). Ties put
+ * audio first so its buffer leads the video frame it accompanies; the final
+ * tiebreak on offset keeps each track in decode order. */
+static int cmp_time(const void *a, const void *b)
 {
-    uint32_t oa = ((const struct mov_sample *)a)->off;
-    uint32_t ob = ((const struct mov_sample *)b)->off;
-    return (oa > ob) - (oa < ob);
+    const struct mov_sample *sa = (const struct mov_sample *)a;
+    const struct mov_sample *sb = (const struct mov_sample *)b;
+    if (sa->t_ms != sb->t_ms) return (sa->t_ms > sb->t_ms) - (sa->t_ms < sb->t_ms);
+    if (sa->is_video != sb->is_video) return (int)sa->is_video - (int)sb->is_video;
+    return (sa->off > sb->off) - (sa->off < sb->off);
 }
 
 /* mdia/hdlr -> handler type ('vide' / 'soun'). */
@@ -215,11 +221,13 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         if (!m->video.scale) m->video.scale = m->video.rate ? m->video.rate : 1;
     }
 
-    return read_stbl_segments(m, stbl, end, 1 /*video*/, 0 /*per-sample*/);
+    return read_stbl_segments(m, stbl, end, 1 /*video*/, 0 /*per-sample*/,
+                              m->video.rate /*mdhd timescale*/);
 }
 
 /* Append a segment to the growing interleaved index. */
-static mr_status push_seg(mr_mov *m, uint32_t off, uint32_t size, int is_video)
+static mr_status push_seg(mr_mov *m, uint32_t off, uint32_t size, int is_video,
+                          uint32_t t_ms)
 {
     if (!size) return MR_OK;
     if (m->nsamples >= m->cap) {
@@ -231,6 +239,7 @@ static mr_status push_seg(mr_mov *m, uint32_t off, uint32_t size, int is_video)
     }
     m->samples[m->nsamples].off      = off;
     m->samples[m->nsamples].size     = size;
+    m->samples[m->nsamples].t_ms     = t_ms;
     m->samples[m->nsamples].is_video = (uint8_t)is_video;
     m->nsamples++;
     return MR_OK;
@@ -239,14 +248,48 @@ static mr_status push_seg(mr_mov *m, uint32_t off, uint32_t size, int is_video)
 /* Flatten a track's stbl into the shared index. Video emits one segment per
  * sample (frame); audio coalesces each chunk into a single PCM segment (far
  * fewer, larger packets). */
+/* Presentation time of the next sample, in milliseconds, walking the stts
+ * (sample_count, sample_delta) runs in decode order. Advances one sample. */
+struct stts_iter {
+    const uint8_t *e; uint32_t cnt, idx;   /* entries base, total, cursor      */
+    uint32_t run_left, delta;              /* remaining in the current run     */
+    uint64_t dts;                          /* cumulative, in media timescale   */
+    uint32_t timescale;
+};
+static void stts_iter_init(struct stts_iter *it, const uint8_t *stbl,
+                           const uint8_t *end, uint32_t timescale)
+{
+    uint32_t sz;
+    const uint8_t *stts = find_atom(stbl, end, T('s','t','t','s'), &sz);
+    it->e = (stts && sz >= 8) ? stts + 8 : NULL;
+    it->cnt = it->e ? rb32(stts + 4) : 0;
+    it->idx = it->run_left = it->delta = 0;
+    it->dts = 0;
+    it->timescale = timescale ? timescale : 1;
+}
+static uint32_t stts_next_ms(struct stts_iter *it)
+{
+    uint32_t ms;
+    while (it->run_left == 0 && it->idx < it->cnt) {  /* enter the next run     */
+        it->run_left = rb32(it->e + (size_t)it->idx * 8);
+        it->delta    = rb32(it->e + (size_t)it->idx * 8 + 4);
+        it->idx++;
+    }
+    ms = (uint32_t)(it->dts * 1000u / it->timescale);
+    it->dts += it->delta;
+    if (it->run_left) it->run_left--;
+    return ms;
+}
+
 static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
                                     const uint8_t *end, int is_video,
-                                    int coalesce_chunks)
+                                    int coalesce_chunks, uint32_t timescale)
 {
     uint32_t stsz_sz, stsc_sz, stco_sz;
     const uint8_t *stsz = find_atom(stbl, end, T('s','t','s','z'), &stsz_sz);
     const uint8_t *stsc = find_atom(stbl, end, T('s','t','s','c'), &stsc_sz);
     const uint8_t *stco = find_atom(stbl, end, T('s','t','c','o'), &stco_sz);
+    struct stts_iter ti;
     int co64 = 0;
     if (!stco) { stco = find_atom(stbl, end, T('c','o','6','4'), &stco_sz); co64 = 1; }
     if (!stsz || !stsc || !stco || stsz_sz < 12 || stsc_sz < 8 || stco_sz < 8)
@@ -262,6 +305,8 @@ static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
     const uint8_t *sc    = stsc + 8;
     const uint8_t *co    = stco + 8;
 
+    stts_iter_init(&ti, stbl, end, timescale);
+
     uint32_t si = 0, e;
     for (e = 0; e < stsc_cnt && si < nsamp; e++) {
         uint32_t first = rb32(sc + e * 12);
@@ -275,18 +320,21 @@ static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
                                 : rb32(co + (uint64_t)(chunk - 1) * 4);
             uint32_t k;
             if (coalesce_chunks) {
-                uint32_t start = (uint32_t)off, total = 0;
+                uint32_t start = (uint32_t)off, total = 0, seg_ms = 0;
                 for (k = 0; k < spc && si < nsamp; k++) {
+                    uint32_t sms = stts_next_ms(&ti);
+                    if (k == 0) seg_ms = sms;
                     total += uniform ? uniform : rb32(sizes + (uint64_t)si * 4);
                     si++;
                 }
-                if (push_seg(m, start, total, is_video) != MR_OK)
+                if (push_seg(m, start, total, is_video, seg_ms) != MR_OK)
                     return MR_ENOMEM;
             } else {
                 for (k = 0; k < spc && si < nsamp; k++) {
                     uint32_t ssz = uniform ? uniform
                                            : rb32(sizes + (uint64_t)si * 4);
-                    if (push_seg(m, (uint32_t)off, ssz, is_video) != MR_OK)
+                    uint32_t sms = stts_next_ms(&ti);
+                    if (push_seg(m, (uint32_t)off, ssz, is_video, sms) != MR_OK)
                         return MR_ENOMEM;
                     off += ssz;
                     si++;
@@ -297,7 +345,8 @@ static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
     return MR_OK;
 }
 
-static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz)
+static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
+                        uint32_t timescale)
 {
     uint32_t sz;
     const uint8_t *stsd = find_atom(stbl, stbl + stbl_sz,
@@ -354,7 +403,7 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz)
     /* Compressed access units must keep their sample boundaries.  PCM remains
      * coalesced per chunk to avoid flooding the player with tiny packets. */
     read_stbl_segments(m, stbl, stbl + stbl_sz, 0 /*audio*/,
-                       m->audio.format_tag == MR_AUDIO_FORMAT_PCM);
+                       m->audio.format_tag == MR_AUDIO_FORMAT_PCM, timescale);
 }
 
 static void parse_trak(mr_mov *m, const uint8_t *trak, uint32_t trak_sz)
@@ -374,8 +423,13 @@ static void parse_trak(mr_mov *m, const uint8_t *trak, uint32_t trak_sz)
 
     if (htype == T('v','i','d','e') && !m->video.valid)
         parse_video(m, stbl, stbl_sz, mdia, mdia_sz);
-    else if (htype == T('s','o','u','n') && !m->audio.valid)
-        parse_audio(m, stbl, stbl_sz);
+    else if (htype == T('s','o','u','n') && !m->audio.valid) {
+        uint32_t mdhd_sz, ts = 0;
+        const uint8_t *mdhd = find_atom(mdia, mdia + mdia_sz,
+                                        T('m','d','h','d'), &mdhd_sz);
+        if (mdhd && mdhd_sz >= 20) ts = rb32(mdhd + 12);   /* media timescale */
+        parse_audio(m, stbl, stbl_sz, ts);
+    }
 }
 
 static mr_status parse_moov(mr_mov *m, const uint8_t *moov, uint32_t sz)
@@ -392,9 +446,10 @@ static mr_status parse_moov(mr_mov *m, const uint8_t *moov, uint32_t sz)
 
     if (!m->video.valid || !m->samples) return MR_EFORMAT;
 
-    /* Interleave audio and video by file offset so packets arrive in the order
-     * they sit in mdat - the natural order for streaming and A/V sync. */
-    qsort(m->samples, m->nsamples, sizeof *m->samples, cmp_off);
+    /* Interleave audio and video by presentation time so packets arrive finely
+     * interleaved for A/V pacing regardless of how coarsely the file chunks
+     * each track in mdat. */
+    qsort(m->samples, m->nsamples, sizeof *m->samples, cmp_time);
     return MR_OK;
 }
 

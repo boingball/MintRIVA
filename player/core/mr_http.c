@@ -53,7 +53,11 @@
 #define HTTP_REQUEST_MAX   1536
 #define HTTP_CHUNK_LINE_MAX 128
 #ifndef HTTP_CACHE_SIZE
-#define HTTP_CACHE_SIZE  (256UL * 1024)
+/* Large enough to span the file-offset gap between a video chunk and its
+ * time-matched audio chunk: the demuxer now delivers samples in presentation
+ * order (fine A/V interleave), so streaming alternates reads between the two
+ * chunk regions and the rewind cache must cover the lag between them. */
+#define HTTP_CACHE_SIZE  (512UL * 1024)
 #endif
 #define HTTP_REDIRECT_MAX     5
 #define HTTP_IO_RETRIES        2
