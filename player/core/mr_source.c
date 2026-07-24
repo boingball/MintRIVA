@@ -15,6 +15,7 @@ struct mr_source {
     size_t  len;
     int   (*read_at)(void *, size_t, void *, size_t);
     void  (*close)(void *);
+    int     sequential;    /* set for network sources that dislike seeking     */
     char    final_name[MR_SOURCE_NAME_MAX];
 };
 
@@ -174,6 +175,16 @@ size_t mr_source_length(const mr_source *s)
 int mr_source_is_streaming(const mr_source *s)
 {
     return s && s->len == MR_SOURCE_LEN_UNKNOWN;
+}
+
+void mr_source_set_sequential(mr_source *s, int on)
+{
+    if (s) s->sequential = on ? 1 : 0;
+}
+
+int mr_source_prefers_sequential(const mr_source *s)
+{
+    return s && s->sequential;
 }
 
 const char *mr_source_final_name(const mr_source *s)

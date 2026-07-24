@@ -1182,5 +1182,8 @@ mr_source *mr_http_source_open(const char *url)
     source = mr_source_create(h,
                               h->streaming ? MR_SOURCE_LEN_UNKNOWN : h->total_len,
                               http_read_at, http_close, h->url);
+    /* Network reads are cheap forward but a backward seek costs a range
+     * re-request; ask demuxers to deliver in file order, not by timestamp. */
+    mr_source_set_sequential(source, 1);
     return source;
 }
