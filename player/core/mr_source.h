@@ -21,12 +21,6 @@ mr_source *mr_source_open(const char *path);
 int        mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len);
 size_t     mr_source_length(const mr_source *s);
 int        mr_source_is_streaming(const mr_source *s);
-
-/* Network sources set this: they read forward cheaply but re-seeking forces an
- * HTTP range re-request, so demuxers should prefer sequential (file-offset)
- * delivery over presentation-order interleave for them. */
-void       mr_source_set_sequential(mr_source *s, int on);
-int        mr_source_prefers_sequential(const mr_source *s);
 const char *mr_source_final_name(const mr_source *s);
 void       mr_source_close(mr_source *s);
 

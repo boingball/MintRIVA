@@ -53,11 +53,17 @@
 #define HTTP_REQUEST_MAX   1536
 #define HTTP_CHUNK_LINE_MAX 128
 #ifndef HTTP_CACHE_SIZE
-/* Large enough to span the file-offset gap between a video chunk and its
- * time-matched audio chunk: the demuxer now delivers samples in presentation
- * order (fine A/V interleave), so streaming alternates reads between the two
- * chunk regions and the rewind cache must cover the lag between them. */
-#define HTTP_CACHE_SIZE  (512UL * 1024)
+/* Read-ahead / rewind window. The demuxer delivers samples in presentation
+ * order (fine A/V interleave), so streaming alternates reads between a file's
+ * video-chunk region and its time-matched audio-chunk region. This window must
+ * comfortably span the lag between them; the read-ahead below keeps it filled
+ * forward so those alternating reads hit RAM instead of reconnecting. */
+#define HTTP_CACHE_SIZE  (1024UL * 1024)
+#endif
+/* How far ahead of the caller's request each network read pulls, so a burst of
+ * interleaved reads is served from one contiguous fetch rather than many. */
+#ifndef HTTP_READAHEAD
+#define HTTP_READAHEAD   (256UL * 1024)
 #endif
 #define HTTP_REDIRECT_MAX     5
 #define HTTP_IO_RETRIES        2
@@ -1073,6 +1079,29 @@ static void cache_store(http_source *h, size_t off,
     h->cache_len = keep;
 }
 
+/* After a network read, keep pulling the open response forward into the cache
+ * so the demuxer's presentation-order reads - which hop between a file's video
+ * and audio chunk regions - are served from RAM. Without this each hop lands
+ * outside the last small read and forces an HTTP range re-request per packet
+ * (the "frame - pause - frame - pause" seen when streaming coarsely chunked
+ * MP4s). Reads only forward from the current position; cache_store slides the
+ * window and drops the oldest bytes once it is full. */
+static void http_readahead(http_source *h)
+{
+    size_t got = 0;
+    if (!h->socket_ready || !h->cache) return;
+    if (h->cache_start + h->cache_len != h->body_pos) return; /* not contiguous */
+    while (got < HTTP_READAHEAD && h->cache_len < HTTP_CACHE_SIZE) {
+        size_t room = HTTP_CACHE_SIZE - h->cache_len;
+        size_t want = HTTP_READAHEAD - got;
+        int n;
+        if (want > room) want = room;
+        n = copy_response_bytes(h, h->cache + h->cache_len, want);
+        if (n <= 0) break;
+        h->cache_len += (size_t)n;   /* copy_response_bytes advanced body_pos */
+    }
+}
+
 static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
 {
     http_source *h = (http_source *)opaque;
@@ -1107,6 +1136,7 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
             return 0;
     }
     cache_store(h, off, out, len);
+    http_readahead(h);
     return 1;
 }
 
@@ -1182,8 +1212,5 @@ mr_source *mr_http_source_open(const char *url)
     source = mr_source_create(h,
                               h->streaming ? MR_SOURCE_LEN_UNKNOWN : h->total_len,
                               http_read_at, http_close, h->url);
-    /* Network reads are cheap forward but a backward seek costs a range
-     * re-request; ask demuxers to deliver in file order, not by timestamp. */
-    mr_source_set_sequential(source, 1);
     return source;
 }

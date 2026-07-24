@@ -134,14 +134,6 @@ static int cmp_time(const void *a, const void *b)
     return (sa->off > sb->off) - (sa->off < sb->off);
 }
 
-/* Sequential (network) delivery: ascending file offset, so an HTTP source reads
- * straight through mdat without backward range re-requests. */
-static int cmp_off(const void *a, const void *b)
-{
-    uint32_t oa = ((const struct mov_sample *)a)->off;
-    uint32_t ob = ((const struct mov_sample *)b)->off;
-    return (oa > ob) - (oa < ob);
-}
 
 /* mdia/hdlr -> handler type ('vide' / 'soun'). */
 static uint32_t track_handler(const uint8_t *mdia, uint32_t mdia_sz)
@@ -457,13 +449,10 @@ static mr_status parse_moov(mr_mov *m, const uint8_t *moov, uint32_t sz)
 
     /* Deliver by presentation time so audio and video arrive finely
      * interleaved for A/V pacing regardless of how coarsely the file chunks
-     * each track in mdat. Network sources are the exception: time order makes
-     * reads alternate between the two chunk regions, and every backward hop is
-     * an HTTP range re-request, so keep them in sequential file order. */
-    if (mr_source_prefers_sequential(m->source))
-        qsort(m->samples, m->nsamples, sizeof *m->samples, cmp_off);
-    else
-        qsort(m->samples, m->nsamples, sizeof *m->samples, cmp_time);
+     * each track in mdat. Over HTTP this makes reads alternate between the two
+     * chunk regions; the source's read-ahead buffer absorbs that so it does not
+     * turn into a range re-request per packet. */
+    qsort(m->samples, m->nsamples, sizeof *m->samples, cmp_time);
     return MR_OK;
 }
 
