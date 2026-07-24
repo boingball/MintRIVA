@@ -2,6 +2,7 @@
  * MintRIVA - local-file and generic source ownership.
  */
 #include "mr_source.h"
+#include "mr_hls.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,6 +151,8 @@ mr_source *mr_source_open(const char *path)
         mr_source_set_error("empty media path");
         return NULL;
     }
+    if (mr_source_is_hls(path))
+        return mr_hls_source_open(path);
     if (mr_source_is_url(path))
         return mr_http_source_open(path);
     return open_local_file(path);

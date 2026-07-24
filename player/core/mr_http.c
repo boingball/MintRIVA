@@ -277,6 +277,12 @@ static int resolve_redirect(const char *base_url, const char *location,
     return n > 0 && (size_t)n < out_size;
 }
 
+int mr_http_resolve_url(const char *base_url, const char *rel,
+                        char *out, size_t out_size)
+{
+    return resolve_redirect(base_url, rel, out, out_size);
+}
+
 static int platform_open(http_source *h)
 {
 #if MR_HTTP_AMIGA

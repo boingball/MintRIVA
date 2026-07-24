@@ -19,7 +19,14 @@
 #endif
 
 #include "mr_source.h"
+#include <stddef.h>
 
 mr_source *mr_http_source_open(const char *url);
+
+/* Resolve a possibly-relative URL (an HLS variant/segment) against a base URL.
+ * Handles absolute, scheme-relative (//host), root-relative (/path) and
+ * directory-relative forms. Returns 1 on success. */
+int mr_http_resolve_url(const char *base_url, const char *rel,
+                        char *out, size_t out_size);
 
 #endif /* MR_HTTP_H */

@@ -21,7 +21,7 @@ CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
            -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
            -Wno-unused-but-set-variable -Wno-sign-compare \
            -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
-CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c \
+CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_ts.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
@@ -41,7 +41,7 @@ MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
                 -I$(MINTAMP_ROOT)/decoders/aac \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
-HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h \
+HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
            core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_ts.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \

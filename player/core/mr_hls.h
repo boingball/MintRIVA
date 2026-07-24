@@ -1,0 +1,21 @@
+/*
+ * MintRIVA - HLS (.m3u8) playlist source.
+ *
+ * Presents an HLS media playlist as one forward-only MPEG-TS byte stream:
+ * the segments, concatenated, are exactly the transport stream the existing
+ * mr_ts demuxer already consumes. Master playlists are resolved to a single
+ * variant. VOD only for now (encrypted and live playlists are rejected
+ * cleanly).
+ */
+#ifndef MR_HLS_H
+#define MR_HLS_H
+
+#include "mr_source.h"
+
+/* True if the URL looks like an HLS playlist (…\.m3u8[?…]). */
+int        mr_source_is_hls(const char *url);
+
+/* Open an HLS playlist URL as a streaming MPEG-TS source. */
+mr_source *mr_hls_source_open(const char *url);
+
+#endif /* MR_HLS_H */

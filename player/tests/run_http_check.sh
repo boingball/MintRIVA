@@ -12,9 +12,27 @@ cleanup()
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
-    rm -rf "$tmpdir"
+    rm -rf "$tmpdir" tests/assets/hls
 }
 trap cleanup EXIT INT TERM
+
+# Derive an HLS VOD fixture by slicing the MPEG-TS test asset into TS-packet-
+# aligned segments; concatenated, they are the original stream, so the HLS
+# source must decode identically to it.
+python3 - <<'PY'
+import os
+d=open('tests/assets/test_mpeg2.ts','rb').read(); PKT=188; n=len(d)//PKT
+os.makedirs('tests/assets/hls',exist_ok=True)
+b1=(n//3)*PKT; b2=(2*n//3)*PKT; parts=[d[:b1],d[b1:b2],d[b2:]]
+m=["#EXTM3U","#EXT-X-VERSION:3","#EXT-X-TARGETDURATION:2","#EXT-X-MEDIA-SEQUENCE:0"]
+for i,p in enumerate(parts):
+    open(f'tests/assets/hls/seg{i}.ts','wb').write(p); m+=["#EXTINF:2.0,",f"seg{i}.ts"]
+m.append("#EXT-X-ENDLIST")
+open('tests/assets/hls/media.m3u8','w').write("\n".join(m)+"\n")
+open('tests/assets/hls/master.m3u8','w').write(
+ "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200000\nmissing.m3u8\n"
+ "#EXT-X-STREAM-INF:BANDWIDTH=300000\nmedia.m3u8\n")
+PY
 
 server_args="--root tests/assets --port-file $tmpdir/port --range-marker $tmpdir/range-used"
 scheme=http
@@ -70,6 +88,14 @@ base="$scheme://127.0.0.1:$port"
 "$decoder" "$base/stream/media/test_mpeg2.ts" \
     --check tests/assets/ref_mpeg2_ts
 "$decoder" "$base/stream/redirect/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+
+# HLS VOD: the media playlist's segments concatenate back to the TS asset, and a
+# master playlist must resolve to the sole reachable variant. Both decode to the
+# same reference frames.
+"$decoder" "$base/media/hls/media.m3u8" \
+    --check tests/assets/ref_mpeg2_ts
+"$decoder" "$base/media/hls/master.m3u8" \
     --check tests/assets/ref_mpeg2_ts
 
 test -f "$tmpdir/range-used"
