@@ -573,38 +573,74 @@ static int decode_ac_event(bitreader *b, int intra, int *last, int *run, int *le
     return 0;
 }
 
-/* ---- IDCT (Annex A, separable double-precision) ------------------------ */
-static double idct_cos[8][8];
-static int    idct_ready = 0;
+/* ---- IDCT (Annex A, separable, fixed-point) ---------------------------- */
+/* Integer port of the separable double-precision IDCT. Coefficients are
+ * K[u][x] = round(C(u) * cos((2x+1)uPi/16) * 2^IDCT_Q) with C(0)=1/sqrt2, so
+ * the row pass yields r*2^IDCT_Q (r without the per-pass 0.5) and the column
+ * pass yields out * 2^(2*IDCT_Q + 2) after folding both 0.5 factors. There is
+ * no floating point on the decode path - a decisive win on FPU-less 68k, where
+ * every double multiply was a software-emulated routine. Common sparse cases
+ * (a flat DC-only block, all-zero high-frequency rows) are shortcut. Kept
+ * numerically faithful to the old float IDCT so ffmpeg conformance holds. */
+#define IDCT_Q     14
+#define IDCT_RND   ((int64_t)1 << (2*IDCT_Q + 1))    /* round for >> (2Q+2)   */
+static int16_t idct_k[8][8];
+static int     idct_ready = 0;
 static void idct_init(void)
 {
     int u, x;
     for (u = 0; u < 8; u++)
-        for (x = 0; x < 8; x++)
-            idct_cos[u][x] = cos((2.0*x + 1.0) * u * 3.14159265358979323846 / 16.0);
+        for (x = 0; x < 8; x++) {
+            double c = (u ? 1.0 : 0.70710678118654752440) *
+                       cos((2.0*x + 1.0) * u * 3.14159265358979323846 / 16.0);
+            double v = c * (double)(1 << IDCT_Q);
+            idct_k[u][x] = (int16_t)(v >= 0 ? v + 0.5 : v - 0.5);
+        }
     idct_ready = 1;
 }
 static void idct_8x8(const int in[8][8], int out[8][8])
 {
-    double tmp[8][8];
-    const double s = 0.5;                        /* sqrt(2/8)                */
-    const double c0 = 0.70710678118654752440;    /* 1/sqrt(2)                */
+    int tmp[8][8];
+    int rownz = 0;                               /* bit v set => row v nonzero */
     int u, x, v, y;
     if (!idct_ready) idct_init();
-    for (v = 0; v < 8; v++)                       /* rows                     */
-        for (x = 0; x < 8; x++) {
-            double a = 0;
-            for (u = 0; u < 8; u++)
-                a += (u ? 1.0 : c0) * in[v][u] * idct_cos[u][x];
-            tmp[v][x] = s * a;
+
+    /* DC-only block: every output equals round(DC/8); skip both passes. */
+    { int only_dc = 1;
+      for (v = 0; v < 8 && only_dc; v++)
+          for (u = 0; u < 8; u++)
+              if ((v | u) && in[v][u]) { only_dc = 0; break; }
+      if (only_dc) {
+          int64_t s = (int64_t)in[0][0] * idct_k[0][0] * idct_k[0][0];
+          int iv = (int)((s + IDCT_RND) >> (2*IDCT_Q + 2));
+          if (iv < -(1<<BPP)) iv = -(1<<BPP);
+          else if (iv > (1<<BPP)-1) iv = (1<<BPP)-1;
+          for (y = 0; y < 8; y++) for (x = 0; x < 8; x++) out[y][x] = iv;
+          return;
+      } }
+
+    for (v = 0; v < 8; v++) {                    /* rows: r * 2^IDCT_Q        */
+        const int *r = in[v];
+        if (!(r[0]|r[1]|r[2]|r[3]|r[4]|r[5]|r[6]|r[7])) {
+            for (x = 0; x < 8; x++) tmp[v][x] = 0;
+            continue;
         }
-    for (x = 0; x < 8; x++)                       /* columns                  */
+        rownz |= 1 << v;
+        for (x = 0; x < 8; x++) {
+            int a = r[0]*idct_k[0][x] + r[1]*idct_k[1][x]
+                  + r[2]*idct_k[2][x] + r[3]*idct_k[3][x]
+                  + r[4]*idct_k[4][x] + r[5]*idct_k[5][x]
+                  + r[6]*idct_k[6][x] + r[7]*idct_k[7][x];
+            tmp[v][x] = a;
+        }
+    }
+    for (x = 0; x < 8; x++)                       /* columns + both 0.5 folds  */
         for (y = 0; y < 8; y++) {
-            double a = 0;
+            int64_t a = 0;
             for (v = 0; v < 8; v++)
-                a += (v ? 1.0 : c0) * tmp[v][x] * idct_cos[v][y];
-            { double r = s * a;
-              int iv = (r >= 0) ? (int)(r + 0.5) : -(int)(-r + 0.5);
+                if (rownz & (1 << v))
+                    a += (int64_t)tmp[v][x] * idct_k[v][y];
+            { int iv = (int)((a + IDCT_RND) >> (2*IDCT_Q + 2));
               if (iv < -(1<<BPP)) iv = -(1<<BPP);            /* §7.4.5 clamp   */
               else if (iv > (1<<BPP)-1) iv = (1<<BPP)-1;
               out[y][x] = iv; }
