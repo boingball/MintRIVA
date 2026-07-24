@@ -1195,6 +1195,11 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
     if (!h->socket_ready || h->body_pos != off + done) {
         done = 0;
         if (!begin_response(h, off)) return 0;
+        /* A reconnect means we seeked to a new region - re-anchor the read-ahead
+         * here. Without this, a one-time metadata read (a moov stored at the end
+         * of the file) leaves max_read at EOF, so the back-window trim evicts the
+         * front-of-file mdat the playback then reads, reconnecting every packet. */
+        h->max_read = off + len;
     }
     while (done < len) {
         int n = copy_response_bytes(h, out + done, len - done);
