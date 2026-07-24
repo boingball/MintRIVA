@@ -120,7 +120,13 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
         if (!a->chip[i]) { audio_close(a); return NULL; }
     }
 
-    a->fifo_size = rate;                        /* ~1 s cushion              */
+    /* Several seconds of cushion: coarsely-interleaved files deliver audio in
+     * multi-second chunks (e.g. CDR-Dinner's ~2.3 s), with video-only runs
+     * between them. A one-second FIFO dropped the tail of each burst and then
+     * starved during the video run - audible as chunky audio and stuttery
+     * pacing. Buffer ~4 s so a burst fits and the video run does not starve.
+     * Sync is unaffected: pacing follows samples actually played, not queued. */
+    a->fifo_size = rate * 4;                    /* ~4 s cushion              */
     if (a->fifo_size < 8192) a->fifo_size = 8192;
     a->fifo = (signed char *)malloc(a->fifo_size);
     if (!a->fifo) { audio_close(a); return NULL; }
