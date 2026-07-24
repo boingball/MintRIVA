@@ -1386,12 +1386,16 @@ static int decode_bvop(m4_ctx *c, bitreader *b)
 static void yuv_to_rgb(m4_ctx *c, uint8_t *const pl[3])
 {
     int x, y;
-    for (y = 0; y < c->h; y++) {
+    /* Output the display region, but never read past the coded planes when the
+     * display is larger than the coded frame; the rest of rgb stays as-is. */
+    int oh = c->h < c->ch ? c->h : c->ch;
+    int ow = c->w < c->cw ? c->w : c->cw;
+    for (y = 0; y < oh; y++) {
         const uint8_t *yl = pl[0] + (size_t)y * c->ystride;
         const uint8_t *cb = pl[1] + (size_t)(y >> 1) * c->cstride;
         const uint8_t *cr = pl[2] + (size_t)(y >> 1) * c->cstride;
         uint8_t *d = c->rgb + (size_t)y * c->w * 3;
-        for (x = 0; x < c->w; x++) {
+        for (x = 0; x < ow; x++) {
             int Y = yl[x] - 16, U = cb[x >> 1] - 128, V = cr[x >> 1] - 128;
             int r = (298 * Y + 409 * V + 128) >> 8;
             int g = (298 * Y - 100 * U - 208 * V + 128) >> 8;
@@ -1434,6 +1438,14 @@ static mr_status m4_open(mr_decoder *dec)
     c->w = dec->width; c->h = dec->height;
     if (dec->config && dec->config_len)
         m4_config_vol(c, dec->config, dec->config_len);
+    /* A VOL can code a larger, macroblock-padded picture than the container's
+     * display size (e.g. CDR-Dinner: 352x242 coded vs 320x240 displayed).
+     * parse_vol leaves the coded grid in mb_w/mb_h/cw/ch, which the decoder
+     * needs, but it also overwrote c->w/c->h with the coded size. Hold the
+     * OUTPUT frame at the caller's display size instead - the player sized its
+     * display buffer to that - and let yuv_to_rgb crop the top-left region.
+     * Without this the emitted frame overruns the display buffer. */
+    c->w = dec->width; c->h = dec->height;
     c->rgb = (uint8_t *)calloc((size_t)c->w * c->h * 3, 1);
     if (!c->rgb) { free(c); return MR_ENOMEM; }
     dec->priv = c;
