@@ -184,14 +184,34 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
             }
         }
     }
-    /* frame rate: mdhd timescale over first stts delta */
+    /* frame rate: mdhd timescale over the *average* stts delta. Using only the
+     * first delta mistimes variable-frame-rate clips whose stts has many
+     * entries (e.g. CDR-Dinner: first delta 33 -> 30.3 fps, but the true
+     * average is ~41 -> 24.2 fps), making playback run fast. */
     {
         uint32_t s2;
         const uint8_t *mdhd = find_atom(mdia, mdia + mdia_sz,
                                         T('m','d','h','d'), &s2);
         if (mdhd && s2 >= 20) m->video.rate = rb32(mdhd + 12); /* timescale */
         const uint8_t *stts = find_atom(stbl, end, T('s','t','t','s'), &s2);
-        if (stts && s2 >= 16) m->video.scale = rb32(stts + 12); /* 1st delta */
+        if (stts && s2 >= 16) {
+            uint32_t n = rb32(stts + 4);              /* entry_count           */
+            uint32_t avail = (s2 - 8) / 8;
+            uint64_t tot_count = 0, tot_dur = 0;
+            uint32_t i;
+            if (n > avail) n = avail;
+            for (i = 0; i < n; i++) {
+                uint32_t cnt = rb32(stts + 8 + (size_t)i * 8);
+                uint32_t del = rb32(stts + 12 + (size_t)i * 8);
+                tot_count += cnt;
+                tot_dur   += (uint64_t)cnt * del;
+            }
+            if (tot_count && tot_dur)
+                m->video.scale = (uint32_t)((tot_dur + tot_count / 2)
+                                            / tot_count);
+            else
+                m->video.scale = rb32(stts + 12);     /* fall back: 1st delta  */
+        }
         if (!m->video.scale) m->video.scale = m->video.rate ? m->video.rate : 1;
     }
 
