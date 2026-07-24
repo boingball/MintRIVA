@@ -21,6 +21,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         chunked = False
         head_length = False
         streaming = False
+        drop = False
         if path.startswith("/chunked-head/"):
             chunked = True
             head_length = True
@@ -34,7 +35,15 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             chunked = True
             streaming = True
             path = path[len("/stream"):]
-        return path, chunked, head_length, streaming
+        elif path.startswith("/drop/"):
+            # Seekable (Content-Length + Accept-Ranges + honours Range) but the
+            # body is truncated after a small cap and the connection closed, so
+            # the client must reconnect with a Range at a non-zero offset to
+            # finish. Models a flaky CDN dropping a transfer mid-stream and
+            # forces the byte-range resume path that moov-at-end files rely on.
+            drop = True
+            path = path[len("/drop"):]
+        return path, chunked, head_length, streaming, drop
 
     def _candidate(self, path):
         if not path.startswith("/media/"):
@@ -52,7 +61,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         return candidate
 
     def do_HEAD(self):
-        path, _chunked, _head_length, streaming = self._route()
+        path, _chunked, _head_length, streaming, _drop = self._route()
         if path.startswith("/redirect/"):
             self.send_response(302)
             self.send_header("Location", "/media/" + path[len("/redirect/"):])
@@ -77,7 +86,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path, chunked, head_length, streaming = self._route()
+        path, chunked, head_length, streaming, drop = self._route()
         if path.startswith("/redirect/"):
             location = "/media/" + path[len("/redirect/"):]
             if head_length:
@@ -86,6 +95,8 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
                 location = "/stream" + location
             elif chunked:
                 location = "/chunked" + location
+            elif drop:
+                location = "/drop" + location
             self.send_response(302)
             self.send_header("Location", location)
             self.send_header("Content-Length", "0")
@@ -140,9 +151,13 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
+        # A /drop/ response advertises the full length but only ever writes up
+        # to drop_cap bytes before the Connection: close closes the socket,
+        # forcing the client to resume with a fresh Range from where it stopped.
+        sendable = min(length, self.server.drop_cap) if drop else length
         with candidate.open("rb") as source:
             source.seek(start)
-            remaining = length
+            remaining = sendable
             while remaining:
                 block = source.read(min(8191 if chunked else 64 * 1024,
                                         remaining))
@@ -172,6 +187,9 @@ def main():
     parser.add_argument("--cert")
     parser.add_argument("--key")
     parser.add_argument("--range-marker")
+    parser.add_argument("--drop-cap", type=int, default=16384,
+                        help="max body bytes a /drop/ response sends before "
+                             "closing, forcing a byte-range resume")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -181,6 +199,7 @@ def main():
     server.verbose = args.verbose
     server.range_marker = (pathlib.Path(args.range_marker)
                            if args.range_marker else None)
+    server.drop_cap = args.drop_cap
     if args.cert or args.key:
         if not args.cert or not args.key:
             parser.error("--cert and --key must be supplied together")

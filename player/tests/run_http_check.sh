@@ -90,6 +90,16 @@ base="$scheme://127.0.0.1:$port"
 "$decoder" "$base/stream/redirect/test_mpeg2.ts" \
     --check tests/assets/ref_mpeg2_ts
 
+# Seekable server that drops each transfer after a small cap: the client must
+# reconnect with a Range at a non-zero offset to finish (the byte-range resume
+# path). The frames still match, and this is what touches the range marker
+# asserted below - read-ahead now caches whole small files, so a plain
+# sequential fetch never needs a mid-file Range on its own.
+"$decoder" "$base/drop/media/test_h264_high.mp4" \
+    --check tests/assets/ref_h264_high
+"$decoder" "$base/drop/media/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+
 # HLS VOD: the media playlist's segments concatenate back to the TS asset, and a
 # master playlist must resolve to the sole reachable variant. Both decode to the
 # same reference frames.
