@@ -81,18 +81,46 @@ static mr_status mjpeg_decode(mr_decoder *dec, const uint8_t *data, uint32_t len
             const uint8_t *sr = info.m_pMCUBufR;
             const uint8_t *sg = info.m_pMCUBufG;
             const uint8_t *sb = info.m_pMCUBufB;
-            int by, bx, yy, xx;
+            int by, bx, yy, xx, copy_w, copy_h;
             for (by = 0; by < info.m_MCUHeight; by += 8) {
                 for (bx = 0; bx < info.m_MCUWidth; bx += 8) {
-                    for (yy = 0; yy < 8; yy++) {
-                        int oy = py0 + by + yy;
-                        for (xx = 0; xx < 8; xx++) {
-                            int ox = px0 + bx + xx;
-                            uint8_t R = *sr++, G, B;
-                            if (gray) { G = B = R; } else { G = *sg++; B = *sb++; }
-                            if (ox < c->w && oy < c->h) {
-                                uint8_t *d = c->fb + (size_t)oy * stride + ox * 3;
-                                d[0] = R; d[1] = G; d[2] = B;
+                    const uint8_t *br = sr;
+                    const uint8_t *bg = sg;
+                    const uint8_t *bb = sb;
+                    int block_x = px0 + bx;
+                    int block_y = py0 + by;
+
+                    sr += 64;
+                    if (!gray) {
+                        sg += 64;
+                        sb += 64;
+                    }
+
+                    copy_w = c->w - block_x;
+                    copy_h = c->h - block_y;
+                    if (copy_w > 8) copy_w = 8;
+                    if (copy_h > 8) copy_h = 8;
+                    if (copy_w <= 0 || copy_h <= 0) continue;
+
+                    if (gray) {
+                        for (yy = 0; yy < copy_h; yy++) {
+                            const uint8_t *r = br + yy * 8;
+                            uint8_t *d = c->fb +
+                                (size_t)(block_y + yy) * stride + block_x * 3;
+                            for (xx = 0; xx < copy_w; xx++) {
+                                uint8_t v = *r++;
+                                *d++ = v; *d++ = v; *d++ = v;
+                            }
+                        }
+                    } else {
+                        for (yy = 0; yy < copy_h; yy++) {
+                            const uint8_t *r = br + yy * 8;
+                            const uint8_t *g = bg + yy * 8;
+                            const uint8_t *b = bb + yy * 8;
+                            uint8_t *d = c->fb +
+                                (size_t)(block_y + yy) * stride + block_x * 3;
+                            for (xx = 0; xx < copy_w; xx++) {
+                                *d++ = *r++; *d++ = *g++; *d++ = *b++;
                             }
                         }
                     }

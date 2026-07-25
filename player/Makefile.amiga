@@ -21,8 +21,8 @@
 #   make -f Makefile.amiga AMIGA_ROOT=/opt/amiga-gcc
 #   make -f Makefile.amiga AMIGA_GCC=/home/me/amiga/bin/m68k-amigaos-gcc
 #
-# CPU baseline is 68020 so a single binary runs on 020/030/040/060 and PiStorm.
-# The core is integer-only (no FPU, no soft-float): runs on a bare 030 A600.
+# CPU baseline is 68030 so a single binary runs on 030/040/060 and PiStorm.
+# The core is integer-only and does not require an FPU.
 
 TOOLCHAIN ?= gcc
 include vendor/libavc_port/libavc.mk
@@ -85,7 +85,7 @@ CORE   += core/mr_h264.c $(LIBAVC_SRC)
 CC      = $(AMIGA_GCC)
 # MPEG-1 (pl_mpeg in mr_mpeg1.c) uses floating point, so this build links libm
 # and the compiler soft-float runtime. MR_HAVE_MPEG1 enables the .mpg paths.
-CFLAGS  = -O2 -std=c99 -m68020 -noixemul -fomit-frame-pointer -Wall -Wextra \
+CFLAGS  = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra \
           -DAMIGA_M68K -DMR_HAVE_MPEG1 -DMR_HAVE_H264 \
           $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
           $(LIBMPEG2_FLAGS) \
@@ -126,7 +126,7 @@ endif
 ifeq ($(TOOLCHAIN),vbcc)
 # Requires VBCC + vc.config target 'aos68k'. Override CC=... if not on PATH.
 CC      ?= vc
-CFLAGS  = +aos68k -c99 -O2 -cpu=68020 -softfloat -DAMIGA_M68K \
+CFLAGS  = +aos68k -c99 -O2 -cpu=68030 -softfloat -DAMIGA_M68K \
           $(HTTP_SSL_FLAGS) $(LIBMPEG2_FLAGS)
 
 all: mr_decode
