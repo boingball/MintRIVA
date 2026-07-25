@@ -1,5 +1,5 @@
 /*
- * MintRIVA - HLS (.m3u8) playlist source (VOD).
+ * MintRIVA - HLS (.m3u8) playlist source (VOD and live).
  *
  * Fetches an HLS playlist, resolves a master playlist down to one media
  * variant, then presents that variant's segments - concatenated - as a single
@@ -7,9 +7,17 @@
  * discovered lazily as they are opened, so the source still supports the
  * demuxer's probe-then-rewind access pattern (random access across already
  * seen segments; sequential fetch beyond them).
+ *
+ * A VOD playlist (EXT-X-ENDLIST, or EXT-X-PLAYLIST-TYPE:VOD) is a fixed list.
+ * A live playlist has neither: it is a sliding window of segments that the
+ * server keeps extending. We track EXT-X-MEDIA-SEQUENCE so a re-fetch appends
+ * only genuinely new segments, and when playback catches up to the last known
+ * segment we re-fetch the playlist to discover more - until an EXT-X-ENDLIST
+ * finally turns the stream into a bounded one and it ends naturally.
  */
 #include "mr_hls.h"
 #include "mr_http.h"
+#include "mr_types.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -17,13 +25,24 @@
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
 #define HLS_URL_MAX      1024
 
+/* How many times playback may re-fetch a live playlist that reports no new
+ * segment before giving up and reporting end of stream. Each re-fetch is a
+ * full HTTP round-trip, which on real hardware paces the polling; this only
+ * bounds a genuinely stalled or dead stream. */
+#define HLS_LIVE_REFETCH_MAX 240
+
 typedef struct {
     char   **segs;        /* resolved segment URLs                            */
     size_t   nsegs;
+    size_t   cap;         /* allocated slots in segs (seg_start holds cap + 1)*/
     size_t  *seg_start;   /* concatenated byte offset of each segment (+ end) */
     size_t   discovered;  /* segments whose size is known (seg_start[0..this])*/
     mr_source *cur;       /* currently open segment source                    */
     size_t   cur_seg;
+    /* Live streaming state (unused for VOD). */
+    int      live;        /* playlist has no ENDLIST: keep re-fetching        */
+    char    *playlist_url;/* media playlist URL to re-fetch for new segments  */
+    unsigned long next_seq; /* media-sequence of the next not-yet-queued seg  */
 } hls_source;
 
 /* ---- URL detection ----------------------------------------------------- */
@@ -90,6 +109,38 @@ static int starts(const char *s, const char *prefix)
     return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
+/* ---- segment list ------------------------------------------------------ */
+
+/* Ensure segs[] has room for one more entry; seg_start[] tracks nsegs + 1
+ * offsets, with seg_start[0] anchored at 0 on the first allocation. */
+static int seg_reserve(hls_source *h)
+{
+    size_t nc;
+    char **ns;
+    size_t *nss;
+    if (h->nsegs < h->cap) return 1;
+    nc = h->cap ? h->cap * 2 : 64;
+    ns = (char **)realloc(h->segs, nc * sizeof *ns);
+    if (!ns) return 0;
+    h->segs = ns;
+    nss = (size_t *)realloc(h->seg_start, (nc + 1) * sizeof *nss);
+    if (!nss) return 0;
+    if (!h->cap) nss[0] = 0;
+    h->seg_start = nss;
+    h->cap = nc;
+    return 1;
+}
+
+static int append_seg(hls_source *h, const char *url)
+{
+    if (!seg_reserve(h)) return 0;
+    h->segs[h->nsegs] = (char *)malloc(strlen(url) + 1);
+    if (!h->segs[h->nsegs]) return 0;
+    strcpy(h->segs[h->nsegs], url);
+    h->nsegs++;
+    return 1;
+}
+
 /* ---- playlist parsing -------------------------------------------------- */
 
 /* Pick the lowest-bandwidth variant from a master playlist; resolve it against
@@ -120,42 +171,45 @@ static int pick_variant(char *text, const char *base_url,
     return have;
 }
 
-/* Parse a media playlist: collect resolved segment URLs into the source.
- * Returns MR_OK, or an error status for encrypted / live / empty playlists. */
-static mr_status parse_media(char *text, const char *base_url, hls_source *h)
+/* Merge a (possibly refreshed) media playlist into the segment list. Segments
+ * are numbered by EXT-X-MEDIA-SEQUENCE + position, so only those at or beyond
+ * next_seq are appended - a re-fetch of a sliding window skips the ones we
+ * already hold. Sets h->live from the ENDLIST / PLAYLIST-TYPE tags. Returns
+ * MR_OK (with *added = how many new segments were queued), or an error for an
+ * encrypted playlist. */
+static mr_status merge_playlist(char *text, const char *base_url,
+                                hls_source *h, int *added)
 {
     char line[HLS_URL_MAX], resolved[HLS_URL_MAX];
     char *p = text;
-    size_t cap = 0;
-    int endlist = 0;
+    unsigned long media_seq = 0, idx = 0;
+    int endlist = 0, vod = 0;
+    *added = 0;
     while ((p = next_line(p, line, sizeof line)) != NULL) {
         if (starts(line, "#EXT-X-KEY") && !strstr(line, "METHOD=NONE")) {
             mr_source_set_error("encrypted HLS (EXT-X-KEY) is not supported");
             return MR_EUNSUPPORTED;
         }
+        if (starts(line, "#EXT-X-MEDIA-SEQUENCE:")) {
+            media_seq = strtoul(line + strlen("#EXT-X-MEDIA-SEQUENCE:"),
+                                NULL, 10);
+            continue;
+        }
+        if (starts(line, "#EXT-X-PLAYLIST-TYPE:") && strstr(line, "VOD"))
+            vod = 1;
         if (starts(line, "#EXT-X-ENDLIST")) { endlist = 1; continue; }
         if (!line[0] || line[0] == '#') continue;      /* tag or blank         */
-        if (!mr_http_resolve_url(base_url, line, resolved, sizeof resolved))
-            continue;
-        if (h->nsegs == cap) {
-            size_t nc = cap ? cap * 2 : 64;
-            char **ns = (char **)realloc(h->segs, nc * sizeof *ns);
-            if (!ns) return MR_ENOMEM;
-            h->segs = ns; cap = nc;
+        {
+            unsigned long seq = media_seq + idx++;
+            if (seq < h->next_seq) continue;           /* already queued       */
+            if (!mr_http_resolve_url(base_url, line, resolved, sizeof resolved))
+                continue;
+            if (!append_seg(h, resolved)) return MR_ENOMEM;
+            h->next_seq = seq + 1;
+            (*added)++;
         }
-        h->segs[h->nsegs] = (char *)malloc(strlen(resolved) + 1);
-        if (!h->segs[h->nsegs]) return MR_ENOMEM;
-        strcpy(h->segs[h->nsegs], resolved);
-        h->nsegs++;
     }
-    if (!h->nsegs) {
-        mr_source_set_error("HLS playlist has no segments");
-        return MR_EFORMAT;
-    }
-    if (!endlist) {
-        mr_source_set_error("live HLS is not supported yet (no EXT-X-ENDLIST)");
-        return MR_EUNSUPPORTED;
-    }
+    h->live = !(endlist || vod);
     return MR_OK;
 }
 
@@ -183,7 +237,8 @@ static int open_seg(hls_source *h, size_t i)
 }
 
 /* Return the segment index whose byte range contains `off`, opening segments
- * forward as needed to discover it. Returns nsegs if `off` is at/after EOF. */
+ * forward as needed to discover it. Returns nsegs if `off` is at/after the end
+ * of the currently known segments. */
 static size_t locate(hls_source *h, size_t off)
 {
     size_t i;
@@ -197,6 +252,27 @@ static size_t locate(hls_source *h, size_t off)
     return h->nsegs;
 }
 
+/* Playback has caught up to the last known segment of a live stream: re-fetch
+ * the playlist until it grows (new segments) or ends (ENDLIST). Returns 1 if
+ * at least one new segment was appended, 0 if the stream ended or stalled. */
+static int hls_refetch_live(hls_source *h)
+{
+    int tries;
+    for (tries = 0; tries < HLS_LIVE_REFETCH_MAX; tries++) {
+        char *text = fetch_text(h->playlist_url);
+        int added;
+        mr_status st;
+        if (!text) return 0;                       /* playlist gone / error    */
+        st = merge_playlist(text, h->playlist_url, h, &added);
+        free(text);
+        if (st != MR_OK) return 0;
+        if (added > 0) return 1;                    /* fresh segments to play   */
+        if (!h->live) return 0;                     /* ENDLIST arrived: done    */
+    }
+    mr_source_set_error("live HLS playlist stalled (no new segments)");
+    return 0;
+}
+
 static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
 {
     hls_source *h = (hls_source *)opaque;
@@ -205,7 +281,12 @@ static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
     while (len) {
         size_t i = locate(h, off);
         size_t local, avail, take;
-        if (i >= h->nsegs) return 0;               /* past the last segment    */
+        if (i >= h->nsegs) {
+            /* Ran off the end of the known segments. For live, pull more from
+             * the playlist and retry; for VOD/ended, this is end of stream. */
+            if (h->live && hls_refetch_live(h)) continue;
+            return 0;
+        }
         if (!open_seg(h, i)) return 0;
         local = off - h->seg_start[i];
         avail = h->seg_start[i + 1] - h->seg_start[i] - local;
@@ -225,6 +306,7 @@ static void hls_close(void *opaque)
     for (i = 0; i < h->nsegs; i++) free(h->segs[i]);
     free(h->segs);
     free(h->seg_start);
+    free(h->playlist_url);
     free(h);
 }
 
@@ -238,6 +320,7 @@ mr_source *mr_hls_source_open(const char *url)
     hls_source *h;
     mr_source *src;
     mr_status st;
+    int added;
 
     text = fetch_text(url);
     if (!text) return NULL;
@@ -263,12 +346,26 @@ mr_source *mr_hls_source_open(const char *url)
 
     h = (hls_source *)calloc(1, sizeof *h);
     if (!h) { free(text); mr_source_set_error("out of memory for HLS"); return NULL; }
-    st = parse_media(text, base, h);
+    st = merge_playlist(text, base, h, &added);
     free(text);
     if (st != MR_OK) { hls_close(h); return NULL; }
+    if (!h->nsegs) {
+        hls_close(h);
+        mr_source_set_error("HLS playlist has no segments");
+        return NULL;
+    }
 
-    h->seg_start = (size_t *)calloc(h->nsegs + 1, sizeof *h->seg_start);
-    if (!h->seg_start) { hls_close(h); mr_source_set_error("out of memory for HLS"); return NULL; }
+    /* A live playlist (no ENDLIST) keeps growing: remember its URL so playback
+     * can re-fetch it to discover new segments as the stream advances. */
+    if (h->live) {
+        h->playlist_url = (char *)malloc(strlen(base) + 1);
+        if (!h->playlist_url) {
+            hls_close(h);
+            mr_source_set_error("out of memory for HLS");
+            return NULL;
+        }
+        strcpy(h->playlist_url, base);
+    }
 
     /* Streaming (unknown total length): the demuxer reads forward and treats a
      * short read as end of stream. */

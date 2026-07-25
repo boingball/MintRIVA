@@ -5,6 +5,7 @@ import argparse
 import http.server
 import pathlib
 import ssl
+import threading
 import urllib.parse
 
 
@@ -85,8 +86,41 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
+    def _serve_live_playlist(self):
+        # A live media playlist: a sliding window that grows by one segment each
+        # time it is polled (advancing EXT-X-MEDIA-SEQUENCE), until every segment
+        # is published and EXT-X-ENDLIST is appended. Only GET advances the poll
+        # counter, so a client following the stream sees each new segment once.
+        total = self.server.live_total
+        window = self.server.live_window
+        with self.server.live_lock:
+            poll = self.server.live_poll
+            self.server.live_poll += 1
+        published = min(window + poll, total)
+        first = max(0, published - window)
+        media_seq = first
+        lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2",
+                 f"#EXT-X-MEDIA-SEQUENCE:{media_seq}"]
+        for j in range(first, published):
+            lines += ["#EXTINF:2.0,", f"/media/hls/lseg{j}.ts"]
+        if published >= total:
+            lines.append("#EXT-X-ENDLIST")
+        body = ("\n".join(lines) + "\n").encode("ascii")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         path, chunked, head_length, streaming, drop = self._route()
+        if path == "/live/playlist.m3u8":
+            self._serve_live_playlist()
+            return
         if path.startswith("/redirect/"):
             location = "/media/" + path[len("/redirect/"):]
             if head_length:
@@ -200,6 +234,12 @@ def main():
     server.range_marker = (pathlib.Path(args.range_marker)
                            if args.range_marker else None)
     server.drop_cap = args.drop_cap
+    # Live HLS playlist state: total segments to publish, sliding-window size,
+    # and the poll counter that advances the window on each GET.
+    server.live_total = 6
+    server.live_window = 3
+    server.live_poll = 0
+    server.live_lock = threading.Lock()
     if args.cert or args.key:
         if not args.cert or not args.key:
             parser.error("--cert and --key must be supplied together")

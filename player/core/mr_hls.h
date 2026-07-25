@@ -4,8 +4,8 @@
  * Presents an HLS media playlist as one forward-only MPEG-TS byte stream:
  * the segments, concatenated, are exactly the transport stream the existing
  * mr_ts demuxer already consumes. Master playlists are resolved to a single
- * variant. VOD only for now (encrypted and live playlists are rejected
- * cleanly).
+ * variant. Both VOD and live playlists play (live re-fetches the playlist to
+ * follow new segments); encrypted (EXT-X-KEY) playlists are rejected cleanly.
  */
 #ifndef MR_HLS_H
 #define MR_HLS_H

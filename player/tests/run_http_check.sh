@@ -32,6 +32,14 @@ open('tests/assets/hls/media.m3u8','w').write("\n".join(m)+"\n")
 open('tests/assets/hls/master.m3u8','w').write(
  "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200000\nmissing.m3u8\n"
  "#EXT-X-STREAM-INF:BANDWIDTH=300000\nmedia.m3u8\n")
+# Also a 6-way split for the live playlist: the fixture server hands these out
+# through a growing, sliding EXT-X-MEDIA-SEQUENCE window (see http_fixture_server
+# /live/), so the client must re-fetch to follow segments lseg0..lseg5. In order
+# they concatenate back to the whole stream, matching the same reference.
+LN=6; step=n//LN
+for i in range(LN):
+    a=i*step*PKT; b=(len(d) if i==LN-1 else (i+1)*step*PKT)
+    open(f'tests/assets/hls/lseg{i}.ts','wb').write(d[a:b])
 PY
 
 server_args="--root tests/assets --port-file $tmpdir/port --range-marker $tmpdir/range-used"
@@ -106,6 +114,13 @@ base="$scheme://127.0.0.1:$port"
 "$decoder" "$base/media/hls/media.m3u8" \
     --check tests/assets/ref_mpeg2_ts
 "$decoder" "$base/media/hls/master.m3u8" \
+    --check tests/assets/ref_mpeg2_ts
+
+# Live HLS: a sliding-window playlist with no EXT-X-ENDLIST that the server
+# grows one segment per poll (advancing EXT-X-MEDIA-SEQUENCE) until it caps and
+# adds ENDLIST. The client must re-fetch to follow lseg0..lseg5 and dedupe by
+# media sequence; concatenated they are the whole stream, so frames still match.
+"$decoder" "$base/live/playlist.m3u8" \
     --check tests/assets/ref_mpeg2_ts
 
 test -f "$tmpdir/range-used"
