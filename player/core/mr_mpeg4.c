@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <math.h>
 
 /* ---- start codes ------------------------------------------------------- */
 #define SC_VO_SEQ_START   0xB0   /* visual_object_sequence_start            */
@@ -584,27 +583,23 @@ static int decode_ac_event(bitreader *b, int intra, int *last, int *run, int *le
  * numerically faithful to the old float IDCT so ffmpeg conformance holds. */
 #define IDCT_Q     14
 #define IDCT_RND   ((int64_t)1 << (2*IDCT_Q + 1))    /* round for >> (2Q+2)   */
-static int16_t idct_k[8][8];
-static int     idct_ready = 0;
-static void idct_init(void)
-{
-    int u, x;
-    for (u = 0; u < 8; u++)
-        for (x = 0; x < 8; x++) {
-            double c = (u ? 1.0 : 0.70710678118654752440) *
-                       cos((2.0*x + 1.0) * u * 3.14159265358979323846 / 16.0);
-            double v = c * (double)(1 << IDCT_Q);
-            idct_k[u][x] = (int16_t)(v >= 0 ? v + 0.5 : v - 0.5);
-        }
-    idct_ready = 1;
-}
+/* Precomputed rather than generated with cos() at start-up: initialization is
+ * now integer-only too, and the decoder no longer pulls in libm by itself. */
+static const int16_t idct_k[8][8] = {
+    {11585, 11585, 11585, 11585, 11585, 11585, 11585, 11585},
+    {16069, 13623,  9102,  3196, -3196, -9102,-13623,-16069},
+    {15137,  6270, -6270,-15137,-15137, -6270,  6270, 15137},
+    {13623, -3196,-16069, -9102,  9102, 16069,  3196,-13623},
+    {11585,-11585,-11585, 11585, 11585,-11585,-11585, 11585},
+    { 9102,-16069,  3196, 13623,-13623, -3196, 16069, -9102},
+    { 6270,-15137, 15137, -6270, -6270, 15137,-15137,  6270},
+    { 3196, -9102, 13623,-16069, 16069,-13623,  9102, -3196}
+};
 static void idct_8x8(const int in[8][8], int out[8][8])
 {
     int tmp[8][8];
     int rownz = 0;                               /* bit v set => row v nonzero */
     int u, x, v, y;
-    if (!idct_ready) idct_init();
-
     /* DC-only block: every output equals round(DC/8); skip both passes. */
     { int only_dc = 1;
       for (v = 0; v < 8 && only_dc; v++)

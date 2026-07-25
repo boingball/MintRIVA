@@ -10,7 +10,6 @@
  */
 #include "mr_msmpeg4v2.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -353,22 +352,18 @@ static int decode_rl_event(bitreader *b, int intra,
  * ffmpeg tolerance. */
 #define IDCT_P 13                        /* cosine-matrix fractional bits    */
 #define IDCT_SHIFT (2 * IDCT_P + 2)      /* two passes + the 1/4 IDCT norm    */
-static int32_t idct_tab[8][8];           /* idct_tab[u][x] = c(u)cos()*2^P    */
-static int idct_ready;
-
-static void idct_init(void)
-{
-    int u, x;
-    for (u = 0; u < 8; u++)
-        for (x = 0; x < 8; x++) {
-            double c = u ? 1.0 : 0.70710678118654752440;
-            double v = c * cos((2.0 * x + 1.0) * u *
-                               3.14159265358979323846 / 16.0);
-            idct_tab[u][x] = (int32_t)(v * (double)(1 << IDCT_P) +
-                                       (v >= 0 ? 0.5 : -0.5));
-        }
-    idct_ready = 1;
-}
+/* Keeping this table in the binary avoids floating-point cos() setup and
+ * makes the complete MP42 decoder path integer-only. */
+static const int32_t idct_tab[8][8] = {
+    {5793, 5793, 5793, 5793, 5793, 5793, 5793, 5793},
+    {8035, 6811, 4551, 1598,-1598,-4551,-6811,-8035},
+    {7568, 3135,-3135,-7568,-7568,-3135, 3135, 7568},
+    {6811,-1598,-8035,-4551, 4551, 8035, 1598,-6811},
+    {5793,-5793,-5793, 5793, 5793,-5793,-5793, 5793},
+    {4551,-8035, 1598, 6811,-6811,-1598, 8035,-4551},
+    {3135,-7568, 7568,-3135,-3135, 7568,-7568, 3135},
+    {1598,-4551, 6811,-8035, 8035,-6811, 4551,-1598}
+};
 
 /* Round acc / 2^IDCT_SHIFT half-away-from-zero, matching the old float path. */
 static int idct_round(int64_t acc)
@@ -383,9 +378,6 @@ static void idct_8x8(const int in[8][8], int out[8][8])
     int32_t tmp[8][8];
     int rowmask = 0;                     /* bit v set => tmp row v nonzero    */
     int u, x, v, y;
-
-    if (!idct_ready)
-        idct_init();
 
     /* Pass 1: horizontal transform of each nonzero input row. */
     for (v = 0; v < 8; v++) {
