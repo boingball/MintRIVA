@@ -224,11 +224,16 @@ static int open_seg(hls_source *h, size_t i)
     if (i >= h->nsegs) return 0;
     if (h->cur && h->cur_seg == i) return 1;
     if (i > h->discovered) return 0;               /* start offset unknown     */
+    /* Close the previous segment's source *before* opening the next one. The
+     * platform TLS layer (AmiSSL) keeps global session state, so two HTTP/S
+     * connections must never be open at the same time - overlapping them makes
+     * the second close tear the first's state down twice. Closing first also
+     * keeps only one segment's read-ahead buffer resident at a time. */
+    if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
     s = mr_http_source_open(h->segs[i]);
     if (!s) return 0;
     len = mr_source_length(s);
     if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
-    if (h->cur) mr_source_close(h->cur);
     h->cur = s;
     h->cur_seg = i;
     h->seg_start[i + 1] = h->seg_start[i] + len;
@@ -258,6 +263,10 @@ static size_t locate(hls_source *h, size_t off)
 static int hls_refetch_live(hls_source *h)
 {
     int tries;
+    /* Playback has consumed the last known segment, so its source is done with:
+     * close it before fetching the playlist so only one HTTP/S connection is
+     * ever open at once (see open_seg). */
+    if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
     for (tries = 0; tries < HLS_LIVE_REFETCH_MAX; tries++) {
         char *text = fetch_text(h->playlist_url);
         int added;
@@ -368,8 +377,7 @@ mr_source *mr_hls_source_open(const char *url)
     }
 
     /* Streaming (unknown total length): the demuxer reads forward and treats a
-     * short read as end of stream. */
-    src = mr_source_create(h, MR_SOURCE_LEN_UNKNOWN, hls_read_at, hls_close, url);
-    if (!src) { hls_close(h); return NULL; }
-    return src;
+     * short read as end of stream. mr_source_create already closes the context
+     * (hls_close) if it fails, so we must not close it again here. */
+    return mr_source_create(h, MR_SOURCE_LEN_UNKNOWN, hls_read_at, hls_close, url);
 }
