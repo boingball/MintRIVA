@@ -204,3 +204,6 @@ Optional iptv-org scalar metadata accepts JSON `null`; retained nullable strings
 become empty values. Parser failures include the file, one-based object number,
 field, byte offset, expected type, and leading token. The failed JSON file is
 kept as `channels.failed.json` or `streams.failed.json` for Amiga-side diagnosis.
+Candidate stream arrays are allocated only after a channel joins successfully;
+channel-directory parsing therefore no longer reserves eight 1 KiB URLs per
+channel. This avoids a large allocation jump at channel 1025 on classic systems.

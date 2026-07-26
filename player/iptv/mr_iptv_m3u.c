@@ -79,11 +79,17 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
         if (!pending.id[0])
           copy(pending.id, sizeof(pending.id), pending.name,
                strlen(pending.name));
+        pending.streams = (mr_iptv_stream *)calloc(1, sizeof(*pending.streams));
+        if (!pending.streams)
+          goto fail;
         copy(pending.streams[0].url, sizeof(pending.streams[0].url), url,
              strlen(url));
         pending.stream_count = 1;
-        if (!append(&d, &pending))
+        if (!append(&d, &pending)) {
+          free(pending.streams);
           goto fail;
+        }
+        pending.streams = NULL;
       }
       have = 0;
     }

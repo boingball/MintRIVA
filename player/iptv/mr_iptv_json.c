@@ -114,7 +114,11 @@ static int json_null(parser *j) {
 }
 
 static int nullable_string(parser *j, char *out, size_t cap) {
+  const char *value_start;
   ws(j);
+  value_start = j->p;
+  if (j->p >= j->end)
+    return expected(j, "string or null");
   if (j->p < j->end && *j->p == '"')
     return string(j, out, cap);
   if (json_null(j)) {
@@ -122,6 +126,7 @@ static int nullable_string(parser *j, char *out, size_t cap) {
       out[0] = 0;
     return 1;
   }
+  j->p = value_start;
   return expected(j, "string or null");
 }
 
@@ -301,6 +306,11 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
       } else if (!strcmp(key, "network")) {
         if (!nullable_string(&j, c.network, sizeof(c.network)))
           goto fail;
+      } else if (!strcmp(key, "owner") || !strcmp(key, "website") ||
+                 !strcmp(key, "logo")) {
+        char ignored[2];
+        if (!nullable_string(&j, ignored, sizeof(ignored)))
+          goto fail;
       } else if (!strcmp(key, "country")) {
         if (!string(&j, c.country, sizeof(c.country)))
           goto fail;
@@ -379,6 +389,20 @@ typedef struct {
   char channel[MR_IPTV_ID_MAX];
   mr_iptv_stream stream;
 } pending;
+
+static int add_stream(mr_iptv_channel *channel, const mr_iptv_stream *stream) {
+  mr_iptv_stream *items;
+  if (channel->stream_count >= MR_IPTV_STREAM_MAX)
+    return 1;
+  items = (mr_iptv_stream *)realloc(
+      channel->streams, (channel->stream_count + 1) * sizeof(*items));
+  if (!items)
+    return 0;
+  channel->streams = items;
+  channel->streams[channel->stream_count++] = *stream;
+  return 1;
+}
+
 int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
   parser j = {data, data, data + len, "streams.json", NULL, {0}, 1, 0};
   pending *all = NULL;
@@ -474,15 +498,18 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
   }
   for (i = 0; i < d->channel_count; i++) {
     mr_iptv_channel *c = &d->channels[i];
+    free(c->streams);
+    c->streams = NULL;
     c->stream_count = 0;
-    for (k = 0; k < n; k++)
-      if (!strcmp(all[k].channel, c->id) &&
-          c->stream_count < MR_IPTV_STREAM_MAX)
-        c->streams[c->stream_count++] = all[k].stream;
+    for (k = 0; k < n; k++) {
+      if (!strcmp(all[k].channel, c->id) && !add_stream(c, &all[k].stream))
+        goto fail;
+    }
     for (k = 0; k < n && c->stream_count < MR_IPTV_STREAM_MAX; k++) {
       size_t z = strlen(c->id);
-      if (!strncmp(all[k].channel, c->id, z) && all[k].channel[z] == '@')
-        c->streams[c->stream_count++] = all[k].stream;
+      if (!strncmp(all[k].channel, c->id, z) && all[k].channel[z] == '@' &&
+          !add_stream(c, &all[k].stream))
+        goto fail;
     }
   }
   free(all);

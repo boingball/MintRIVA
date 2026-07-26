@@ -1,10 +1,14 @@
 #include "../iptv/mr_iptv.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int main(void) {
   mr_iptv_directory d;
+  char *many;
+  size_t many_used;
+  int many_index;
   size_t ids[8];
   mr_iptv_filter f;
   const char *c =
@@ -35,7 +39,8 @@ int main(void) {
   const char *nullable_channels =
       "[{\"id\":\"Example.uk\",\"name\":\"Caf\xc3\xa9 TV\",\"alt_names\":[],"
       "\"network\":null,\"country\":\"GB\",\"categories\":[\"news\"],"
-      "\"is_nsfw\":false,\"closed\":null,\"replaced_by\":null,"
+      "\"is_nsfw\":false,\"website\":null,\"closed\":null,"
+      "\"replaced_by\":null,"
       "\"owner\":null,\"extra\":{\"nothing\":null,\"values\":[true,false,"
       "null,12.5]}}]  \n";
   const char *nullable_streams =
@@ -79,6 +84,15 @@ int main(void) {
   assert(d.channels[0].stream_count == 1);
   assert(!d.channels[0].streams[0].http_referrer[0]);
   assert(!d.channels[0].streams[0].user_agent[0]);
+  assert(mr_iptv_parse_channels(&d, "[{\"website\":null}]",
+                                sizeof("[{\"website\":null}]") - 1));
+  assert(mr_iptv_parse_channels(
+      &d, "[{\"website\":\"https://example.com\"}]",
+      sizeof("[{\"website\":\"https://example.com\"}]") - 1));
+  assert(!mr_iptv_parse_channels(&d, "[{\"website\":123}]",
+                                 sizeof("[{\"website\":123}]") - 1));
+  assert(strstr(mr_iptv_last_error(), "field website"));
+  assert(strstr(mr_iptv_last_error(), "byte 12"));
   assert(
       !mr_iptv_parse_channels(&d, "[{\"id\":\"x\",\"network\":nul}]",
                               sizeof("[{\"id\":\"x\",\"network\":nul}]") - 1));
@@ -95,6 +109,23 @@ int main(void) {
       &d, "[{\"channel\":\"Example.uk\",\"url\":none}]",
       sizeof("[{\"channel\":\"Example.uk\",\"url\":none}]") - 1));
   assert(strstr(mr_iptv_last_error(), "field url"));
+  many = (char *)malloc(220000);
+  assert(many);
+  many[0] = '[';
+  many_used = 1;
+  for (many_index = 0; many_index < 1100; many_index++)
+    many_used += (size_t)snprintf(
+        many + many_used, 220000 - many_used,
+        "%s{\"id\":\"Test%d.uk\",\"name\":\"Test\",\"network\":null,"
+        "\"website\":null,\"country\":\"GB\",\"categories\":[],"
+        "\"alt_names\":[],\"is_nsfw\":false,\"closed\":null,"
+        "\"replaced_by\":null}",
+        many_index ? "," : "", many_index);
+  many[many_used++] = ']';
+  many[many_used] = 0;
+  assert(mr_iptv_parse_channels(&d, many, many_used));
+  assert(d.channel_count == 1100);
+  free(many);
   mr_iptv_free(&d);
   puts("IPTV parser/filter checks passed");
   return 0;

@@ -23,7 +23,7 @@ typedef struct {
   char categories[MR_IPTV_CATEGORY_MAX][MR_IPTV_NAME_MAX];
   unsigned alt_count, category_count, stream_count;
   unsigned is_nsfw : 1, closed : 1, replaced : 1;
-  mr_iptv_stream streams[MR_IPTV_STREAM_MAX];
+  mr_iptv_stream *streams;
 } mr_iptv_channel;
 
 typedef struct {
