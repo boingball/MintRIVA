@@ -191,6 +191,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         printf("timing/%d frames: decode=%lu ms, display=%lu ms (encode=%lu, blit=%lu)\n",
                frames, (unsigned long)(t_dec * 1000 / CLOCKS_PER_SEC),
                (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC), e, bl);
+        if (display_aga_kalms_timing(&bl))
+            printf("Kalms conversion: %lu ms\n", bl);
     }
     if (audio) {
         int g = 0;
@@ -244,7 +246,8 @@ int main(int argc, char **argv)
         printf("usage: mrplay <file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
-               "[--2x] [--lace] [--loop] [--wpa|--c2p] [--cd32] [--time]\n");
+               "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
+               "[--cd32] [--time]\n");
         return 5;
     }
     {   /* display options anywhere on the command line */
@@ -256,6 +259,8 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--2x"))   display_set_scale(2);
             else if (!strcmp(argv[i], "--wpa"))  display_set_c2p(0);
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
+            else if (!strcmp(argv[i], "--riva-c2p")) display_set_riva_c2p(1);
+            else if (!strcmp(argv[i], "--kalms-c2p")) display_set_kalms_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
@@ -482,6 +487,8 @@ int main(int argc, char **argv)
                (unsigned long)(t_dec  * 1000 / CLOCKS_PER_SEC),
                (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC),
                enc_ms, blit_ms);
+        if (display_aga_kalms_timing(&blit_ms))
+            printf("Kalms conversion: %lu ms\n", blit_ms);
     }
     /* Let any queued audio drain (bounded, so a wedged clock can't loop). */
     if (audio) {

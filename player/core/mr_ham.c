@@ -8,19 +8,28 @@ static int iabs(int v) { return v < 0 ? -v : v; }
 /* Divide-free channel quantisers, built once (divides are slow on 68030).
  * q4[v]   -> nearest of the 4 HAM8 cube levels, index 0..3
  * s4[v]   -> that level's value (q4[v]*85)
- * q16[v]  -> nearest of 16 grey levels (HAM6), index 0..15
+ * grey_q/sum and grey_v/sum replace HAM6's per-pixel divide and quantise;
+ * grey_dist caches its three channel-to-grey distance calculations.
  * Values are identical to the previous (v*N+127)/255 arithmetic. */
-static uint8_t q4[256], s4[256], q16[256], serr8[256];
+static uint8_t q4[256], s4[256], serr8[256];
+static uint8_t grey_q[766], grey_v[766], grey_dist[16][256];
 static int     ham_lut_ready = 0;
 
 static void build_ham_lut(void)
 {
-    int v;
+    int v, q, sum;
     for (v = 0; v < 256; v++) {
         q4[v]    = (uint8_t)((v * 3 + 127) / 255);
         s4[v]    = (uint8_t)(q4[v] * 85);
-        q16[v]   = (uint8_t)((v * 15 + 127) / 255);
         serr8[v] = (uint8_t)iabs(v - q4[v] * 85);   /* HAM8 per-channel set err */
+    }
+    for (q = 0; q < 16; q++)
+        for (v = 0; v < 256; v++)
+            grey_dist[q][v] = (uint8_t)iabs(v - q * 17);
+    for (sum = 0; sum <= 765; sum++) {
+        q = ((sum / 3) * 15 + 127) / 255;
+        grey_q[sum] = (uint8_t)q;
+        grey_v[sum] = (uint8_t)(q * 17);
     }
     ham_lut_ready = 1;
 }
@@ -45,11 +54,6 @@ void mr_ham_palette(uint8_t *pal, int bits)
 void mr_ham_encode(const uint8_t *rgb, int w, int h, int rgb_stride,
                    uint8_t *out, int out_stride, int bits)
 {
-    int data_bits = bits - 2;                 /* 6 (HAM8) or 4 (HAM6)        */
-    int mshift    = 8 - data_bits;            /* modify component <<2 or <<4 */
-    int cshift    = data_bits;                /* control bits sit above data */
-    int lowmask   = (1 << mshift) - 1;        /* truncation error = v&lowmask */
-    int color     = (bits >= 8);
     int x, y;
 
     if (!ham_lut_ready) build_ham_lut();
@@ -57,38 +61,49 @@ void mr_ham_encode(const uint8_t *rgb, int w, int h, int rgb_stride,
         const uint8_t *sr = rgb + (size_t)y * rgb_stride;
         uint8_t       *dr = out + (size_t)y * out_stride;
         int pr = 0, pg = 0, pb = 0;           /* held colour (line start = 0)*/
-        for (x = 0; x < w; x++) {
-            int R = sr[x * 3 + 0], G = sr[x * 3 + 1], B = sr[x * 3 + 2];
-            /* held-channel errors shared between the modify options */
-            int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);
-            /* modify error is just the low bits lost to truncation (v>=v&~mask) */
-            int e_r = (R & lowmask) + dpg + dpb;
-            int e_g = dpr + (G & lowmask) + dpb;
-            int e_b = dpr + dpg + (B & lowmask);
-            int e_set, set_idx, cr, cg, cb;
+        if (bits >= 8) {
+            for (x = 0; x < w; x++, sr += 3) {
+                int R = sr[0], G = sr[1], B = sr[2];
+                int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);
+                int er = (R & 3) + dpg + dpb;
+                int eg = dpr + (G & 3) + dpb;
+                int eb = dpr + dpg + (B & 3);
+                int e_set = serr8[R] + serr8[G] + serr8[B];
 
-            if (color) {                       /* HAM8: per-channel cube      */
-                e_set   = serr8[R] + serr8[G] + serr8[B];
-                set_idx = (q4[R] << 4) | (q4[G] << 2) | q4[B];
-                cr = s4[R]; cg = s4[G]; cb = s4[B];
-            } else {                           /* HAM6: grey ramp             */
-                int grey = (R + G + B) / 3, gv = q16[grey] * 17;
-                e_set   = iabs(R - gv) + iabs(G - gv) + iabs(B - gv);
-                set_idx = q16[grey]; cr = cg = cb = gv;
+                if (e_set <= er && e_set <= eg && e_set <= eb) {
+                    *dr++ = (uint8_t)((q4[R] << 4) | (q4[G] << 2) | q4[B]);
+                    pr = s4[R]; pg = s4[G]; pb = s4[B];
+                } else if (er <= eg && er <= eb) {
+                    *dr++ = (uint8_t)(0x80 | (R >> 2)); pr = R & ~3;
+                } else if (eg <= eb) {
+                    *dr++ = (uint8_t)(0xc0 | (G >> 2)); pg = G & ~3;
+                } else {
+                    *dr++ = (uint8_t)(0x40 | (B >> 2)); pb = B & ~3;
+                }
             }
+        } else {
+            for (x = 0; x < w; x++, sr += 3) {
+                int R = sr[0], G = sr[1], B = sr[2];
+                int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);
+                int held = dpr + dpg + dpb;
+                int best = (R & 15) - dpr, channel = 0;
+                int delta = (G & 15) - dpg;
+                int sum = R + G + B, qi = grey_q[sum];
+                int e_set = grey_dist[qi][R] + grey_dist[qi][G] + grey_dist[qi][B];
+                if (delta < best) { best = delta; channel = 1; }
+                delta = (B & 15) - dpb;
+                if (delta < best) { best = delta; channel = 2; }
 
-            if (e_set <= e_r && e_set <= e_g && e_set <= e_b) {
-                dr[x] = (uint8_t)((0 << cshift) | set_idx);
-                pr = cr; pg = cg; pb = cb;
-            } else if (e_r <= e_g && e_r <= e_b) {
-                int q = R >> mshift;
-                dr[x] = (uint8_t)((2 << cshift) | q); pr = q << mshift;
-            } else if (e_g <= e_b) {
-                int q = G >> mshift;
-                dr[x] = (uint8_t)((3 << cshift) | q); pg = q << mshift;
-            } else {
-                int q = B >> mshift;
-                dr[x] = (uint8_t)((1 << cshift) | q); pb = q << mshift;
+                if (e_set <= held + best) {
+                    *dr++ = (uint8_t)qi;
+                    pr = pg = pb = grey_v[sum];
+                } else if (channel == 0) {
+                    *dr++ = (uint8_t)(0x20 | (R >> 4)); pr = R & ~15;
+                } else if (channel == 1) {
+                    *dr++ = (uint8_t)(0x30 | (G >> 4)); pg = G & ~15;
+                } else {
+                    *dr++ = (uint8_t)(0x10 | (B >> 4)); pb = B & ~15;
+                }
             }
         }
     }

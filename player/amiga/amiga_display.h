@@ -29,6 +29,13 @@ void display_set_scale(int n);
 /* AGA blit path: 0 = graphics WritePixelArray8 (default), 1 = built-in C2P. */
 void display_set_c2p(int on);
 
+/* Select the experimental RiVA-inspired, 32-pixel direct-to-plane C2P.  It is
+ * deliberately opt-in until it has been benchmarked on each 68k generation. */
+void display_set_riva_c2p(int on);
+
+/* Select Kalms' public-domain c2p1x1_8_c5_030 AGA converter. */
+void display_set_kalms_c2p(int on);
+
 /* Allow interlaced AGA screens (up to ~640x512). The AGA fitter compensates
  * for the doubled vertical resolution, preserving the video's physical aspect
  * ratio. Off by default because interlace flickers on native displays. */
@@ -40,6 +47,13 @@ void display_set_akiko(int on);
 
 /* Accumulated AGA encode / blit time in ms (0 if the AGA backend wasn't used). */
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms);
+
+/* Most recent AGA frame's conversion and blit times (rather than totals). */
+void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms);
+
+/* Return non-zero when the opened AGA screen is using Kalms, optionally
+ * returning its accumulated conversion time. */
+int display_aga_kalms_timing(unsigned long *conversion_ms);
 
 /* Open a display able to show w*h frames: tries RTG (cybergraphics) first, then
  * falls back to AGA. Returns NULL only if neither works. */

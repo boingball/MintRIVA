@@ -82,6 +82,22 @@ AMIGA_GCC  ?= $(firstword \
     $(wildcard $(HOME)/amiga/bin/m68k-amigaos-gcc) \
     $(wildcard $(HOME)/opt/amiga/bin/m68k-amigaos-gcc))
 
+# Kalms' authoritative source is in Motorola/Devpac syntax, not GNU as
+# syntax.  Assemble it unchanged with vasm and give the Amiga GCC linker a
+# native hunk object (this toolchain does not accept vasm's ELF output). Look
+# next to the selected cross-compiler first; both the assembler
+# and NDK include directory remain overridable for other SDK layouts.
+KALMS_SRC = vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
+KALMS_OBJ = build/c2p1x1_8_c5_030.o
+KALMS_VASM ?= $(firstword \
+    $(wildcard $(dir $(AMIGA_GCC))vasmm68k_mot) \
+    $(shell command -v vasmm68k_mot 2>/dev/null))
+KALMS_ASM_INCLUDE ?= $(firstword \
+    $(wildcard $(AMIGA_ROOT)/m68k-amigaos/ndk-include/lvo/exec_lib.i) \
+    $(wildcard $(AMIGA_ROOT)/m68k-amigaos/include/lvo/exec_lib.i) \
+    $(wildcard $(AMIGA_ROOT)/include/lvo/exec_lib.i))
+KALMS_ASM_INCLUDE := $(patsubst %/lvo/exec_lib.i,%,$(KALMS_ASM_INCLUDE))
+
 ifeq ($(TOOLCHAIN),gcc)
 CORE   += core/mr_h264.c $(LIBAVC_SRC)
 CC      = $(AMIGA_GCC)
@@ -98,6 +114,8 @@ LDFLAGS = -noixemul -lgcc
 
 all: mrplay mrgui mr_decode
 
+KALMS_CHECK = tests/mr_kalms_c2p_check.c core/mr_c2p.c
+
 check-cc:
 	@test -n "$(CC)" && test -x "$(CC)" || { \
 	  echo "ERROR: m68k-amigaos-gcc not found."; \
@@ -106,9 +124,21 @@ check-cc:
 	  exit 1; }
 	@echo "using CC = $(CC)"
 
-mrplay: check-cc check-mintamp $(PLAY) $(CORE) | check-libavc
+mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LDFLAGS)
+	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(KALMS_OBJ) $(LDFLAGS)
+
+check-kalms:
+	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
+	  echo "ERROR: vasmm68k_mot is required for the Kalms Motorola-syntax source."; \
+	  echo "  Set KALMS_VASM to its full path."; exit 1; }
+	@test -n "$(KALMS_ASM_INCLUDE)" || { \
+	  echo "ERROR: lvo/exec_lib.i was not found in the Amiga NDK."; \
+	  echo "  Set KALMS_ASM_INCLUDE to the directory containing lvo/."; exit 1; }
+
+$(KALMS_OBJ): $(KALMS_SRC) Makefile.amiga | check-kalms
+	@mkdir -p $(@D)
+	$(KALMS_VASM) -Fhunk -m68030 -no-opt -I$(KALMS_ASM_INCLUDE) -o $@ $<
 
 # As in MintAMP, mrgui opens the ReAction classes explicitly at runtime.
 # No libauto archive is required by the cross-toolchain.
@@ -130,6 +160,9 @@ mr_decode: check-cc $(HARN) $(CORE) | check-libavc
 	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE) $(LDFLAGS)
 endif
 
+kalms_c2p_check: check-cc check-kalms $(KALMS_CHECK) $(KALMS_OBJ)
+	$(CC) $(CFLAGS) -o $@ $(KALMS_CHECK) $(KALMS_OBJ) $(LDFLAGS)
+
 ifeq ($(TOOLCHAIN),vbcc)
 # Requires VBCC + vc.config target 'aos68k'. Override CC=... if not on PATH.
 CC      ?= vc
@@ -142,6 +175,6 @@ mr_decode: $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f mrplay mrgui mr_decode
+	rm -f mrplay mrgui mr_decode kalms_c2p_check $(KALMS_OBJ)
 
-.PHONY: all clean check-cc check-mintamp check-libavc
+.PHONY: all clean check-cc check-mintamp check-libavc check-kalms kalms_c2p_check

@@ -39,3 +39,55 @@ void mr_c2p8(const uint8_t *chunky, int pw, int h, int chunky_stride,
         }
     }
 }
+
+/* Build each plane from left to right: pixel zero becomes bit 31, exactly as
+ * four consecutive transpose8 calls make it the MSB of the first plane byte. */
+static void transpose32(const uint8_t *in, uint32_t out[8])
+{
+    int pixel, plane;
+    for (plane = 0; plane < 8; plane++) out[plane] = 0;
+    for (pixel = 0; pixel < 32; pixel++) {
+        uint32_t value = in[pixel];
+        out[0] = (out[0] << 1) | ( value        & 1U);
+        out[1] = (out[1] << 1) | ((value >> 1) & 1U);
+        out[2] = (out[2] << 1) | ((value >> 2) & 1U);
+        out[3] = (out[3] << 1) | ((value >> 3) & 1U);
+        out[4] = (out[4] << 1) | ((value >> 4) & 1U);
+        out[5] = (out[5] << 1) | ((value >> 5) & 1U);
+        out[6] = (out[6] << 1) | ((value >> 6) & 1U);
+        out[7] = (out[7] << 1) | ((value >> 7) & 1U);
+    }
+}
+
+static void store_plane_word(uint8_t *dst, uint32_t value)
+{
+#ifdef AMIGA_M68K
+    /* Callers guarantee alignment; m68k's big-endian store writes four plane
+     * bytes with one longword Chip RAM transaction. */
+    *(uint32_t *)dst = value;
+#else
+    /* Keep differential tests independent of the host's byte order. */
+    dst[0] = (uint8_t)(value >> 24);
+    dst[1] = (uint8_t)(value >> 16);
+    dst[2] = (uint8_t)(value >> 8);
+    dst[3] = (uint8_t)value;
+#endif
+}
+
+void mr_c2p8_riva32(const uint8_t *chunky, int pw, int h, int chunky_stride,
+                    int nplanes, uint8_t *const planes[], int bpr,
+                    int x0byte, int y0)
+{
+    int y, group, plane;
+    for (y = 0; y < h; y++) {
+        const uint8_t *row = chunky + (size_t)y * chunky_stride;
+        size_t base = (size_t)(y0 + y) * bpr + x0byte;
+        for (group = 0; group < (pw >> 5); group++) {
+            uint32_t words[8];
+            transpose32(row + (group << 5), words);
+            for (plane = 0; plane < nplanes; plane++)
+                store_plane_word(planes[plane] + base + (group << 2),
+                                 words[plane]);
+        }
+    }
+}
