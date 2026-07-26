@@ -2,6 +2,7 @@
  * MintRIVA - minimal AVI (RIFF) demuxer implementation.
  */
 #include "mr_avi.h"
+#include "mr_rawvideo.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -90,6 +91,14 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
                     if (comp && (is_printable_fourcc(comp) ||
                                  !a->video.fourcc))
                         a->video.fourcc = comp;
+                }
+                if (mr_rawvideo_is_uyvy422(a->video.fourcc)) {
+                    uint32_t stride = mr_rawvideo_uyvy422_stride(a->video.width);
+                    a->video_config[0] = (uint8_t)stride;
+                    a->video_config[1] = (uint8_t)(stride >> 8);
+                    a->video_config[2] = (uint8_t)(stride >> 16);
+                    a->video_config[3] = (uint8_t)(stride >> 24);
+                    a->video.config_len = 4;
                 }
                 a->video.valid = 1;
             } else if (cur_type == CC_auds && size >= 16) {

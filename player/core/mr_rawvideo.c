@@ -63,7 +63,9 @@ static mr_status rawvideo_open(mr_decoder *dec)
     /* QuickTime raw packets may append arbitrary tail storage.  Unless the
      * sample description supplies an authoritative rowBytes field, 2vuy is
      * tightly packed and total packet size must not be spread across rows. */
-    c->src_stride = minimum;
+    c->src_stride = dec->config && dec->config_len >= 4
+                  ? mr_rl32(dec->config) : minimum;
+    if (c->src_stride < minimum) { free(c); return MR_EFORMAT; }
     c->minimum_row = minimum;
     bytes = (size_t)c->dst_stride * c->height;
     c->frame = (uint8_t *)malloc(bytes);

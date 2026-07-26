@@ -338,6 +338,10 @@ int main(int argc, char **argv)
         const mr_audio_info *ai = mr_demux_audio(dx);
         if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM &&
             (ai->bits == 8 || ai->bits == 16)) {
+            if (want_time && ai->bits == 8)
+                printf("audio: PCM U8 %s %lu Hz\n",
+                       ai->channels == 1 ? "mono" : "stereo",
+                       (unsigned long)ai->sample_rate);
             audio = audio_open(ai->sample_rate, ai->channels, ai->bits);
             if (audio) printf("audio: Paula out, %lu Hz (src %u-bit %u ch)\n",
                               (unsigned long)ai->sample_rate,
@@ -419,10 +423,15 @@ int main(int argc, char **argv)
             uint32_t rows = (vi->height > 0 &&
                              stride <= pkt.len / (uint32_t)vi->height)
                           ? stride * (uint32_t)vi->height : pkt.len;
-            printf("raw UYVY422: %dx%d, stride=%lu, packet=%lu, trailing=%lu\n",
-                   vi->width, vi->height, (unsigned long)stride,
-                   (unsigned long)pkt.len,
-                   (unsigned long)(rows <= pkt.len ? pkt.len - rows : 0));
+            if (!strcmp(mr_demux_container_name(dx), "AVI"))
+                printf("raw UYVY422 AVI: %dx%d stride=%lu packet=%lu\n",
+                       vi->width, vi->height, (unsigned long)stride,
+                       (unsigned long)pkt.len);
+            else
+                printf("raw UYVY422: %dx%d, stride=%lu, packet=%lu, "
+                       "trailing=%lu\n", vi->width, vi->height,
+                       (unsigned long)stride, (unsigned long)pkt.len,
+                       (unsigned long)(rows <= pkt.len ? pkt.len - rows : 0));
             raw_diag_printed = 1;
         }
         {

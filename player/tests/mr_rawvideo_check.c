@@ -135,11 +135,37 @@ static void check_sample_strides(void)
     d.codec->close(&d);
 }
 
+static void check_avi_layout(void)
+{
+    uint8_t config[4] = { 0x80, 0x02, 0, 0 };
+    uint8_t *packet = (uint8_t *)malloc(153600);
+    mr_decoder d;
+    int frame;
+    unsigned i;
+    CHECK(packet != NULL);
+    if (!packet) return;
+    for (i = 0; i < 153600; i += 4) {
+        packet[i] = 128; packet[i + 1] = 81;
+        packet[i + 2] = 240; packet[i + 3] = 81;
+    }
+    CHECK(open_decoder(&d, 320, 240, config, sizeof config) == MR_OK);
+    CHECK(mr_rawvideo_source_stride(&d) == 640);
+    CHECK(d.codec->decode(&d, packet, 153599) == MR_EFORMAT);
+    for (frame = 0; frame < 14; frame++)
+        CHECK(d.codec->decode(&d, packet, 153600) == MR_OK);
+    /* Non-black, red-biased RGB proves conversion completed before display. */
+    expect_pixel(&d, 0, 0, 255, 0, 76);
+    expect_pixel(&d, 319, 239, 255, 0, 76);
+    d.codec->close(&d);
+    free(packet);
+}
+
 int main(void)
 {
     check_pairs();
     check_stride_odd_and_short();
     check_sample_strides();
+    check_avi_layout();
     if (failed) return 1;
     puts("raw UYVY422 decoder checks passed");
     return 0;

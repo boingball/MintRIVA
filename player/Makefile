@@ -111,7 +111,11 @@ mr_legacy_video_check: tests/mr_legacy_video_check.c \
 mr_rawvideo_check: tests/mr_rawvideo_check.c core/mr_rawvideo.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-check: mr_decode mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check
+mr_pcm_u8_check: tests/mr_pcm_u8_check.c amiga/mr_audio.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_pcm_u8_check.c
+
+check: mr_decode mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check
+	./mr_pcm_u8_check
 	./mr_rawvideo_check
 	./mr_legacy_video_check
 	./mr_scale_check
@@ -195,5 +199,6 @@ clean:
 	      mr_mpeg1_probe_check mr_ps_check
 	rm -f mr_legacy_video_check
 	rm -f mr_rawvideo_check
+	rm -f mr_pcm_u8_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean

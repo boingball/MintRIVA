@@ -183,9 +183,12 @@ void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
             } else s = l;
             s >>= 8;                                        /* 16 -> 8 bit    */
         } else {
-            int l = (int)(signed char)p[0];
-            if (ch >= 2) { int r = (int)(signed char)p[1]; s = (l + r) / 2; }
-            else s = l;
+            int l = (int)audio_pcm_u8_to_s16(p[0]);
+            if (ch >= 2) {
+                int r = (int)audio_pcm_u8_to_s16(p[1]);
+                s = (l + r) / 2;
+            } else s = l;
+            s >>= 8;
         }
         fifo_push(a, (signed char)s);
     }
