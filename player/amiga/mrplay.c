@@ -249,7 +249,7 @@ int main(int argc, char **argv)
         printf("usage: mrplay <file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
-               "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p] "
+               "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--time]\n");
         return 5;
     }
@@ -263,10 +263,11 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--wpa"))  display_set_c2p(0);
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
             else if (!strcmp(argv[i], "--riva-c2p")) display_set_riva_c2p(1);
+            else if (!strcmp(argv[i], "--kalms-c2p")) display_set_kalms_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
-            else if (!strcmp(argv[i], "--time")) want_time = 1;
+            else if (!strcmp(argv[i], "--time")) { want_time = 1; display_set_timing(1); }
         }
     }
     printf("mrplay: opening %s\n", argv[1]);

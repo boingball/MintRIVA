@@ -5,7 +5,8 @@
  * (256-colour dither / HAM8 / HAM6) plus a chunky->planar step. The default
  * WritePixelArray8 remains the default; --c2p selects the portable mr_c2p8 and
  * --riva-c2p selects an opt-in 32-pixel, direct-to-plane variant for hardware
- * measurement. Optional 2x pixel doubling.
+ * measurement. --kalms-c2p selects Kalms' public-domain 68030 converter.
+ * Optional 2x pixel doubling.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -13,6 +14,7 @@
 #include "../core/mr_ham.h"
 #include "../core/mr_scale.h"
 #include "../core/mr_c2p.h"
+#include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_030.h"
 
 #include <exec/types.h>
 #include <intuition/intuition.h>
@@ -27,6 +29,7 @@
 #include <proto/graphics.h>
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <time.h>
 
 #define ESC_RAWKEY 0x45
@@ -57,7 +60,7 @@ typedef struct {
     int             pw;          /* chunky row stride (>= dw)               */
     int             depth;
     int             x0, y0, x0byte;
-    int             ham, scale, resize, use_c2p, use_riva_c2p, use_akiko;
+    int             ham, scale, resize, use_c2p, use_riva_c2p, use_kalms_c2p, use_akiko;
     int             quit;
 } aga_state;
 
@@ -122,6 +125,7 @@ static void *aga_open(int w, int h, const char *title)
     int   ham   = g_aga_ham;
     int   akiko = g_aga_akiko;
     int   riva_c2p_mode = (g_aga_c2p == 2) && !akiko;
+    int   kalms_c2p_mode = (g_aga_c2p == 3) && !akiko;
     int   c2p   = (g_aga_c2p == 1) && !akiko;
     int   dw, dh, depth = (ham == 6) ? 6 : 8;
     int   sw, sh, physical_w, physical_h, hires, lace, resize;
@@ -169,6 +173,7 @@ static void *aga_open(int w, int h, const char *title)
     s->w = w; s->h = h; s->dw = dw; s->dh = dh;
     s->ham = ham; s->scale = scale; s->resize = resize;
     s->depth = depth; s->use_c2p = c2p; s->use_riva_c2p = riva_c2p_mode;
+    s->use_kalms_c2p = kalms_c2p_mode;
     s->use_akiko = akiko;
     /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
      * a 32-multiple row stride; the built-in C2P only needs 8-pixel alignment.
@@ -176,7 +181,9 @@ static void *aga_open(int w, int h, const char *title)
      * 16 pixels even though xstop names the unpadded visible width.  Packing an
      * odd width tightly makes every following row start early (854 / 2 = 427
      * exposed this as five-pixel diagonal wraps). */
-    if (akiko || riva_c2p_mode)
+    if (kalms_c2p_mode)
+                   { s->pw = sw; s->x0 = ((sw - dw) / 2) & ~31; }
+    else if (akiko || riva_c2p_mode)
                    { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
     else if (c2p)  { s->pw = (dw + 7)  & ~7;  s->x0 = ((sw - dw) / 2) & ~7;  }
     else           { s->pw = (dw + 15) & ~15; s->x0 = (sw - dw) / 2;         }
@@ -199,6 +206,40 @@ static void *aga_open(int w, int h, const char *title)
         WA_IDCMP, IDCMP_RAWKEY, TAG_END);
     if (!s->win) { CloseScreen(s->scr); free(s); return NULL; }
 
+    if (kalms_c2p_mode) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        long spacing = 0;
+        int p, compatible = depth == 8 && bm && bm->Planes[0] && bm->Planes[1] &&
+                            bm->BytesPerRow == s->pw / 8;
+        if (compatible) {
+            spacing = (long)((ULONG)bm->Planes[1] - (ULONG)bm->Planes[0]);
+            compatible = spacing > 0 && spacing <= 16384;
+        }
+        for (p = 1; compatible && p < depth; p++)
+            compatible = bm->Planes[p] && (UBYTE *)bm->Planes[p] ==
+                         (UBYTE *)bm->Planes[0] + (size_t)p * spacing;
+        if (compatible) {
+            /* The upstream register ABI puts width/height/y-offset/bplsize in
+             * d0/d1/d3/d5. Geometry is immutable for this screen, so the
+             * self-modifying initialiser is called exactly once here. */
+            c2p1x1_8_c5_030_smcinit(s->pw, s->dh, s->y0, spacing);
+        } else {
+            s->use_kalms_c2p = 0;
+            /* An incompatible planar allocation must never reach Kalms: use
+             * the established graphics.library path instead. */
+            s->tempbm = AllocBitMap((ULONG)s->pw, 1, (ULONG)depth, 0, bm);
+            if (!s->tempbm) goto fail;
+            InitRastPort(&s->temprp);
+            s->temprp.BitMap = s->tempbm;
+        }
+        if (g_aga_time) {
+            printf("AGA C2P backend: Kalms c2p1x1_8_c5_030\n");
+            printf("Kalms plane layout: %s\n", compatible ? "compatible" : "incompatible");
+            if (!compatible)
+                printf("Kalms fallback: WPA (planes are not eight equally spaced contiguous planes, row length differs, or bplsize exceeds 16 KiB)\n");
+        }
+    }
+
     /* padded + cleared so C2P's pad columns are black */
     s->chunky = (unsigned char *)calloc((size_t)s->pw * dh, 1);
     if (!s->chunky) goto fail;
@@ -210,7 +251,7 @@ static void *aga_open(int w, int h, const char *title)
         s->scaled = (unsigned char *)malloc((size_t)dw * dh * 3);
         if (!s->scaled) goto fail;
     }
-    if (!c2p && !riva_c2p_mode && !akiko) {        /* WritePixelArray8 path   */
+    if (!c2p && !riva_c2p_mode && !kalms_c2p_mode && !akiko) { /* WPA path */
         s->tempbm = AllocBitMap((ULONG)s->pw, 1, (ULONG)depth, 0,
                                 s->scr->RastPort.BitMap);
         if (!s->tempbm) goto fail;
@@ -245,8 +286,9 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
          * cleanly through arbitrary scaling, and the fitted image is small. */
         mr_scale_resize_rgb24(rgb, w, h, stride, s->scaled,
                               dw, s->dh, dw * 3);
-        if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, s->chunky, pw, s->ham);
-        else        mr_dither_rgb8(s->scaled, dw, s->dh, dw * 3, s->chunky, pw, 0);
+        uint8_t *encoded = s->chunky + (s->use_kalms_c2p ? s->x0 : 0);
+        if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, encoded, pw, s->ham);
+        else        mr_dither_rgb8(s->scaled, dw, s->dh, dw * 3, encoded, pw, 0);
         ddy0 = 0; ddh = s->dh;
     } else {
         /* Encode only the changed source rows [dy0,dy1); the screen keeps the
@@ -263,10 +305,13 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         if (sc == 2) {
             if (s->ham) mr_ham_encode(src, w, rows, stride, s->enc, w, s->ham);
             else        mr_dither_rgb8(src, w, rows, stride, s->enc, w, dy0);
-            mr_scale2x_u8(s->enc, w, rows, w, s->chunky + (size_t)(dy0*2) * pw, pw);
+            mr_scale2x_u8(s->enc, w, rows, w,
+                          s->chunky + (size_t)(dy0*2) * pw +
+                          (s->use_kalms_c2p ? s->x0 : 0), pw);
             ddy0 = dy0 * 2; ddh = rows * 2;
         } else {
-            uint8_t *dst = s->chunky + (size_t)dy0 * pw;
+            uint8_t *dst = s->chunky + (size_t)dy0 * pw +
+                           (s->use_kalms_c2p ? s->x0 : 0);
             if (s->ham) mr_ham_encode(src, w, rows, stride, dst, pw, s->ham);
             else        mr_dither_rgb8(src, w, rows, stride, dst, pw, dy0);
             ddy0 = dy0; ddh = rows;
@@ -281,6 +326,11 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         akiko_c2p(crow, pw, ddh, pw, s->depth,
                   (uint8_t *const *)bm->Planes, bm->BytesPerRow,
                   s->x0byte, s->y0 + ddy0);
+    } else if (s->use_kalms_c2p) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        /* This routine has no row-modulo ABI. Convert the complete persistent
+         * screen-width chunky frame; unchanged rows remain valid in it. */
+        c2p1x1_8_c5_030(s->chunky, bm->Planes[0]);
     } else if (s->use_riva_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         mr_c2p8_riva32(crow, pw, ddh, pw, s->depth,
@@ -298,6 +348,9 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                          (UBYTE *)crow, &s->temprp);
     }
     s_frame_blit = clock() - a; s_blit += s_frame_blit; }
+    if (s->use_kalms_c2p && g_aga_time)
+        printf("Kalms conversion: %lu ms\n",
+               (unsigned long)(s_frame_blit * 1000 / CLOCKS_PER_SEC));
 }
 
 static int aga_poll(void *handle)

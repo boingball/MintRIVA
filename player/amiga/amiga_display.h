@@ -33,6 +33,9 @@ void display_set_c2p(int on);
  * deliberately opt-in until it has been benchmarked on each 68k generation. */
 void display_set_riva_c2p(int on);
 
+/* Select Kalms' public-domain c2p1x1_8_c5_030 AGA converter. */
+void display_set_kalms_c2p(int on);
+
 /* Allow interlaced AGA screens (up to ~640x512). The AGA fitter compensates
  * for the doubled vertical resolution, preserving the video's physical aspect
  * ratio. Off by default because interlace flickers on native displays. */
@@ -41,6 +44,9 @@ void display_set_lace(int on);
 /* Use the CD32 Akiko chip's hardware chunky->planar instead of the CPU C2P.
  * CD32 only; no effect (and unsafe) elsewhere, so gate it on --cd32. */
 void display_set_akiko(int on);
+
+/* Enable display-backend diagnostics printed by --time. */
+void display_set_timing(int on);
 
 /* Accumulated AGA encode / blit time in ms (0 if the AGA backend wasn't used). */
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms);

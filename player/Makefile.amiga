@@ -57,7 +57,8 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_mpeg4.c core/mr_msmpeg4v2.c
 HARN  = tests/mr_decode.c
 PLAY  = amiga/mrplay.c amiga/display.c amiga/display_cgx.c \
-        amiga/display_aga.c amiga/audio_paula.c audio/mr_audio_decode.c
+        amiga/display_aga.c amiga/audio_paula.c audio/mr_audio_decode.c \
+        vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
 GUI   = amiga/mrgui.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
@@ -98,6 +99,9 @@ LDFLAGS = -noixemul -lgcc
 
 all: mrplay mrgui mr_decode
 
+KALMS_CHECK = tests/mr_kalms_c2p_check.c core/mr_c2p.c \
+              vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
+
 check-cc:
 	@test -n "$(CC)" && test -x "$(CC)" || { \
 	  echo "ERROR: m68k-amigaos-gcc not found."; \
@@ -130,6 +134,9 @@ mr_decode: check-cc $(HARN) $(CORE) | check-libavc
 	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE) $(LDFLAGS)
 endif
 
+kalms_c2p_check: check-cc $(KALMS_CHECK)
+	$(CC) $(CFLAGS) -o $@ $(KALMS_CHECK) $(LDFLAGS)
+
 ifeq ($(TOOLCHAIN),vbcc)
 # Requires VBCC + vc.config target 'aos68k'. Override CC=... if not on PATH.
 CC      ?= vc
@@ -142,6 +149,6 @@ mr_decode: $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f mrplay mrgui mr_decode
+	rm -f mrplay mrgui mr_decode kalms_c2p_check
 
-.PHONY: all clean check-cc check-mintamp check-libavc
+.PHONY: all clean check-cc check-mintamp check-libavc kalms_c2p_check
