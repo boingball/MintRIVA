@@ -55,23 +55,24 @@ enum {
 
 static int open_classes(void) {
   IntuitionBase = (struct IntuitionBase *)OpenLibrary(
-      (CONST_STRPTR)"intuition.library", 39);
-  UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 39);
-  WindowBase = OpenLibrary((CONST_STRPTR)"window.class", IPTV_CLASS_VERSION);
-  LayoutBase = OpenLibrary((CONST_STRPTR)"gadgets/layout.gadget",
-                           IPTV_CLASS_VERSION);
-  ButtonBase = OpenLibrary((CONST_STRPTR)"gadgets/button.gadget",
-                           IPTV_CLASS_VERSION);
-  ChooserBase = OpenLibrary((CONST_STRPTR)"gadgets/chooser.gadget",
-                            IPTV_CLASS_VERSION);
-  ListBrowserBase = OpenLibrary((CONST_STRPTR)"gadgets/listbrowser.gadget",
+      (CONST_STRPTR) "intuition.library", 39);
+  UtilityBase = OpenLibrary((CONST_STRPTR) "utility.library", 39);
+  WindowBase = OpenLibrary((CONST_STRPTR) "window.class", IPTV_CLASS_VERSION);
+  LayoutBase =
+      OpenLibrary((CONST_STRPTR) "gadgets/layout.gadget", IPTV_CLASS_VERSION);
+  ButtonBase =
+      OpenLibrary((CONST_STRPTR) "gadgets/button.gadget", IPTV_CLASS_VERSION);
+  ChooserBase =
+      OpenLibrary((CONST_STRPTR) "gadgets/chooser.gadget", IPTV_CLASS_VERSION);
+  ListBrowserBase = OpenLibrary((CONST_STRPTR) "gadgets/listbrowser.gadget",
                                 IPTV_CLASS_VERSION);
-  StringBase = OpenLibrary((CONST_STRPTR)"gadgets/string.gadget",
-                           IPTV_CLASS_VERSION);
-  LabelBase = OpenLibrary((CONST_STRPTR)"images/label.image",
-                          IPTV_CLASS_VERSION);
+  StringBase =
+      OpenLibrary((CONST_STRPTR) "gadgets/string.gadget", IPTV_CLASS_VERSION);
+  LabelBase =
+      OpenLibrary((CONST_STRPTR) "images/label.image", IPTV_CLASS_VERSION);
   return IntuitionBase && UtilityBase && WindowBase && LayoutBase &&
-         ButtonBase && ChooserBase && ListBrowserBase && StringBase && LabelBase;
+         ButtonBase && ChooserBase && ListBrowserBase && StringBase &&
+         LabelBase;
 }
 
 static void close_classes(void) {
@@ -157,8 +158,7 @@ static void free_nodes(struct List *list) {
 }
 
 static size_t rebuild_nodes(struct List *list, mr_iptv_directory *directory,
-                            const char *search, ULONG country,
-                            ULONG category) {
+                            const char *search, ULONG country, ULONG category) {
   mr_iptv_filter filter;
   size_t i, shown = 0;
   filter.country = country == 0 ? "GB" : "All";
@@ -171,10 +171,9 @@ static size_t rebuild_nodes(struct List *list, mr_iptv_directory *directory,
     struct Node *node;
     if (!mr_iptv_channel_visible(&directory->channels[i], &filter))
       continue;
-    node = AllocListBrowserNode(1, LBNA_UserData,
-                                (ULONG)&directory->channels[i], LBNA_Column, 0,
-                                LBNCA_Text, (ULONG)directory->channels[i].name,
-                                TAG_END);
+    node = AllocListBrowserNode(
+        1, LBNA_UserData, (ULONG)&directory->channels[i], LBNA_Column, 0,
+        LBNCA_Text, (ULONG)directory->channels[i].name, TAG_END);
     if (!node)
       break;
     AddTail(list, node);
@@ -183,7 +182,8 @@ static size_t rebuild_nodes(struct List *list, mr_iptv_directory *directory,
   return shown;
 }
 
-static void set_status(Object *status, struct Window *window, const char *text) {
+static void set_status(Object *status, struct Window *window,
+                       const char *text) {
   SetGadgetAttrs((struct Gadget *)status, window, NULL, STRINGA_TextVal,
                  (ULONG)text, TAG_DONE);
 }
@@ -209,16 +209,15 @@ static int start_url(const char *url) {
     return 0;
   quote_arg(quoted, sizeof(quoted), url);
   snprintf(args, sizeof(args), "%s\n", quoted);
-  seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
+  seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
   if (!seglist)
-    seglist = LoadSeg((CONST_STRPTR)"mrplay");
+    seglist = LoadSeg((CONST_STRPTR) "mrplay");
   if (!seglist)
     return 0;
-  if (!CreateNewProcTags(NP_Seglist, seglist, NP_FreeSeglist, TRUE,
-                         NP_Arguments, (ULONG)args, NP_StackSize,
-                         MRPLAY_STACK_SIZE, NP_Cli, TRUE, NP_CommandName,
-                         (ULONG)"mrplay", NP_Name, (ULONG)"MintRIVA player",
-                         TAG_END)) {
+  if (!CreateNewProcTags(
+          NP_Seglist, seglist, NP_FreeSeglist, TRUE, NP_Arguments, (ULONG)args,
+          NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE, NP_CommandName,
+          (ULONG) "mrplay", NP_Name, (ULONG) "MintRIVA player", TAG_END)) {
     UnLoadSeg(seglist);
     return 0;
   }
@@ -229,6 +228,10 @@ int main(void) {
   Object *winobj = NULL, *layout = NULL, *search = NULL, *country = NULL;
   Object *category = NULL, *channels = NULL, *status = NULL, *url = NULL;
   Object *buttons = NULL;
+  Object *refresh_button = NULL, *play_button = NULL, *open_button = NULL;
+  Object *close_button = NULL;
+  Object *search_label = NULL, *country_label = NULL, *category_label = NULL;
+  Object *url_label = NULL;
   struct Window *window = NULL;
   struct List channel_nodes, countries, categories;
   mr_iptv_directory directory;
@@ -237,9 +240,15 @@ int main(void) {
   char status_text[128];
   int rc = RETURN_FAIL, loaded;
 
-  NewList(&channel_nodes);
-  NewList(&countries);
-  NewList(&categories);
+  channel_nodes.lh_Head = (struct Node *)&channel_nodes.lh_Tail;
+  channel_nodes.lh_Tail = NULL;
+  channel_nodes.lh_TailPred = (struct Node *)&channel_nodes.lh_Head;
+  countries.lh_Head = (struct Node *)&countries.lh_Tail;
+  countries.lh_Tail = NULL;
+  countries.lh_TailPred = (struct Node *)&countries.lh_Head;
+  categories.lh_Head = (struct Node *)&categories.lh_Tail;
+  categories.lh_Tail = NULL;
+  categories.lh_TailPred = (struct Node *)&categories.lh_Head;
   mr_iptv_init(&directory);
   if (!open_classes())
     goto cleanup;
@@ -253,64 +262,81 @@ int main(void) {
   if (loaded)
     rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
 
-  search = NewObject(STRING_GetClass(), NULL, GA_ID, G_SEARCH, GA_RelVerify,
-                     TRUE, STRINGA_MaxChars, MR_IPTV_NAME_MAX, TAG_DONE);
-  country = NewObject(CHOOSER_GetClass(), NULL, GA_ID, G_COUNTRY, GA_RelVerify,
-                      TRUE, CHOOSER_Labels, (ULONG)&countries,
-                      CHOOSER_Selected, 0, TAG_DONE);
-  category = NewObject(CHOOSER_GetClass(), NULL, GA_ID, G_CATEGORY, GA_RelVerify,
-                       TRUE, CHOOSER_Labels, (ULONG)&categories,
-                       CHOOSER_Selected, 0, TAG_DONE);
-  channels = NewObject(LISTBROWSER_GetClass(), NULL, GA_ID, G_CHANNELS,
-                       GA_RelVerify, TRUE, LISTBROWSER_Labels,
-                       (ULONG)&channel_nodes, LISTBROWSER_AutoFit, TRUE,
-                       LISTBROWSER_ShowSelected, TRUE, TAG_DONE);
-  url = NewObject(STRING_GetClass(), NULL, STRINGA_MaxChars, MR_IPTV_URL_MAX,
-                  TAG_DONE);
+  search = (Object *)NewObject(STRING_GetClass(), NULL, GA_ID, G_SEARCH,
+                               GA_RelVerify, TRUE, STRINGA_MaxChars,
+                               MR_IPTV_NAME_MAX, TAG_DONE);
+  country = (Object *)NewObject(
+      CHOOSER_GetClass(), NULL, GA_ID, G_COUNTRY, GA_RelVerify, TRUE,
+      CHOOSER_Labels, (ULONG)&countries, CHOOSER_Selected, 0, TAG_DONE);
+  category = (Object *)NewObject(
+      CHOOSER_GetClass(), NULL, GA_ID, G_CATEGORY, GA_RelVerify, TRUE,
+      CHOOSER_Labels, (ULONG)&categories, CHOOSER_Selected, 0, TAG_DONE);
+  channels = (Object *)NewObject(
+      LISTBROWSER_GetClass(), NULL, GA_ID, G_CHANNELS, GA_RelVerify, TRUE,
+      LISTBROWSER_Labels, (ULONG)&channel_nodes, LISTBROWSER_AutoFit, TRUE,
+      LISTBROWSER_ShowSelected, TRUE, TAG_DONE);
+  url = (Object *)NewObject(STRING_GetClass(), NULL, STRINGA_MaxChars,
+                            MR_IPTV_URL_MAX, TAG_DONE);
   if (loaded)
     snprintf(status_text, sizeof(status_text), "%lu channels loaded from cache",
              (unsigned long)directory.channel_count);
   else
     strcpy(status_text, "No IPTV cache. Copy iptv-org JSON to Cache/IPTV.");
-  status = NewObject(STRING_GetClass(), NULL, GA_ReadOnly, TRUE,
-                     STRINGA_TextVal, (ULONG)status_text, STRINGA_MaxChars,
-                     sizeof(status_text), TAG_DONE);
+  status = (Object *)NewObject(STRING_GetClass(), NULL, GA_ReadOnly, TRUE,
+                               STRINGA_TextVal, (ULONG)status_text,
+                               STRINGA_MaxChars, sizeof(status_text), TAG_DONE);
   if (!search || !country || !category || !channels || !url || !status)
     goto cleanup;
 
-  buttons = HLayoutObject,
-      LAYOUT_EvenSize, TRUE,
-      LAYOUT_AddChild,
-      ButtonObject, GA_ID, G_REFRESH, GA_Text, "Refresh cache", GA_RelVerify,
-      TRUE, ButtonEnd,
-      LAYOUT_AddChild,
-      ButtonObject, GA_ID, G_PLAY, GA_Text, "Play", GA_RelVerify, TRUE,
-      GA_Disabled, loaded ? FALSE : TRUE, ButtonEnd,
-      LAYOUT_AddChild,
-      ButtonObject, GA_ID, G_OPEN_URL, GA_Text, "Open URL...", GA_RelVerify,
-      TRUE, ButtonEnd,
-      LAYOUT_AddChild,
-      ButtonObject, GA_ID, G_CLOSE, GA_Text, "Close", GA_RelVerify, TRUE,
-      ButtonEnd, LayoutEnd;
-  layout = VLayoutObject,
-      LAYOUT_SpaceOuter, TRUE, LAYOUT_SpaceInner, TRUE,
-      LAYOUT_AddChild, search, CHILD_Label,
-      LabelObject, LABEL_Text, "Search", LabelEnd,
-      LAYOUT_AddChild, country, CHILD_Label,
-      LabelObject, LABEL_Text, "Country", LabelEnd,
-      LAYOUT_AddChild, category, CHILD_Label,
-      LabelObject, LABEL_Text, "Category", LabelEnd,
-      LAYOUT_AddChild, channels,
-      LAYOUT_AddChild, url, CHILD_Label,
-      LabelObject, LABEL_Text, "Manual URL", LabelEnd,
-      LAYOUT_AddChild, buttons, CHILD_WeightedHeight, 0,
-      LAYOUT_AddChild, status, CHILD_WeightedHeight, 0, LayoutEnd;
-  winobj = WindowObject, WA_Title, "MintRIVA IPTV", WA_Activate, TRUE,
-      WA_DepthGadget, TRUE, WA_DragBar, TRUE, WA_CloseGadget, TRUE,
+  refresh_button = (Object *)NewObject(
+      BUTTON_GetClass(), NULL, GA_ID, G_REFRESH, GA_Text,
+      (ULONG) "Refresh cache", GA_RelVerify, TRUE, TAG_DONE);
+  play_button = (Object *)NewObject(
+      BUTTON_GetClass(), NULL, GA_ID, G_PLAY, GA_Text, (ULONG) "Play",
+      GA_RelVerify, TRUE, GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
+  open_button =
+      (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_OPEN_URL, GA_Text,
+                          (ULONG) "Open URL...", GA_RelVerify, TRUE, TAG_DONE);
+  close_button =
+      (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_CLOSE, GA_Text,
+                          (ULONG) "Close", GA_RelVerify, TRUE, TAG_DONE);
+  search_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
+                                     (ULONG) "Search", TAG_DONE);
+  country_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
+                                      (ULONG) "Country", TAG_DONE);
+  category_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
+                                       (ULONG) "Category", TAG_DONE);
+  url_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
+                                  (ULONG) "Manual URL", TAG_DONE);
+  if (!refresh_button || !play_button || !open_button || !close_button ||
+      !search_label || !country_label || !category_label || !url_label)
+    goto cleanup;
+
+  buttons = (Object *)NewObject(
+      LAYOUT_GetClass(), NULL, LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
+      LAYOUT_EvenSize, TRUE, LAYOUT_AddChild, (ULONG)refresh_button,
+      LAYOUT_AddChild, (ULONG)play_button, LAYOUT_AddChild, (ULONG)open_button,
+      LAYOUT_AddChild, (ULONG)close_button, TAG_DONE);
+  if (!buttons)
+    goto cleanup;
+  layout = (Object *)NewObject(
+      LAYOUT_GetClass(), NULL, LAYOUT_Orientation, LAYOUT_ORIENT_VERT,
+      LAYOUT_SpaceOuter, TRUE, LAYOUT_SpaceInner, TRUE, LAYOUT_AddChild,
+      (ULONG)search, CHILD_Label, (ULONG)search_label, LAYOUT_AddChild,
+      (ULONG)country, CHILD_Label, (ULONG)country_label, LAYOUT_AddChild,
+      (ULONG)category, CHILD_Label, (ULONG)category_label, LAYOUT_AddChild,
+      (ULONG)channels, LAYOUT_AddChild, (ULONG)url, CHILD_Label,
+      (ULONG)url_label, LAYOUT_AddChild, (ULONG)buttons, CHILD_WeightedHeight,
+      0, LAYOUT_AddChild, (ULONG)status, CHILD_WeightedHeight, 0, TAG_DONE);
+  if (!layout)
+    goto cleanup;
+  winobj = (Object *)NewObject(
+      WINDOW_GetClass(), NULL, WA_Title, (ULONG) "MintRIVA IPTV", WA_Activate,
+      TRUE, WA_DepthGadget, TRUE, WA_DragBar, TRUE, WA_CloseGadget, TRUE,
       WA_SizeGadget, TRUE, WA_IDCMP,
-      IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_IDCMPUPDATE,
-      WINDOW_Position, WPOS_CENTERSCREEN, WINDOW_ParentGroup, layout, WindowEnd;
-  if (!layout || !buttons || !winobj)
+      IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_IDCMPUPDATE, WINDOW_Position,
+      WPOS_CENTERSCREEN, WINDOW_ParentGroup, (ULONG)layout, TAG_DONE);
+  if (!winobj)
     goto cleanup;
   window = (struct Window *)RA_OpenWindow(winobj);
   if (!window)
@@ -338,9 +364,9 @@ int main(void) {
         GetAttr(CHOOSER_Selected, category, &category_index);
         SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                        LISTBROWSER_Labels, ~0UL, TAG_DONE);
-        selected = rebuild_nodes(&channel_nodes, &directory,
-                                 text ? (char *)text : "", country_index,
-                                 category_index);
+        selected =
+            rebuild_nodes(&channel_nodes, &directory, text ? (char *)text : "",
+                          country_index, category_index);
         SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                        LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
         snprintf(status_text, sizeof(status_text), "%lu channels shown",
@@ -376,8 +402,42 @@ cleanup:
     if (window)
       RA_CloseWindow(winobj);
     DisposeObject(winobj);
-  } else if (layout)
+  } else if (layout) {
     DisposeObject(layout);
+  } else {
+    if (buttons) {
+      DisposeObject(buttons);
+    } else {
+      if (refresh_button)
+        DisposeObject(refresh_button);
+      if (play_button)
+        DisposeObject(play_button);
+      if (open_button)
+        DisposeObject(open_button);
+      if (close_button)
+        DisposeObject(close_button);
+    }
+    if (search)
+      DisposeObject(search);
+    if (country)
+      DisposeObject(country);
+    if (category)
+      DisposeObject(category);
+    if (channels)
+      DisposeObject(channels);
+    if (url)
+      DisposeObject(url);
+    if (status)
+      DisposeObject(status);
+    if (search_label)
+      DisposeObject(search_label);
+    if (country_label)
+      DisposeObject(country_label);
+    if (category_label)
+      DisposeObject(category_label);
+    if (url_label)
+      DisposeObject(url_label);
+  }
   free_nodes(&channel_nodes);
   free_chooser(&countries);
   free_chooser(&categories);
