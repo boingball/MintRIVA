@@ -109,6 +109,7 @@ static void update_file_info(Object *file, Object *info)
 int main(void)
 {
     Object *wo, *file, *mode, *lace, *twox, *info;
+    Object *layout, *controls, *buttons;
     struct Window *w;
     struct List modes;
     ULONG sigmask, result;
@@ -124,42 +125,83 @@ int main(void)
     AddTail(&modes, AllocChooserNode(CNA_Text, (ULONG)"HAM8", TAG_END));
     AddTail(&modes, AllocChooserNode(CNA_Text, (ULONG)"CGX", TAG_END));
 
-    file = GetFileObject, GA_ID, G_FILE, GA_RelVerify, TRUE,
-        GETFILE_TitleText, (ULONG)"Choose a video", GETFILE_ReadOnly, TRUE,
-        GETFILE_DrawersOnly, FALSE, End;
-    mode = ChooserObject, GA_ID, G_MODE, GA_RelVerify, TRUE,
-        CHOOSER_Labels, (ULONG)&modes, CHOOSER_Selected, 3, ChooserEnd;
-    lace = CheckBoxObject, GA_ID, G_LACE, GA_Text, (ULONG)"Laced", CheckBoxEnd;
-    twox = CheckBoxObject, GA_ID, G_2X, GA_Text, (ULONG)"2x", CheckBoxEnd;
-    info = StringObject, GA_ReadOnly, TRUE,
-        STRINGA_TextVal, (ULONG)"No file selected", StringEnd;
+    file = NewObject(GETFILE_GetClass(), NULL,
+                     GA_ID, G_FILE,
+                     GA_RelVerify, TRUE,
+                     GETFILE_TitleText, (ULONG)"Choose a video",
+                     GETFILE_ReadOnly, TRUE,
+                     GETFILE_DrawersOnly, FALSE,
+                     TAG_END);
+    mode = NewObject(CHOOSER_GetClass(), NULL,
+                     GA_ID, G_MODE,
+                     GA_RelVerify, TRUE,
+                     CHOOSER_Labels, (ULONG)&modes,
+                     CHOOSER_Selected, 3,
+                     TAG_END);
+    lace = NewObject(CHECKBOX_GetClass(), NULL,
+                     GA_ID, G_LACE,
+                     GA_Text, (ULONG)"Laced",
+                     TAG_END);
+    twox = NewObject(CHECKBOX_GetClass(), NULL,
+                     GA_ID, G_2X,
+                     GA_Text, (ULONG)"2x",
+                     TAG_END);
+    info = NewObject(STRING_GetClass(), NULL,
+                     GA_ReadOnly, TRUE,
+                     STRINGA_TextVal, (ULONG)"No file selected",
+                     TAG_END);
 
-    wo = WindowObject,
-        WA_Title, (ULONG)"MintRIVA Control",
-        WA_Activate, TRUE, WA_DepthGadget, TRUE, WA_CloseGadget, TRUE,
-        WINDOW_Position, WPOS_CENTERSCREEN,
-        WINDOW_Layout, VLayoutObject,
-            LAYOUT_AddChild, file,
-            CHILD_Label, LabelObject, LABEL_Text, (ULONG)"File", LabelEnd,
-            LAYOUT_AddChild, HLayoutObject,
-                LAYOUT_AddChild, mode,
-                CHILD_Label, LabelObject, LABEL_Text, (ULONG)"Display", LabelEnd,
-                LAYOUT_AddChild, lace,
-                LAYOUT_AddChild, twox,
-            LayoutEnd,
-            LAYOUT_AddChild, HLayoutObject,
-                LAYOUT_AddChild, ButtonObject, GA_ID, G_PLAY,
-                    GA_Text, (ULONG)"Play", GA_RelVerify, TRUE, ButtonEnd,
-                LAYOUT_AddChild, ButtonObject, GA_ID, G_PAUSE,
-                    GA_Text, (ULONG)"Pause", GA_RelVerify, TRUE, ButtonEnd,
-                LAYOUT_AddChild, ButtonObject, GA_ID, G_STOP,
-                    GA_Text, (ULONG)"Stop", GA_RelVerify, TRUE, ButtonEnd,
-                LAYOUT_AddChild, ButtonObject, GA_ID, G_FF,
-                    GA_Text, (ULONG)"Fast forward", GA_RelVerify, TRUE, ButtonEnd,
-            LayoutEnd,
-            LAYOUT_AddChild, info,
-        LayoutEnd,
-    WindowEnd;
+    controls = NewObject(LAYOUT_GetClass(), NULL,
+                         LAYOUT_AddChild, mode,
+                         CHILD_Label, NewObject(LABEL_GetClass(), NULL,
+                                                LABEL_Text, (ULONG)"Display",
+                                                TAG_END),
+                         LAYOUT_AddChild, lace,
+                         LAYOUT_AddChild, twox,
+                         TAG_END);
+
+    buttons = NewObject(LAYOUT_GetClass(), NULL,
+                        LAYOUT_AddChild, NewObject(BUTTON_GetClass(), NULL,
+                                                   GA_ID, G_PLAY,
+                                                   GA_Text, (ULONG)"Play",
+                                                   GA_RelVerify, TRUE,
+                                                   TAG_END),
+                        LAYOUT_AddChild, NewObject(BUTTON_GetClass(), NULL,
+                                                   GA_ID, G_PAUSE,
+                                                   GA_Text, (ULONG)"Pause",
+                                                   GA_RelVerify, TRUE,
+                                                   TAG_END),
+                        LAYOUT_AddChild, NewObject(BUTTON_GetClass(), NULL,
+                                                   GA_ID, G_STOP,
+                                                   GA_Text, (ULONG)"Stop",
+                                                   GA_RelVerify, TRUE,
+                                                   TAG_END),
+                        LAYOUT_AddChild, NewObject(BUTTON_GetClass(), NULL,
+                                                   GA_ID, G_FF,
+                                                   GA_Text, (ULONG)"Fast forward",
+                                                   GA_RelVerify, TRUE,
+                                                   TAG_END),
+                        TAG_END);
+
+    layout = NewObject(LAYOUT_GetClass(), NULL,
+                       LAYOUT_Orientation, LAYOUT_ORIENT_VERT,
+                       LAYOUT_AddChild, file,
+                       CHILD_Label, NewObject(LABEL_GetClass(), NULL,
+                                              LABEL_Text, (ULONG)"File",
+                                              TAG_END),
+                       LAYOUT_AddChild, controls,
+                       LAYOUT_AddChild, buttons,
+                       LAYOUT_AddChild, info,
+                       TAG_END);
+
+    wo = NewObject(WINDOW_GetClass(), NULL,
+                   WA_Title, (ULONG)"MintRIVA Control",
+                   WA_Activate, TRUE,
+                   WA_DepthGadget, TRUE,
+                   WA_CloseGadget, TRUE,
+                   WINDOW_Position, WPOS_CENTERSCREEN,
+                   WINDOW_Layout, layout,
+                   TAG_END);
     if (!wo || !(w = (struct Window *)RA_OpenWindow(wo))) {
         if (wo) DisposeObject(wo);
         FreeChooserNodes(&modes);
