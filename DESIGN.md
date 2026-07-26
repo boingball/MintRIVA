@@ -187,3 +187,9 @@ back through the same URL launch path used by command-line playback. Downloads
 use the existing HTTP/AmiSSL implementation and a temporary-parse-rename cache
 transaction, retaining a previously valid cache after any failure. Directory
 JSON never enters the preferences file.
+
+`iptvgui` reads `cache.meta` at startup and automatically refreshes channel and
+stream JSON after 24 hours. It downloads through the shared HTTP/AmiSSL source
+into bounded `.tmp` files, parses both files before installation, and keeps
+`.old` files until both renames succeed so an interrupted or malformed refresh
+cannot destroy the last usable directory.

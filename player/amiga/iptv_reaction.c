@@ -3,6 +3,7 @@
  * Keeping this in a second process gives directory parsing its own event loop;
  * selected URLs are still played by the normal mrplay executable.
  */
+#include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 
 #include <classes/window.h>
@@ -33,10 +34,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define IPTV_CLASS_VERSION 44
 #define IPTV_FILE_MAX (32UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
+#define IPTV_CACHE_SECONDS (24UL * 60UL * 60UL)
+#define IPTV_CHANNELS_URL "https://iptv-org.github.io/api/channels.json"
+#define IPTV_STREAMS_URL "https://iptv-org.github.io/api/streams.json"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
@@ -132,6 +137,133 @@ static char *read_file(const char *path, size_t *length) {
   data[size] = 0;
   *length = (size_t)size;
   return data;
+}
+
+static void ensure_cache_drawers(void) {
+  BPTR lock;
+  lock = CreateDir((CONST_STRPTR) "PROGDIR:Cache");
+  if (lock)
+    UnLock(lock);
+  lock = CreateDir((CONST_STRPTR) "PROGDIR:Cache/IPTV");
+  if (lock)
+    UnLock(lock);
+}
+
+static int cache_is_fresh(void) {
+  FILE *meta = fopen("PROGDIR:Cache/IPTV/cache.meta", "r");
+  unsigned long saved;
+  time_t now;
+  if (!meta)
+    return 0;
+  if (fscanf(meta, "%lu", &saved) != 1) {
+    fclose(meta);
+    return 0;
+  }
+  fclose(meta);
+  now = time(NULL);
+  return now != (time_t)-1 && (unsigned long)now >= saved &&
+         (unsigned long)now - saved < IPTV_CACHE_SECONDS;
+}
+
+static int download_file(const char *url, const char *path) {
+  mr_source *source;
+  FILE *file;
+  unsigned char buffer[16384];
+  size_t length, offset, count;
+  source = mr_http_source_open(url);
+  if (!source)
+    return 0;
+  length = mr_source_length(source);
+  if (!length || length == MR_SOURCE_LEN_UNKNOWN || length > IPTV_FILE_MAX) {
+    mr_source_close(source);
+    return 0;
+  }
+  file = fopen(path, "wb");
+  if (!file) {
+    mr_source_close(source);
+    return 0;
+  }
+  for (offset = 0; offset < length; offset += count) {
+    count = length - offset;
+    if (count > sizeof(buffer))
+      count = sizeof(buffer);
+    if (!mr_source_read_at(source, offset, buffer, count) ||
+        fwrite(buffer, 1, count, file) != count) {
+      fclose(file);
+      remove(path);
+      mr_source_close(source);
+      return 0;
+    }
+  }
+  if (fclose(file) != 0) {
+    remove(path);
+    mr_source_close(source);
+    return 0;
+  }
+  mr_source_close(source);
+  return 1;
+}
+
+static int refresh_cache(void) {
+  const char *channels_tmp = "PROGDIR:Cache/IPTV/channels.json.tmp";
+  const char *streams_tmp = "PROGDIR:Cache/IPTV/streams.json.tmp";
+  mr_iptv_directory check;
+  char *channels = NULL, *streams = NULL;
+  size_t channels_size, streams_size;
+  FILE *meta;
+  time_t now;
+  int valid = 0;
+
+  ensure_cache_drawers();
+  remove(channels_tmp);
+  remove(streams_tmp);
+  if (!download_file(IPTV_CHANNELS_URL, channels_tmp) ||
+      !download_file(IPTV_STREAMS_URL, streams_tmp))
+    goto done;
+  channels = read_file(channels_tmp, &channels_size);
+  streams = read_file(streams_tmp, &streams_size);
+  mr_iptv_init(&check);
+  if (!channels || !streams ||
+      !mr_iptv_parse_channels(&check, channels, channels_size) ||
+      !mr_iptv_join_streams(&check, streams, streams_size) ||
+      !check.channel_count)
+    goto parsed;
+
+  /* Temporary files are fully downloaded and parsed before the old valid
+   * cache is touched. */
+  remove("PROGDIR:Cache/IPTV/channels.json.old");
+  remove("PROGDIR:Cache/IPTV/streams.json.old");
+  rename("PROGDIR:Cache/IPTV/channels.json",
+         "PROGDIR:Cache/IPTV/channels.json.old");
+  rename("PROGDIR:Cache/IPTV/streams.json",
+         "PROGDIR:Cache/IPTV/streams.json.old");
+  if (rename(channels_tmp, "PROGDIR:Cache/IPTV/channels.json") != 0 ||
+      rename(streams_tmp, "PROGDIR:Cache/IPTV/streams.json") != 0) {
+    remove("PROGDIR:Cache/IPTV/channels.json");
+    remove("PROGDIR:Cache/IPTV/streams.json");
+    rename("PROGDIR:Cache/IPTV/channels.json.old",
+           "PROGDIR:Cache/IPTV/channels.json");
+    rename("PROGDIR:Cache/IPTV/streams.json.old",
+           "PROGDIR:Cache/IPTV/streams.json");
+    goto parsed;
+  }
+  remove("PROGDIR:Cache/IPTV/channels.json.old");
+  remove("PROGDIR:Cache/IPTV/streams.json.old");
+  now = time(NULL);
+  meta = fopen("PROGDIR:Cache/IPTV/cache.meta", "w");
+  if (meta) {
+    fprintf(meta, "%lu\n", (unsigned long)now);
+    fclose(meta);
+  }
+  valid = 1;
+parsed:
+  mr_iptv_free(&check);
+done:
+  free(channels);
+  free(streams);
+  remove(channels_tmp);
+  remove(streams_tmp);
+  return valid;
 }
 
 static int load_cache(mr_iptv_directory *directory) {
@@ -238,7 +370,7 @@ int main(void) {
   ULONG sigmask, signals, result, selected, country_index, category_index;
   UWORD code;
   char status_text[128];
-  int rc = RETURN_FAIL, loaded;
+  int rc = RETURN_FAIL, loaded, refresh_attempted, refreshed;
 
   channel_nodes.lh_Head = (struct Node *)&channel_nodes.lh_Tail;
   channel_nodes.lh_Tail = NULL;
@@ -258,6 +390,8 @@ int main(void) {
       !add_chooser(&categories, "Entertainment"))
     goto cleanup;
 
+  refresh_attempted = !cache_is_fresh();
+  refreshed = refresh_attempted ? refresh_cache() : 0;
   loaded = load_cache(&directory);
   if (loaded)
     rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
@@ -278,7 +412,10 @@ int main(void) {
   url = (Object *)NewObject(STRING_GetClass(), NULL, STRINGA_MaxChars,
                             MR_IPTV_URL_MAX, TAG_DONE);
   if (loaded)
-    snprintf(status_text, sizeof(status_text), "%lu channels loaded from cache",
+    snprintf(status_text, sizeof(status_text),
+             refresh_attempted && !refreshed
+                 ? "%lu channels loaded; refresh failed, retained cache"
+                 : "%lu channels loaded from cache",
              (unsigned long)directory.channel_count);
   else
     strcpy(status_text, "No IPTV cache. Copy iptv-org JSON to Cache/IPTV.");
@@ -373,8 +510,35 @@ int main(void) {
                  (unsigned long)selected);
         set_status(status, window, status_text);
       } else if ((result & WMHI_GADGETMASK) == G_REFRESH) {
-        set_status(status, window,
-                   "Refresh requires updated JSON in PROGDIR:Cache/IPTV.");
+        STRPTR search_text = NULL;
+        set_status(status, window, "Downloading channel directory...");
+        SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
+                       TRUE, TAG_DONE);
+        if (!refresh_cache()) {
+          set_status(status, window,
+                     "IPTV refresh failed; retaining cached directory");
+          SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
+                         GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
+        } else {
+          GetAttr(STRINGA_TextVal, search, (ULONG *)&search_text);
+          GetAttr(CHOOSER_Selected, country, &country_index);
+          GetAttr(CHOOSER_Selected, category, &category_index);
+          SetGadgetAttrs((struct Gadget *)channels, window, NULL,
+                         LISTBROWSER_Labels, ~0UL, TAG_DONE);
+          free_nodes(&channel_nodes);
+          mr_iptv_free(&directory);
+          loaded = load_cache(&directory);
+          selected = rebuild_nodes(&channel_nodes, &directory,
+                                   search_text ? (char *)search_text : "",
+                                   country_index, category_index);
+          SetGadgetAttrs((struct Gadget *)channels, window, NULL,
+                         LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
+          SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
+                         GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
+          snprintf(status_text, sizeof(status_text), "%lu channels shown",
+                   (unsigned long)selected);
+          set_status(status, window, status_text);
+        }
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
         if (!start_url(text ? (char *)text : ""))

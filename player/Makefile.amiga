@@ -63,7 +63,7 @@ PLAY  = amiga/mrplay.c amiga/display.c amiga/display_cgx.c \
         audio/mr_pcm.c
 GUI   = amiga/mrgui.c
 IPTVGUI = amiga/iptv_reaction.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
-          iptv/mr_iptv_m3u.c
+          iptv/mr_iptv_m3u.c core/mr_source.c core/mr_http.c core/mr_hls.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
               $(wildcard $(MINTAMP_ROOT)/real/*.c)
@@ -151,7 +151,7 @@ mrgui: check-cc $(GUI)
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
 iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h
-	$(CC) $(GUI_CFLAGS) -o $@ $(IPTVGUI) $(LDFLAGS)
+	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(IPTVGUI) $(LDFLAGS)
 
 check-mintamp:
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
