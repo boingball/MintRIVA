@@ -67,14 +67,15 @@ static void decoded_audio_sink(void *user, const int16_t *pcm,
                     (int)channels);
 }
 
-/* The separate ReAction controller uses the standard break signals, which
- * avoids a resident broker or a custom public-port ABI. Shell Ctrl-C remains
- * stop; Ctrl-D toggles pause and Ctrl-E requests a forward seek. */
+/* The ReAction controller uses Ctrl-F for a normal stop so AmigaDOS does not
+ * abort the CLI process before display/audio cleanup runs.  Shell Ctrl-C is
+ * still accepted when mrplay sees it itself; Ctrl-D toggles pause and Ctrl-E
+ * toggles fast-forward. */
 static int control_signal_event(void)
 {
     ULONG sig = SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D |
-                             SIGBREAKF_CTRL_E);
-    if (sig & SIGBREAKF_CTRL_C) return MR_EV_QUIT;
+                             SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
+    if (sig & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) return MR_EV_QUIT;
     if (sig & SIGBREAKF_CTRL_D) return MR_EV_PAUSE;
     if (sig & SIGBREAKF_CTRL_E) return MR_EV_SEEK_FWD;
     return MR_EV_NONE;
