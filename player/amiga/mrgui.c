@@ -230,6 +230,15 @@ static void signal_player(ULONG mask)
     Permit();
 }
 
+static void stop_player_and_wait(void)
+{
+    int guard;
+
+    signal_player(SIGBREAKF_CTRL_F);
+    for (guard = 0; guard < 250 && find_player(); guard++)
+        Delay(1);
+}
+
 static void quote_arg(char *dst, size_t cap, const char *src)
 {
     size_t n;
@@ -597,7 +606,7 @@ int main(void)
                     break;
 
                 case G_STOP:
-                    signal_player(SIGBREAKF_CTRL_C);
+                    stop_player_and_wait();
                     break;
 
                 case G_FF:
@@ -617,7 +626,7 @@ int main(void)
 
 done:
     status = RETURN_OK;
-    signal_player(SIGBREAKF_CTRL_C);
+    stop_player_and_wait();
 
 cleanup:
     /* Dispose only the highest successfully-created owner.  The window owns
