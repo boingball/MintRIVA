@@ -110,8 +110,10 @@ mrplay: check-cc check-mintamp $(PLAY) $(CORE) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ $(PLAY) $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LDFLAGS)
 
+# As in MintAMP, mrgui opens the ReAction classes explicitly at runtime.
+# No libauto archive is required by the cross-toolchain.
 mrgui: check-cc $(GUI)
-	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) -lauto $(LDFLAGS)
+	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
 check-mintamp:
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
