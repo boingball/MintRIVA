@@ -4,9 +4,9 @@
  * own its custom screen, while the small controller stays on Workbench.  On
  * CGX the player is a resizable Workbench window alongside this controller.
  *
- * The ReAction setup follows MintAMP: class libraries are opened explicitly at
- * runtime, BOOPSI objects are created with NewObject(), and no libauto link is
- * required.
+ * The ReAction setup follows MintAMP: system/class libraries are opened
+ * explicitly at runtime, BOOPSI objects are created with NewObject(), pointer
+ * tag data is cast to ULONG, and no libauto link is required.
  */
 #include <exec/types.h>
 #include <exec/libraries.h>
@@ -24,9 +24,11 @@
 #include <images/label.h>
 #include <reaction/reaction.h>
 #include <reaction/reaction_macros.h>
+#include <proto/asl.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
+#include <proto/utility.h>
 #include <proto/button.h>
 #include <proto/checkbox.h>
 #include <proto/chooser.h>
@@ -42,9 +44,10 @@
 #define MRGUI_CLASS_VERSION 44
 #endif
 
-/* ReAction/class library bases, matching the manual runtime setup used by
- * MintAMP rather than relying on libauto. */
+/* Runtime library bases, following MintAMP's ReAction frontend. */
 struct IntuitionBase *IntuitionBase;
+struct Library *UtilityBase;
+struct Library *AslBase;
 struct Library *WindowBase;
 struct Library *LayoutBase;
 struct Library *ButtonBase;
@@ -60,6 +63,8 @@ static int open_reaction_classes(void)
 {
     IntuitionBase = (struct IntuitionBase *)OpenLibrary(
         (CONST_STRPTR)"intuition.library", 39);
+    UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 39);
+    AslBase = OpenLibrary((CONST_STRPTR)"asl.library", 39);
     WindowBase = OpenLibrary((CONST_STRPTR)"window.class",
                              MRGUI_CLASS_VERSION);
     LayoutBase = OpenLibrary((CONST_STRPTR)"gadgets/layout.gadget",
@@ -77,9 +82,9 @@ static int open_reaction_classes(void)
     LabelBase = OpenLibrary((CONST_STRPTR)"images/label.image",
                             MRGUI_CLASS_VERSION);
 
-    return IntuitionBase && WindowBase && LayoutBase && ButtonBase &&
-           CheckBoxBase && ChooserBase && GetFileBase && StringBase &&
-           LabelBase;
+    return IntuitionBase && UtilityBase && AslBase && WindowBase &&
+           LayoutBase && ButtonBase && CheckBoxBase && ChooserBase &&
+           GetFileBase && StringBase && LabelBase;
 }
 
 static void close_reaction_classes(void)
@@ -115,6 +120,14 @@ static void close_reaction_classes(void)
     if (WindowBase) {
         CloseLibrary(WindowBase);
         WindowBase = NULL;
+    }
+    if (AslBase) {
+        CloseLibrary(AslBase);
+        AslBase = NULL;
+    }
+    if (UtilityBase) {
+        CloseLibrary(UtilityBase);
+        UtilityBase = NULL;
     }
     if (IntuitionBase) {
         CloseLibrary((struct Library *)IntuitionBase);
@@ -344,10 +357,6 @@ int main(void)
                                     TAG_DONE);
     if (!controls)
         goto cleanup;
-    mode = NULL;
-    display_label = NULL;
-    lace = NULL;
-    twox = NULL;
 
     play_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
                                       GA_ID, G_PLAY,
@@ -382,10 +391,6 @@ int main(void)
                                    TAG_DONE);
     if (!buttons)
         goto cleanup;
-    play_button = NULL;
-    pause_button = NULL;
-    stop_button = NULL;
-    ff_button = NULL;
 
     layout = (Object *)NewObject(LAYOUT_GetClass(), NULL,
                                   LAYOUT_Orientation, LAYOUT_ORIENT_VERT,
@@ -402,11 +407,6 @@ int main(void)
                                   TAG_DONE);
     if (!layout)
         goto cleanup;
-    file = NULL;
-    file_label = NULL;
-    controls = NULL;
-    buttons = NULL;
-    info = NULL;
 
     wo = (Object *)NewObject(WINDOW_GetClass(), NULL,
                               WA_Title, (ULONG)"MintRIVA Control",
@@ -422,7 +422,6 @@ int main(void)
                               TAG_DONE);
     if (!wo)
         goto cleanup;
-    layout = NULL;
 
     w = (struct Window *)RA_OpenWindow(wo);
     if (!w)
@@ -470,39 +469,48 @@ done:
     signal_player(SIGBREAKF_CTRL_C);
 
 cleanup:
+    /* Dispose only the highest successfully-created owner.  A window owns its
+     * parent layout; the root layout owns its child layouts and gadgets. */
     if (wo) {
         if (w)
             RA_CloseWindow(wo);
         DisposeObject(wo);
-    }
-    if (layout)
+    } else if (layout) {
         DisposeObject(layout);
-    if (controls)
-        DisposeObject(controls);
-    if (buttons)
-        DisposeObject(buttons);
-    if (file)
-        DisposeObject(file);
-    if (mode)
-        DisposeObject(mode);
-    if (lace)
-        DisposeObject(lace);
-    if (twox)
-        DisposeObject(twox);
-    if (info)
-        DisposeObject(info);
-    if (file_label)
-        DisposeObject(file_label);
-    if (display_label)
-        DisposeObject(display_label);
-    if (play_button)
-        DisposeObject(play_button);
-    if (pause_button)
-        DisposeObject(pause_button);
-    if (stop_button)
-        DisposeObject(stop_button);
-    if (ff_button)
-        DisposeObject(ff_button);
+    } else {
+        if (controls) {
+            DisposeObject(controls);
+        } else {
+            if (mode)
+                DisposeObject(mode);
+            if (lace)
+                DisposeObject(lace);
+            if (twox)
+                DisposeObject(twox);
+            if (display_label)
+                DisposeObject(display_label);
+        }
+
+        if (buttons) {
+            DisposeObject(buttons);
+        } else {
+            if (play_button)
+                DisposeObject(play_button);
+            if (pause_button)
+                DisposeObject(pause_button);
+            if (stop_button)
+                DisposeObject(stop_button);
+            if (ff_button)
+                DisposeObject(ff_button);
+        }
+
+        if (file)
+            DisposeObject(file);
+        if (info)
+            DisposeObject(info);
+        if (file_label)
+            DisposeObject(file_label);
+    }
 
     free_chooser_nodes(&modes);
     close_reaction_classes();
