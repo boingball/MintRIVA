@@ -22,7 +22,14 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
+#include <proto/button.h>
+#include <proto/checkbox.h>
 #include <proto/chooser.h>
+#include <proto/getfile.h>
+#include <proto/label.h>
+#include <proto/layout.h>
+#include <proto/string.h>
+#include <proto/window.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -119,7 +126,7 @@ int main(void)
 
     file = GetFileObject, GA_ID, G_FILE, GA_RelVerify, TRUE,
         GETFILE_TitleText, (ULONG)"Choose a video", GETFILE_ReadOnly, TRUE,
-        GETFILE_DrawersOnly, FALSE, GetFileEnd;
+        GETFILE_DrawersOnly, FALSE, End;
     mode = ChooserObject, GA_ID, G_MODE, GA_RelVerify, TRUE,
         CHOOSER_Labels, (ULONG)&modes, CHOOSER_Selected, 3, ChooserEnd;
     lace = CheckBoxObject, GA_ID, G_LACE, GA_Text, (ULONG)"Laced", CheckBoxEnd;
