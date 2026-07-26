@@ -413,11 +413,14 @@ int main(int argc, char **argv)
         if (pkt.len == 0) continue;
         if (want_time && !raw_diag_printed &&
             mr_rawvideo_is_uyvy422(vi->fourcc)) {
-            uint32_t stride = vi->config_len >= 4 ? mr_rl32(vi->config) : 0;
+            /* Query decoder-owned state, proving MOV config survived through
+             * mr_decoder_open_config rather than merely printing the demuxer. */
+            uint32_t stride = mr_rawvideo_source_stride(&dec);
             uint32_t rows = (vi->height > 0 &&
                              stride <= pkt.len / (uint32_t)vi->height)
                           ? stride * (uint32_t)vi->height : pkt.len;
-            printf("raw UYVY422: %dx%d, packet=%lu, stride=%lu, trailing=%lu\n",
+            printf("raw UYVY422: width=%d height=%d packet=%lu "
+                   "stride=%lu trailing=%lu\n",
                    vi->width, vi->height, (unsigned long)pkt.len,
                    (unsigned long)stride,
                    (unsigned long)(rows <= pkt.len ? pkt.len - rows : 0));

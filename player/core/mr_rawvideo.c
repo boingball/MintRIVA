@@ -4,7 +4,7 @@
 
 typedef struct {
     int width, height, dst_stride;
-    uint32_t src_stride;
+    uint32_t src_stride, minimum_row;
     uint8_t *frame;
 } rawvideo_ctx;
 
@@ -68,8 +68,13 @@ static mr_status rawvideo_open(mr_decoder *dec)
     c->width = dec->width;
     c->height = dec->height;
     c->dst_stride = dec->width * 3;
-    c->src_stride = dec->config_len >= 4 ? mr_rl32(dec->config) : minimum;
+    /* MOV must provide the stored rowBytes.  Silently assuming packed rows
+     * when container setup is lost produces plausible but badly sheared
+     * pictures, so fail opening instead. */
+    if (!dec->config || dec->config_len < 4) { free(c); return MR_EFORMAT; }
+    c->src_stride = mr_rl32(dec->config);
     if (c->src_stride < minimum) { free(c); return MR_EFORMAT; }
+    c->minimum_row = minimum;
     bytes = (size_t)c->dst_stride * c->height;
     c->frame = (uint8_t *)malloc(bytes);
     if (!c->frame) { free(c); return MR_ENOMEM; }
@@ -84,13 +89,18 @@ static mr_status rawvideo_decode(mr_decoder *dec, const uint8_t *data,
                                  uint32_t len)
 {
     rawvideo_ctx *c = (rawvideo_ctx *)dec->priv;
-    uint32_t needed;
+    uint32_t last_row;
     int y, x;
-    if (!data || c->height <= 0 ||
-        c->src_stride > UINT32_MAX / (uint32_t)c->height)
+    if (!data || c->height <= 0 || c->src_stride < c->minimum_row)
         return MR_EFORMAT;
-    needed = c->src_stride * (uint32_t)c->height;
-    if (len < needed) return MR_EFORMAT;
+    /* Only a visible packed row is required at the final row start.  Stored
+     * padding after that row may be shorter than src_stride, and unrelated
+     * packet trailing bytes are allowed. */
+    if ((uint32_t)(c->height - 1) >
+        (UINT32_MAX - c->minimum_row) / c->src_stride)
+        return MR_EFORMAT;
+    last_row = (uint32_t)(c->height - 1) * c->src_stride + c->minimum_row;
+    if (len < last_row) return MR_EFORMAT;
     for (y = 0; y < c->height; y++) {
         const uint8_t *src = data + (size_t)y * c->src_stride;
         uint8_t *dst = c->frame + (size_t)y * c->dst_stride;
@@ -103,6 +113,14 @@ static mr_status rawvideo_decode(mr_decoder *dec, const uint8_t *data,
     }
     dec->frame.dirty_y0 = 0; dec->frame.dirty_y1 = c->height;
     return MR_OK;
+}
+
+uint32_t mr_rawvideo_source_stride(const mr_decoder *dec)
+{
+    const rawvideo_ctx *c;
+    if (!dec || dec->codec != &mr_codec_rawvideo || !dec->priv) return 0;
+    c = (const rawvideo_ctx *)dec->priv;
+    return c->src_stride;
 }
 
 static void rawvideo_close(mr_decoder *dec)

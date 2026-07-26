@@ -27,6 +27,7 @@ static void expect_pixel(const mr_decoder *d, int x, int y,
 
 static void check_pairs(void)
 {
+    static const uint8_t stride[4] = { 4, 0, 0, 0 };
     static const struct {
         uint8_t cb, y, cr;
         uint8_t r, g, b;
@@ -42,7 +43,7 @@ static void check_pairs(void)
         uint8_t packet[4] = { cases[i].cb, cases[i].y,
                               cases[i].cr, cases[i].y };
         mr_decoder d;
-        CHECK(open_decoder(&d, 2, 1, NULL, 0) == MR_OK);
+        CHECK(open_decoder(&d, 2, 1, stride, sizeof stride) == MR_OK);
         CHECK(d.codec->decode(&d, packet, sizeof packet) == MR_OK);
         expect_pixel(&d, 0, 0, cases[i].r, cases[i].g, cases[i].b);
         expect_pixel(&d, 1, 0, cases[i].r, cases[i].g, cases[i].b);
@@ -64,7 +65,7 @@ static void check_stride_odd_and_short(void)
       memcpy(guarded + 1, rows, sizeof rows);
     }
     CHECK(open_decoder(&d, 3, 2, stride, sizeof stride) == MR_OK);
-    CHECK(d.codec->decode(&d, guarded + 1, 23) == MR_EFORMAT);
+    CHECK(d.codec->decode(&d, guarded + 1, 19) == MR_EFORMAT);
     CHECK(d.codec->decode(&d, guarded + 1, 24) == MR_OK);
     CHECK(guarded[0] == 0xa5 && guarded[25] == 0xa5);
     expect_pixel(&d, 0, 0, 0, 0, 0);
@@ -112,25 +113,28 @@ static void check_sample_strides(void)
         memset(padded, 0xcc, 90112);
         for (y = 0; y < 136; y++) {
             uint8_t *row = padded + (size_t)y * 662;
+            uint8_t luma = (uint8_t)(16 + y);
             for (i = 0; i < 640; i += 4) {
-                row[i] = 128; row[i + 1] = y & 1 ? 235 : 16;
-                row[i + 2] = 128; row[i + 3] = y & 1 ? 16 : 235;
+                row[i] = 128; row[i + 1] = luma;
+                row[i + 2] = 128; row[i + 3] = luma;
             }
         }
         CHECK(open_decoder(&d, 320, 136, padded_stride, 4) == MR_OK);
-        CHECK(d.codec->decode(&d, padded, 90031) == MR_EFORMAT);
+        CHECK(mr_rawvideo_source_stride(&d) == 662);
+        CHECK(d.codec->decode(&d, padded, 90009) == MR_EFORMAT);
         for (frame = 0; frame < 165; frame++)
             CHECK(d.codec->decode(&d, padded, 90112) == MR_OK);
-        expect_pixel(&d, 0, 0, 0, 0, 0);
-        expect_pixel(&d, 319, 0, 255, 255, 255);
-        expect_pixel(&d, 0, 1, 255, 255, 255);
-        expect_pixel(&d, 319, 1, 0, 0, 0);
-        expect_pixel(&d, 0, 135, 255, 255, 255);
+        for (y = 0; y < 136; y++) {
+            int grey = (298 * y + 128) >> 8;
+            expect_pixel(&d, 0, y, grey, grey, grey);
+            expect_pixel(&d, 319, y, grey, grey, grey);
+        }
         d.codec->close(&d);
         free(padded);
     }
 
     CHECK(open_decoder(&d, 320, 1, invalid_stride, 4) == MR_EFORMAT);
+    CHECK(open_decoder(&d, 320, 1, NULL, 0) == MR_EFORMAT);
 }
 
 int main(void)

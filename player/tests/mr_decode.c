@@ -7,6 +7,7 @@
  *   mr_decode <file.avi>                    - print stream info + frame count
  *   mr_decode <file.avi> --ppm <outdir>     - write decoded frames as PPM
  *   mr_decode <file.avi> --check <refdir>    - compare vs refdir/fNNN.ppm
+ *   mr_decode <file.mov> --first-ppm <file>   - dump first decoded RGB frame
  */
 #include "../core/mr_demux.h"
 #include "../core/mr_codec.h"
@@ -121,7 +122,7 @@ int main(int argc, char **argv)
     const char *dir;
     if (argc < 2) {
         fprintf(stderr, "usage: mr_decode <file> [--memory] "
-                        "[--ppm dir|--check dir]\n");
+                        "[--ppm dir|--check dir|--first-ppm file]\n");
         return 2;
     }
     if (argc > argi && !strcmp(argv[argi], "--memory")) {
@@ -228,6 +229,10 @@ int main(int argc, char **argv)
             }
         }
         frame++;
+        if (mode && !strcmp(mode, "--first-ppm") && dir) {
+            write_ppm(dir, &dec.frame);
+            break;
+        }
         char path[512];
         if (do_dirty) {
             int w = dec.frame.width, h = dec.frame.height, y, changed_lo = h, changed_hi = 0;
