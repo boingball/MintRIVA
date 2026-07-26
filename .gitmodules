@@ -4,6 +4,3 @@
 [submodule "player/vendor/libavc"]
 	path = player/vendor/libavc
 	url = https://github.com/ittiam-systems/libavc.git
-[submodule "player/vendor/kalms-c2p"]
-	path = player/vendor/kalms-c2p
-	url = https://github.com/Kalmalyzer/kalms-c2p.git
