@@ -380,9 +380,14 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
     m->audio.channels    = rb16(e + 24);
     m->audio.bits_per_sample = rb16(e + 26);
     m->audio.sample_rate = rb32(e + 32) >> 16;  /* 16.16 fixed              */
+    /* Keep the public FourCC in the same byte order as video FourCCs so
+     * callers can print/examine it portably; fmt remains big-endian for atom
+     * comparisons inside this parser. */
+    m->audio.codec_tag = MR_FOURCC(e[4], e[5], e[6], e[7]);
     /* map common uncompressed PCM 4CCs to the WAVE PCM tag */
     if (fmt == T('s','o','w','t') || fmt == T('t','w','o','s') ||
-        fmt == T('r','a','w',' ') || fmt == T('l','p','c','m') ||
+        fmt == T('r','a','w',' ') || fmt == T('N','O','N','E') ||
+        fmt == T('l','p','c','m') ||
         fmt == T('i','n','2','4') || fmt == T('i','n','3','2'))
         m->audio.format_tag = MR_AUDIO_FORMAT_PCM;
     else if (fmt == T('.','m','p','3'))
@@ -419,9 +424,20 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         }
     }
     m->audio.valid = 1;
-    if (m->audio.format_tag == MR_AUDIO_FORMAT_PCM)
+    if (m->audio.format_tag == MR_AUDIO_FORMAT_PCM) {
+        /* QuickTime signedness is part of the sample entry, not implied by
+         * the sample width.  In particular, 8-bit 'twos' is signed while
+         * 8-bit 'raw ' and 'NONE' are unsigned. */
+        m->audio.pcm_signed = fmt == T('t','w','o','s') ||
+                              fmt == T('s','o','w','t') ||
+                              fmt == T('i','n','2','4') ||
+                              fmt == T('i','n','3','2');
+        m->audio.pcm_big_endian = fmt == T('t','w','o','s') ||
+                                  fmt == T('i','n','2','4') ||
+                                  fmt == T('i','n','3','2');
         m->audio.block_align = (uint16_t)(m->audio.channels *
                                          ((m->audio.bits_per_sample + 7) / 8));
+    }
 
     /* Compressed access units must keep their sample boundaries.  PCM remains
      * coalesced per chunk to avoid flooding the player with tiny packets. */

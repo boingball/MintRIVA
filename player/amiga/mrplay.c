@@ -338,11 +338,22 @@ int main(int argc, char **argv)
         const mr_audio_info *ai = mr_demux_audio(dx);
         if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
             audio_dec = mr_audio_decoder_open(ai);
-            if (want_time && audio_dec)
-                printf("audio: %s %s %lu Hz\n",
-                       mr_audio_decoder_name(audio_dec),
-                       ai->channels == 1 ? "mono" : "stereo",
-                       (unsigned long)ai->sample_rate);
+            if (want_time && audio_dec) {
+                if (ai->codec_tag > 0xffff)
+                    printf("audio: %s %s %lu Hz (%c%c%c%c)\n",
+                           mr_audio_decoder_name(audio_dec),
+                           ai->channels == 1 ? "mono" : "stereo",
+                           (unsigned long)ai->sample_rate,
+                           (int)(ai->codec_tag & 255),
+                           (int)((ai->codec_tag >> 8) & 255),
+                           (int)((ai->codec_tag >> 16) & 255),
+                           (int)((ai->codec_tag >> 24) & 255));
+                else
+                    printf("audio: %s %s %lu Hz\n",
+                           mr_audio_decoder_name(audio_dec),
+                           ai->channels == 1 ? "mono" : "stereo",
+                           (unsigned long)ai->sample_rate);
+            }
             if (audio_dec)
                 audio = audio_open(mr_audio_decoder_rate(audio_dec),
                                    (int)mr_audio_decoder_channels(audio_dec), 16);

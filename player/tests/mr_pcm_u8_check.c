@@ -3,7 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static mr_audio_info pcm_info(unsigned bits, unsigned channels, unsigned align)
+static mr_audio_info pcm_info(unsigned bits, unsigned channels, unsigned align,
+                              int is_signed, int big_endian)
 {
     mr_audio_info i;
     memset(&i, 0, sizeof i);
@@ -13,6 +14,8 @@ static mr_audio_info pcm_info(unsigned bits, unsigned channels, unsigned align)
     i.channels = (uint16_t)channels;
     i.bits_per_sample = (uint16_t)bits;
     i.block_align = (uint16_t)align;
+    i.pcm_signed = (uint8_t)is_signed;
+    i.pcm_big_endian = (uint8_t)big_endian;
     return i;
 }
 
@@ -25,9 +28,11 @@ static int expect(int condition, const char *message)
 int main(void)
 {
     static const uint8_t u8[] = { 0xa5, 0x00, 0x80, 0xff, 0x5a };
+    static const uint8_t s8[] = { 0x80, 0x00, 0x7f };
     static const uint8_t s16[] = {
         0xa5, 0x00, 0x80, 0x00, 0x00, 0xff, 0x7f, 0x5a
     };
+    static const uint8_t s16be[] = { 0x80, 0x00, 0x00, 0x00, 0x7f, 0xff };
     static const uint8_t stereo[] = {
         0x00, 0x80, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x80
     };
@@ -39,7 +44,7 @@ int main(void)
     long n;
 
     memset(guarded, 0x36, sizeof guarded);
-    i = pcm_info(8, 1, 1);
+    i = pcm_info(8, 1, 1, 0, 0);       /* AVI PCM / MOV raw or NONE */
     n = mr_pcm_decode_s16(&i, u8 + 1, 3, guarded + 1, 3);
     if (!expect(n == 3, "U8 frame count") ||
         !expect(guarded[1] == -32768 && guarded[2] == 0 &&
@@ -48,8 +53,14 @@ int main(void)
                 "U8 output guards")) return 1;
     if (!expect(u8[0] == 0xa5 && u8[4] == 0x5a, "U8 input guards")) return 1;
 
+    i = pcm_info(8, 1, 1, 1, 1);       /* MOV twos (endianness immaterial) */
+    n = mr_pcm_decode_s16(&i, s8, sizeof s8, guarded, 3);
+    if (!expect(n == 3, "S8 frame count") ||
+        !expect(guarded[0] == -32768 && guarded[1] == 0 &&
+                guarded[2] == 32512, "S8 signed conversion")) return 1;
+
     memset(guarded, 0x36, sizeof guarded);
-    i = pcm_info(16, 1, 2);
+    i = pcm_info(16, 1, 2, 1, 0);       /* AVI PCM / MOV sowt */
     n = mr_pcm_decode_s16(&i, s16 + 1, 6, guarded + 1, 3);
     if (!expect(n == 3, "S16LE frame count") ||
         !expect(guarded[1] == -32768 && guarded[2] == 0 &&
@@ -59,25 +70,31 @@ int main(void)
         !expect(s16[0] == 0xa5 && s16[7] == 0x5a, "S16LE input guards"))
         return 1;
 
-    i = pcm_info(16, 2, 4);
+    i = pcm_info(16, 1, 2, 1, 1);       /* MOV twos */
+    n = mr_pcm_decode_s16(&i, s16be, sizeof s16be, guarded, 3);
+    if (!expect(n == 3, "S16BE frame count") ||
+        !expect(guarded[0] == -32768 && guarded[1] == 0 &&
+                guarded[2] == 32767, "S16BE signed conversion")) return 1;
+
+    i = pcm_info(16, 2, 4, 1, 0);
     n = mr_pcm_decode_s16(&i, stereo, sizeof stereo, guarded, 2);
     if (!expect(n == 2, "stereo frame count") ||
         !expect(guarded[0] == -32768 && guarded[1] == 32767 &&
                 guarded[2] == 0 && guarded[3] == -32768,
                 "stereo interleaving")) return 1;
 
-    i = pcm_info(16, 1, 4);
+    i = pcm_info(16, 1, 4, 1, 0);
     n = mr_pcm_decode_s16(&i, padded, sizeof padded, guarded, 3);
     if (!expect(n == 2, "truncated final frame ignored") ||
         !expect(guarded[0] == -32768 && guarded[1] == 32767,
                 "block alignment/padding")) return 1;
 
-    i = pcm_info(16, 2, 3);
+    i = pcm_info(16, 2, 3, 1, 0);
     if (!expect(!mr_pcm_supported(&i), "undersized block alignment rejected"))
         return 1;
-    i = pcm_info(12, 1, 2);
+    i = pcm_info(12, 1, 2, 1, 0);
     if (!expect(!mr_pcm_supported(&i), "unsupported depth rejected")) return 1;
 
-    puts("PCM U8/S16LE mono, stereo, alignment and guard checks passed");
+    puts("PCM U8/S8/S16LE/S16BE mono, stereo, alignment and guard checks passed");
     return 0;
 }

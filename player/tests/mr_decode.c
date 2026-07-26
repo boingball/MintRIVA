@@ -174,10 +174,22 @@ int main(int argc, char **argv)
            (int)((fc >> 16) & 0xff), (int)((fc >> 24) & 0xff),
            (unsigned long)vi->rate, (unsigned long)vi->scale,
            (unsigned long)(vi->scale ? vi->rate / vi->scale : 0u));
-    if (ai->valid)
+    if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
+        printf("audio: PCM %c%u%s%s %lu Hz",
+               ai->pcm_signed ? 'S' : 'U', (unsigned)ai->bits_per_sample,
+               ai->bits_per_sample > 8
+                   ? (ai->pcm_big_endian ? "BE" : "LE") : "",
+               ai->channels == 1 ? " mono" : ai->channels == 2 ? " stereo" : "",
+               (unsigned long)ai->sample_rate);
+        if (ai->codec_tag > 0xffff)
+            printf(" (%c%c%c%c)", (int)(ai->codec_tag & 255),
+                   (int)((ai->codec_tag >> 8) & 255),
+                   (int)((ai->codec_tag >> 16) & 255),
+                   (int)((ai->codec_tag >> 24) & 255));
+        putchar('\n');
+    } else if (ai->valid)
         printf("audio: tag=0x%04x %lu Hz %u ch %u-bit\n",
-               (unsigned)ai->format_tag,
-               (unsigned long)ai->sample_rate,
+               (unsigned)ai->format_tag, (unsigned long)ai->sample_rate,
                (unsigned)ai->channels, (unsigned)ai->bits_per_sample);
 
     const mr_codec *codec = mr_codec_find(fc);

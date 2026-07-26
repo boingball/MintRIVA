@@ -33,18 +33,23 @@ long mr_pcm_decode_s16(const mr_audio_info *info,
         for (channel = 0; channel < info->channels; channel++, p += bytes) {
             int16_t sample;
             if (bytes == 1) {
-                sample = (int16_t)(((int)p[0] - 128) << 8);
+                sample = info->pcm_signed
+                       ? (int16_t)((int16_t)(int8_t)p[0] << 8)
+                       : (int16_t)(((int)p[0] - 128) << 8);
             } else if (bytes == 2) {
-                sample = (int16_t)((uint16_t)p[0] |
-                                   ((uint16_t)p[1] << 8));
+                sample = info->pcm_big_endian
+                       ? (int16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1])
+                       : (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
             } else if (bytes == 3) {
-                /* Preserve the most significant 16 bits of signed S24LE. */
-                sample = (int16_t)((uint16_t)p[1] |
-                                   ((uint16_t)p[2] << 8));
+                /* Preserve the most significant 16 bits of signed S24. */
+                sample = info->pcm_big_endian
+                       ? (int16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1])
+                       : (int16_t)((uint16_t)p[1] | ((uint16_t)p[2] << 8));
             } else {
-                /* Preserve the most significant 16 bits of signed S32LE. */
-                sample = (int16_t)((uint16_t)p[2] |
-                                   ((uint16_t)p[3] << 8));
+                /* Preserve the most significant 16 bits of signed S32. */
+                sample = info->pcm_big_endian
+                       ? (int16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1])
+                       : (int16_t)((uint16_t)p[2] | ((uint16_t)p[3] << 8));
             }
             out[frame * info->channels + channel] = sample;
         }
