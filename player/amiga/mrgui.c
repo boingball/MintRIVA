@@ -75,6 +75,7 @@ enum {
     G_STOP,
     G_FF,
     G_MODE,
+    G_C2P,
     G_LACE,
     G_2X
 };
@@ -300,8 +301,8 @@ static void update_file_info(Object *file, Object *info,
     set_info(info, window, text);
 }
 
-static void update_mode_controls(Object *mode, Object *lace, Object *twox,
-                                 struct Window *window)
+static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
+                                 Object *twox, struct Window *window)
 {
     ULONG selected;
     ULONG disable_chipset_options;
@@ -310,6 +311,9 @@ static void update_mode_controls(Object *mode, Object *lace, Object *twox,
     GetAttr(CHOOSER_Selected, mode, &selected);
     disable_chipset_options = selected == 3 ? TRUE : FALSE;
 
+    SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
+                   GA_Disabled, disable_chipset_options,
+                   TAG_DONE);
     SetGadgetAttrs((struct Gadget *)lace, window, NULL,
                    GA_Disabled, disable_chipset_options,
                    TAG_DONE);
@@ -318,13 +322,15 @@ static void update_mode_controls(Object *mode, Object *lace, Object *twox,
                    TAG_DONE);
 }
 
-static void start_player(Object *file, Object *mode, Object *lace,
-                         Object *twox, Object *info, struct Window *window)
+static void start_player(Object *file, Object *mode, Object *c2p,
+                         Object *lace, Object *twox, Object *info,
+                         struct Window *window)
 {
     char path[512];
     char quoted[1040];
     char args[1200];
     ULONG selected;
+    ULONG selected_c2p;
     ULONG checked_lace;
     ULONG checked_2x;
     STRPTR full_file;
@@ -332,6 +338,7 @@ static void start_player(Object *file, Object *mode, Object *lace,
     struct Process *process;
 
     selected = 0;
+    selected_c2p = 0;
     checked_lace = 0;
     checked_2x = 0;
     full_file = NULL;
@@ -352,14 +359,18 @@ static void start_player(Object *file, Object *mode, Object *lace,
     path[sizeof(path) - 1] = 0;
 
     GetAttr(CHOOSER_Selected, mode, &selected);
+    GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
     GetAttr(CHECKBOX_Checked, lace, &checked_lace);
     GetAttr(CHECKBOX_Checked, twox, &checked_2x);
     quote_arg(quoted, sizeof(quoted), path);
 
-    snprintf(args, sizeof(args), "%s%s%s%s\n", quoted,
+    snprintf(args, sizeof(args), "%s%s%s%s%s\n", quoted,
              selected == 0 ? " --aga" :
              selected == 1 ? " --aga --ham6" :
              selected == 2 ? " --aga --ham" : "",
+             selected < 3 ? (selected_c2p == 1 ? " --cd32" :
+                             selected_c2p == 2 ? " --kalms-c2p" :
+                             " --wpa") : "",
              checked_lace && selected < 3 ? " --lace" : "",
              checked_2x && selected < 3 ? " --2x" : "");
 
@@ -395,6 +406,7 @@ int main(void)
     Object *window_object;
     Object *file;
     Object *mode;
+    Object *c2p;
     Object *lace;
     Object *twox;
     Object *info;
@@ -403,12 +415,14 @@ int main(void)
     Object *buttons;
     Object *file_label;
     Object *display_label;
+    Object *c2p_label;
     Object *play_button;
     Object *pause_button;
     Object *stop_button;
     Object *ff_button;
     struct Window *window;
     struct List modes;
+    struct List c2p_modes;
     ULONG sigmask;
     ULONG result;
     ULONG signals;
@@ -419,6 +433,7 @@ int main(void)
     window_object = NULL;
     file = NULL;
     mode = NULL;
+    c2p = NULL;
     lace = NULL;
     twox = NULL;
     info = NULL;
@@ -427,6 +442,7 @@ int main(void)
     buttons = NULL;
     file_label = NULL;
     display_label = NULL;
+    c2p_label = NULL;
     play_button = NULL;
     pause_button = NULL;
     stop_button = NULL;
@@ -438,6 +454,9 @@ int main(void)
     modes.lh_Head = (struct Node *)&modes.lh_Tail;
     modes.lh_Tail = NULL;
     modes.lh_TailPred = (struct Node *)&modes.lh_Head;
+    c2p_modes.lh_Head = (struct Node *)&c2p_modes.lh_Tail;
+    c2p_modes.lh_Tail = NULL;
+    c2p_modes.lh_TailPred = (struct Node *)&c2p_modes.lh_Head;
 
     if (!open_reaction_classes()) {
         fprintf(stderr, "mrgui: ReAction V%ld classes are not available.\n",
@@ -450,6 +469,10 @@ int main(void)
         !add_chooser_node(&modes, "HAM6") ||
         !add_chooser_node(&modes, "HAM8") ||
         (have_rtg && !add_chooser_node(&modes, "CGX")))
+        goto cleanup;
+    if (!add_chooser_node(&c2p_modes, "Standard") ||
+        !add_chooser_node(&c2p_modes, "CD32") ||
+        !add_chooser_node(&c2p_modes, "Kalms"))
         goto cleanup;
 
     file = (Object *)NewObject(GETFILE_GetClass(), NULL,
@@ -465,6 +488,12 @@ int main(void)
                                CHOOSER_Labels, (ULONG)&modes,
                                CHOOSER_Selected, have_rtg ? 3 : 0,
                                TAG_DONE);
+    c2p = (Object *)NewObject(CHOOSER_GetClass(), NULL,
+                              GA_ID, G_C2P,
+                              GA_RelVerify, TRUE,
+                              CHOOSER_Labels, (ULONG)&c2p_modes,
+                              CHOOSER_Selected, 0,
+                              TAG_DONE);
     lace = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_LACE,
                                GA_Text, (ULONG)"Laced",
@@ -484,15 +513,20 @@ int main(void)
     display_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                         LABEL_Text, (ULONG)"Display",
                                         TAG_DONE);
+    c2p_label = (Object *)NewObject(LABEL_GetClass(), NULL,
+                                    LABEL_Text, (ULONG)"C2P",
+                                    TAG_DONE);
 
-    if (!file || !mode || !lace || !twox || !info ||
-        !file_label || !display_label)
+    if (!file || !mode || !c2p || !lace || !twox || !info ||
+        !file_label || !display_label || !c2p_label)
         goto cleanup;
 
     controls = (Object *)NewObject(LAYOUT_GetClass(), NULL,
                                     LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
                                     LAYOUT_AddChild, (ULONG)mode,
                                     CHILD_Label, (ULONG)display_label,
+                                    LAYOUT_AddChild, (ULONG)c2p,
+                                    CHILD_Label, (ULONG)c2p_label,
                                     LAYOUT_AddChild, (ULONG)lace,
                                     LAYOUT_AddChild, (ULONG)twox,
                                     TAG_DONE);
@@ -572,7 +606,7 @@ int main(void)
     if (!window)
         goto cleanup;
 
-    update_mode_controls(mode, lace, twox, window);
+    update_mode_controls(mode, c2p, lace, twox, window);
     GetAttr(WINDOW_SigMask, window_object, &sigmask);
 
     for (;;) {
@@ -594,11 +628,11 @@ int main(void)
                     break;
 
                 case G_MODE:
-                    update_mode_controls(mode, lace, twox, window);
+                    update_mode_controls(mode, c2p, lace, twox, window);
                     break;
 
                 case G_PLAY:
-                    start_player(file, mode, lace, twox, info, window);
+                    start_player(file, mode, c2p, lace, twox, info, window);
                     break;
 
                 case G_PAUSE:
@@ -643,12 +677,16 @@ cleanup:
         } else {
             if (mode)
                 DisposeObject(mode);
+            if (c2p)
+                DisposeObject(c2p);
             if (lace)
                 DisposeObject(lace);
             if (twox)
                 DisposeObject(twox);
             if (display_label)
                 DisposeObject(display_label);
+            if (c2p_label)
+                DisposeObject(c2p_label);
         }
 
         if (buttons) {
@@ -673,6 +711,7 @@ cleanup:
     }
 
     free_chooser_nodes(&modes);
+    free_chooser_nodes(&c2p_modes);
     close_reaction_classes();
     return status;
 }

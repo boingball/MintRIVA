@@ -94,7 +94,9 @@ in the style of MintAMP's ReAction interface. Keep `mrgui` and `mrplay` in the
 same directory (or put `mrplay` on the command path), run `mrgui`, choose a
 movie and select **AGA**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
 apply to the three chipset modes; CGX playback opens a size-gadget window and
-scales the video as that window is resized. Play starts the selected movie,
+scales the video as that window is resized. The **C2P** chooser selects the
+standard graphics.library path, CD32 Akiko hardware, or the Kalms converter for
+chipset playback, and is disabled for CGX. Play starts the selected movie,
 Pause toggles playback, Stop exits it, and Fast forward toggles unpaced decode.
 
 The controller's file gadget identifies the selected file. On launch, `mrplay`
