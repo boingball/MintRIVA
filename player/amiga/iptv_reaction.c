@@ -59,6 +59,23 @@ enum {
   G_CLOSE
 };
 
+typedef struct {
+  const char *label;
+  const char *iptv_code;
+} iptv_country_choice;
+
+static const iptv_country_choice country_choices[] = {
+    {"United Kingdom", "UK"},
+    {"United States", "US"},
+    {"All", NULL},
+};
+
+static const char *country_code(ULONG selected) {
+  if (selected >= sizeof(country_choices) / sizeof(country_choices[0]))
+    selected = 0;
+  return country_choices[selected].iptv_code;
+}
+
 static int open_classes(void) {
   IntuitionBase = (struct IntuitionBase *)OpenLibrary(
       (CONST_STRPTR) "intuition.library", 39);
@@ -268,7 +285,8 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   set_status(status, window, "Parsing channel directory...");
   mr_iptv_init(&check);
   check_initialized = 1;
-  if (!mr_iptv_load_country_files(&check, channels_tmp, streams_tmp, "GB")) {
+  if (!mr_iptv_load_country_files(&check, channels_tmp, streams_tmp,
+                                  country_choices[0].iptv_code)) {
     snprintf(error, error_size, "%s", mr_iptv_last_error());
     remove(channels_failed);
     rename(channels_tmp, channels_failed);
@@ -341,7 +359,9 @@ static size_t rebuild_nodes(struct List *list, mr_iptv_directory *directory,
                             const char *search, ULONG country, ULONG category) {
   mr_iptv_filter filter;
   size_t i, shown = 0;
-  filter.country = country == 0 ? "GB" : "US";
+  filter.country = country_code(country);
+  if (!filter.country)
+    filter.country = "All";
   filter.category = category == 1   ? "news"
                     : category == 2 ? "entertainment"
                                     : "All";
@@ -416,6 +436,7 @@ int main(void) {
   struct List channel_nodes, countries, categories;
   mr_iptv_directory directory;
   ULONG sigmask, signals, result, selected, country_index, category_index;
+  size_t country_choice_index;
   UWORD code;
   char status_text[256], refresh_error[256], cache_error[256];
   int rc = RETURN_FAIL, loaded, refresh_attempted, cache_ready;
@@ -432,15 +453,20 @@ int main(void) {
   mr_iptv_init(&directory);
   if (!open_classes())
     goto cleanup;
-  if (!add_chooser(&countries, "United Kingdom") ||
-      !add_chooser(&countries, "United States") ||
-      !add_chooser(&categories, "All") || !add_chooser(&categories, "News") ||
+  for (country_choice_index = 0;
+       country_choice_index <
+       sizeof(country_choices) / sizeof(country_choices[0]);
+       country_choice_index++)
+    if (!add_chooser(&countries, country_choices[country_choice_index].label))
+      goto cleanup;
+  if (!add_chooser(&categories, "All") || !add_chooser(&categories, "News") ||
       !add_chooser(&categories, "Entertainment"))
     goto cleanup;
 
   cache_ready = choose_cache_dir(cache_error, sizeof(cache_error));
   refresh_attempted = cache_ready && !cache_is_fresh();
-  loaded = cache_ready ? load_cache(&directory, "GB") : 0;
+  loaded =
+      cache_ready ? load_cache(&directory, country_choices[0].iptv_code) : 0;
   if (loaded)
     rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
 
@@ -542,20 +568,16 @@ int main(void) {
                      LISTBROWSER_Labels, ~0UL, TAG_DONE);
       free_nodes(&channel_nodes);
       mr_iptv_free(&directory);
-      loaded = load_cache(&directory, "GB");
+      loaded = load_cache(&directory, country_choices[0].iptv_code);
       selected = rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
       SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                      LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
       SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
                      loaded ? FALSE : TRUE, TAG_DONE);
-      if (directory.skipped_channel_count)
-        snprintf(status_text, sizeof(status_text),
-                 "%lu channels shown; %lu non-playable/limited skipped",
-                 (unsigned long)selected,
-                 (unsigned long)directory.skipped_channel_count);
-      else
-        snprintf(status_text, sizeof(status_text), "%lu channels shown",
-                 (unsigned long)selected);
+      snprintf(status_text, sizeof(status_text),
+               "Ready: %lu playable %s channels; %lu streams matched",
+               (unsigned long)selected, country_choices[0].iptv_code,
+               (unsigned long)directory.matched_stream_count);
       set_status(status, window, status_text);
     }
   }
@@ -582,21 +604,31 @@ int main(void) {
         SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                        LISTBROWSER_Labels, ~0UL, TAG_DONE);
         if ((result & WMHI_GADGETMASK) == G_COUNTRY) {
-          set_status(status, window,
-                     country_index == 0 ? "Reading channels for GB..."
-                                        : "Reading channels for US...");
+          snprintf(status_text, sizeof(status_text),
+                   "Reading channels for %s...",
+                   country_code(country_index) ? country_code(country_index)
+                                               : "All");
+          set_status(status, window, status_text);
           Delay(1);
           free_nodes(&channel_nodes);
           mr_iptv_free(&directory);
-          loaded = load_cache(&directory, country_index == 0 ? "GB" : "US");
+          loaded = load_cache(&directory, country_code(country_index));
         }
         selected =
             rebuild_nodes(&channel_nodes, &directory, text ? (char *)text : "",
                           country_index, category_index);
         SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                        LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
-        snprintf(status_text, sizeof(status_text), "%lu channels shown",
-                 (unsigned long)selected);
+        if ((result & WMHI_GADGETMASK) == G_COUNTRY)
+          snprintf(status_text, sizeof(status_text),
+                   "Ready: %lu playable %s channels; %lu streams matched",
+                   (unsigned long)selected,
+                   country_code(country_index) ? country_code(country_index)
+                                               : "All",
+                   (unsigned long)directory.matched_stream_count);
+        else
+          snprintf(status_text, sizeof(status_text), "%lu channels shown",
+                   (unsigned long)selected);
         set_status(status, window, status_text);
       } else if ((result & WMHI_GADGETMASK) == G_REFRESH) {
         STRPTR search_text = NULL;
@@ -616,7 +648,7 @@ int main(void) {
                          LISTBROWSER_Labels, ~0UL, TAG_DONE);
           free_nodes(&channel_nodes);
           mr_iptv_free(&directory);
-          loaded = load_cache(&directory, country_index == 0 ? "GB" : "US");
+          loaded = load_cache(&directory, country_code(country_index));
           selected = rebuild_nodes(&channel_nodes, &directory,
                                    search_text ? (char *)search_text : "",
                                    country_index, category_index);
@@ -624,14 +656,12 @@ int main(void) {
                          LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
           SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
                          GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
-          if (directory.skipped_channel_count)
-            snprintf(status_text, sizeof(status_text),
-                     "%lu channels shown; %lu non-playable/limited skipped",
-                     (unsigned long)selected,
-                     (unsigned long)directory.skipped_channel_count);
-          else
-            snprintf(status_text, sizeof(status_text), "%lu channels shown",
-                     (unsigned long)selected);
+          snprintf(status_text, sizeof(status_text),
+                   "Ready: %lu playable %s channels; %lu streams matched",
+                   (unsigned long)selected,
+                   country_code(country_index) ? country_code(country_index)
+                                               : "All",
+                   (unsigned long)directory.matched_stream_count);
           set_status(status, window, status_text);
         }
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {

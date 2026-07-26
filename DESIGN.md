@@ -223,3 +223,5 @@ ID hash, and validates streams one object at a time. Unrelated streams are never
 stored. Channels keep at most two alternate names/categories and four preferred
 streams, then streamless channels are removed in place. Changing country
 reprocesses the cache without another network request.
+The ReAction chooser owns a single label/code mapping table; iptv-org's `UK`
+code is authoritative for United Kingdom filtering (not ISO `GB`).

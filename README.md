@@ -143,6 +143,8 @@ Cached JSON is processed incrementally with a 16 KiB buffer. Only the selected
 country is held in RAM; unrelated global streams are validated and discarded.
 Changing country rebuilds the compact directory from cache without downloading
 the API files again. Each channel retains at most four preferred stream URLs.
+Country filtering uses the directory's own codes (`UK` for United Kingdom and
+`US` for United States), rather than deriving ISO codes from display labels.
 
 Per-stream `Referer` and `User-Agent` values are retained by the IPTV model.
 Builds whose HTTP source cannot attach those headers report that limitation

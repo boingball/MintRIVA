@@ -34,7 +34,7 @@ static void write_streaming_fixture(const char *channels_path,
             "%s{\"id\":\"C%d\",\"name\":\"Channel %d\",\"country\":\"%s\","
             "\"is_nsfw\":false,\"closed\":null,\"replaced_by\":null",
             i ? "," : "", i, i,
-            i < 300   ? "GB"
+            i < 300   ? "UK"
             : i < 400 ? "US"
                       : "ZZ");
     if (i == 0) {
@@ -88,18 +88,18 @@ int main(void) {
   mr_iptv_filter f;
   const char *c =
       "[{\"id\":\"BBCNews.uk\",\"name\":\"BBC News\",\"alt_names\":[\"BBC "
-      "World\"],\"network\":\"BBC\",\"country\":\"GB\",\"categories\":["
+      "World\"],\"network\":\"BBC\",\"country\":\"UK\",\"categories\":["
       "\"news\"],\"is_nsfw\":false,\"unknown\":{\"x\":[1]}},{\"id\":\"Fun.uk\","
       "\"name\":\"Fun "
-      "\\u2603\",\"alt_names\":[],\"network\":\"Net\",\"country\":\"GB\","
+      "\\u2603\",\"alt_names\":[],\"network\":\"Net\",\"country\":\"UK\","
       "\"categories\":[\"entertainment\"],\"is_nsfw\":false},{\"id\":\"US.us\","
       "\"name\":\"US "
       "One\",\"country\":\"US\",\"categories\":[\"news\"],\"alt_names\":[],"
       "\"is_nsfw\":false},{\"id\":\"Adult.uk\",\"name\":\"Adult\",\"country\":"
-      "\"GB\",\"categories\":[],\"alt_names\":[],\"is_nsfw\":true},{\"id\":"
-      "\"Closed.uk\",\"name\":\"Closed\",\"country\":\"GB\",\"categories\":[],"
+      "\"UK\",\"categories\":[],\"alt_names\":[],\"is_nsfw\":true},{\"id\":"
+      "\"Closed.uk\",\"name\":\"Closed\",\"country\":\"UK\",\"categories\":[],"
       "\"alt_names\":[],\"is_nsfw\":false,\"closed\":\"2020\"},{\"id\":\"Empty."
-      "uk\",\"name\":\"Empty\",\"country\":\"GB\",\"categories\":[],\"alt_"
+      "uk\",\"name\":\"Empty\",\"country\":\"UK\",\"categories\":[],\"alt_"
       "names\":[],\"is_nsfw\":false}]";
   const char *s =
       "[{\"channel\":\"BBCNews.uk\",\"url\":\"https://one.test/"
@@ -113,7 +113,7 @@ int main(void) {
                   "group-title=\"Science\",NASA\nhttps://nasa.test/live.m3u8\n";
   const char *nullable_channels =
       "[{\"id\":\"Example.uk\",\"name\":\"Caf\xc3\xa9 TV\",\"alt_names\":[],"
-      "\"network\":null,\"country\":\"GB\",\"categories\":[\"news\"],"
+      "\"network\":null,\"country\":\"UK\",\"categories\":[\"news\"],"
       "\"is_nsfw\":false,\"website\":null,\"closed\":null,"
       "\"replaced_by\":null,"
       "\"owner\":null,\"extra\":{\"nothing\":null,\"values\":[true,false,"
@@ -131,7 +131,7 @@ int main(void) {
   assert(d.channels[0].stream_count == 2);
   assert(d.channels[1].stream_count == 1);
   assert(!strcmp(d.channels[1].name, "Fun ?"));
-  f.country = "GB";
+  f.country = "UK";
   f.category = "news";
   f.search = "world";
   assert(mr_iptv_filter_channels(&d, &f, ids, 8) == 1 && ids[0] == 0);
@@ -178,8 +178,8 @@ int main(void) {
       !mr_iptv_parse_channels(&d, "[{\"id\":\"x\",\"network\":NULL}]",
                               sizeof("[{\"id\":\"x\",\"network\":NULL}]") - 1));
   assert(!mr_iptv_parse_channels(
-      &d, "[{\"id\":\"x\",\"network\":null \"country\":\"GB\"}]",
-      sizeof("[{\"id\":\"x\",\"network\":null \"country\":\"GB\"}]") - 1));
+      &d, "[{\"id\":\"x\",\"network\":null \"country\":\"UK\"}]",
+      sizeof("[{\"id\":\"x\",\"network\":null \"country\":\"UK\"}]") - 1));
   assert(strstr(mr_iptv_last_error(), "',' or '}'"));
   assert(!mr_iptv_join_streams(
       &d, "[{\"channel\":\"Example.uk\",\"url\":none}]",
@@ -202,17 +202,30 @@ int main(void) {
   assert(!strcmp(d.channels[19999].id, "C20099"));
   write_streaming_fixture("/tmp/mr_channels.json", "/tmp/mr_streams.json");
   assert(mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
-                                    "/tmp/mr_streams.json", "GB"));
+                                    "/tmp/mr_streams.json", "UK"));
   assert(d.parsed_channel_count == 25000);
   assert(d.parsed_stream_count == 30000);
+  assert(d.country_match_count == 300);
+  assert(d.eligible_channel_count == 300);
+  assert(d.matched_stream_count == 500);
   assert(d.channel_count == 300);
   assert(directory_bytes(&d) < 4 * 1024 * 1024);
   assert(directory_bytes(&d) + 3 * 16384 + 65536 < 8 * 1024 * 1024);
   for (channel_index = 0; channel_index < (int)d.channel_count; channel_index++)
     assert(d.channels[channel_index].stream_count > 0 &&
            d.channels[channel_index].stream_count <= 4);
+  assert(!mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
+                                     "/tmp/mr_streams.json", "GB"));
+  assert(strstr(mr_iptv_last_error(), "No channel records matched country GB"));
+  assert(d.channel_count == 300);
   assert(mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
                                     "/tmp/mr_streams.json", "US"));
+  assert(d.channel_count == 100);
+  assert(d.country_match_count == 100 && d.matched_stream_count == 100);
+  assert(!mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
+                                     "/tmp/mr_streams.json", "ZZ"));
+  assert(strstr(mr_iptv_last_error(),
+                "channels found, but none had matching streams"));
   assert(d.channel_count == 100);
   {
     FILE *broken = fopen("/tmp/mr_channels.json", "wb");
@@ -221,7 +234,7 @@ int main(void) {
     fclose(broken);
   }
   assert(!mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
-                                     "/tmp/mr_streams.json", "GB"));
+                                     "/tmp/mr_streams.json", "UK"));
   assert(d.channel_count == 100);
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");

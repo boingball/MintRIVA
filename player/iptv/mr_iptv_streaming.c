@@ -212,8 +212,13 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
     if (one.channel_count &&
         (!country || !*country || !strcmp(one.channels[0].country, country))) {
       mr_iptv_channel *items;
-      if (d.channel_count == COUNTRY_CHANNEL_MAX)
-        goto fail_one;
+      d.country_match_count++;
+      d.eligible_channel_count++;
+      if (d.channel_count == COUNTRY_CHANNEL_MAX) {
+        d.skipped_channel_count++;
+        mr_iptv_free(&one);
+        continue;
+      }
       items = realloc(d.channels, (d.channel_count + 1) * sizeof(*items));
       if (!items)
         goto fail_one;
@@ -230,6 +235,17 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
   cr.file = NULL;
   if (rc < 0)
     goto fail;
+  printf("IPTV: parsed %lu channels\n", (unsigned long)d.parsed_channel_count);
+  printf("IPTV: retained %lu channels for %s\n", (unsigned long)d.channel_count,
+         country ? country : "All");
+  if (!d.country_match_count) {
+    char message[128];
+    snprintf(message, sizeof(message), "No channel records matched country %s",
+             country ? country : "All");
+    mr_iptv_set_error(message);
+    preserve_error = 1;
+    goto fail;
+  }
   while (hash_size < d.channel_count * 2 + 1)
     hash_size <<= 1;
   hash = calloc(hash_size, sizeof(*hash));
@@ -267,6 +283,8 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
       mr_iptv_free(&dummy);
       goto fail;
     }
+    if (match >= 0 && dummy.channel_count && dummy.channels[0].stream_count)
+      d.matched_stream_count++;
     mr_iptv_free(&dummy);
   }
   fclose(sr.file);
@@ -286,6 +304,16 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
     }
   }
   d.channel_count = retained;
+  if (!d.channel_count) {
+    char message[160];
+    snprintf(message, sizeof(message),
+             "%lu %s channels found, but none had matching streams",
+             (unsigned long)d.eligible_channel_count,
+             country ? country : "All");
+    mr_iptv_set_error(message);
+    preserve_error = 1;
+    goto fail;
+  }
   {
     size_t streams_kept = 0, pool_bytes = 0, metadata_bytes = 0;
     size_t channel_bytes, stream_bytes, hash_bytes, working_bytes;
@@ -319,11 +347,11 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
     printf("IPTV: estimated directory working memory %lu KB\n",
            (unsigned long)((working_bytes + 1023) / 1024));
   }
-  printf("IPTV: parsed %lu channels, retained %lu for %s\n",
-         (unsigned long)d.parsed_channel_count, (unsigned long)d.channel_count,
-         country ? country : "All");
-  printf("IPTV: parsed %lu streams; string/record storage is country-bounded\n",
-         (unsigned long)d.parsed_stream_count);
+  printf("IPTV: parsed %lu streams; matched %lu streams\n",
+         (unsigned long)d.parsed_stream_count,
+         (unsigned long)d.matched_stream_count);
+  printf("IPTV: retained %lu playable %s channels\n",
+         (unsigned long)d.channel_count, country ? country : "All");
   free(hash);
   free(object);
   mr_iptv_free(out);
