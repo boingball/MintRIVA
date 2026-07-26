@@ -7,6 +7,7 @@
  * is parsed - no edit lists, no fragmented MP4.
  */
 #include "mr_mov.h"
+#include "mr_rawvideo.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -230,13 +231,18 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         /* For uncompressed video, stsz is the authoritative stored frame
          * size.  Derive rowBytes from it rather than assuming width*2: old
          * QuickTime files commonly align scanlines. */
-        if (st == MR_OK &&
-            (m->video.fourcc == MR_FOURCC('2','v','u','y') ||
-             m->video.fourcc == MR_FOURCC('U','Y','V','Y')) &&
-            first_sample < m->nsamples && m->video.height > 0 &&
-            m->samples[first_sample].size % (uint32_t)m->video.height == 0) {
-            uint32_t stride = m->samples[first_sample].size /
-                              (uint32_t)m->video.height;
+        if (st == MR_OK && mr_rawvideo_is_uyvy422(m->video.fourcc) &&
+            first_sample < m->nsamples && m->video.height > 0) {
+            uint32_t sample_size = m->samples[first_sample].size;
+            /* FFmpeg's raw decoder derives rowBytes from the whole stored
+             * packet: floor(packet/height), rounded down to the UYVY word
+             * boundary.  Any remainder is storage after the final row. */
+            uint32_t stride = mr_rawvideo_uyvy422_stride(m->video.width,
+                                                        m->video.height,
+                                                        sample_size);
+            /* Publish zero as an explicit invalid stride too.  Leaving config
+             * absent would make the decoder assume tight rows, hiding metadata
+             * that is insufficient to derive a safe stored-row layout. */
             m->rawvideo_config[0] = (uint8_t)stride;
             m->rawvideo_config[1] = (uint8_t)(stride >> 8);
             m->rawvideo_config[2] = (uint8_t)(stride >> 16);

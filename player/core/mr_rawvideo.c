@@ -8,6 +8,34 @@ typedef struct {
     uint8_t *frame;
 } rawvideo_ctx;
 
+int mr_rawvideo_is_uyvy422(uint32_t fourcc)
+{
+    return fourcc == MR_FOURCC('2','v','u','y') ||
+           fourcc == MR_FOURCC('2','V','u','y') ||
+           fourcc == MR_FOURCC('U','Y','V','Y');
+}
+
+static uint32_t uyvy422_minimum_stride(int width)
+{
+    uint32_t pairs;
+    if (width <= 0) return 0;
+    pairs = ((uint32_t)width + 1u) / 2u;
+    return pairs <= UINT32_MAX / 4u ? pairs * 4u : 0;
+}
+
+uint32_t mr_rawvideo_uyvy422_stride(int width, int height,
+                                    uint32_t packet_size)
+{
+    uint32_t minimum, stride;
+    if (height <= 0) return 0;
+    minimum = uyvy422_minimum_stride(width);
+    if (!minimum) return 0;
+    stride = (packet_size / (uint32_t)height) & ~1u;
+    if (stride < minimum || stride > packet_size / (uint32_t)height)
+        return 0;
+    return stride;
+}
+
 static uint8_t clamp8(int v)
 {
     if (v < 0) return 0;
@@ -33,8 +61,10 @@ static mr_status rawvideo_open(mr_decoder *dec)
 {
     rawvideo_ctx *c = (rawvideo_ctx *)calloc(1, sizeof *c);
     size_t bytes;
-    uint32_t minimum = (uint32_t)((dec->width + 1) / 2) * 4u;
+    uint32_t minimum;
     if (!c) return MR_ENOMEM;
+    minimum = uyvy422_minimum_stride(dec->width);
+    if (!minimum) { free(c); return MR_EFORMAT; }
     c->width = dec->width;
     c->height = dec->height;
     c->dst_stride = dec->width * 3;
@@ -84,6 +114,7 @@ static void rawvideo_close(mr_decoder *dec)
 
 const mr_codec mr_codec_rawvideo = {
     "raw UYVY422 (2vuy)",
-    { MR_FOURCC('2','v','u','y'), MR_FOURCC('U','Y','V','Y'), 0 },
+    { MR_FOURCC('2','v','u','y'), MR_FOURCC('2','V','u','y'),
+      MR_FOURCC('U','Y','V','Y'), 0 },
     rawvideo_open, rawvideo_decode, rawvideo_close, NULL
 };
