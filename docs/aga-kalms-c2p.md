@@ -28,8 +28,15 @@ register-ABI header unchanged under `player/vendor/kalms-c2p/normal/`.
 
 ## Verification
 
-`make -f Makefile.amiga kalms_c2p_check` builds an Amiga-side differential
+`make -f Makefile.amiga kalms_c2p_check` uses `vasmm68k_mot` to assemble the
+authoritative Motorola/Devpac-syntax source unchanged into an ELF object, then
+builds an Amiga-side differential
 test covering several 32-pixel-aligned widths and multi-row heights against
 `mr_c2p8`. Building `mrplay` links the assembly directly; `nm mrplay` can be
 used to confirm `c2p1x1_8_c5_030`, `c2p1x1_8_c5_030_smcinit`, and their
 underscore aliases are present.
+
+The build normally finds vasm beside `m68k-amigaos-gcc` and the assembly NDK
+includes below `AMIGA_ROOT`. Alternative SDK layouts can set `KALMS_VASM` and
+`KALMS_ASM_INCLUDE` explicitly; the latter names the directory containing
+`lvo/exec_lib.i`.
