@@ -7,8 +7,10 @@
 #include <exec/types.h>
 #include <exec/tasks.h>
 #include <dos/dos.h>
+#include <dos/dostags.h>
 #include <intuition/intuition.h>
 #include <reaction/reaction.h>
+#include <reaction/reaction_macros.h>
 #include <classes/window.h>
 #include <gadgets/button.h>
 #include <gadgets/checkbox.h>
@@ -20,6 +22,7 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
+#include <proto/chooser.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -48,8 +51,7 @@ static void quote_arg(char *dst, size_t cap, const char *s)
     dst[n] = 0;
 }
 
-static void start_player(Object *win, Object *file, Object *mode,
-                         Object *lace, Object *twox)
+static void start_player(Object *file, Object *mode, Object *lace, Object *twox)
 {
     char path[512], quoted[1040], args[1200];
     ULONG selected = 0, checked_lace = 0, checked_2x = 0;
@@ -57,7 +59,8 @@ static void start_player(Object *win, Object *file, Object *mode,
         STRPTR p = NULL;
         GetAttr(GETFILE_FullFile, file, (ULONG *)&p);
         if (!p || !*p) return;
-        strncpy(path, p, sizeof path - 1); path[sizeof path - 1] = 0;
+        strncpy(path, (const char *)p, sizeof path - 1);
+        path[sizeof path - 1] = 0;
     }
     GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHECKBOX_Checked, lace, &checked_lace);
@@ -73,8 +76,6 @@ static void start_player(Object *win, Object *file, Object *mode,
                       NP_Arguments, (ULONG)args,
                       NP_Cli, TRUE, NP_Name, (ULONG)"MintRIVA player",
                       TAG_END);
-    SetWindowTitles((struct Window *)NULL, (CONST_STRPTR)-1, (CONST_STRPTR)-1);
-    (void)win;
 }
 
 static void update_file_info(Object *file, Object *info)
@@ -86,7 +87,7 @@ static void update_file_info(Object *file, Object *info)
     const char *ext;
     GetAttr(GETFILE_FullFile, file, (ULONG *)&path);
     if (!path || !*path) return;
-    ext = strrchr(path, '.');
+    ext = strrchr((const char *)path, '.');
     lock = Lock(path, ACCESS_READ);
     if (lock && Examine(lock, &fib))
         snprintf(text, sizeof text, "%s | type: %s | %ld bytes", path,
@@ -106,7 +107,11 @@ int main(void)
     ULONG sigmask, result;
     UWORD code;
 
-    NewList(&modes);
+    /* Initialise explicitly: some OS3 NDK combinations do not expose the
+     * newer exec.library NewList() convenience entry point. */
+    modes.lh_Head = (struct Node *)&modes.lh_Tail;
+    modes.lh_Tail = NULL;
+    modes.lh_TailPred = (struct Node *)&modes.lh_Head;
     AddTail(&modes, AllocChooserNode(CNA_Text, (ULONG)"AGA", TAG_END));
     AddTail(&modes, AllocChooserNode(CNA_Text, (ULONG)"HAM6", TAG_END));
     AddTail(&modes, AllocChooserNode(CNA_Text, (ULONG)"HAM8", TAG_END));
@@ -149,7 +154,9 @@ int main(void)
         End,
     End;
     if (!wo || !(w = (struct Window *)RA_OpenWindow(wo))) {
-        if (wo) DisposeObject(wo); FreeChooserNodes(&modes); return RETURN_FAIL;
+        if (wo) DisposeObject(wo);
+        FreeChooserNodes(&modes);
+        return RETURN_FAIL;
     }
     GetAttr(WINDOW_SigMask, wo, &sigmask);
     for (;;) {
@@ -160,7 +167,7 @@ int main(void)
             case WMHI_GADGETUP:
                 switch (result & WMHI_GADGETMASK) {
                 case G_FILE: update_file_info(file, info); break;
-                case G_PLAY: start_player(wo, file, mode, lace, twox); break;
+                case G_PLAY: start_player(file, mode, lace, twox); break;
                 case G_PAUSE: signal_player(SIGBREAKF_CTRL_D); break;
                 case G_STOP: signal_player(SIGBREAKF_CTRL_C); break;
                 case G_FF: signal_player(SIGBREAKF_CTRL_E); break;
