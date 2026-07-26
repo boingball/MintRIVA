@@ -158,7 +158,6 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
           t_show += clock() - a; }
         frames++;
         if (audio) audio_service(audio);
-        (void)pts;
     }
 
     if (want_time && frames > 0) {
