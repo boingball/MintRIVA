@@ -18,8 +18,8 @@ typedef struct mr_mpeg1 mr_mpeg1;
 int        mr_mpeg1_probe(const uint8_t *buf, size_t len);
 
 /* True for an MPEG program stream whose video has an MPEG-2 sequence
- * extension. This is kept separate because pl_mpeg cannot decode MPEG-2
- * video, even when the accompanying audio happens to be MP2. */
+ * extension. Such streams use the MPEG-PS demuxer and libmpeg2 rather than
+ * pl_mpeg, even when the accompanying audio happens to be MP2. */
 int        mr_mpeg2_ps_probe(const uint8_t *buf, size_t len);
 
 /* Open over a borrowed buffer (must outlive the source). NULL on failure. */

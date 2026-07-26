@@ -130,6 +130,10 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       audio -> Paula), reusing the display/audio backends. The 68k build links
       a fixed-point decode path with no libm/soft-float dependency. pause/loop
       apply. (Cinepak/MJPEG path stays integer.)
+- [x] MPEG-2 program streams (`.mpg`/`.mpeg`, including DVD-style files) are
+      demuxed in-tree and decoded by the existing integer libmpeg2 adapter; no
+      additional video decoder dependency is required. Audio support depends
+      on the elementary audio codec (DVD AC-3 is not currently decoded).
 - [x] Microsoft MPEG-4 v2 (`MP42`/`DIV2`) in AVI: separate H.263-derived decoder
       plugin with I/P pictures, slice/DC/AC prediction, skip macroblocks and
       half-pel motion compensation. Host-validated against ffmpeg on the full

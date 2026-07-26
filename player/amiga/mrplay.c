@@ -260,17 +260,9 @@ int main(int argc, char **argv)
             free(buf);
             return rc;
         }
-        if (mr_mpeg2_ps_probe(buf, (size_t)len)) {
-            printf("MPEG-2 program stream is not supported (MP2 audio is "
-                   "supported with MPEG-1 video; MPEG-2 video currently "
-                   "requires an MPEG-TS container)\n");
-            free(buf);
-            return 10;
-        }
-
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {
-            printf("unsupported container (need AVI, MOV/MP4, MPEG-TS, "
+            printf("unsupported container (need AVI, MOV/MP4, MPEG-TS/PS, "
                    "raw MJPEG/M4V or MPEG-1)\n");
             free(buf);
             return 10;
@@ -306,7 +298,8 @@ int main(int argc, char **argv)
                               (unsigned)ai->bits, (unsigned)ai->channels);
             else       printf("audio: Paula open failed, playing silent\n");
         } else if (ai->valid &&
-                   (ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
+                   (ai->format_tag == MR_AUDIO_FORMAT_MP2 ||
+                    ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
                     ai->format_tag == MR_AUDIO_FORMAT_AAC)) {
             audio_dec = mr_audio_decoder_open(ai);
             if (audio_dec)
@@ -320,6 +313,7 @@ int main(int argc, char **argv)
             else {
                 printf("audio: unsupported %s setup or Paula open failed, "
                        "playing silent\n",
+                       ai->format_tag == MR_AUDIO_FORMAT_MP2 ? "MP2" :
                        ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" : "AAC");
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);
