@@ -83,8 +83,9 @@ AMIGA_GCC  ?= $(firstword \
     $(wildcard $(HOME)/opt/amiga/bin/m68k-amigaos-gcc))
 
 # Kalms' authoritative source is in Motorola/Devpac syntax, not GNU as
-# syntax.  Assemble it unchanged with vasm and give GCC's linker an ELF
-# object.  Look next to the selected cross-compiler first; both the assembler
+# syntax.  Assemble it unchanged with vasm and give the Amiga GCC linker a
+# native hunk object (this toolchain does not accept vasm's ELF output). Look
+# next to the selected cross-compiler first; both the assembler
 # and NDK include directory remain overridable for other SDK layouts.
 KALMS_SRC = vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
 KALMS_OBJ = build/c2p1x1_8_c5_030.o
@@ -135,9 +136,9 @@ check-kalms:
 	  echo "ERROR: lvo/exec_lib.i was not found in the Amiga NDK."; \
 	  echo "  Set KALMS_ASM_INCLUDE to the directory containing lvo/."; exit 1; }
 
-$(KALMS_OBJ): $(KALMS_SRC) | check-kalms
+$(KALMS_OBJ): $(KALMS_SRC) Makefile.amiga | check-kalms
 	@mkdir -p $(@D)
-	$(KALMS_VASM) -Felf -m68030 -no-opt -I$(KALMS_ASM_INCLUDE) -o $@ $<
+	$(KALMS_VASM) -Fhunk -m68030 -no-opt -I$(KALMS_ASM_INCLUDE) -o $@ $<
 
 # As in MintAMP, mrgui opens the ReAction classes explicitly at runtime.
 # No libauto archive is required by the cross-toolchain.

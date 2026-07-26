@@ -29,7 +29,7 @@ register-ABI header unchanged under `player/vendor/kalms-c2p/normal/`.
 ## Verification
 
 `make -f Makefile.amiga kalms_c2p_check` uses `vasmm68k_mot` to assemble the
-authoritative Motorola/Devpac-syntax source unchanged into an ELF object, then
+authoritative Motorola/Devpac-syntax source unchanged into an Amiga hunk object, then
 builds an Amiga-side differential
 test covering several 32-pixel-aligned widths and multi-row heights against
 `mr_c2p8`. Building `mrplay` links the assembly directly; `nm mrplay` can be
