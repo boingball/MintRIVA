@@ -14,6 +14,7 @@
  *   mrplay <file.avi|file.mov>
  */
 #include "../core/mr_demux.h"
+#include "../core/mr_http.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
@@ -237,6 +238,11 @@ int main(int argc, char **argv)
     int frames = 0;
     int want_time = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
     int raw_diag_printed = 0;
+    const char *media_path = NULL;
+    const char *user_agent = NULL;
+    const char *referer = NULL;
+    mr_http_options http_options;
+    int have_http_options = 0;
     unsigned long clock_base = 0;
     clock_t t_dec = 0, t_show = 0;
 
@@ -245,7 +251,8 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
 
     if (argc < 2) {
-        printf("usage: mrplay <file.avi|file.mov|file.ts|file.m2ts|"
+        printf("usage: mrplay [--user-agent <value>] [--referer <value>] "
+               "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
@@ -255,7 +262,20 @@ int main(int argc, char **argv)
     {   /* display options anywhere on the command line */
         int i;
         for (i = 1; i < argc; i++) {
-            if      (!strcmp(argv[i], "--aga"))  display_set_force_aga(1);
+            if (!strcmp(argv[i], "--user-agent")) {
+                if (++i >= argc) {
+                    printf("--user-agent requires a value\n");
+                    return 5;
+                }
+                user_agent = argv[i];
+            } else if (!strcmp(argv[i], "--referer")) {
+                if (++i >= argc) {
+                    printf("--referer requires a value\n");
+                    return 5;
+                }
+                referer = argv[i];
+            }
+            else if (!strcmp(argv[i], "--aga"))  display_set_force_aga(1);
             else if (!strcmp(argv[i], "--ham"))  display_set_ham(8);
             else if (!strcmp(argv[i], "--ham6")) display_set_ham(6);
             else if (!strcmp(argv[i], "--2x"))   display_set_scale(2);
@@ -267,24 +287,40 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
             else if (!strcmp(argv[i], "--time")) want_time = 1;
+            else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
-    printf("mrplay: opening %s\n", argv[1]);
+    if (!media_path) {
+        printf("no media URL or filename supplied\n");
+        return 5;
+    }
+    if (!mr_http_options_init(&http_options, user_agent, referer)) {
+        printf("invalid HTTP options: %s\n", mr_source_last_error());
+        return 5;
+    }
+    have_http_options = user_agent || referer;
+    if (want_time) {
+        printf("HTTP User-Agent: %s\n",
+               user_agent ? user_agent : "MintRIVA/0.1 AmigaOS");
+        if (referer) printf("HTTP Referer: %s\n", referer);
+    }
+    printf("mrplay: opening %s\n", media_path);
 
-    dx = mr_demux_open_file(argv[1]);
+    dx = mr_demux_open_file_ex(media_path,
+                               have_http_options ? &http_options : NULL);
     if (dx) {
         printf("streaming %s from %s\n", mr_demux_container_name(dx),
-               !strncmp(argv[1], "http://", 7) ||
-               !strncmp(argv[1], "https://", 8) ? "network" : "disk");
+               !strncmp(media_path, "http://", 7) ||
+               !strncmp(media_path, "https://", 8) ? "network" : "disk");
     } else {
-        if (mr_demux_is_file_backed_container(argv[1])) {
+        if (mr_demux_is_file_backed_container(media_path)) {
             printf("cannot open stream: %s\n", mr_demux_last_open_error());
             return 10;
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input
          * buffer because their current decoders parse directly from it. */
-        buf = slurp(argv[1], &len);
-        if (!buf) { printf("cannot read %s\n", argv[1]); return 10; }
+        buf = slurp(media_path, &len);
+        if (!buf) { printf("cannot read %s\n", media_path); return 10; }
         printf("loaded %ld bytes\n", len);
 
         if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
@@ -319,7 +355,7 @@ int main(int argc, char **argv)
     }
 
     printf("media: file=%s, container=%s, video=%s (%c%c%c%c), "
-           "%dx%d, %lu.%03lu fps\n", argv[1], mr_demux_container_name(dx),
+           "%dx%d, %lu.%03lu fps\n", media_path, mr_demux_container_name(dx),
            codec->name, (int)(vi->fourcc & 255), (int)((vi->fourcc >> 8) & 255),
            (int)((vi->fourcc >> 16) & 255), (int)((vi->fourcc >> 24) & 255),
            vi->width, vi->height,

@@ -236,6 +236,28 @@ int main(void) {
   assert(!mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
                                      "/tmp/mr_streams.json", "UK"));
   assert(d.channel_count == 100);
+  {
+    mr_iptv_stream launch;
+    char args[4096];
+    memset(&launch, 0, sizeof(launch));
+    strcpy(launch.url, "https://example.test/live.m3u8?a=1&b=2");
+    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+    assert(!strcmp(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");
+    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+    assert(!strcmp(args, "--user-agent \"Mozilla/5.0 Test Agent\" "
+                         "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    launch.user_agent[0] = 0;
+    strcpy(launch.http_referrer, "https://example.test/player");
+    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+    assert(!strcmp(args, "--referer \"https://example.test/player\" "
+                         "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    strcpy(launch.user_agent, "Agent *with* \"quotes\"");
+    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+    assert(strstr(args, "--user-agent \"Agent **with** *\"quotes*\"\""));
+    strcpy(launch.user_agent, "bad\nheader");
+    assert(!mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+  }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");
   mr_iptv_free(&d);

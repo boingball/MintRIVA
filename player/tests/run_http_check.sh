@@ -42,7 +42,7 @@ for i in range(LN):
     open(f'tests/assets/hls/lseg{i}.ts','wb').write(d[a:b])
 PY
 
-server_args="--root tests/assets --port-file $tmpdir/port --range-marker $tmpdir/range-used"
+server_args="--root tests/assets --port-file $tmpdir/port --range-marker $tmpdir/range-used --header-log $tmpdir/headers"
 scheme=http
 if test "$mode" = https; then
     scheme=https
@@ -124,4 +124,49 @@ base="$scheme://127.0.0.1:$port"
     --check tests/assets/ref_mpeg2_ts
 
 test -f "$tmpdir/range-used"
+
+# Typed IPTV headers must survive redirects, range reconnects, HLS master and
+# child playlists, and every HLS segment. The first request also proves the
+# default UA and absence of an implicit Referer.
+: >"$tmpdir/headers"
+"$decoder" "$base/media/test_mpeg2.ts" --check tests/assets/ref_mpeg2_ts
+grep -F '|MintRIVA/0.1 AmigaOS|' "$tmpdir/headers" >/dev/null
+! grep -v -F '|MintRIVA/0.1 AmigaOS|' "$tmpdir/headers" >/dev/null
+
+: >"$tmpdir/headers"
+"$decoder" "$base/media/test_mpeg2.ts" --user-agent 'IPTV Agent With Spaces' \
+    --check tests/assets/ref_mpeg2_ts
+! grep -v -F '|IPTV Agent With Spaces|' "$tmpdir/headers" >/dev/null
+
+: >"$tmpdir/headers"
+"$decoder" "$base/media/test_mpeg2.ts" --referer 'https://example.com/' \
+    --check tests/assets/ref_mpeg2_ts
+! grep -v -F '|MintRIVA/0.1 AmigaOS|https://example.com/' \
+    "$tmpdir/headers" >/dev/null
+
+: >"$tmpdir/headers"
+ua='Mozilla/5.0 MintRIVA header test'
+ref='https://example.com/player?channel=one&mode=live'
+"$decoder" "$base/redirect/test_mpeg2.ts" \
+    --user-agent "$ua" --referer "$ref" \
+    --check tests/assets/ref_mpeg2_ts
+"$decoder" "$base/drop/media/test_mpeg2.ts" \
+    --user-agent "$ua" --referer "$ref" \
+    --check tests/assets/ref_mpeg2_ts
+"$decoder" "$base/media/hls/master.m3u8" \
+    --user-agent "$ua" --referer "$ref" \
+    --check tests/assets/ref_mpeg2_ts
+grep -F "|$ua|$ref" "$tmpdir/headers" >/dev/null
+! grep -v -F "|$ua|$ref" "$tmpdir/headers" >/dev/null
+
+# Newlines and fixed-buffer overflows are rejected before a request is sent.
+if "$decoder" "$base/media/test_mpeg2.ts" --user-agent "bad$(printf '\r')value" \
+    --check tests/assets/ref_mpeg2_ts >/dev/null 2>&1; then
+    echo 'CR header injection was accepted' >&2; exit 1
+fi
+overlong=$(awk 'BEGIN { for (i=0; i<256; i++) printf "x" }')
+if "$decoder" "$base/media/test_mpeg2.ts" --user-agent "$overlong" \
+    --check tests/assets/ref_mpeg2_ts >/dev/null 2>&1; then
+    echo 'overlong User-Agent was accepted' >&2; exit 1
+fi
 echo "$mode URL checks passed"

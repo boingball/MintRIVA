@@ -3,6 +3,7 @@
  */
 #include "mr_source.h"
 #include "mr_hls.h"
+#include "mr_http.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -144,7 +145,8 @@ static mr_source *open_local_file(const char *path)
     return source;
 }
 
-mr_source *mr_source_open(const char *path)
+mr_source *mr_source_open_ex(const char *path,
+                             const struct mr_http_options *options)
 {
     g_source_error[0] = '\0';
     if (!path || !*path) {
@@ -152,10 +154,15 @@ mr_source *mr_source_open(const char *path)
         return NULL;
     }
     if (mr_source_is_hls(path))
-        return mr_hls_source_open(path);
+        return mr_hls_source_open_ex(path, options);
     if (mr_source_is_url(path))
-        return mr_http_source_open(path);
+        return mr_http_source_open_ex(path, options);
     return open_local_file(path);
+}
+
+mr_source *mr_source_open(const char *path)
+{
+    return mr_source_open_ex(path, NULL);
 }
 
 int mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len)

@@ -55,6 +55,7 @@ enum {
   G_CHANNELS,
   G_REFRESH,
   G_PLAY,
+  G_NEXT_STREAM,
   G_OPEN_URL,
   G_CLOSE
 };
@@ -388,27 +389,16 @@ static void set_status(Object *status, struct Window *window,
                  (ULONG)text, TAG_DONE);
 }
 
-static void quote_arg(char *dst, size_t cap, const char *src) {
-  size_t n = 0;
-  if (cap)
-    dst[n++] = '"';
-  while (*src && n + 3 < cap) {
-    if (*src == '"' || *src == '*')
-      dst[n++] = '*';
-    dst[n++] = *src++;
-  }
-  if (n + 1 < cap)
-    dst[n++] = '"';
-  dst[n] = 0;
-}
-
-static int start_url(const char *url) {
-  char quoted[MR_IPTV_URL_MAX * 2 + 4], args[MR_IPTV_URL_MAX * 2 + 8];
+static int start_stream(const mr_iptv_stream *stream) {
+  char args[MR_IPTV_URL_MAX * 4 + MR_HTTP_USER_AGENT_MAX * 2 + 64];
+  mr_http_options options;
   BPTR seglist;
-  if (!mr_iptv_valid_url(url))
+  if (!stream || !mr_iptv_valid_url(stream->url) ||
+      !mr_http_options_init(&options, stream->user_agent,
+                            stream->http_referrer))
     return 0;
-  quote_arg(quoted, sizeof(quoted), url);
-  snprintf(args, sizeof(args), "%s\n", quoted);
+  if (!mr_iptv_build_mrplay_args(stream, args, sizeof(args)))
+    return 0;
   seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
   if (!seglist)
     seglist = LoadSeg((CONST_STRPTR) "mrplay");
@@ -424,11 +414,21 @@ static int start_url(const char *url) {
   return 1;
 }
 
+static int start_url(const char *url) {
+  mr_iptv_stream stream;
+  memset(&stream, 0, sizeof(stream));
+  if (!url || strlen(url) >= sizeof(stream.url))
+    return 0;
+  strcpy(stream.url, url);
+  return start_stream(&stream);
+}
+
 int main(void) {
   Object *winobj = NULL, *layout = NULL, *search = NULL, *country = NULL;
   Object *category = NULL, *channels = NULL, *status = NULL, *url = NULL;
   Object *buttons = NULL;
-  Object *refresh_button = NULL, *play_button = NULL, *open_button = NULL;
+  Object *refresh_button = NULL, *play_button = NULL, *next_button = NULL;
+  Object *open_button = NULL;
   Object *close_button = NULL;
   Object *search_label = NULL, *country_label = NULL, *category_label = NULL;
   Object *url_label = NULL;
@@ -440,6 +440,8 @@ int main(void) {
   UWORD code;
   char status_text[256], refresh_error[256], cache_error[256];
   int rc = RETURN_FAIL, loaded, refresh_attempted, cache_ready;
+  mr_iptv_channel *active_channel = NULL;
+  unsigned active_stream = 0;
 
   channel_nodes.lh_Head = (struct Node *)&channel_nodes.lh_Tail;
   channel_nodes.lh_Tail = NULL;
@@ -507,6 +509,10 @@ int main(void) {
   play_button = (Object *)NewObject(
       BUTTON_GetClass(), NULL, GA_ID, G_PLAY, GA_Text, (ULONG) "Play",
       GA_RelVerify, TRUE, GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
+  next_button = (Object *)NewObject(
+      BUTTON_GetClass(), NULL, GA_ID, G_NEXT_STREAM, GA_Text,
+      (ULONG) "Next Stream", GA_RelVerify, TRUE,
+      GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
   open_button =
       (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_OPEN_URL, GA_Text,
                           (ULONG) "Open URL...", GA_RelVerify, TRUE, TAG_DONE);
@@ -521,14 +527,16 @@ int main(void) {
                                        (ULONG) "Category", TAG_DONE);
   url_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
                                   (ULONG) "Manual URL", TAG_DONE);
-  if (!refresh_button || !play_button || !open_button || !close_button ||
+  if (!refresh_button || !play_button || !next_button || !open_button ||
+      !close_button ||
       !search_label || !country_label || !category_label || !url_label)
     goto cleanup;
 
   buttons = (Object *)NewObject(
       LAYOUT_GetClass(), NULL, LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
       LAYOUT_EvenSize, TRUE, LAYOUT_AddChild, (ULONG)refresh_button,
-      LAYOUT_AddChild, (ULONG)play_button, LAYOUT_AddChild, (ULONG)open_button,
+      LAYOUT_AddChild, (ULONG)play_button, LAYOUT_AddChild, (ULONG)next_button,
+      LAYOUT_AddChild, (ULONG)open_button,
       LAYOUT_AddChild, (ULONG)close_button, TAG_DONE);
   if (!buttons)
     goto cleanup;
@@ -561,18 +569,24 @@ int main(void) {
     Delay(1);
     SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
                    TRUE, TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)next_button, window, NULL, GA_Disabled,
+                   TRUE, TAG_DONE);
     if (!refresh_cache(refresh_error, sizeof(refresh_error), status, window)) {
       set_status(status, window, refresh_error);
     } else {
       SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                      LISTBROWSER_Labels, ~0UL, TAG_DONE);
       free_nodes(&channel_nodes);
+      active_channel = NULL;
+      active_stream = 0;
       mr_iptv_free(&directory);
       loaded = load_cache(&directory, country_choices[0].iptv_code);
       selected = rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
       SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                      LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
       SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
+                     loaded ? FALSE : TRUE, TAG_DONE);
+      SetGadgetAttrs((struct Gadget *)next_button, window, NULL, GA_Disabled,
                      loaded ? FALSE : TRUE, TAG_DONE);
       snprintf(status_text, sizeof(status_text),
                "Ready: %lu playable %s channels; %lu streams matched",
@@ -611,6 +625,8 @@ int main(void) {
           set_status(status, window, status_text);
           Delay(1);
           free_nodes(&channel_nodes);
+          active_channel = NULL;
+          active_stream = 0;
           mr_iptv_free(&directory);
           loaded = load_cache(&directory, country_code(country_index));
         }
@@ -635,10 +651,14 @@ int main(void) {
         set_status(status, window, "Downloading channel directory...");
         SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
                        TRUE, TAG_DONE);
+        SetGadgetAttrs((struct Gadget *)next_button, window, NULL, GA_Disabled,
+                       TRUE, TAG_DONE);
         if (!refresh_cache(refresh_error, sizeof(refresh_error), status,
                            window)) {
           set_status(status, window, refresh_error);
           SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
+                         GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
+          SetGadgetAttrs((struct Gadget *)next_button, window, NULL,
                          GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
         } else {
           GetAttr(STRINGA_TextVal, search, (ULONG *)&search_text);
@@ -647,6 +667,8 @@ int main(void) {
           SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                          LISTBROWSER_Labels, ~0UL, TAG_DONE);
           free_nodes(&channel_nodes);
+          active_channel = NULL;
+          active_stream = 0;
           mr_iptv_free(&directory);
           loaded = load_cache(&directory, country_code(country_index));
           selected = rebuild_nodes(&channel_nodes, &directory,
@@ -655,6 +677,8 @@ int main(void) {
           SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                          LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
           SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
+                         GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
+          SetGadgetAttrs((struct Gadget *)next_button, window, NULL,
                          GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
           snprintf(status_text, sizeof(status_text),
                    "Ready: %lu playable %s channels; %lu streams matched",
@@ -668,19 +692,34 @@ int main(void) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
         if (!start_url(text ? (char *)text : ""))
           set_status(status, window, "Invalid URL or mrplay could not start.");
-      } else if ((result & WMHI_GADGETMASK) == G_PLAY) {
+      } else if ((result & WMHI_GADGETMASK) == G_PLAY ||
+                 (result & WMHI_GADGETMASK) == G_NEXT_STREAM) {
         GetAttr(LISTBROWSER_SelectedNode, channels, (ULONG *)&node);
         if (node)
           GetListBrowserNodeAttrs(node, LBNA_UserData, (ULONG)&channel,
                                   TAG_DONE);
         if (!channel)
           set_status(status, window, "Select a channel first.");
-        else if (channel->streams[0].http_referrer[0] ||
-                 channel->streams[0].user_agent[0])
-          set_status(status, window,
-                     "This channel requires HTTP headers not yet supported");
-        else if (!start_url(channel->streams[0].url))
-          set_status(status, window, "mrplay could not start this stream.");
+        else {
+          if (channel != active_channel) {
+            active_channel = channel;
+            active_stream = 0;
+          } else if ((result & WMHI_GADGETMASK) == G_NEXT_STREAM) {
+            if (active_stream + 1 >= channel->stream_count) {
+              set_status(status, window, "No more streams for this channel.");
+              continue;
+            }
+            active_stream++;
+          }
+          snprintf(status_text, sizeof(status_text),
+                   "Starting %s - stream %lu of %lu", channel->name,
+                   (unsigned long)active_stream + 1,
+                   (unsigned long)channel->stream_count);
+          set_status(status, window, status_text);
+          if (!start_stream(&channel->streams[active_stream]))
+            set_status(status, window,
+                       "Invalid stream metadata or mrplay could not start.");
+        }
       }
     }
   }
@@ -701,6 +740,8 @@ cleanup:
         DisposeObject(refresh_button);
       if (play_button)
         DisposeObject(play_button);
+      if (next_button)
+        DisposeObject(next_button);
       if (open_button)
         DisposeObject(open_button);
       if (close_button)

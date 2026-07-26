@@ -21,7 +21,20 @@
 #include "mr_source.h"
 #include <stddef.h>
 
+#define MR_HTTP_USER_AGENT_MAX 256
+#define MR_HTTP_REFERER_MAX 1024
+
+typedef struct mr_http_options {
+    char user_agent[MR_HTTP_USER_AGENT_MAX];
+    char referer[MR_HTTP_REFERER_MAX];
+} mr_http_options;
+
+int mr_http_options_init(mr_http_options *options, const char *user_agent,
+                         const char *referer);
+
 mr_source *mr_http_source_open(const char *url);
+mr_source *mr_http_source_open_ex(const char *url,
+                                  const mr_http_options *options);
 
 /* Download a complete response to a file using the shared redirect, TLS,
  * timeout and chunk decoder. The destination is removed on failure. */

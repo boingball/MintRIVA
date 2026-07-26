@@ -74,6 +74,8 @@ redirects and byte-range seeking are supported:
 ```sh
 mrplay "http://example.net/video.avi"
 mrplay "https://example.net/video.mp4"
+mrplay --user-agent "Mozilla/5.0" --referer "https://example.net/" \
+  "https://example.net/live/master.m3u8"
 ```
 
 Plain HTTP is present in the normal Amiga build. HTTPS uses
@@ -146,9 +148,13 @@ the API files again. Each channel retains at most four preferred stream URLs.
 Country filtering uses the directory's own codes (`UK` for United Kingdom and
 `US` for United States), rather than deriving ISO codes from display labels.
 
-Per-stream `Referer` and `User-Agent` values are retained by the IPTV model.
-Builds whose HTTP source cannot attach those headers report that limitation
-rather than leaking a channel's headers into later playback.
+Per-stream `Referer` and `User-Agent` values are retained by the IPTV model and
+passed as typed, bounded `mrplay` options. They follow redirects, HLS variant
+playlists, live-playlist refreshes, segments, and range reconnects. Values with
+CR/LF or values exceeding their fixed limits are rejected, and the options are
+owned by one playback source so they cannot leak into a later channel. The IPTV
+window's **Next Stream** button advances through the retained alternatives
+without silently looping.
 
 ## Layout
 

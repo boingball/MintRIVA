@@ -10,6 +10,7 @@
 #include "mr_types.h"
 
 typedef struct mr_source mr_source;
+struct mr_http_options;
 
 /* Sentinel length for a forward-only (non-seekable) stream whose total size
  * is unknown up front — e.g. length-less chunked HTTP media. Callers must not
@@ -18,6 +19,8 @@ typedef struct mr_source mr_source;
 
 int        mr_source_is_url(const char *path);
 mr_source *mr_source_open(const char *path);
+mr_source *mr_source_open_ex(const char *path,
+                             const struct mr_http_options *options);
 int        mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len);
 size_t     mr_source_length(const mr_source *s);
 int        mr_source_is_streaming(const mr_source *s);

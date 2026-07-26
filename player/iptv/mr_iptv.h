@@ -6,14 +6,16 @@
 #define MR_IPTV_ID_MAX 128
 #define MR_IPTV_NAME_MAX 128
 #define MR_IPTV_URL_MAX 1024
+#define MR_IPTV_REFERRER_MAX 1024
+#define MR_IPTV_USER_AGENT_MAX 256
 #define MR_IPTV_ALT_MAX 8
 #define MR_IPTV_STREAM_MAX 8
 #define MR_IPTV_CATEGORY_MAX 8
 
 typedef struct {
   char url[MR_IPTV_URL_MAX];
-  char http_referrer[256];
-  char user_agent[256];
+  char http_referrer[MR_IPTV_REFERRER_MAX];
+  char user_agent[MR_IPTV_USER_AGENT_MAX];
 } mr_iptv_stream;
 
 typedef struct {
@@ -46,6 +48,8 @@ int mr_iptv_channel_visible(const mr_iptv_channel *, const mr_iptv_filter *);
 size_t mr_iptv_filter_channels(const mr_iptv_directory *,
                                const mr_iptv_filter *, size_t *, size_t);
 int mr_iptv_valid_url(const char *url);
+int mr_iptv_build_mrplay_args(const mr_iptv_stream *stream, char *out,
+                              size_t out_size);
 const char *mr_iptv_last_error(void);
 void mr_iptv_set_error(const char *message);
 int mr_iptv_load_country_files(mr_iptv_directory *directory,

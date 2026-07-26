@@ -225,3 +225,9 @@ streams, then streamless channels are removed in place. Changing country
 reprocesses the cache without another network request.
 The ReAction chooser owns a single label/code mapping table; iptv-org's `UK`
 code is authoritative for United Kingdom filtering (not ISO `GB`).
+IPTV request metadata crosses the player boundary only as the typed
+`--user-agent` and `--referer` options. `mr_http_options` rejects CR/LF and
+overlong values, is copied into each HTTP/HLS source instance, and is reused by
+redirects, range reconnects, master/media playlist fetches, live refreshes, and
+segment requests. The default remains `MintRIVA/0.1 AmigaOS` with no Referer;
+there is deliberately no arbitrary-header command-line interface.

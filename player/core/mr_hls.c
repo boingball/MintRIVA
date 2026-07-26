@@ -43,6 +43,8 @@ typedef struct {
     int      live;        /* playlist has no ENDLIST: keep re-fetching        */
     char    *playlist_url;/* media playlist URL to re-fetch for new segments  */
     unsigned long next_seq; /* media-sequence of the next not-yet-queued seg  */
+    mr_http_options options; /* inherited by playlists and segments            */
+    int      have_options;
 } hls_source;
 
 /* ---- URL detection ----------------------------------------------------- */
@@ -62,9 +64,9 @@ int mr_source_is_hls(const char *url)
 
 /* ---- small text helpers ------------------------------------------------ */
 
-static char *fetch_text(const char *url)
+static char *fetch_text(const char *url, const mr_http_options *options)
 {
-    mr_source *s = mr_http_source_open(url);
+    mr_source *s = mr_http_source_open_ex(url, options);
     size_t len;
     char *buf;
     if (!s) return NULL;
@@ -230,7 +232,8 @@ static int open_seg(hls_source *h, size_t i)
      * the second close tear the first's state down twice. Closing first also
      * keeps only one segment's read-ahead buffer resident at a time. */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
-    s = mr_http_source_open(h->segs[i]);
+    s = mr_http_source_open_ex(h->segs[i],
+                               h->have_options ? &h->options : NULL);
     if (!s) return 0;
     len = mr_source_length(s);
     if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
@@ -268,7 +271,8 @@ static int hls_refetch_live(hls_source *h)
      * ever open at once (see open_seg). */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
     for (tries = 0; tries < HLS_LIVE_REFETCH_MAX; tries++) {
-        char *text = fetch_text(h->playlist_url);
+        char *text = fetch_text(h->playlist_url,
+                                h->have_options ? &h->options : NULL);
         int added;
         mr_status st;
         if (!text) return 0;                       /* playlist gone / error    */
@@ -321,17 +325,17 @@ static void hls_close(void *opaque)
 
 /* ---- open -------------------------------------------------------------- */
 
-mr_source *mr_hls_source_open(const char *url)
+mr_source *mr_hls_source_open_ex(const char *url,
+                                 const mr_http_options *options)
 {
     char *text;
     char media_url[HLS_URL_MAX];
     const char *base;
     hls_source *h;
-    mr_source *src;
     mr_status st;
     int added;
 
-    text = fetch_text(url);
+    text = fetch_text(url, options);
     if (!text) return NULL;
 
     /* Master playlist? Resolve to one media variant and refetch. */
@@ -343,7 +347,7 @@ mr_source *mr_hls_source_open(const char *url)
             return NULL;
         }
         free(text);
-        text = fetch_text(media_url);
+        text = fetch_text(media_url, options);
         if (!text) return NULL;
         base = media_url;
         if (strstr(text, "#EXT-X-STREAM-INF")) {
@@ -355,6 +359,15 @@ mr_source *mr_hls_source_open(const char *url)
 
     h = (hls_source *)calloc(1, sizeof *h);
     if (!h) { free(text); mr_source_set_error("out of memory for HLS"); return NULL; }
+    if (options) {
+        if (!mr_http_options_init(&h->options, options->user_agent,
+                                  options->referer)) {
+            free(text);
+            hls_close(h);
+            return NULL;
+        }
+        h->have_options = 1;
+    }
     st = merge_playlist(text, base, h, &added);
     free(text);
     if (st != MR_OK) { hls_close(h); return NULL; }
@@ -380,4 +393,9 @@ mr_source *mr_hls_source_open(const char *url)
      * short read as end of stream. mr_source_create already closes the context
      * (hls_close) if it fails, so we must not close it again here. */
     return mr_source_create(h, MR_SOURCE_LEN_UNKNOWN, hls_read_at, hls_close, url);
+}
+
+mr_source *mr_hls_source_open(const char *url)
+{
+    return mr_hls_source_open_ex(url, NULL);
 }
