@@ -3,9 +3,9 @@
  *
  * Opens a custom screen and blits each frame through a portable pixel encoder
  * (256-colour dither / HAM8 / HAM6) plus a chunky->planar step. The default
- * blit is the built-in mr_c2p8 (writes straight to the bitplanes; host-verified
- * correct), which avoids WritePixelArray8's general-case overhead; --wpa
- * selects WritePixelArray8 for comparison. Optional 2x pixel doubling.
+ * WritePixelArray8 remains the default; --c2p selects the portable mr_c2p8 and
+ * --riva-c2p selects an opt-in 32-pixel, direct-to-plane variant for hardware
+ * measurement. Optional 2x pixel doubling.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -32,11 +32,16 @@
 #define ESC_RAWKEY 0x45
 
 /* Encode vs blit time, for mrplay --time. */
-static clock_t s_enc = 0, s_blit = 0;
+static clock_t s_enc = 0, s_blit = 0, s_frame_enc = 0, s_frame_blit = 0;
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms)
 {
     if (enc_ms)  *enc_ms  = (unsigned long)(s_enc  * 1000 / CLOCKS_PER_SEC);
     if (blit_ms) *blit_ms = (unsigned long)(s_blit * 1000 / CLOCKS_PER_SEC);
+}
+void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms)
+{
+    if (enc_ms)  *enc_ms  = (unsigned long)(s_frame_enc  * 1000 / CLOCKS_PER_SEC);
+    if (blit_ms) *blit_ms = (unsigned long)(s_frame_blit * 1000 / CLOCKS_PER_SEC);
 }
 
 typedef struct {
@@ -52,7 +57,7 @@ typedef struct {
     int             pw;          /* chunky row stride (>= dw)               */
     int             depth;
     int             x0, y0, x0byte;
-    int             ham, scale, resize, use_c2p, use_akiko;
+    int             ham, scale, resize, use_c2p, use_riva_c2p, use_akiko;
     int             quit;
 } aga_state;
 
@@ -92,6 +97,49 @@ static void akiko_c2p(const uint8_t *chunky, int pw, int h, int chunky_stride,
     }
 }
 
+/* RiVA's useful lesson is not a blitter trick: its C2P writes converted data
+ * straight into the display's planes in 32-pixel units.  Keep MintRIVA's
+ * proven transpose, but coalesce four byte stores into one aligned longword
+ * per plane.  On AGA this cuts Chip RAM writes from 32 to 8 per group. */
+static void riva_transpose8(const uint8_t *in, uint8_t out[8])
+{
+    uint64_t x = 0;
+    int i;
+    for (i = 0; i < 8; i++) x = (x << 8) | in[i];
+    x = (x & 0xAA55AA55AA55AA55ULL)
+      | ((x & 0x00AA00AA00AA00AAULL) << 7)
+      | ((x >> 7) & 0x00AA00AA00AA00AAULL);
+    x = (x & 0xCCCC3333CCCC3333ULL)
+      | ((x & 0x0000CCCC0000CCCCULL) << 14)
+      | ((x >> 14) & 0x0000CCCC0000CCCCULL);
+    x = (x & 0xF0F0F0F00F0F0F0FULL)
+      | ((x & 0x00000000F0F0F0F0ULL) << 28)
+      | ((x >> 28) & 0x00000000F0F0F0F0ULL);
+    for (i = 0; i < 8; i++) { out[i] = (uint8_t)x; x >>= 8; }
+}
+
+static void riva_c2p(const uint8_t *chunky, int pw, int h, int stride,
+                     int nplanes, uint8_t *const planes[], int bpr,
+                     int x0byte, int y0)
+{
+    int y, g, q, p;
+    for (y = 0; y < h; y++) {
+        const uint8_t *row = chunky + (size_t)y * stride;
+        size_t base = (size_t)(y0 + y) * bpr + x0byte;
+        for (g = 0; g < (pw >> 5); g++) {
+            uint8_t bytes[4][8];
+            for (q = 0; q < 4; q++)
+                riva_transpose8(row + (g << 5) + (q << 3), bytes[q]);
+            for (p = 0; p < nplanes; p++) {
+                ULONG v = ((ULONG)bytes[0][p] << 24)
+                        | ((ULONG)bytes[1][p] << 16)
+                        | ((ULONG)bytes[2][p] << 8) | bytes[3][p];
+                *(ULONG *)(planes[p] + base + (g << 2)) = v;
+            }
+        }
+    }
+}
+
 static void load_palette(struct Screen *scr, int ham)
 {
     ULONG tab[1 + 256 * 3 + 1];
@@ -116,10 +164,13 @@ static void *aga_open(int w, int h, const char *title)
     int   scale = (g_aga_scale == 2) ? 2 : 1;
     int   ham   = g_aga_ham;
     int   akiko = g_aga_akiko;
-    int   c2p   = g_aga_c2p && !akiko;   /* Akiko is its own blit path */
+    int   riva_c2p_mode = (g_aga_c2p == 2) && !akiko;
+    int   c2p   = (g_aga_c2p == 1) && !akiko;
     int   dw, dh, depth = (ham == 6) ? 6 : 8;
     int   sw, sh, physical_w, physical_h, hires, lace, resize;
     ULONG modeid;
+
+    s_enc = s_blit = s_frame_enc = s_frame_blit = 0;
 
     /*
      * AGA raster pixels are not square: HIRES doubles horizontal resolution
@@ -160,14 +211,16 @@ static void *aga_open(int w, int h, const char *title)
     if (!s) return NULL;
     s->w = w; s->h = h; s->dw = dw; s->dh = dh;
     s->ham = ham; s->scale = scale; s->resize = resize;
-    s->depth = depth; s->use_c2p = c2p; s->use_akiko = akiko;
+    s->depth = depth; s->use_c2p = c2p; s->use_riva_c2p = riva_c2p_mode;
+    s->use_akiko = akiko;
     /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
      * a 32-multiple row stride; the built-in C2P only needs 8-pixel alignment.
      * graphics.library WritePixelArray8 requires each source row rounded up to
      * 16 pixels even though xstop names the unpadded visible width.  Packing an
      * odd width tightly makes every following row start early (854 / 2 = 427
      * exposed this as five-pixel diagonal wraps). */
-    if (akiko)     { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
+    if (akiko || riva_c2p_mode)
+                   { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
     else if (c2p)  { s->pw = (dw + 7)  & ~7;  s->x0 = ((sw - dw) / 2) & ~7;  }
     else           { s->pw = (dw + 15) & ~15; s->x0 = (sw - dw) / 2;         }
     if (s->x0 < 0) s->x0 = 0;
@@ -200,7 +253,7 @@ static void *aga_open(int w, int h, const char *title)
         s->scaled = (unsigned char *)malloc((size_t)dw * dh * 3);
         if (!s->scaled) goto fail;
     }
-    if (!c2p && !akiko) {                          /* WritePixelArray8 path   */
+    if (!c2p && !riva_c2p_mode && !akiko) {        /* WritePixelArray8 path   */
         s->tempbm = AllocBitMap((ULONG)s->pw, 1, (ULONG)depth, 0,
                                 s->scr->RastPort.BitMap);
         if (!s->tempbm) goto fail;
@@ -227,6 +280,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     int pw = s->pw, dw = s->dw, sc = s->scale;
     int ddy0, ddh;
     if (!s || !s->scr) return;
+    s_frame_enc = s_frame_blit = 0;
 
     { clock_t a = clock();
     if (s->resize) {
@@ -244,7 +298,9 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         int rows;
         if (dy0 < 0) dy0 = 0;
         if (dy1 > h)  dy1 = h;
-        if (dy1 <= dy0) { s_enc += clock() - a; return; }  /* nothing changed */
+        if (dy1 <= dy0) {
+            s_frame_enc = clock() - a; s_enc += s_frame_enc; return;
+        }
         src = rgb + (size_t)dy0 * stride;
         rows = dy1 - dy0;
         if (sc == 2) {
@@ -259,7 +315,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             ddy0 = dy0; ddh = rows;
         }
     }
-    s_enc += clock() - a; }
+    s_frame_enc = clock() - a; s_enc += s_frame_enc; }
 
     { clock_t a = clock();
     const uint8_t *crow = s->chunky + (size_t)ddy0 * pw;
@@ -268,6 +324,11 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         akiko_c2p(crow, pw, ddh, pw, s->depth,
                   (uint8_t *const *)bm->Planes, bm->BytesPerRow,
                   s->x0byte, s->y0 + ddy0);
+    } else if (s->use_riva_c2p) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        riva_c2p(crow, pw, ddh, pw, s->depth,
+                 (uint8_t *const *)bm->Planes, bm->BytesPerRow,
+                 s->x0byte, s->y0 + ddy0);
     } else if (s->use_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         mr_c2p8(crow, pw, ddh, pw, s->depth,
@@ -279,7 +340,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                          (UWORD)(s->x0 + dw - 1), (UWORD)(s->y0 + ddy0 + ddh - 1),
                          (UBYTE *)crow, &s->temprp);
     }
-    s_blit += clock() - a; }
+    s_frame_blit = clock() - a; s_blit += s_frame_blit; }
 }
 
 static int aga_poll(void *handle)

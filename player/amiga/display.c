@@ -30,6 +30,7 @@ void display_set_force_aga(int on) { g_force_aga = on; }
 void display_set_ham(int bits) { g_aga_ham = bits; if (bits) g_force_aga = 1; }
 void display_set_scale(int n)  { g_aga_scale = (n == 2) ? 2 : 1; }
 void display_set_c2p(int on)   { g_aga_c2p = on ? 1 : 0; }
+void display_set_riva_c2p(int on) { g_aga_c2p = on ? 2 : 0; }
 void display_set_lace(int on)  { g_aga_lace = on ? 1 : 0; }
 void display_set_akiko(int on) { g_aga_akiko = on ? 1 : 0; }
 

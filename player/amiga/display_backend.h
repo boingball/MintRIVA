@@ -24,7 +24,7 @@ extern const display_backend backend_aga;
 /* AGA backend configuration, set via the public display_set_* calls. */
 extern int g_aga_ham;    /* 0 = 256-colour dither, 6 = HAM6, 8 = HAM8       */
 extern int g_aga_scale;  /* 1 or 2 (pixel doubling)                        */
-extern int g_aga_c2p;    /* 1 = fast mr_c2p8 (default), 0 = WritePixelArray8 */
+extern int g_aga_c2p;    /* 0 = WPA8, 1 = portable C2P, 2 = RiVA-style C2P   */
 extern int g_aga_lace;   /* 1 = allow interlaced screens (taller fit)       */
 extern int g_aga_akiko;  /* 1 = use CD32 Akiko hardware C2P                  */
 

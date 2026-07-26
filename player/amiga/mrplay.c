@@ -182,6 +182,11 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                            fr.dirty_y0, fr.dirty_y1);
           t_show += clock() - a; }
         frames++;
+        if (want_time) {
+            unsigned long e = 0, bl = 0;
+            display_aga_frame_timing(&e, &bl);
+            printf("frame/%d: conversion=%lu ms, blit=%lu ms\n", frames, e, bl);
+        }
         if (audio) audio_service(audio);
     }
 
@@ -244,7 +249,8 @@ int main(int argc, char **argv)
         printf("usage: mrplay <file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
-               "[--2x] [--lace] [--loop] [--wpa|--c2p] [--cd32] [--time]\n");
+               "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p] "
+               "[--cd32] [--time]\n");
         return 5;
     }
     {   /* display options anywhere on the command line */
@@ -256,6 +262,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--2x"))   display_set_scale(2);
             else if (!strcmp(argv[i], "--wpa"))  display_set_c2p(0);
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
+            else if (!strcmp(argv[i], "--riva-c2p")) display_set_riva_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
@@ -472,6 +479,12 @@ int main(int argc, char **argv)
                          dec.frame.dirty_y0, dec.frame.dirty_y1);
         t_show += clock() - a;
         frames++;
+        if (want_time) {
+            unsigned long enc_ms = 0, blit_ms = 0;
+            display_aga_frame_timing(&enc_ms, &blit_ms);
+            printf("frame/%d: conversion=%lu ms, blit=%lu ms\n",
+                   frames, enc_ms, blit_ms);
+        }
     }
     }
     if (want_time && frames > 0) {
