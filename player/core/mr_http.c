@@ -1153,16 +1153,34 @@ static void http_cache_trim(http_source *h)
  * stays contiguous with body_pos. */
 static void http_readahead(http_source *h, int min_only)
 {
+    size_t cache_end, forward;
+
     if (!h->socket_ready || !h->cache) return;
     if (h->cache_start + h->cache_len != h->body_pos) return; /* not contiguous */
     http_cache_trim(h);
+
+    /*
+     * Measure the bytes retained ahead of the furthest demuxer request.
+     * cache_len includes the rewind window behind playback, so using it here
+     * caused blocking read-ahead to stop once the total cache exceeded
+     * HTTP_MIN_WINDOW even when almost no unread data remained ahead.
+     */
+    cache_end = h->cache_start + h->cache_len;
+    forward = cache_end > h->max_read ? cache_end - h->max_read : 0;
+
     /* Bootstrap: guarantee a minimum forward window with blocking reads. */
-    while (h->cache_len < HTTP_MIN_WINDOW && h->cache_len < HTTP_CACHE_SIZE) {
+    while (forward < HTTP_MIN_WINDOW && h->cache_len < HTTP_CACHE_SIZE) {
         size_t room = HTTP_CACHE_SIZE - h->cache_len;
-        int n = copy_response_bytes(h, h->cache + h->cache_len,
-                                    room < 65536 ? room : 65536);
+        size_t want = HTTP_MIN_WINDOW - forward;
+        int n;
+
+        if (want > room) want = room;
+        if (want > 65536) want = 65536;
+
+        n = copy_response_bytes(h, h->cache + h->cache_len, want);
         if (n <= 0) return;
         h->cache_len += (size_t)n;
+        forward += (size_t)n;
     }
     if (min_only) return;
     /* Proactive: absorb whatever is already waiting on the socket, no block. */
