@@ -64,7 +64,8 @@ PLAY  = amiga/mrplay.c amiga/display.c amiga/display_cgx.c \
         audio/mr_pcm.c
 GUI   = amiga/mrgui.c
 IPTVGUI = amiga/iptv_reaction.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
-          iptv/mr_iptv_m3u.c core/mr_source.c core/mr_http.c core/mr_hls.c
+          iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c \
+          core/mr_source.c core/mr_http.c core/mr_hls.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
               $(wildcard $(MINTAMP_ROOT)/real/*.c)

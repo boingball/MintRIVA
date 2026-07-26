@@ -139,6 +139,11 @@ pipeline.  Playback still depends on the existing demuxers and codecs. HLS
 prefers supported low-resolution variants (maximum width 640 by default), and
 cannot make DRM, login-only, unsupported-codec, or dead streams playable.
 
+Cached JSON is processed incrementally with a 16 KiB buffer. Only the selected
+country is held in RAM; unrelated global streams are validated and discarded.
+Changing country rebuilds the compact directory from cache without downloading
+the API files again. Each channel retains at most four preferred stream URLs.
+
 Per-stream `Referer` and `User-Agent` values are retained by the IPTV model.
 Builds whose HTTP source cannot attach those headers report that limitation
 rather than leaking a channel's headers into later playback.

@@ -26,6 +26,10 @@ static char last_error[256];
 const char *mr_iptv_last_error(void) {
   return last_error[0] ? last_error : "invalid JSON";
 }
+void mr_iptv_set_error(const char *message) {
+  snprintf(last_error, sizeof(last_error), "%s",
+           message ? message : "IPTV error");
+}
 
 static int expected(parser *j, const char *type) {
   char token[20];
@@ -611,13 +615,6 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
   }
   d->channel_count = retained;
   d->parsed_stream_count = parsed_streams;
-  printf("IPTV: parsed %lu channels\n", (unsigned long)d->parsed_channel_count);
-  printf("IPTV: parsed %lu streams\n", (unsigned long)d->parsed_stream_count);
-  printf("IPTV: retained %lu playable channels",
-         (unsigned long)d->channel_count);
-  if (d->skipped_channel_count)
-    printf("; %lu channels skipped", (unsigned long)d->skipped_channel_count);
-  printf("\n");
   free(all);
   return 1;
 fail:

@@ -46,5 +46,9 @@ size_t mr_iptv_filter_channels(const mr_iptv_directory *,
                                const mr_iptv_filter *, size_t *, size_t);
 int mr_iptv_valid_url(const char *url);
 const char *mr_iptv_last_error(void);
+void mr_iptv_set_error(const char *message);
+int mr_iptv_load_country_files(mr_iptv_directory *directory,
+                               const char *channels_path,
+                               const char *streams_path, const char *country);
 
 #endif

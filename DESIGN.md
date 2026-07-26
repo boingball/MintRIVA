@@ -216,3 +216,10 @@ The parser validates up to 100,000 JSON channel objects but retains at most
 records are discarded immediately; after stream joining the table is compacted
 again to channels with a valid URL. Crossing the retained limit is counted and
 reported as a warning while syntax validation continues to the end of the file.
+The runtime browser no longer uses that global-table validation path to load a
+country. `mr_iptv_streaming.c` scans cached arrays with a 16 KiB stdio buffer,
+retains only the selected country's compact metadata, builds an open-addressed
+ID hash, and validates streams one object at a time. Unrelated streams are never
+stored. Channels keep at most two alternate names/categories and four preferred
+streams, then streamless channels are removed in place. Changing country
+reprocesses the cache without another network request.

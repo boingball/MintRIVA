@@ -22,9 +22,69 @@ static int parse_generated(mr_iptv_directory *directory, size_t count,
   return result;
 }
 
+static void write_streaming_fixture(const char *channels_path,
+                                    const char *streams_path) {
+  FILE *file;
+  int i, j;
+  file = fopen(channels_path, "wb");
+  assert(file);
+  fputc('[', file);
+  for (i = 0; i < 25000; i++) {
+    fprintf(file,
+            "%s{\"id\":\"C%d\",\"name\":\"Channel %d\",\"country\":\"%s\","
+            "\"is_nsfw\":false,\"closed\":null,\"replaced_by\":null",
+            i ? "," : "", i, i,
+            i < 300   ? "GB"
+            : i < 400 ? "US"
+                      : "ZZ");
+    if (i == 0) {
+      fputs(",\"padding\":\"", file);
+      for (j = 0; j < 20000; j++)
+        fputc('x', file);
+      fputc('"', file);
+    }
+    fputc('}', file);
+  }
+  fputc(']', file);
+  fclose(file);
+  file = fopen(streams_path, "wb");
+  assert(file);
+  fputc('[', file);
+  for (i = 0; i < 30000; i++) {
+    const char *prefix = i ? "," : "";
+    if (i < 500)
+      fprintf(file,
+              "%s{\"channel\":\"C%d\",\"url\":\"https://example.test/%d.m3u8\","
+              "\"http_referrer\":null,\"user_agent\":null}",
+              prefix, i % 300, i);
+    else if (i < 600)
+      fprintf(file,
+              "%s{\"channel\":\"C%d\",\"url\":\"https://example.test/%d.ts\"}",
+              prefix, 300 + i - 500, i);
+    else
+      fprintf(file,
+              "%s{\"channel\":\"Unrelated%d\",\"url\":\"https://example.test/"
+              "%d.ts\"}",
+              prefix, i, i);
+  }
+  fputc(']', file);
+  fclose(file);
+}
+
+static size_t directory_bytes(const mr_iptv_directory *directory) {
+  size_t bytes = directory->channel_count * sizeof(*directory->channels), i;
+  for (i = 0; i < directory->channel_count; i++)
+    bytes += directory->channels[i].stream_count * sizeof(mr_iptv_stream) +
+             (directory->channels[i].alt_count +
+              directory->channels[i].category_count) *
+                 MR_IPTV_NAME_MAX;
+  return bytes;
+}
+
 int main(void) {
   mr_iptv_directory d;
   size_t ids[8];
+  int channel_index;
   mr_iptv_filter f;
   const char *c =
       "[{\"id\":\"BBCNews.uk\",\"name\":\"BBC News\",\"alt_names\":[\"BBC "
@@ -140,6 +200,31 @@ int main(void) {
   assert(parse_generated(&d, 20100, 100));
   assert(d.channel_count == 20000 && d.skipped_channel_count == 100);
   assert(!strcmp(d.channels[19999].id, "C20099"));
+  write_streaming_fixture("/tmp/mr_channels.json", "/tmp/mr_streams.json");
+  assert(mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
+                                    "/tmp/mr_streams.json", "GB"));
+  assert(d.parsed_channel_count == 25000);
+  assert(d.parsed_stream_count == 30000);
+  assert(d.channel_count == 300);
+  assert(directory_bytes(&d) < 4 * 1024 * 1024);
+  assert(directory_bytes(&d) + 3 * 16384 + 65536 < 8 * 1024 * 1024);
+  for (channel_index = 0; channel_index < (int)d.channel_count; channel_index++)
+    assert(d.channels[channel_index].stream_count > 0 &&
+           d.channels[channel_index].stream_count <= 4);
+  assert(mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
+                                    "/tmp/mr_streams.json", "US"));
+  assert(d.channel_count == 100);
+  {
+    FILE *broken = fopen("/tmp/mr_channels.json", "wb");
+    assert(broken);
+    fputs("[{\"id\":", broken);
+    fclose(broken);
+  }
+  assert(!mr_iptv_load_country_files(&d, "/tmp/mr_channels.json",
+                                     "/tmp/mr_streams.json", "GB"));
+  assert(d.channel_count == 100);
+  remove("/tmp/mr_channels.json");
+  remove("/tmp/mr_streams.json");
   mr_iptv_free(&d);
   puts("IPTV parser/filter checks passed");
   return 0;

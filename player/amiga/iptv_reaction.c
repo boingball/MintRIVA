@@ -115,31 +115,6 @@ static void free_chooser(struct List *list) {
     FreeChooserNode(node);
 }
 
-static char *read_file(const char *path, size_t *length) {
-  FILE *file;
-  long size;
-  char *data;
-  *length = 0;
-  file = fopen(path, "rb");
-  if (!file)
-    return NULL;
-  if (fseek(file, 0, SEEK_END) || (size = ftell(file)) < 0 ||
-      (unsigned long)size > IPTV_FILE_MAX || fseek(file, 0, SEEK_SET)) {
-    fclose(file);
-    return NULL;
-  }
-  data = malloc((size_t)size + 1);
-  if (!data || fread(data, 1, (size_t)size, file) != (size_t)size) {
-    free(data);
-    fclose(file);
-    return NULL;
-  }
-  fclose(file);
-  data[size] = 0;
-  *length = (size_t)size;
-  return data;
-}
-
 static void set_status(Object *status, struct Window *window, const char *text);
 
 static char cache_dir[128];
@@ -206,6 +181,17 @@ static int download_file(const char *url, const char *path) {
   return mr_http_download_file(url, path, IPTV_FILE_MAX);
 }
 
+static size_t file_size(const char *path) {
+  FILE *file = fopen(path, "rb");
+  long size;
+  if (!file)
+    return 0;
+  if (fseek(file, 0, SEEK_END) || (size = ftell(file)) < 0)
+    size = 0;
+  fclose(file);
+  return (size_t)size;
+}
+
 static void download_error(char *error, size_t error_size, const char *stage) {
   const char *detail = mr_source_last_error();
   if (strstr(detail, "download file"))
@@ -220,7 +206,6 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   char streams_path[192], channels_old[192], streams_old[192], meta_path[192];
   char channels_failed[192], streams_failed[192];
   mr_iptv_directory check;
-  char *channels = NULL, *streams = NULL;
   size_t channels_size = 0, streams_size = 0;
   FILE *meta;
   time_t now;
@@ -253,8 +238,8 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
     download_error(error, error_size, "Channels");
     goto done;
   }
-  channels = read_file(channels_tmp, &channels_size);
-  if (!channels) {
+  channels_size = file_size(channels_tmp);
+  if (!channels_size) {
     snprintf(error, error_size,
              "Reading temporary files failed: channels.json");
     remove(channels_failed);
@@ -270,8 +255,8 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
     download_error(error, error_size, "Streams");
     goto done;
   }
-  streams = read_file(streams_tmp, &streams_size);
-  if (!streams) {
+  streams_size = file_size(streams_tmp);
+  if (!streams_size) {
     snprintf(error, error_size, "Reading temporary files failed: streams.json");
     remove(streams_failed);
     rename(streams_tmp, streams_failed);
@@ -283,14 +268,10 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   set_status(status, window, "Parsing channel directory...");
   mr_iptv_init(&check);
   check_initialized = 1;
-  if (!mr_iptv_parse_channels(&check, channels, channels_size)) {
+  if (!mr_iptv_load_country_files(&check, channels_tmp, streams_tmp, "GB")) {
     snprintf(error, error_size, "%s", mr_iptv_last_error());
     remove(channels_failed);
     rename(channels_tmp, channels_failed);
-    goto done;
-  }
-  if (!mr_iptv_join_streams(&check, streams, streams_size)) {
-    snprintf(error, error_size, "%s", mr_iptv_last_error());
     remove(streams_failed);
     rename(streams_tmp, streams_failed);
     goto done;
@@ -335,33 +316,19 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
 done:
   if (check_initialized)
     mr_iptv_free(&check);
-  free(channels);
-  free(streams);
   remove(channels_tmp);
   remove(streams_tmp);
   return valid;
 }
 
-static int load_cache(mr_iptv_directory *directory) {
+static int load_cache(mr_iptv_directory *directory, const char *country) {
   char channels_path[192], streams_path[192];
-  char *channels, *streams;
-  size_t channels_size, streams_size;
   if (!cache_dir[0])
     return 0;
   cache_path(channels_path, sizeof(channels_path), "channels.json");
   cache_path(streams_path, sizeof(streams_path), "streams.json");
-  channels = read_file(channels_path, &channels_size);
-  streams = read_file(streams_path, &streams_size);
-  if (!channels || !streams ||
-      !mr_iptv_parse_channels(directory, channels, channels_size) ||
-      !mr_iptv_join_streams(directory, streams, streams_size)) {
-    free(channels);
-    free(streams);
-    return 0;
-  }
-  free(channels);
-  free(streams);
-  return 1;
+  return mr_iptv_load_country_files(directory, channels_path, streams_path,
+                                    country);
 }
 
 static void free_nodes(struct List *list) {
@@ -374,7 +341,7 @@ static size_t rebuild_nodes(struct List *list, mr_iptv_directory *directory,
                             const char *search, ULONG country, ULONG category) {
   mr_iptv_filter filter;
   size_t i, shown = 0;
-  filter.country = country == 0 ? "GB" : "All";
+  filter.country = country == 0 ? "GB" : "US";
   filter.category = category == 1   ? "news"
                     : category == 2 ? "entertainment"
                                     : "All";
@@ -466,14 +433,14 @@ int main(void) {
   if (!open_classes())
     goto cleanup;
   if (!add_chooser(&countries, "United Kingdom") ||
-      !add_chooser(&countries, "All") || !add_chooser(&categories, "All") ||
-      !add_chooser(&categories, "News") ||
+      !add_chooser(&countries, "United States") ||
+      !add_chooser(&categories, "All") || !add_chooser(&categories, "News") ||
       !add_chooser(&categories, "Entertainment"))
     goto cleanup;
 
   cache_ready = choose_cache_dir(cache_error, sizeof(cache_error));
   refresh_attempted = cache_ready && !cache_is_fresh();
-  loaded = cache_ready ? load_cache(&directory) : 0;
+  loaded = cache_ready ? load_cache(&directory, "GB") : 0;
   if (loaded)
     rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
 
@@ -575,7 +542,7 @@ int main(void) {
                      LISTBROWSER_Labels, ~0UL, TAG_DONE);
       free_nodes(&channel_nodes);
       mr_iptv_free(&directory);
-      loaded = load_cache(&directory);
+      loaded = load_cache(&directory, "GB");
       selected = rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
       SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                      LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
@@ -614,6 +581,15 @@ int main(void) {
         GetAttr(CHOOSER_Selected, category, &category_index);
         SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                        LISTBROWSER_Labels, ~0UL, TAG_DONE);
+        if ((result & WMHI_GADGETMASK) == G_COUNTRY) {
+          set_status(status, window,
+                     country_index == 0 ? "Reading channels for GB..."
+                                        : "Reading channels for US...");
+          Delay(1);
+          free_nodes(&channel_nodes);
+          mr_iptv_free(&directory);
+          loaded = load_cache(&directory, country_index == 0 ? "GB" : "US");
+        }
         selected =
             rebuild_nodes(&channel_nodes, &directory, text ? (char *)text : "",
                           country_index, category_index);
@@ -640,7 +616,7 @@ int main(void) {
                          LISTBROWSER_Labels, ~0UL, TAG_DONE);
           free_nodes(&channel_nodes);
           mr_iptv_free(&directory);
-          loaded = load_cache(&directory);
+          loaded = load_cache(&directory, country_index == 0 ? "GB" : "US");
           selected = rebuild_nodes(&channel_nodes, &directory,
                                    search_text ? (char *)search_text : "",
                                    country_index, category_index);
