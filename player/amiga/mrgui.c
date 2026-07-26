@@ -245,18 +245,37 @@ static void set_info(Object *info, struct Window *window, const char *text);
 
 static void open_iptv_browser(Object *info, struct Window *window)
 {
-    LONG result;
+    BPTR seglist;
+    struct Process *process;
+    static const char arguments[] = "\n";
 
     /* Keep the directory browser in its own process so downloads and list
-     * filtering can never stall the controller's transport event loop. */
-    result = SystemTags((CONST_STRPTR)"PROGDIR:iptvgui",
-                        SYS_Asynch, TRUE,
-                        SYS_Input, 0,
-                        SYS_Output, 0,
-                        TAG_END);
-    if (result == -1)
+     * filtering can never stall the controller's transport event loop.  Load
+     * the executable directly rather than asking the shell to find it: files
+     * copied to an Amiga volume do not always retain the Execute protection
+     * bit, which made a valid iptvgui appear as an "Unknown command". */
+    seglist = LoadSeg((CONST_STRPTR)"PROGDIR:iptvgui");
+    if (!seglist)
+        seglist = LoadSeg((CONST_STRPTR)"iptvgui");
+    if (!seglist) {
         set_info(info, window,
-                 "Could not start iptvgui (keep it beside mrgui)." );
+                 "Could not load iptvgui (keep it beside mrgui).");
+        return;
+    }
+
+    process = CreateNewProcTags(
+        NP_Seglist, seglist,
+        NP_FreeSeglist, TRUE,
+        NP_Arguments, (ULONG)arguments,
+        NP_StackSize, MRPLAY_STACK_SIZE,
+        NP_Cli, TRUE,
+        NP_CommandName, (ULONG)"iptvgui",
+        NP_Name, (ULONG)"MintRIVA IPTV",
+        TAG_END);
+    if (!process) {
+        UnLoadSeg(seglist);
+        set_info(info, window, "Could not create the iptvgui process.");
+    }
 }
 
 static void quote_arg(char *dst, size_t cap, const char *src)

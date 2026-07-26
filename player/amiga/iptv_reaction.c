@@ -382,7 +382,7 @@ int main(void) {
       } else if ((result & WMHI_GADGETMASK) == G_PLAY) {
         GetAttr(LISTBROWSER_SelectedNode, channels, (ULONG *)&node);
         if (node)
-          GetListBrowserNodeAttrs(node, LBNA_UserData, (ULONG *)&channel,
+          GetListBrowserNodeAttrs(node, LBNA_UserData, (ULONG)&channel,
                                   TAG_DONE);
         if (!channel)
           set_status(status, window, "Select a channel first.");
