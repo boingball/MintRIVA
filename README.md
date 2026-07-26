@@ -117,7 +117,10 @@ whole-file input path and therefore do not accept URLs.
 ### IPTV browser
 
 The ReAction controller includes an **IPTV...** launcher for the separate
-`iptvgui` directory window.  Its default public directory is iptv-org
+`iptvgui` directory window. Build it together with the controller using
+`make -f Makefile.amiga mrgui iptvgui`; keep both programs beside `mrplay`.
+The browser immediately reads valid cached `channels.json` and `streams.json`
+from `PROGDIR:Cache/IPTV/`. Its default public directory is iptv-org
 (`channels.json`, `streams.json`, `countries.json`, and `categories.json`).
 MintRIVA does not host or redistribute television channels: iptv-org is a
 collection of publicly available links, and individual links may be offline,

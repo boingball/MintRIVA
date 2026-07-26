@@ -3,6 +3,7 @@
 # Two programs:
 #   mrplay    - the player: opens an RTG window and plays an AVI/MOV clip.
 #   mrgui     - separate ReAction controller for mrplay.
+#   iptvgui   - separate ReAction IPTV directory browser.
 #   mr_decode - decoder test harness: dumps frames to PPM (no display), used to
 #               verify decoding on real hardware.
 #
@@ -61,6 +62,8 @@ PLAY  = amiga/mrplay.c amiga/display.c amiga/display_cgx.c \
         amiga/display_aga.c amiga/audio_paula.c audio/mr_audio_decode.c \
         audio/mr_pcm.c
 GUI   = amiga/mrgui.c
+IPTVGUI = amiga/iptv_reaction.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
+          iptv/mr_iptv_m3u.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
               $(wildcard $(MINTAMP_ROOT)/real/*.c)
@@ -114,7 +117,7 @@ CFLAGS  = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra \
 GUI_CFLAGS = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra
 LDFLAGS = -noixemul -lgcc
 
-all: mrplay mrgui mr_decode
+all: mrplay mrgui iptvgui mr_decode
 
 KALMS_CHECK = tests/mr_kalms_c2p_check.c core/mr_c2p.c
 
@@ -147,6 +150,9 @@ $(KALMS_OBJ): $(KALMS_SRC) Makefile.amiga | check-kalms
 mrgui: check-cc $(GUI)
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
+iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h
+	$(CC) $(GUI_CFLAGS) -o $@ $(IPTVGUI) $(LDFLAGS)
+
 check-mintamp:
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
 	      -f $(MINTAMP_ROOT)/decoders/aac/aacdec.h || { \
@@ -177,6 +183,7 @@ mr_decode: $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f mrplay mrgui mr_decode kalms_c2p_check $(KALMS_OBJ)
+	rm -f mrplay mrgui iptvgui mr_decode kalms_c2p_check $(KALMS_OBJ)
 
-.PHONY: all clean check-cc check-mintamp check-libavc check-kalms kalms_c2p_check
+.PHONY: all clean check-cc check-mintamp check-libavc check-kalms \
+	kalms_c2p_check
