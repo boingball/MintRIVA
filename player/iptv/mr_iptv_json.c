@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
+#include <exec/memory.h>
+#include <proto/exec.h>
+#endif
+
 #define JSON_MAX_DEPTH 24
 #define IPTV_MAX_CHANNELS 20000
 #define IPTV_MAX_STREAMS 30000
@@ -219,7 +224,7 @@ static int boolean(parser *j, unsigned *v) {
     return j->p += 5, *v = 0, 1;
   return j->error = 1, 0;
 }
-static int str_array(parser *j, char a[][MR_IPTV_NAME_MAX], unsigned *count,
+static int str_array(parser *j, char (**a)[MR_IPTV_NAME_MAX], unsigned *count,
                      unsigned max) {
   ws(j);
   if (j->p == j->end || *j->p++ != '[')
@@ -231,8 +236,19 @@ static int str_array(parser *j, char a[][MR_IPTV_NAME_MAX], unsigned *count,
     char tmp[MR_IPTV_NAME_MAX];
     if (!string(j, tmp, sizeof(tmp)))
       return 0;
-    if (*count < max)
-      strcpy(a[(*count)++], tmp);
+    if (*count < max) {
+      void *items = realloc(*a, (*count + 1) * sizeof(**a));
+      if (!items) {
+        j->error = 1;
+        snprintf(last_error, sizeof(last_error),
+                 "%s object %lu field %s: allocation failed for string array",
+                 j->source, (unsigned long)j->object_index,
+                 j->field ? j->field : "unknown");
+        return 0;
+      }
+      *a = items;
+      strcpy((*a)[(*count)++], tmp);
+    }
     ws(j);
     if (j->p == j->end)
       return j->error = 1, 0;
@@ -242,18 +258,26 @@ static int str_array(parser *j, char a[][MR_IPTV_NAME_MAX], unsigned *count,
       return j->error = 1, 0;
   }
 }
-static int grow(mr_iptv_directory *d) {
-  size_t cap = d->channel_capacity ? d->channel_capacity * 2 : 64;
-  void *p;
-  if (cap > IPTV_MAX_CHANNELS)
-    cap = IPTV_MAX_CHANNELS;
-  if (d->channel_count == cap)
+static int grow_channels(mr_iptv_directory *d, size_t *requested) {
+  size_t new_capacity;
+  void *new_channels;
+  if (d->channel_count < d->channel_capacity)
+    return 1;
+  if (d->channel_capacity >= IPTV_MAX_CHANNELS)
     return 0;
-  p = realloc(d->channels, cap * sizeof(*d->channels));
-  if (!p)
+  new_capacity = d->channel_capacity ? d->channel_capacity * 2 : 64;
+  if (new_capacity > IPTV_MAX_CHANNELS)
+    new_capacity = IPTV_MAX_CHANNELS;
+  if (new_capacity <= d->channel_capacity ||
+      new_capacity > ((size_t)-1) / sizeof(*d->channels))
     return 0;
-  d->channels = p;
-  d->channel_capacity = cap;
+  if (requested)
+    *requested = new_capacity;
+  new_channels = realloc(d->channels, new_capacity * sizeof(*d->channels));
+  if (!new_channels)
+    return 0;
+  d->channels = new_channels;
+  d->channel_capacity = new_capacity;
   return 1;
 }
 
@@ -261,6 +285,8 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
                            size_t len) {
   parser j = {data, data, data + len, "channels.json", NULL, {0}, 1, 0};
   mr_iptv_directory d;
+  mr_iptv_channel c;
+  int c_active = 0;
   last_error[0] = 0;
   mr_iptv_init(&d);
   ws(&j);
@@ -275,9 +301,9 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
     goto done;
   }
   for (;;) {
-    mr_iptv_channel c;
     j.field = NULL;
     memset(&c, 0, sizeof(c));
+    c_active = 1;
     ws(&j);
     if (j.p == j.end || *j.p != '{') {
       expected(&j, "'{' or ']'");
@@ -315,10 +341,10 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
         if (!string(&j, c.country, sizeof(c.country)))
           goto fail;
       } else if (!strcmp(key, "alt_names")) {
-        if (!str_array(&j, c.alt_names, &c.alt_count, MR_IPTV_ALT_MAX))
+        if (!str_array(&j, &c.alt_names, &c.alt_count, MR_IPTV_ALT_MAX))
           goto fail;
       } else if (!strcmp(key, "categories")) {
-        if (!str_array(&j, c.categories, &c.category_count,
+        if (!str_array(&j, &c.categories, &c.category_count,
                        MR_IPTV_CATEGORY_MAX))
           goto fail;
       } else if (!strcmp(key, "is_nsfw")) {
@@ -350,9 +376,40 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
     }
     j.p++;
     if (c.id[0] && c.name[0]) {
-      if (d.channel_count == d.channel_capacity && !grow(&d))
-        goto fail;
+      if (d.channel_count == d.channel_capacity) {
+        size_t requested = d.channel_capacity;
+        if (!grow_channels(&d, &requested)) {
+          if (d.channel_capacity >= IPTV_MAX_CHANNELS)
+            snprintf(last_error, sizeof(last_error),
+                     "channels.json: channel limit reached at %lu entries",
+                     (unsigned long)d.channel_count);
+          else {
+            fprintf(stderr, "IPTV: growing channels %lu -> %lu\n",
+                    (unsigned long)d.channel_capacity,
+                    (unsigned long)requested);
+            fprintf(stderr, "IPTV: channel record size %lu bytes\n",
+                    (unsigned long)sizeof(*d.channels));
+            fprintf(stderr, "IPTV: requested allocation %lu bytes\n",
+                    (unsigned long)(requested * sizeof(*d.channels)));
+#if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
+            fprintf(stderr, "IPTV: available memory %lu bytes\n",
+                    (unsigned long)AvailMem(MEMF_ANY));
+#endif
+            snprintf(last_error, sizeof(last_error),
+                     "channels.json: unable to grow channel table beyond %lu "
+                     "entries (requested %lu bytes)",
+                     (unsigned long)d.channel_capacity,
+                     (unsigned long)(requested * sizeof(*d.channels)));
+          }
+          goto fail;
+        }
+      }
       d.channels[d.channel_count++] = c;
+      c_active = 0;
+    } else {
+      free(c.alt_names);
+      free(c.categories);
+      c_active = 0;
     }
     ws(&j);
     if (j.p == j.end)
@@ -379,6 +436,10 @@ done:
   *out = d;
   return 1;
 fail:
+  if (c_active) {
+    free(c.alt_names);
+    free(c.categories);
+  }
   if (!last_error[0])
     expected(&j, "valid JSON");
   mr_iptv_free(&d);
@@ -465,13 +526,22 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
     }
     j.p++;
     if (x.channel[0] && mr_iptv_valid_url(x.stream.url)) {
-      if (n == IPTV_MAX_STREAMS)
+      if (n == IPTV_MAX_STREAMS) {
+        snprintf(last_error, sizeof(last_error),
+                 "streams.json: stream limit reached at %lu entries",
+                 (unsigned long)n);
         goto fail;
+      }
       if (n == cap) {
         size_t nc = cap ? cap * 2 : 128;
         void *p = realloc(all, nc * sizeof(*all));
-        if (!p)
+        if (!p) {
+          snprintf(
+              last_error, sizeof(last_error),
+              "streams.json: unable to grow stream table beyond %lu entries",
+              (unsigned long)cap);
           goto fail;
+        }
         all = p;
         cap = nc;
       }
@@ -502,14 +572,20 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
     c->streams = NULL;
     c->stream_count = 0;
     for (k = 0; k < n; k++) {
-      if (!strcmp(all[k].channel, c->id) && !add_stream(c, &all[k].stream))
+      if (!strcmp(all[k].channel, c->id) && !add_stream(c, &all[k].stream)) {
+        snprintf(last_error, sizeof(last_error),
+                 "streams.json: allocation failed joining channel %s", c->id);
         goto fail;
+      }
     }
     for (k = 0; k < n && c->stream_count < MR_IPTV_STREAM_MAX; k++) {
       size_t z = strlen(c->id);
       if (!strncmp(all[k].channel, c->id, z) && all[k].channel[z] == '@' &&
-          !add_stream(c, &all[k].stream))
+          !add_stream(c, &all[k].stream)) {
+        snprintf(last_error, sizeof(last_error),
+                 "streams.json: allocation failed joining channel %s", c->id);
         goto fail;
+      }
     }
   }
   free(all);

@@ -61,13 +61,22 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
       header = 1;
     } else if ((size_t)(e - p) > 8 && !memcmp(p, "#EXTINF:", 8)) {
       const char *comma = memchr(p, ',', (size_t)(e - p));
+      char group[MR_IPTV_NAME_MAX];
+      free(pending.categories);
+      free(pending.streams);
       memset(&pending, 0, sizeof(pending));
+      group[0] = 0;
       attr(p, "tvg-id", pending.id, sizeof(pending.id));
       attr(p, "tvg-name", pending.name, sizeof(pending.name));
-      attr(p, "group-title", pending.categories[0],
-           sizeof(pending.categories[0]));
-      if (pending.categories[0][0])
+      attr(p, "group-title", group, sizeof(group));
+      if (group[0]) {
+        pending.categories = calloc(1, sizeof(*pending.categories));
+        if (!pending.categories)
+          goto fail;
+        copy(pending.categories[0], sizeof(pending.categories[0]), group,
+             strlen(group));
         pending.category_count = 1;
+      }
       if (comma && comma + 1 < e && !pending.name[0])
         copy(pending.name, sizeof(pending.name), comma + 1,
              (size_t)(e - comma - 1));
@@ -85,11 +94,10 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
         copy(pending.streams[0].url, sizeof(pending.streams[0].url), url,
              strlen(url));
         pending.stream_count = 1;
-        if (!append(&d, &pending)) {
-          free(pending.streams);
+        if (!append(&d, &pending))
           goto fail;
-        }
         pending.streams = NULL;
+        pending.categories = NULL;
       }
       have = 0;
     }
@@ -97,10 +105,14 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
   }
   if (!header)
     goto fail;
+  free(pending.categories);
+  free(pending.streams);
   mr_iptv_free(out);
   *out = d;
   return 1;
 fail:
+  free(pending.categories);
+  free(pending.streams);
   mr_iptv_free(&d);
   return 0;
 }

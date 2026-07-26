@@ -6,8 +6,11 @@
 void mr_iptv_init(mr_iptv_directory *d) { memset(d, 0, sizeof(*d)); }
 void mr_iptv_free(mr_iptv_directory *d) {
   size_t i;
-  for (i = 0; i < d->channel_count; i++)
+  for (i = 0; i < d->channel_count; i++) {
+    free(d->channels[i].alt_names);
+    free(d->channels[i].categories);
     free(d->channels[i].streams);
+  }
   free(d->channels);
   mr_iptv_init(d);
 }

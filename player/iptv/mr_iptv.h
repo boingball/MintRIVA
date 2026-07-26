@@ -19,8 +19,8 @@ typedef struct {
 typedef struct {
   char id[MR_IPTV_ID_MAX], name[MR_IPTV_NAME_MAX];
   char network[MR_IPTV_NAME_MAX], country[8];
-  char alt_names[MR_IPTV_ALT_MAX][MR_IPTV_NAME_MAX];
-  char categories[MR_IPTV_CATEGORY_MAX][MR_IPTV_NAME_MAX];
+  char (*alt_names)[MR_IPTV_NAME_MAX];
+  char (*categories)[MR_IPTV_NAME_MAX];
   unsigned alt_count, category_count, stream_count;
   unsigned is_nsfw : 1, closed : 1, replaced : 1;
   mr_iptv_stream *streams;

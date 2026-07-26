@@ -207,3 +207,7 @@ kept as `channels.failed.json` or `streams.failed.json` for Amiga-side diagnosis
 Candidate stream arrays are allocated only after a channel joins successfully;
 channel-directory parsing therefore no longer reserves eight 1 KiB URLs per
 channel. This avoids a large allocation jump at channel 1025 on classic systems.
+Alternate-name and category arrays are likewise allocated only when present,
+reducing the fixed channel record to roughly 432 bytes on the host build. The
+20,000-channel table therefore needs about 8.6 MiB plus only the metadata that
+actually exists, rather than a large contiguous maximum-field reservation.
