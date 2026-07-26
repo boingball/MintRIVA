@@ -14,8 +14,13 @@
 
 typedef struct mr_mpeg1 mr_mpeg1;
 
-/* True if the buffer looks like an MPEG-1 program stream (pack header). */
+/* True only for an MPEG program stream containing MPEG-1 video. */
 int        mr_mpeg1_probe(const uint8_t *buf, size_t len);
+
+/* True for an MPEG program stream whose video has an MPEG-2 sequence
+ * extension. This is kept separate because pl_mpeg cannot decode MPEG-2
+ * video, even when the accompanying audio happens to be MP2. */
+int        mr_mpeg2_ps_probe(const uint8_t *buf, size_t len);
 
 /* Open over a borrowed buffer (must outlive the source). NULL on failure. */
 mr_mpeg1  *mr_mpeg1_open(const uint8_t *buf, size_t len);

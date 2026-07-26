@@ -260,6 +260,13 @@ int main(int argc, char **argv)
             free(buf);
             return rc;
         }
+        if (mr_mpeg2_ps_probe(buf, (size_t)len)) {
+            printf("MPEG-2 program stream is not supported (MP2 audio is "
+                   "supported with MPEG-1 video; MPEG-2 video currently "
+                   "requires an MPEG-TS container)\n");
+            free(buf);
+            return 10;
+        }
 
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {

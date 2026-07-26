@@ -150,6 +150,12 @@ int main(int argc, char **argv)
             free(buf);
             return rc;
         }
+        if (mr_mpeg2_ps_probe(buf, len)) {
+            fprintf(stderr, "MPEG-2 program streams are not supported; "
+                            "use MPEG-TS for MPEG-2 video\n");
+            free(buf);
+            return 2;
+        }
 #endif
 
         dx = mr_demux_open(buf, len);

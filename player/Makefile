@@ -67,6 +67,10 @@ mr_scale_check: tests/mr_scale_check.c core/mr_scale.c core/mr_scale.h \
                 core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_scale_check.c core/mr_scale.c
 
+mr_mpeg1_probe_check: tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
+                      core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c
+
 mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c \
                 audio/mr_audio_decode.h $(CORE)
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
@@ -85,8 +89,9 @@ check-libavc:
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
-check: mr_decode mr_scale_check
+check: mr_decode mr_scale_check mr_mpeg1_probe_check
 	./mr_scale_check
+	./mr_mpeg1_probe_check
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
@@ -159,6 +164,7 @@ check-https: mr_decode_ssl
 	sh tests/run_http_check.sh ./mr_decode_ssl https
 
 clean:
-	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check
+	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check \
+	      mr_mpeg1_probe_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean
