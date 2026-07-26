@@ -32,6 +32,17 @@ int main(void) {
       "a\"},{\"channel\":\"Closed.uk\",\"url\":\"http://closed.test/a\"}]";
   const char *m = "#EXTM3U\n#EXTINF:-1 tvg-id=\"nasa.us\" tvg-name=\"NASA TV\" "
                   "group-title=\"Science\",NASA\nhttps://nasa.test/live.m3u8\n";
+  const char *nullable_channels =
+      "[{\"id\":\"Example.uk\",\"name\":\"Caf\xc3\xa9 TV\",\"alt_names\":[],"
+      "\"network\":null,\"country\":\"GB\",\"categories\":[\"news\"],"
+      "\"is_nsfw\":false,\"closed\":null,\"replaced_by\":null,"
+      "\"owner\":null,\"extra\":{\"nothing\":null,\"values\":[true,false,"
+      "null,12.5]}}]  \n";
+  const char *nullable_streams =
+      "[{\"channel\":null,\"url\":\"https://unused.test/live.m3u8\","
+      "\"http_referrer\":null,\"user_agent\":null,\"extra\":null},"
+      "{\"channel\":\"Example.uk\",\"url\":\"https://example.com/live.m3u8\","
+      "\"http_referrer\":null,\"user_agent\":null}]\t";
   mr_iptv_init(&d);
   assert(mr_iptv_parse_channels(&d, c, strlen(c)));
   assert(d.channel_count == 6);
@@ -57,6 +68,33 @@ int main(void) {
   assert(!strcmp(d.channels[0].categories[0], "Science"));
   assert(!mr_iptv_parse_m3u(&d, "bad", 3));
   assert(d.channel_count == 1);
+  mr_iptv_free(&d);
+  mr_iptv_init(&d);
+  assert(
+      mr_iptv_parse_channels(&d, nullable_channels, strlen(nullable_channels)));
+  assert(d.channel_count == 1 && !d.channels[0].network[0]);
+  assert(!d.channels[0].closed && !d.channels[0].replaced);
+  assert(!strcmp(d.channels[0].name, "Caf\xc3\xa9 TV"));
+  assert(mr_iptv_join_streams(&d, nullable_streams, strlen(nullable_streams)));
+  assert(d.channels[0].stream_count == 1);
+  assert(!d.channels[0].streams[0].http_referrer[0]);
+  assert(!d.channels[0].streams[0].user_agent[0]);
+  assert(
+      !mr_iptv_parse_channels(&d, "[{\"id\":\"x\",\"network\":nul}]",
+                              sizeof("[{\"id\":\"x\",\"network\":nul}]") - 1));
+  assert(strstr(mr_iptv_last_error(), "field network"));
+  assert(strstr(mr_iptv_last_error(), "byte"));
+  assert(
+      !mr_iptv_parse_channels(&d, "[{\"id\":\"x\",\"network\":NULL}]",
+                              sizeof("[{\"id\":\"x\",\"network\":NULL}]") - 1));
+  assert(!mr_iptv_parse_channels(
+      &d, "[{\"id\":\"x\",\"network\":null \"country\":\"GB\"}]",
+      sizeof("[{\"id\":\"x\",\"network\":null \"country\":\"GB\"}]") - 1));
+  assert(strstr(mr_iptv_last_error(), "',' or '}'"));
+  assert(!mr_iptv_join_streams(
+      &d, "[{\"channel\":\"Example.uk\",\"url\":none}]",
+      sizeof("[{\"channel\":\"Example.uk\",\"url\":none}]") - 1));
+  assert(strstr(mr_iptv_last_error(), "field url"));
   mr_iptv_free(&d);
   puts("IPTV parser/filter checks passed");
   return 0;

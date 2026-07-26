@@ -1,5 +1,6 @@
 #include "mr_iptv.h"
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -7,9 +8,45 @@
 #define IPTV_MAX_CHANNELS 20000
 #define IPTV_MAX_STREAMS 30000
 typedef struct {
-  const char *p, *end;
+  const char *start, *p, *end;
+  const char *source, *field;
+  char field_storage[40];
+  size_t object_index;
   int error;
 } parser;
+
+static char last_error[256];
+
+const char *mr_iptv_last_error(void) {
+  return last_error[0] ? last_error : "invalid JSON";
+}
+
+static int expected(parser *j, const char *type) {
+  char token[20];
+  size_t left;
+  unsigned char c;
+  if (last_error[0])
+    return 0;
+  j->error = 1;
+  left = (size_t)(j->end - j->p);
+  c = left ? (unsigned char)*j->p : 0;
+  if (!left)
+    strcpy(token, "end of input");
+  else if (isprint(c))
+    snprintf(token, sizeof(token), "'%c'", c);
+  else
+    snprintf(token, sizeof(token), "0x%02x", (unsigned)c);
+  if (j->field && *j->field)
+    snprintf(last_error, sizeof(last_error),
+             "%s object %lu field %s at byte %lu: expected %s, got %s",
+             j->source, (unsigned long)j->object_index, j->field,
+             (unsigned long)(j->p - j->start), type, token);
+  else
+    snprintf(last_error, sizeof(last_error),
+             "%s at byte %lu: expected %s, got %s", j->source,
+             (unsigned long)(j->p - j->start), type, token);
+  return 0;
+}
 
 static void ws(parser *j) {
   while (j->p < j->end && isspace((unsigned char)*j->p))
@@ -25,8 +62,9 @@ static int string(parser *j, char *out, size_t cap) {
   size_t n = 0;
   int a, b, c, d, cp;
   ws(j);
-  if (j->p == j->end || *j->p++ != '"')
-    return j->error = 1, 0;
+  if (j->p == j->end || *j->p != '"')
+    return expected(j, "string");
+  j->p++;
   while (j->p < j->end && *j->p != '"') {
     unsigned char ch = (unsigned char)*j->p++;
     if (ch < 0x20)
@@ -66,6 +104,60 @@ static int string(parser *j, char *out, size_t cap) {
     out[n] = 0;
   return 1;
 }
+static int json_null(parser *j) {
+  ws(j);
+  if ((size_t)(j->end - j->p) >= 4 && !memcmp(j->p, "null", 4)) {
+    j->p += 4;
+    return 1;
+  }
+  return 0;
+}
+
+static int nullable_string(parser *j, char *out, size_t cap) {
+  ws(j);
+  if (j->p < j->end && *j->p == '"')
+    return string(j, out, cap);
+  if (json_null(j)) {
+    if (cap)
+      out[0] = 0;
+    return 1;
+  }
+  return expected(j, "string or null");
+}
+
+static int number(parser *j) {
+  const char *p = j->p;
+  if (p < j->end && *p == '-')
+    p++;
+  if (p == j->end)
+    return 0;
+  if (*p == '0')
+    p++;
+  else {
+    if (*p < '1' || *p > '9')
+      return 0;
+    while (p < j->end && *p >= '0' && *p <= '9')
+      p++;
+  }
+  if (p < j->end && *p == '.') {
+    p++;
+    if (p == j->end || *p < '0' || *p > '9')
+      return 0;
+    while (p < j->end && *p >= '0' && *p <= '9')
+      p++;
+  }
+  if (p < j->end && (*p == 'e' || *p == 'E')) {
+    p++;
+    if (p < j->end && (*p == '+' || *p == '-'))
+      p++;
+    if (p == j->end || *p < '0' || *p > '9')
+      return 0;
+    while (p < j->end && *p >= '0' && *p <= '9')
+      p++;
+  }
+  j->p = p;
+  return 1;
+}
 static int skip(parser *, int);
 static int skip(parser *j, int depth) {
   char key[2];
@@ -98,8 +190,20 @@ static int skip(parser *j, int depth) {
         return j->error = 1, 0;
     }
   }
-  while (j->p < j->end && !strchr(",]} \t\r\n", *j->p))
-    j->p++;
+  if (json_null(j))
+    return 1;
+  if ((size_t)(j->end - j->p) >= 4 && !memcmp(j->p, "true", 4)) {
+    j->p += 4;
+    return 1;
+  }
+  if ((size_t)(j->end - j->p) >= 5 && !memcmp(j->p, "false", 5)) {
+    j->p += 5;
+    return 1;
+  }
+  if (*j->p == ',' || *j->p == ']' || *j->p == '}')
+    return expected(j, "JSON value");
+  if (!number(j))
+    return expected(j, "JSON value");
   return 1;
 }
 static int boolean(parser *j, unsigned *v) {
@@ -150,12 +254,16 @@ static int grow(mr_iptv_directory *d) {
 
 int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
                            size_t len) {
-  parser j = {data, data + len, 0};
+  parser j = {data, data, data + len, "channels.json", NULL, {0}, 1, 0};
   mr_iptv_directory d;
+  last_error[0] = 0;
   mr_iptv_init(&d);
   ws(&j);
-  if (j.p == j.end || *j.p++ != '[')
+  if (j.p == j.end || *j.p != '[') {
+    expected(&j, "'['");
     goto fail;
+  }
+  j.p++;
   ws(&j);
   if (j.p < j.end && *j.p == ']') {
     j.p++;
@@ -163,17 +271,27 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
   }
   for (;;) {
     mr_iptv_channel c;
+    j.field = NULL;
     memset(&c, 0, sizeof(c));
     ws(&j);
-    if (j.p == j.end || *j.p++ != '{')
+    if (j.p == j.end || *j.p != '{') {
+      expected(&j, "'{' or ']'");
       goto fail;
+    }
+    j.p++;
     ws(&j);
     while (j.p < j.end && *j.p != '}') {
       char key[40];
       unsigned b;
       if (!string(&j, key, sizeof(key)) ||
-          (ws(&j), j.p == j.end || *j.p++ != ':'))
+          (ws(&j), j.p == j.end || *j.p != ':')) {
+        if (!j.error)
+          expected(&j, "':'");
         goto fail;
+      }
+      j.p++;
+      strcpy(j.field_storage, key);
+      j.field = j.field_storage;
       if (!strcmp(key, "id")) {
         if (!string(&j, c.id, sizeof(c.id)))
           goto fail;
@@ -181,7 +299,7 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
         if (!string(&j, c.name, sizeof(c.name)))
           goto fail;
       } else if (!strcmp(key, "network")) {
-        if (!string(&j, c.network, sizeof(c.network)))
+        if (!nullable_string(&j, c.network, sizeof(c.network)))
           goto fail;
       } else if (!strcmp(key, "country")) {
         if (!string(&j, c.country, sizeof(c.country)))
@@ -198,23 +316,15 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
           goto fail;
         c.is_nsfw = b;
       } else if (!strcmp(key, "closed")) {
-        ws(&j);
-        if (j.p < j.end && *j.p == '"') {
-          char x[8];
-          if (!string(&j, x, sizeof(x)))
-            goto fail;
-          c.closed = x[0] != 0;
-        } else if (!skip(&j, 1))
+        char x[8];
+        if (!nullable_string(&j, x, sizeof(x)))
           goto fail;
+        c.closed = x[0] != 0;
       } else if (!strcmp(key, "replaced_by")) {
-        ws(&j);
-        if (j.p < j.end && *j.p == '"') {
-          char x[8];
-          if (!string(&j, x, sizeof(x)))
-            goto fail;
-          c.replaced = x[0] != 0;
-        } else if (!skip(&j, 1))
+        char x[8];
+        if (!nullable_string(&j, x, sizeof(x)))
           goto fail;
+        c.replaced = x[0] != 0;
       } else if (!skip(&j, 1))
         goto fail;
       ws(&j);
@@ -224,8 +334,11 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
       } else
         break;
     }
-    if (j.p == j.end || *j.p++ != '}')
+    if (j.p == j.end || *j.p != '}') {
+      expected(&j, "',' or '}'");
       goto fail;
+    }
+    j.p++;
     if (c.id[0] && c.name[0]) {
       if (d.channel_count == d.channel_capacity && !grow(&d))
         goto fail;
@@ -238,17 +351,26 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
       j.p++;
       break;
     }
-    if (*j.p++ != ',')
+    if (*j.p != ',') {
+      j.field = NULL;
+      expected(&j, "',' or ']'");
       goto fail;
+    }
+    j.p++;
+    j.object_index++;
   }
 done:
   ws(&j);
-  if (j.p != j.end)
+  if (j.p != j.end) {
+    expected(&j, "end of input");
     goto fail;
+  }
   mr_iptv_free(out);
   *out = d;
   return 1;
 fail:
+  if (!last_error[0])
+    expected(&j, "valid JSON");
   mr_iptv_free(&d);
   return 0;
 }
@@ -258,35 +380,51 @@ typedef struct {
   mr_iptv_stream stream;
 } pending;
 int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
-  parser j = {data, data + len, 0};
+  parser j = {data, data, data + len, "streams.json", NULL, {0}, 1, 0};
   pending *all = NULL;
   size_t n = 0, cap = 0, i, k;
+  last_error[0] = 0;
   ws(&j);
-  if (j.p == j.end || *j.p++ != '[')
+  if (j.p == j.end || *j.p != '[') {
+    expected(&j, "'['");
     goto fail;
+  }
+  j.p++;
   ws(&j);
   while (j.p < j.end && *j.p != ']') {
     pending x;
     memset(&x, 0, sizeof(x));
-    if (*j.p++ != '{')
+    j.field = NULL;
+    if (j.p == j.end || *j.p != '{') {
+      expected(&j, "'{' or ']'");
       goto fail;
+    }
+    j.p++;
     ws(&j);
     while (j.p < j.end && *j.p != '}') {
       char key[40];
       if (!string(&j, key, sizeof(key)) ||
-          (ws(&j), j.p == j.end || *j.p++ != ':'))
+          (ws(&j), j.p == j.end || *j.p != ':')) {
+        if (!j.error)
+          expected(&j, "':'");
         goto fail;
+      }
+      j.p++;
+      strcpy(j.field_storage, key);
+      j.field = j.field_storage;
       if (!strcmp(key, "channel")) {
-        if (!string(&j, x.channel, sizeof(x.channel)))
+        if (!nullable_string(&j, x.channel, sizeof(x.channel)))
           goto fail;
       } else if (!strcmp(key, "url")) {
         if (!string(&j, x.stream.url, sizeof(x.stream.url)))
           goto fail;
       } else if (!strcmp(key, "http_referrer")) {
-        if (!string(&j, x.stream.http_referrer, sizeof(x.stream.http_referrer)))
+        if (!nullable_string(&j, x.stream.http_referrer,
+                             sizeof(x.stream.http_referrer)))
           goto fail;
       } else if (!strcmp(key, "user_agent")) {
-        if (!string(&j, x.stream.user_agent, sizeof(x.stream.user_agent)))
+        if (!nullable_string(&j, x.stream.user_agent,
+                             sizeof(x.stream.user_agent)))
           goto fail;
       } else if (!skip(&j, 1))
         goto fail;
@@ -297,8 +435,11 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
       } else
         break;
     }
-    if (j.p == j.end || *j.p++ != '}')
+    if (j.p == j.end || *j.p != '}') {
+      expected(&j, "',' or '}'");
       goto fail;
+    }
+    j.p++;
     if (x.channel[0] && mr_iptv_valid_url(x.stream.url)) {
       if (n == IPTV_MAX_STREAMS)
         goto fail;
@@ -316,14 +457,21 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
     if (j.p < j.end && *j.p == ',') {
       j.p++;
       ws(&j);
+      j.object_index++;
     } else
       break;
   }
-  if (j.p == j.end || *j.p++ != ']')
+  if (j.p == j.end || *j.p != ']') {
+    j.field = NULL;
+    expected(&j, "',' or ']'");
     goto fail;
+  }
+  j.p++;
   ws(&j);
-  if (j.p != j.end)
+  if (j.p != j.end) {
+    expected(&j, "end of input");
     goto fail;
+  }
   for (i = 0; i < d->channel_count; i++) {
     mr_iptv_channel *c = &d->channels[i];
     c->stream_count = 0;
@@ -340,6 +488,8 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
   free(all);
   return 1;
 fail:
+  if (!last_error[0])
+    expected(&j, "valid JSON");
   free(all);
   return 0;
 }

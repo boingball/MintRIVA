@@ -218,6 +218,7 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
                          struct Window *window) {
   char channels_tmp[192], streams_tmp[192], channels_path[192];
   char streams_path[192], channels_old[192], streams_old[192], meta_path[192];
+  char channels_failed[192], streams_failed[192];
   mr_iptv_directory check;
   char *channels = NULL, *streams = NULL;
   size_t channels_size = 0, streams_size = 0;
@@ -241,6 +242,8 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   cache_path(channels_old, sizeof(channels_old), "channels.json.old");
   cache_path(streams_old, sizeof(streams_old), "streams.json.old");
   cache_path(meta_path, sizeof(meta_path), "cache.meta");
+  cache_path(channels_failed, sizeof(channels_failed), "channels.failed.json");
+  cache_path(streams_failed, sizeof(streams_failed), "streams.failed.json");
   remove(channels_tmp);
   remove(streams_tmp);
 
@@ -254,6 +257,8 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   if (!channels) {
     snprintf(error, error_size,
              "Reading temporary files failed: channels.json");
+    remove(channels_failed);
+    rename(channels_tmp, channels_failed);
     goto done;
   }
   printf("IPTV: downloaded channels.json, %lu bytes\n",
@@ -268,6 +273,8 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   streams = read_file(streams_tmp, &streams_size);
   if (!streams) {
     snprintf(error, error_size, "Reading temporary files failed: streams.json");
+    remove(streams_failed);
+    rename(streams_tmp, streams_failed);
     goto done;
   }
   printf("IPTV: downloaded streams.json, %lu bytes\n",
@@ -277,16 +284,22 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   mr_iptv_init(&check);
   check_initialized = 1;
   if (!mr_iptv_parse_channels(&check, channels, channels_size)) {
-    snprintf(error, error_size, "Parsing channels.json failed: malformed JSON");
+    snprintf(error, error_size, "%s", mr_iptv_last_error());
+    remove(channels_failed);
+    rename(channels_tmp, channels_failed);
     goto done;
   }
   if (!mr_iptv_join_streams(&check, streams, streams_size)) {
-    snprintf(error, error_size, "Parsing streams.json failed: malformed JSON");
+    snprintf(error, error_size, "%s", mr_iptv_last_error());
+    remove(streams_failed);
+    rename(streams_tmp, streams_failed);
     goto done;
   }
   if (!check.channel_count) {
     snprintf(error, error_size,
              "Parsing channels.json failed: empty directory");
+    remove(channels_failed);
+    rename(channels_tmp, channels_failed);
     goto done;
   }
 

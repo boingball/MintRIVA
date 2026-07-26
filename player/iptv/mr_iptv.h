@@ -44,5 +44,6 @@ int mr_iptv_channel_visible(const mr_iptv_channel *, const mr_iptv_filter *);
 size_t mr_iptv_filter_channels(const mr_iptv_directory *,
                                const mr_iptv_filter *, size_t *, size_t);
 int mr_iptv_valid_url(const char *url);
+const char *mr_iptv_last_error(void);
 
 #endif

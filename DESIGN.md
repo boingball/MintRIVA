@@ -200,3 +200,7 @@ The browser opens before starting an expired-cache refresh and preserves the
 HTTP/AmiSSL diagnostic with its failing stage. Cache setup probes
 `PROGDIR:Cache/IPTV/` for writes and falls back to `T:MintRIVA-IPTV/` rather
 than silently attempting downloads into a read-only program directory.
+Optional iptv-org scalar metadata accepts JSON `null`; retained nullable strings
+become empty values. Parser failures include the file, one-based object number,
+field, byte offset, expected type, and leading token. The failed JSON file is
+kept as `channels.failed.json` or `streams.failed.json` for Amiga-side diagnosis.
