@@ -23,17 +23,9 @@ static uint32_t uyvy422_minimum_stride(int width)
     return pairs <= UINT32_MAX / 4u ? pairs * 4u : 0;
 }
 
-uint32_t mr_rawvideo_uyvy422_stride(int width, int height,
-                                    uint32_t packet_size)
+uint32_t mr_rawvideo_uyvy422_stride(int width)
 {
-    uint32_t minimum, stride;
-    if (height <= 0) return 0;
-    minimum = uyvy422_minimum_stride(width);
-    if (!minimum) return 0;
-    stride = (packet_size / (uint32_t)height) & ~1u;
-    if (stride < minimum || stride > packet_size / (uint32_t)height)
-        return 0;
-    return stride;
+    return uyvy422_minimum_stride(width);
 }
 
 static uint8_t clamp8(int v)
@@ -68,12 +60,10 @@ static mr_status rawvideo_open(mr_decoder *dec)
     c->width = dec->width;
     c->height = dec->height;
     c->dst_stride = dec->width * 3;
-    /* MOV must provide the stored rowBytes.  Silently assuming packed rows
-     * when container setup is lost produces plausible but badly sheared
-     * pictures, so fail opening instead. */
-    if (!dec->config || dec->config_len < 4) { free(c); return MR_EFORMAT; }
-    c->src_stride = mr_rl32(dec->config);
-    if (c->src_stride < minimum) { free(c); return MR_EFORMAT; }
+    /* QuickTime raw packets may append arbitrary tail storage.  Unless the
+     * sample description supplies an authoritative rowBytes field, 2vuy is
+     * tightly packed and total packet size must not be spread across rows. */
+    c->src_stride = minimum;
     c->minimum_row = minimum;
     bytes = (size_t)c->dst_stride * c->height;
     c->frame = (uint8_t *)malloc(bytes);
@@ -89,18 +79,16 @@ static mr_status rawvideo_decode(mr_decoder *dec, const uint8_t *data,
                                  uint32_t len)
 {
     rawvideo_ctx *c = (rawvideo_ctx *)dec->priv;
-    uint32_t last_row;
+    uint32_t required;
     int y, x;
     if (!data || c->height <= 0 || c->src_stride < c->minimum_row)
         return MR_EFORMAT;
-    /* Only a visible packed row is required at the final row start.  Stored
-     * padding after that row may be shorter than src_stride, and unrelated
-     * packet trailing bytes are allowed. */
-    if ((uint32_t)(c->height - 1) >
-        (UINT32_MAX - c->minimum_row) / c->src_stride)
+    /* Only visible image bytes are required.  Any bytes after all complete
+     * packed rows are packet-level padding/private tail data. */
+    if (c->minimum_row > UINT32_MAX / (uint32_t)c->height)
         return MR_EFORMAT;
-    last_row = (uint32_t)(c->height - 1) * c->src_stride + c->minimum_row;
-    if (len < last_row) return MR_EFORMAT;
+    required = c->minimum_row * (uint32_t)c->height;
+    if (len < required) return MR_EFORMAT;
     for (y = 0; y < c->height; y++) {
         const uint8_t *src = data + (size_t)y * c->src_stride;
         uint8_t *dst = c->frame + (size_t)y * c->dst_stride;

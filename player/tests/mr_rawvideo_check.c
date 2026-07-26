@@ -53,19 +53,19 @@ static void check_pairs(void)
 
 static void check_stride_odd_and_short(void)
 {
-    uint8_t stride[4] = { 12, 0, 0, 0 };
     uint8_t guarded[2 + 24];
     mr_decoder d;
     memset(guarded, 0xa5, sizeof guarded);
-    /* Two padded, top-down rows; width=3 consumes two complete UYVY pairs. */
+    /* Two tightly packed odd-width rows plus an unrelated packet tail. */
     { uint8_t rows[24] = {
-        128,16,128,235, 128,128,128,77, 9,9,9,9,
-        128,235,128,16, 128,16,128,88, 8,8,8,8
+        128,16,128,235, 128,128,128,77,
+        128,235,128,16, 128,16,128,88,
+        9,9,9,9, 8,8,8,8
       };
       memcpy(guarded + 1, rows, sizeof rows);
     }
-    CHECK(open_decoder(&d, 3, 2, stride, sizeof stride) == MR_OK);
-    CHECK(d.codec->decode(&d, guarded + 1, 19) == MR_EFORMAT);
+    CHECK(open_decoder(&d, 3, 2, NULL, 0) == MR_OK);
+    CHECK(d.codec->decode(&d, guarded + 1, 15) == MR_EFORMAT);
     CHECK(d.codec->decode(&d, guarded + 1, 24) == MR_OK);
     CHECK(guarded[0] == 0xa5 && guarded[25] == 0xa5);
     expect_pixel(&d, 0, 0, 0, 0, 0);
@@ -80,8 +80,7 @@ static void check_stride_odd_and_short(void)
 static void check_sample_strides(void)
 {
     uint8_t tight_stride[4] = { 0x80, 0x02, 0, 0 }; /* 640 */
-    uint8_t padded_stride[4] = { 0x96, 0x02, 0, 0 }; /* 662 */
-    uint8_t invalid_stride[4] = { 0x7e, 0x02, 0, 0 }; /* 638 */
+    uint8_t sample_stride[4] = { 0x80, 0x02, 0, 0 }; /* 640 */
     uint8_t tight[640];
     uint8_t *padded;
     mr_decoder d;
@@ -91,10 +90,9 @@ static void check_sample_strides(void)
     CHECK(mr_rawvideo_is_uyvy422(MR_FOURCC('2','V','u','y')));
     CHECK(mr_rawvideo_is_uyvy422(MR_FOURCC('U','Y','V','Y')));
     CHECK(!mr_rawvideo_is_uyvy422(MR_FOURCC('Y','U','Y','2')));
-    CHECK(mr_rawvideo_uyvy422_stride(320, 136, 90112) == 662);
-    CHECK(662u * 136u == 90032u);
-    CHECK(90112u - 662u * 136u == 80u);
-    CHECK(mr_rawvideo_uyvy422_stride(320, 1, 638) == 0);
+    CHECK(mr_rawvideo_uyvy422_stride(320) == 640);
+    CHECK(640u * 136u == 87040u);
+    CHECK(90112u - 640u * 136u == 3072u);
 
     for (i = 0; i < sizeof tight; i += 4) {
         tight[i] = 128; tight[i + 1] = 16;
@@ -112,16 +110,16 @@ static void check_sample_strides(void)
         int y, frame;
         memset(padded, 0xcc, 90112);
         for (y = 0; y < 136; y++) {
-            uint8_t *row = padded + (size_t)y * 662;
+            uint8_t *row = padded + (size_t)y * 640;
             uint8_t luma = (uint8_t)(16 + y);
             for (i = 0; i < 640; i += 4) {
                 row[i] = 128; row[i + 1] = luma;
                 row[i + 2] = 128; row[i + 3] = luma;
             }
         }
-        CHECK(open_decoder(&d, 320, 136, padded_stride, 4) == MR_OK);
-        CHECK(mr_rawvideo_source_stride(&d) == 662);
-        CHECK(d.codec->decode(&d, padded, 90009) == MR_EFORMAT);
+        CHECK(open_decoder(&d, 320, 136, sample_stride, 4) == MR_OK);
+        CHECK(mr_rawvideo_source_stride(&d) == 640);
+        CHECK(d.codec->decode(&d, padded, 87039) == MR_EFORMAT);
         for (frame = 0; frame < 165; frame++)
             CHECK(d.codec->decode(&d, padded, 90112) == MR_OK);
         for (y = 0; y < 136; y++) {
@@ -133,8 +131,8 @@ static void check_sample_strides(void)
         free(padded);
     }
 
-    CHECK(open_decoder(&d, 320, 1, invalid_stride, 4) == MR_EFORMAT);
-    CHECK(open_decoder(&d, 320, 1, NULL, 0) == MR_EFORMAT);
+    CHECK(open_decoder(&d, 320, 1, NULL, 0) == MR_OK);
+    d.codec->close(&d);
 }
 
 int main(void)

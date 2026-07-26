@@ -419,10 +419,9 @@ int main(int argc, char **argv)
             uint32_t rows = (vi->height > 0 &&
                              stride <= pkt.len / (uint32_t)vi->height)
                           ? stride * (uint32_t)vi->height : pkt.len;
-            printf("raw UYVY422: width=%d height=%d packet=%lu "
-                   "stride=%lu trailing=%lu\n",
-                   vi->width, vi->height, (unsigned long)pkt.len,
-                   (unsigned long)stride,
+            printf("raw UYVY422: %dx%d, stride=%lu, packet=%lu, trailing=%lu\n",
+                   vi->width, vi->height, (unsigned long)stride,
+                   (unsigned long)pkt.len,
                    (unsigned long)(rows <= pkt.len ? pkt.len - rows : 0));
             raw_diag_printed = 1;
         }

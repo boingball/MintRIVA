@@ -228,21 +228,12 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         mr_status st = read_stbl_segments(m, stbl, end, 1 /*video*/,
                                          0 /*per-sample*/,
                                          m->video.rate /*mdhd timescale*/);
-        /* For uncompressed video, stsz is the authoritative stored frame
-         * size.  Derive rowBytes from it rather than assuming width*2: old
-         * QuickTime files commonly align scanlines. */
+        /* stsz describes the complete packet, not rowBytes. QuickTime raw
+         * packets may contain a large codec-private/padding tail, so never
+         * distribute sample size across the displayed rows. */
         if (st == MR_OK && mr_rawvideo_is_uyvy422(m->video.fourcc) &&
             first_sample < m->nsamples && m->video.height > 0) {
-            uint32_t sample_size = m->samples[first_sample].size;
-            /* FFmpeg's raw decoder derives rowBytes from the whole stored
-             * packet: floor(packet/height), rounded down to the UYVY word
-             * boundary.  Any remainder is storage after the final row. */
-            uint32_t stride = mr_rawvideo_uyvy422_stride(m->video.width,
-                                                        m->video.height,
-                                                        sample_size);
-            /* Publish zero as an explicit invalid stride too.  Leaving config
-             * absent would make the decoder assume tight rows, hiding metadata
-             * that is insufficient to derive a safe stored-row layout. */
+            uint32_t stride = mr_rawvideo_uyvy422_stride(m->video.width);
             m->rawvideo_config[0] = (uint8_t)stride;
             m->rawvideo_config[1] = (uint8_t)(stride >> 8);
             m->rawvideo_config[2] = (uint8_t)(stride >> 16);
