@@ -140,7 +140,29 @@ static char *read_file(const char *path, size_t *length) {
   return data;
 }
 
-static void ensure_cache_drawers(void) {
+static void set_status(Object *status, struct Window *window, const char *text);
+
+static char cache_dir[128];
+
+static void cache_path(char *out, size_t cap, const char *name) {
+  snprintf(out, cap, "%s%s", cache_dir, name);
+}
+
+static int try_cache_dir(const char *directory) {
+  char probe[192];
+  FILE *file;
+  strncpy(cache_dir, directory, sizeof(cache_dir) - 1);
+  cache_dir[sizeof(cache_dir) - 1] = 0;
+  cache_path(probe, sizeof(probe), ".write-test");
+  file = fopen(probe, "wb");
+  if (!file)
+    return 0;
+  fclose(file);
+  remove(probe);
+  return 1;
+}
+
+static int choose_cache_dir(char *error, size_t error_size) {
   BPTR lock;
   lock = CreateDir((CONST_STRPTR) "PROGDIR:Cache");
   if (lock)
@@ -148,12 +170,26 @@ static void ensure_cache_drawers(void) {
   lock = CreateDir((CONST_STRPTR) "PROGDIR:Cache/IPTV");
   if (lock)
     UnLock(lock);
+  if (try_cache_dir("PROGDIR:Cache/IPTV/"))
+    return 1;
+  lock = CreateDir((CONST_STRPTR) "T:MintRIVA-IPTV");
+  if (lock)
+    UnLock(lock);
+  if (try_cache_dir("T:MintRIVA-IPTV/"))
+    return 1;
+  snprintf(error, error_size,
+           "Cache directory failed: PROGDIR: and T: are not writable");
+  cache_dir[0] = 0;
+  return 0;
 }
 
 static int cache_is_fresh(void) {
-  FILE *meta = fopen("PROGDIR:Cache/IPTV/cache.meta", "r");
+  char path[192];
+  FILE *meta;
   unsigned long saved;
   time_t now;
+  cache_path(path, sizeof(path), "cache.meta");
+  meta = fopen(path, "r");
   if (!meta)
     return 0;
   if (fscanf(meta, "%lu", &saved) != 1) {
@@ -170,61 +206,122 @@ static int download_file(const char *url, const char *path) {
   return mr_http_download_file(url, path, IPTV_FILE_MAX);
 }
 
-static int refresh_cache(void) {
-  const char *channels_tmp = "PROGDIR:Cache/IPTV/channels.json.tmp";
-  const char *streams_tmp = "PROGDIR:Cache/IPTV/streams.json.tmp";
+static void download_error(char *error, size_t error_size, const char *stage) {
+  const char *detail = mr_source_last_error();
+  if (strstr(detail, "download file"))
+    snprintf(error, error_size, "Cache write failed: %s", detail);
+  else
+    snprintf(error, error_size, "%s download failed: %s", stage, detail);
+}
+
+static int refresh_cache(char *error, size_t error_size, Object *status,
+                         struct Window *window) {
+  char channels_tmp[192], streams_tmp[192], channels_path[192];
+  char streams_path[192], channels_old[192], streams_old[192], meta_path[192];
   mr_iptv_directory check;
   char *channels = NULL, *streams = NULL;
-  size_t channels_size, streams_size;
+  size_t channels_size = 0, streams_size = 0;
   FILE *meta;
   time_t now;
-  int valid = 0;
+  int check_initialized = 0, valid = 0;
 
-  ensure_cache_drawers();
+  if (error_size)
+    error[0] = 0;
+#if !defined(HAVE_AMISSL)
+  snprintf(error, error_size,
+           "IPTV requires HTTPS support; rebuild with SSL=1");
+  return 0;
+#endif
+  if (!cache_dir[0] && !choose_cache_dir(error, error_size))
+    return 0;
+  cache_path(channels_tmp, sizeof(channels_tmp), "channels.json.tmp");
+  cache_path(streams_tmp, sizeof(streams_tmp), "streams.json.tmp");
+  cache_path(channels_path, sizeof(channels_path), "channels.json");
+  cache_path(streams_path, sizeof(streams_path), "streams.json");
+  cache_path(channels_old, sizeof(channels_old), "channels.json.old");
+  cache_path(streams_old, sizeof(streams_old), "streams.json.old");
+  cache_path(meta_path, sizeof(meta_path), "cache.meta");
   remove(channels_tmp);
   remove(streams_tmp);
-  if (!download_file(IPTV_CHANNELS_URL, channels_tmp) ||
-      !download_file(IPTV_STREAMS_URL, streams_tmp))
-    goto done;
-  channels = read_file(channels_tmp, &channels_size);
-  streams = read_file(streams_tmp, &streams_size);
-  mr_iptv_init(&check);
-  if (!channels || !streams ||
-      !mr_iptv_parse_channels(&check, channels, channels_size) ||
-      !mr_iptv_join_streams(&check, streams, streams_size) ||
-      !check.channel_count)
-    goto parsed;
 
-  /* Temporary files are fully downloaded and parsed before the old valid
-   * cache is touched. */
-  remove("PROGDIR:Cache/IPTV/channels.json.old");
-  remove("PROGDIR:Cache/IPTV/streams.json.old");
-  rename("PROGDIR:Cache/IPTV/channels.json",
-         "PROGDIR:Cache/IPTV/channels.json.old");
-  rename("PROGDIR:Cache/IPTV/streams.json",
-         "PROGDIR:Cache/IPTV/streams.json.old");
-  if (rename(channels_tmp, "PROGDIR:Cache/IPTV/channels.json") != 0 ||
-      rename(streams_tmp, "PROGDIR:Cache/IPTV/streams.json") != 0) {
-    remove("PROGDIR:Cache/IPTV/channels.json");
-    remove("PROGDIR:Cache/IPTV/streams.json");
-    rename("PROGDIR:Cache/IPTV/channels.json.old",
-           "PROGDIR:Cache/IPTV/channels.json");
-    rename("PROGDIR:Cache/IPTV/streams.json.old",
-           "PROGDIR:Cache/IPTV/streams.json");
-    goto parsed;
+  set_status(status, window, "Downloading channels.json...");
+  printf("IPTV: requesting %s\n", IPTV_CHANNELS_URL);
+  if (!download_file(IPTV_CHANNELS_URL, channels_tmp)) {
+    download_error(error, error_size, "Channels");
+    goto done;
   }
-  remove("PROGDIR:Cache/IPTV/channels.json.old");
-  remove("PROGDIR:Cache/IPTV/streams.json.old");
+  channels = read_file(channels_tmp, &channels_size);
+  if (!channels) {
+    snprintf(error, error_size,
+             "Reading temporary files failed: channels.json");
+    goto done;
+  }
+  printf("IPTV: downloaded channels.json, %lu bytes\n",
+         (unsigned long)channels_size);
+
+  set_status(status, window, "Downloading streams.json...");
+  printf("IPTV: requesting %s\n", IPTV_STREAMS_URL);
+  if (!download_file(IPTV_STREAMS_URL, streams_tmp)) {
+    download_error(error, error_size, "Streams");
+    goto done;
+  }
+  streams = read_file(streams_tmp, &streams_size);
+  if (!streams) {
+    snprintf(error, error_size, "Reading temporary files failed: streams.json");
+    goto done;
+  }
+  printf("IPTV: downloaded streams.json, %lu bytes\n",
+         (unsigned long)streams_size);
+
+  set_status(status, window, "Parsing channel directory...");
+  mr_iptv_init(&check);
+  check_initialized = 1;
+  if (!mr_iptv_parse_channels(&check, channels, channels_size)) {
+    snprintf(error, error_size, "Parsing channels.json failed: malformed JSON");
+    goto done;
+  }
+  if (!mr_iptv_join_streams(&check, streams, streams_size)) {
+    snprintf(error, error_size, "Parsing streams.json failed: malformed JSON");
+    goto done;
+  }
+  if (!check.channel_count) {
+    snprintf(error, error_size,
+             "Parsing channels.json failed: empty directory");
+    goto done;
+  }
+
+  set_status(status, window, "Saving IPTV cache...");
+  remove(channels_old);
+  remove(streams_old);
+  rename(channels_path, channels_old);
+  rename(streams_path, streams_old);
+  if (rename(channels_tmp, channels_path) != 0 ||
+      rename(streams_tmp, streams_path) != 0) {
+    remove(channels_path);
+    remove(streams_path);
+    rename(channels_old, channels_path);
+    rename(streams_old, streams_path);
+    snprintf(error, error_size, "Renaming cache files failed (IoErr %ld)",
+             (long)IoErr());
+    goto done;
+  }
+  remove(channels_old);
+  remove(streams_old);
   now = time(NULL);
-  meta = fopen("PROGDIR:Cache/IPTV/cache.meta", "w");
-  if (meta) {
-    fprintf(meta, "%lu\n", (unsigned long)now);
-    fclose(meta);
+  meta = fopen(meta_path, "w");
+  if (!meta) {
+    snprintf(error, error_size,
+             "Writing cache.meta failed: cannot create file");
+    goto done;
+  }
+  if (fprintf(meta, "%lu\n", (unsigned long)now) < 0 || fclose(meta) != 0) {
+    snprintf(error, error_size, "Writing cache.meta failed: write error");
+    goto done;
   }
   valid = 1;
-parsed:
-  mr_iptv_free(&check);
 done:
+  if (check_initialized)
+    mr_iptv_free(&check);
   free(channels);
   free(streams);
   remove(channels_tmp);
@@ -233,10 +330,15 @@ done:
 }
 
 static int load_cache(mr_iptv_directory *directory) {
+  char channels_path[192], streams_path[192];
   char *channels, *streams;
   size_t channels_size, streams_size;
-  channels = read_file("PROGDIR:Cache/IPTV/channels.json", &channels_size);
-  streams = read_file("PROGDIR:Cache/IPTV/streams.json", &streams_size);
+  if (!cache_dir[0])
+    return 0;
+  cache_path(channels_path, sizeof(channels_path), "channels.json");
+  cache_path(streams_path, sizeof(streams_path), "streams.json");
+  channels = read_file(channels_path, &channels_size);
+  streams = read_file(streams_path, &streams_size);
   if (!channels || !streams ||
       !mr_iptv_parse_channels(directory, channels, channels_size) ||
       !mr_iptv_join_streams(directory, streams, streams_size)) {
@@ -335,8 +437,8 @@ int main(void) {
   mr_iptv_directory directory;
   ULONG sigmask, signals, result, selected, country_index, category_index;
   UWORD code;
-  char status_text[128];
-  int rc = RETURN_FAIL, loaded, refresh_attempted, refreshed;
+  char status_text[256], refresh_error[256], cache_error[256];
+  int rc = RETURN_FAIL, loaded, refresh_attempted, cache_ready;
 
   channel_nodes.lh_Head = (struct Node *)&channel_nodes.lh_Tail;
   channel_nodes.lh_Tail = NULL;
@@ -356,9 +458,9 @@ int main(void) {
       !add_chooser(&categories, "Entertainment"))
     goto cleanup;
 
-  refresh_attempted = !cache_is_fresh();
-  refreshed = refresh_attempted ? refresh_cache() : 0;
-  loaded = load_cache(&directory);
+  cache_ready = choose_cache_dir(cache_error, sizeof(cache_error));
+  refresh_attempted = cache_ready && !cache_is_fresh();
+  loaded = cache_ready ? load_cache(&directory) : 0;
   if (loaded)
     rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
 
@@ -377,14 +479,16 @@ int main(void) {
       LISTBROWSER_ShowSelected, TRUE, TAG_DONE);
   url = (Object *)NewObject(STRING_GetClass(), NULL, STRINGA_MaxChars,
                             MR_IPTV_URL_MAX, TAG_DONE);
-  if (loaded)
-    snprintf(status_text, sizeof(status_text),
-             refresh_attempted && !refreshed
-                 ? "%lu channels loaded; refresh failed, retained cache"
-                 : "%lu channels loaded from cache",
+  if (refresh_attempted)
+    strcpy(status_text, "Downloading channel directory...");
+  else if (loaded)
+    snprintf(status_text, sizeof(status_text), "%lu channels loaded from cache",
              (unsigned long)directory.channel_count);
+  else if (!cache_ready)
+    strncpy(status_text, cache_error, sizeof(status_text) - 1);
   else
-    strcpy(status_text, "No IPTV cache. Copy iptv-org JSON to Cache/IPTV.");
+    strcpy(status_text, "No IPTV directory cache available");
+  status_text[sizeof(status_text) - 1] = 0;
   status = (Object *)NewObject(STRING_GetClass(), NULL, GA_ReadOnly, TRUE,
                                STRINGA_TextVal, (ULONG)status_text,
                                STRINGA_MaxChars, sizeof(status_text), TAG_DONE);
@@ -445,6 +549,30 @@ int main(void) {
   if (!window)
     goto cleanup;
   GetAttr(WINDOW_SigMask, winobj, &sigmask);
+  /* The window is open and its loading status is visible before any network
+   * operation begins. Delay one tick so Intuition can draw the new window. */
+  if (refresh_attempted) {
+    Delay(1);
+    SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
+                   TRUE, TAG_DONE);
+    if (!refresh_cache(refresh_error, sizeof(refresh_error), status, window)) {
+      set_status(status, window, refresh_error);
+    } else {
+      SetGadgetAttrs((struct Gadget *)channels, window, NULL,
+                     LISTBROWSER_Labels, ~0UL, TAG_DONE);
+      free_nodes(&channel_nodes);
+      mr_iptv_free(&directory);
+      loaded = load_cache(&directory);
+      selected = rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
+      SetGadgetAttrs((struct Gadget *)channels, window, NULL,
+                     LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
+      SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
+                     loaded ? FALSE : TRUE, TAG_DONE);
+      snprintf(status_text, sizeof(status_text), "%lu channels shown",
+               (unsigned long)selected);
+      set_status(status, window, status_text);
+    }
+  }
   for (;;) {
     signals = Wait(sigmask | SIGBREAKF_CTRL_C);
     if (signals & SIGBREAKF_CTRL_C)
@@ -480,9 +608,9 @@ int main(void) {
         set_status(status, window, "Downloading channel directory...");
         SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
                        TRUE, TAG_DONE);
-        if (!refresh_cache()) {
-          set_status(status, window,
-                     "IPTV refresh failed; retaining cached directory");
+        if (!refresh_cache(refresh_error, sizeof(refresh_error), status,
+                           window)) {
+          set_status(status, window, refresh_error);
           SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
                          GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
         } else {

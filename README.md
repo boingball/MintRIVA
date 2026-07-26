@@ -118,8 +118,11 @@ whole-file input path and therefore do not accept URLs.
 
 The ReAction controller includes an **IPTV...** launcher for the separate
 `iptvgui` directory window. Build it together with the controller using
-`make -f Makefile.amiga mrgui iptvgui SSL=1`; keep both programs beside
-`mrplay`. `SSL=1` enables AmiSSL for the HTTPS iptv-org directory download.
+`make -f Makefile.amiga all SSL=1 SSLCERTS=1`; keep `mrgui`, `iptvgui`, and
+`mrplay` together. `SSL=1` enables AmiSSL for the HTTPS iptv-org directory
+download and `SSLCERTS=1` enables certificate verification. A browser built
+without HTTPS support remains usable for cached data and manual URLs, but a
+refresh explicitly reports that it must be rebuilt with `SSL=1`.
 The browser immediately reads valid cached `channels.json` and `streams.json`
 from `PROGDIR:Cache/IPTV/`. Its default public directory is iptv-org
 (`channels.json`, `streams.json`, `countries.json`, and `categories.json`).

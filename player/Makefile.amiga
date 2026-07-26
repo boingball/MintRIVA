@@ -14,6 +14,7 @@
 #   make -f Makefile.amiga mrplay          # just the player
 #   make -f Makefile.amiga mrplay SSL=1    # add HTTPS via AmiSSL v5
 #   make -f Makefile.amiga mrplay SSL=1 SSLCERTS=1 # verify certificates
+#   make -f Makefile.amiga all SSL=1 SSLCERTS=1 # IPTV HTTPS + verification
 #   make -f Makefile.amiga TOOLCHAIN=vbcc  # mr_decode via vbcc + vclib
 #
 # The compiler does NOT need to be on your PATH: this prefers whatever

@@ -196,3 +196,7 @@ cannot destroy the last usable directory.
 The complete-response helper in `mr_http.c` accepts both Content-Length and
 chunked/length-less responses, which avoids treating GitHub Pages' transfer
 framing as a cache failure.
+The browser opens before starting an expired-cache refresh and preserves the
+HTTP/AmiSSL diagnostic with its failing stage. Cache setup probes
+`PROGDIR:Cache/IPTV/` for writes and falls back to `T:MintRIVA-IPTV/` rather
+than silently attempting downloads into a read-only program directory.
