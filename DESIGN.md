@@ -158,3 +158,17 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 - [ ] seek/loop
 - [ ] Moon-shot heavier codec, gated to fast/PiStorm machines
 ```
+
+## Legacy codec compatibility policy
+
+The H.263 implementation is a separate codec plugin (`mr_h263.c`); AVI and MOV
+continue to pass packets and stream metadata through the generic codec API.
+Its baseline syntax and reconstruction path are isolated from feature checks so
+future H.263+ annex work can be added one tool at a time. It currently accepts
+QCIF/CIF baseline and rejects UMV, SAC, advanced prediction, PB modes and
+extended PTYPE instead of silently approximating them. Decoder reset reopens the
+plugin and consequently discards the reference frame.
+
+Compatibility roadmap: H.263 baseline is supported; H.263+ annexes are partial
+and explicitly rejected as documented in README.md; H.261 is not yet supported;
+Indeo 3, Sorenson Video 1, WMV1/2, and VP3/Theora are planned.

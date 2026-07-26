@@ -131,3 +131,31 @@ MintRIVA code inherits GPL-2.0 to stay compatible with the RiVA reference it
 draws on. The vendored VideoLAN libmpeg2 core is GPL-2.0-or-later. MintAMP/Helix
 and Apache-2.0 Ittiam libavc remain separately licensed in their pinned
 submodules; retain their notices when distributing source or binaries.
+
+## VLC-era video compatibility (wave 1)
+
+H.263 baseline video in AVI and QuickTime MOV is supported for QCIF and CIF,
+including intra/inter pictures, skipped macroblocks, half-pixel motion
+compensation and persistent reference frames. The decoder rejects malformed or
+truncated syntax and refuses H.263+ tools rather than producing corrupt output.
+H.263+ is therefore **partial**: UMV, SAC, advanced prediction, PB/improved-PB,
+deblocking, slice structure, reference-picture selection, independent segments,
+alternative inter VLC, modified quantisation, data partitioning, custom clock
+frequency and scalability remain explicitly unsupported. H.261 is not yet
+supported. Indeo 3, Sorenson Video 1, WMV1/2 and VP3/Theora are planned.
+
+The FourCC audit below is deliberately conservative. “Registry” means the alias
+is covered by the deterministic routing test; a named clip means its bitstream
+was also decoded by the existing conformance suite.
+
+| FourCC | Codec family | MintRIVA decoder | Status | Tested sample |
+|---|---|---|---|---|
+| `DIVX`, `DX50`, `XVID`, `xvid`, `FMP4`, `MP4V`, `mp4v` | ISO MPEG-4 Part 2 | `mpeg4` | accepted | `test_mp4v_sp.avi`; registry |
+| `3IV2`, `3iv2`, `3IVX` | 3ivX / ISO MPEG-4 Part 2 | `mpeg4` | accepted | registry; upstream sample inspection pending |
+| `RMP4`, `BLZ0`, `SEDG`, `M4S2`, `MP4S` | ISO MPEG-4 Part 2 vendor aliases | `mpeg4` | accepted | registry |
+| `DIV2`, `MP42` | Microsoft MPEG-4 v2 | `msmpeg4v2` | accepted, kept separate | `test_div2.avi`, `test_mp42.avi` |
+| `DIV1`, `MP41` | Microsoft MPEG-4 v1 | none | unsupported | registry rejection |
+| `DIV3`, `MP43`, `AP41`, `COL1`, `COL0` | Microsoft MPEG-4 v3 / DivX 3 | none | unsupported; never routed to ISO ASP | registry rejection |
+| `DIV4`, `DIV5`, `DIV6` | ambiguous DivX-era vendor tags | none | unsupported pending sample verification | registry rejection |
+| `H263`, `h263`, `I263`, `i263` | H.263 | `H.263 baseline` | accepted for baseline QCIF/CIF | registry; `h263.mov` conformance pending |
+| `U263`, `u263`, `T263`, `X263` | vendor H.263 / frequently H.263+ | `H.263 baseline` | registered, but annex flags are rejected | registry; upstream sample inspection pending |

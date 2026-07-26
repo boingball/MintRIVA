@@ -9,6 +9,7 @@ static const mr_codec *const g_codecs[] = {
     &mr_codec_mpeg2,
     &mr_codec_mpeg4,
     &mr_codec_msmpeg4v2,
+    &mr_codec_h263,
     &mr_codec_msvideo1,
     &mr_codec_rle,
     &mr_codec_rawvideo,
@@ -22,7 +23,7 @@ const mr_codec *mr_codec_find(uint32_t fourcc)
     size_t i, j;
     for (i = 0; i < sizeof(g_codecs) / sizeof(g_codecs[0]); i++) {
         const mr_codec *c = g_codecs[i];
-        for (j = 0; j < 8; j++) {
+        for (j = 0; j < sizeof(c->fourcc) / sizeof(c->fourcc[0]); j++) {
             if (c->fourcc[j] && c->fourcc[j] == fourcc)
                 return c;
         }

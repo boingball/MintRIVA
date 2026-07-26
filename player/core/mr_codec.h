@@ -18,7 +18,7 @@ typedef struct mr_codec {
     const char *name;
     /* AVI fourcc(s) this decoder claims (BITMAPINFOHEADER biCompression).
      * Unused slots are 0. Codecs like MPEG-4 have many aliases. */
-    uint32_t    fourcc[8];
+    uint32_t    fourcc[24];
     /* Allocate decoder state for a w*h stream. */
     mr_status (*open)(mr_decoder *dec);
     /* Decode one compressed frame into dec->frame. May reuse/patch the
@@ -63,6 +63,8 @@ extern const mr_codec mr_codec_mjpeg;
 extern const mr_codec mr_codec_mpeg2;
 extern const mr_codec mr_codec_mpeg4;
 extern const mr_codec mr_codec_msmpeg4v2;
+extern const mr_codec mr_codec_h263;
+extern const mr_codec mr_codec_h263;
 extern const mr_codec mr_codec_msvideo1;
 extern const mr_codec mr_codec_rle;
 extern const mr_codec mr_codec_rawvideo;
