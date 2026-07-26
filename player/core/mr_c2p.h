@@ -22,4 +22,9 @@ void mr_c2p8(const uint8_t *chunky, int pw, int h, int chunky_stride,
              int nplanes, uint8_t *const planes[], int bpr,
              int x0byte, int y0);
 
+/* 32-pixel direct-to-plane variant using only 32-bit integer operations. */
+void mr_c2p8_riva32(const uint8_t *chunky, int pw, int h, int chunky_stride,
+                    int nplanes, uint8_t *const planes[], int bpr,
+                    int x0byte, int y0);
+
 #endif /* MR_C2P_H */

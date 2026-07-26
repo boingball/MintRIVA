@@ -36,6 +36,22 @@ adjacent plane bytes into one aligned longword store. This reduces expensive
 Chip RAM transactions without adding a Fast-to-Chip staging bitmap or assuming
 that all planes are one contiguous allocation.
 
+The first hardware benchmark motivated a 32-bit-only revision. For 176 frames
+of a 150x118 Cinepak clip the measurements were:
+
+| backend | display | blit |
+| --- | ---: | ---: |
+| `--wpa` | 7025 ms | 3272 ms |
+| `--c2p` | 8649 ms | 4891 ms |
+| `--riva-c2p` | 8914 ms | 5169 ms |
+
+Conversion time was effectively identical, isolating the regression to the
+C2P/blit stage. The first experimental routine used a `uint64_t` transpose;
+multiword masks and shifts are costly on a 68030. The revised routine constructs
+the same plane bits with 32-bit operations only, retains aligned longword plane
+writes, and is differentially tested against `mr_c2p8` using random rows,
+multiple 32-pixel groups, source strides, and partial dirty-row offsets.
+
 The current `WritePixelArray8` default and `--c2p` renderer remain available as
 fallbacks. Akiko continues to take precedence when selected. HAM6, HAM8,
 ordered-colour, exact 2x scaling, arbitrary resize, laced modes, and dirty row

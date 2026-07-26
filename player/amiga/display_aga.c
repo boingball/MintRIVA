@@ -97,49 +97,6 @@ static void akiko_c2p(const uint8_t *chunky, int pw, int h, int chunky_stride,
     }
 }
 
-/* RiVA's useful lesson is not a blitter trick: its C2P writes converted data
- * straight into the display's planes in 32-pixel units.  Keep MintRIVA's
- * proven transpose, but coalesce four byte stores into one aligned longword
- * per plane.  On AGA this cuts Chip RAM writes from 32 to 8 per group. */
-static void riva_transpose8(const uint8_t *in, uint8_t out[8])
-{
-    uint64_t x = 0;
-    int i;
-    for (i = 0; i < 8; i++) x = (x << 8) | in[i];
-    x = (x & 0xAA55AA55AA55AA55ULL)
-      | ((x & 0x00AA00AA00AA00AAULL) << 7)
-      | ((x >> 7) & 0x00AA00AA00AA00AAULL);
-    x = (x & 0xCCCC3333CCCC3333ULL)
-      | ((x & 0x0000CCCC0000CCCCULL) << 14)
-      | ((x >> 14) & 0x0000CCCC0000CCCCULL);
-    x = (x & 0xF0F0F0F00F0F0F0FULL)
-      | ((x & 0x00000000F0F0F0F0ULL) << 28)
-      | ((x >> 28) & 0x00000000F0F0F0F0ULL);
-    for (i = 0; i < 8; i++) { out[i] = (uint8_t)x; x >>= 8; }
-}
-
-static void riva_c2p(const uint8_t *chunky, int pw, int h, int stride,
-                     int nplanes, uint8_t *const planes[], int bpr,
-                     int x0byte, int y0)
-{
-    int y, g, q, p;
-    for (y = 0; y < h; y++) {
-        const uint8_t *row = chunky + (size_t)y * stride;
-        size_t base = (size_t)(y0 + y) * bpr + x0byte;
-        for (g = 0; g < (pw >> 5); g++) {
-            uint8_t bytes[4][8];
-            for (q = 0; q < 4; q++)
-                riva_transpose8(row + (g << 5) + (q << 3), bytes[q]);
-            for (p = 0; p < nplanes; p++) {
-                ULONG v = ((ULONG)bytes[0][p] << 24)
-                        | ((ULONG)bytes[1][p] << 16)
-                        | ((ULONG)bytes[2][p] << 8) | bytes[3][p];
-                *(ULONG *)(planes[p] + base + (g << 2)) = v;
-            }
-        }
-    }
-}
-
 static void load_palette(struct Screen *scr, int ham)
 {
     ULONG tab[1 + 256 * 3 + 1];
@@ -326,9 +283,9 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                   s->x0byte, s->y0 + ddy0);
     } else if (s->use_riva_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        riva_c2p(crow, pw, ddh, pw, s->depth,
-                 (uint8_t *const *)bm->Planes, bm->BytesPerRow,
-                 s->x0byte, s->y0 + ddy0);
+        mr_c2p8_riva32(crow, pw, ddh, pw, s->depth,
+                       (uint8_t *const *)bm->Planes, bm->BytesPerRow,
+                       s->x0byte, s->y0 + ddy0);
     } else if (s->use_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         mr_c2p8(crow, pw, ddh, pw, s->depth,
