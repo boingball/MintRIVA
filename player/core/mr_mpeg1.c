@@ -2,7 +2,7 @@
  * MintRIVA - MPEG-1 source, wrapping pl_mpeg.
  *
  * This translation unit carries pl_mpeg's implementation (PL_MPEG_IMPLEMENTATION),
- * so it is the one place its (float-using MP2) code is compiled.
+ * so it is the one place its integer-only MP2 code is compiled.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,14 +53,14 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len)
 
 int mr_mpeg1_width(mr_mpeg1 *m)  { return m ? m->w : 0; }
 int mr_mpeg1_height(mr_mpeg1 *m) { return m ? m->h : 0; }
-double mr_mpeg1_framerate(mr_mpeg1 *m) { return m ? plm_get_framerate(m->plm) : 0; }
+unsigned mr_mpeg1_framerate_millihz(mr_mpeg1 *m) { return m ? plm_get_framerate(m->plm) : 0; }
 
 unsigned mr_mpeg1_samplerate(mr_mpeg1 *m)
 {
     return m ? m->rate_eff : 0;
 }
 
-int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts)
+int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
 {
     plm_frame_t *fr;
     if (!m) return 0;
@@ -74,7 +74,7 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts)
     out->data   = m->fb;
     out->dirty_y0 = 0;                          /* inter frames, but simplest */
     out->dirty_y1 = m->h;                       /* is a full repaint          */
-    if (pts) *pts = fr->time;
+    if (pts_us) *pts_us = fr->time;
     return 1;
 }
 
@@ -92,9 +92,7 @@ int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
     for (j = 0; j < s->count; j += decim) {
         int ch;
         for (ch = 0; ch < 2; ch++) {
-            float f = s->interleaved[j * 2 + ch];
-            int v = (int)(f * 32767.0f);
-            if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+            int v = s->interleaved[j * 2 + ch];
             *dst++ = (unsigned char)(v & 0xff);
             *dst++ = (unsigned char)((v >> 8) & 0xff);
         }

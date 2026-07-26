@@ -22,7 +22,7 @@ mr_mpeg1  *mr_mpeg1_open(const uint8_t *buf, size_t len);
 
 int        mr_mpeg1_width(mr_mpeg1 *m);
 int        mr_mpeg1_height(mr_mpeg1 *m);
-double     mr_mpeg1_framerate(mr_mpeg1 *m);
+unsigned   mr_mpeg1_framerate_millihz(mr_mpeg1 *m);
 
 /* Audio: the effective output sample rate (0 = no audio track). MP2 is decoded
  * as stereo; the rate is halved internally if the stream is above Paula's reach
@@ -30,9 +30,9 @@ double     mr_mpeg1_framerate(mr_mpeg1 *m);
 unsigned   mr_mpeg1_samplerate(mr_mpeg1 *m);
 
 /* Decode the next video frame into `out` (RGB24, owned by the source); *pts (if
- * non-NULL) gets its presentation time in seconds. Returns 1 on a frame, 0 at
+ * non-NULL) gets its presentation time in microseconds. Returns 1 on a frame, 0 at
  * end of stream. */
-int        mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts);
+int        mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us);
 
 /* Decode one audio frame into `dst` as little-endian signed-16 stereo
  * interleaved bytes (room for 1152*4 bytes needed; explicit LE so it is correct

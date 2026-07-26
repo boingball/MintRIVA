@@ -128,7 +128,7 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       stream so it gets a source wrapper, not the demux+codec split.
 - [x] MPEG-1 in the Amiga player: .mpg/.mpeg play through pl_mpeg (video + MP2
       audio -> Paula), reusing the display/audio backends. The 68k build links
-      libm + soft-float for this (MPEG-1 is a fast-machine codec). pause/loop
+      a fixed-point decode path with no libm/soft-float dependency. pause/loop
       apply. (Cinepak/MJPEG path stays integer.)
 - [x] Microsoft MPEG-4 v2 (`MP42`/`DIV2`) in AVI: separate H.263-derived decoder
       plugin with I/P pictures, slice/DC/AC prediction, skip macroblocks and

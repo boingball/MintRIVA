@@ -83,8 +83,7 @@ AMIGA_GCC  ?= $(firstword \
 ifeq ($(TOOLCHAIN),gcc)
 CORE   += core/mr_h264.c $(LIBAVC_SRC)
 CC      = $(AMIGA_GCC)
-# MPEG-1 (pl_mpeg in mr_mpeg1.c) uses floating point, so this build links libm
-# and the compiler soft-float runtime. MR_HAVE_MPEG1 enables the .mpg paths.
+# MPEG-1 (pl_mpeg in mr_mpeg1.c) is fixed-point. MR_HAVE_MPEG1 enables .mpg.
 CFLAGS  = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra \
           -DAMIGA_M68K -DMR_HAVE_MPEG1 -DMR_HAVE_H264 \
           $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
@@ -92,7 +91,7 @@ CFLAGS  = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra \
           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
           -Wno-unused-but-set-variable -Wno-sign-compare \
           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
-LDFLAGS = -noixemul -lm -lgcc
+LDFLAGS = -noixemul -lgcc
 
 all: mrplay mr_decode
 
@@ -126,7 +125,7 @@ endif
 ifeq ($(TOOLCHAIN),vbcc)
 # Requires VBCC + vc.config target 'aos68k'. Override CC=... if not on PATH.
 CC      ?= vc
-CFLAGS  = +aos68k -c99 -O2 -cpu=68030 -softfloat -DAMIGA_M68K \
+CFLAGS  = +aos68k -c99 -O2 -cpu=68030 -DAMIGA_M68K \
           $(HTTP_SSL_FLAGS) $(LIBMPEG2_FLAGS)
 
 all: mr_decode

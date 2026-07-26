@@ -52,9 +52,9 @@ HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
 
 all: mr_decode
 
-# pl_mpeg (in mr_mpeg1.c) uses libm; MR_HAVE_MPEG1 enables the harness path.
+# pl_mpeg is integer-only; MR_HAVE_MPEG1 enables the harness path.
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE) -lm
+	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE)
 
 # Optional host HTTPS build used by the local TLS integration test. The Amiga
 # build uses AmiSSL instead; this only validates the shared HTTP/TLS parser and
