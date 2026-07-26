@@ -93,6 +93,7 @@ CFLAGS  = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra \
           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
           -Wno-unused-but-set-variable -Wno-sign-compare \
           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
+GUI_CFLAGS = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra
 LDFLAGS = -noixemul -lgcc
 
 all: mrplay mrgui mr_decode
@@ -110,7 +111,7 @@ mrplay: check-cc check-mintamp $(PLAY) $(CORE) | check-libavc
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LDFLAGS)
 
 mrgui: check-cc $(GUI)
-	$(CC) $(CFLAGS) -o $@ $(GUI) -lauto $(LDFLAGS)
+	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) -lauto $(LDFLAGS)
 
 check-mintamp:
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \

@@ -20,7 +20,6 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
-#include <proto/reaction.h>
 #include <stdio.h>
 #include <string.h>
 
