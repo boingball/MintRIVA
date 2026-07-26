@@ -18,6 +18,11 @@ falls back silently to `WritePixelArray8`.
 This deliberately avoids assumptions about how graphics.library allocated the
 planes.
 
+On fallback, MintRIVA restores WPA's visible-width-based chunky row padding;
+it does not retain Kalms' screen-width stride. This is required for HAM6,
+whose six-plane screen is intentionally incompatible with the eight-plane
+routine, and for any other layout that uses the WPA path.
+
 For a compatible layout, `--time` prints one accumulated
 `Kalms conversion: ... ms` result after playback. Timing for every AGA backend
 is reported only in the final totals; no diagnostics are emitted while opening

@@ -234,7 +234,15 @@ static void *aga_open(int w, int h, const char *title)
         } else {
             s->use_kalms_c2p = 0;
             /* An incompatible planar allocation must never reach Kalms: use
-             * the established graphics.library path instead. */
+             * the established graphics.library path instead. WPA derives its
+             * source-row modulo from the visible width, so restore the normal
+             * WPA padding rather than retaining Kalms' screen-wide stride.
+             * Keeping the latter made HAM6 (which necessarily has only six
+             * planes) read each following chunky row from the wrong offset. */
+            s->pw = (dw + 15) & ~15;
+            s->x0 = (sw - dw) / 2;
+            if (s->x0 < 0) s->x0 = 0;
+            s->x0byte = s->x0 >> 3;
             s->tempbm = AllocBitMap((ULONG)s->pw, 1, (ULONG)depth, 0, bm);
             if (!s->tempbm) goto fail;
             InitRastPort(&s->temprp);
