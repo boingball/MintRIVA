@@ -1,12 +1,7 @@
 /* MintRIVA ReAction controller.
  *
- * This intentionally remains a separate process: native AGA/HAM playback can
- * own its custom screen, while the small controller stays on Workbench.  On
- * CGX the player is a resizable Workbench window alongside this controller.
- *
- * The ReAction setup follows MintAMP: system/class libraries are opened
- * explicitly at runtime, BOOPSI objects are created with NewObject(), pointer
- * tag data is cast to ULONG, and no libauto link is required.
+ * The GUI stays on Workbench and launches the separate mrplay executable.
+ * ReAction classes are opened explicitly, following MintAMP's working setup.
  */
 #include <exec/types.h>
 #include <exec/libraries.h>
@@ -14,6 +9,10 @@
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <intuition/intuition.h>
+#include <intuition/screens.h>
+#include <graphics/displayinfo.h>
+#include <graphics/gfxbase.h>
+#include <cybergraphx/cybergraphics.h>
 #include <classes/window.h>
 #include <gadgets/button.h>
 #include <gadgets/checkbox.h>
@@ -28,7 +27,9 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
+#include <proto/graphics.h>
 #include <proto/utility.h>
+#include <proto/cybergraphics.h>
 #include <proto/button.h>
 #include <proto/checkbox.h>
 #include <proto/chooser.h>
@@ -44,10 +45,20 @@
 #define MRGUI_CLASS_VERSION 44
 #endif
 
-/* Runtime library bases, following MintAMP's ReAction frontend. */
+#define MRPLAY_STACK_SIZE 320000UL
+
+#if defined(__GNUC__)
+static const char mrgui_stack_cookie[] __attribute__((used)) =
+    "$STACK:131072";
+#endif
+
+/* Runtime library bases.  CyberGfxBase is optional: a planar Workbench must
+ * still be able to run the AGA/HAM controller. */
 struct IntuitionBase *IntuitionBase;
+struct GfxBase *GfxBase;
 struct Library *UtilityBase;
 struct Library *AslBase;
+struct Library *CyberGfxBase;
 struct Library *WindowBase;
 struct Library *LayoutBase;
 struct Library *ButtonBase;
@@ -57,14 +68,30 @@ struct Library *GetFileBase;
 struct Library *StringBase;
 struct Library *LabelBase;
 
-enum { G_FILE = 1, G_PLAY, G_PAUSE, G_STOP, G_FF, G_MODE, G_LACE, G_2X };
+enum {
+    G_FILE = 1,
+    G_PLAY,
+    G_PAUSE,
+    G_STOP,
+    G_FF,
+    G_MODE,
+    G_LACE,
+    G_2X
+};
 
 static int open_reaction_classes(void)
 {
     IntuitionBase = (struct IntuitionBase *)OpenLibrary(
         (CONST_STRPTR)"intuition.library", 39);
+    GfxBase = (struct GfxBase *)OpenLibrary(
+        (CONST_STRPTR)"graphics.library", 39);
     UtilityBase = OpenLibrary((CONST_STRPTR)"utility.library", 39);
     AslBase = OpenLibrary((CONST_STRPTR)"asl.library", 39);
+
+    /* Optional.  Its presence alone does not mean the current Workbench is
+     * RTG; default_screen_is_rtg() checks the actual public-screen mode. */
+    CyberGfxBase = OpenLibrary((CONST_STRPTR)"cybergraphics.library", 40);
+
     WindowBase = OpenLibrary((CONST_STRPTR)"window.class",
                              MRGUI_CLASS_VERSION);
     LayoutBase = OpenLibrary((CONST_STRPTR)"gadgets/layout.gadget",
@@ -82,9 +109,9 @@ static int open_reaction_classes(void)
     LabelBase = OpenLibrary((CONST_STRPTR)"images/label.image",
                             MRGUI_CLASS_VERSION);
 
-    return IntuitionBase && UtilityBase && AslBase && WindowBase &&
-           LayoutBase && ButtonBase && CheckBoxBase && ChooserBase &&
-           GetFileBase && StringBase && LabelBase;
+    return IntuitionBase && GfxBase && UtilityBase && AslBase &&
+           WindowBase && LayoutBase && ButtonBase && CheckBoxBase &&
+           ChooserBase && GetFileBase && StringBase && LabelBase;
 }
 
 static void close_reaction_classes(void)
@@ -121,6 +148,10 @@ static void close_reaction_classes(void)
         CloseLibrary(WindowBase);
         WindowBase = NULL;
     }
+    if (CyberGfxBase) {
+        CloseLibrary(CyberGfxBase);
+        CyberGfxBase = NULL;
+    }
     if (AslBase) {
         CloseLibrary(AslBase);
         AslBase = NULL;
@@ -129,10 +160,33 @@ static void close_reaction_classes(void)
         CloseLibrary(UtilityBase);
         UtilityBase = NULL;
     }
+    if (GfxBase) {
+        CloseLibrary((struct Library *)GfxBase);
+        GfxBase = NULL;
+    }
     if (IntuitionBase) {
         CloseLibrary((struct Library *)IntuitionBase);
         IntuitionBase = NULL;
     }
+}
+
+static int default_screen_is_rtg(void)
+{
+    struct Screen *screen;
+    ULONG mode_id;
+    int is_rtg;
+
+    if (!CyberGfxBase || !GfxBase || !IntuitionBase)
+        return 0;
+
+    screen = LockPubScreen(NULL);
+    if (!screen)
+        return 0;
+
+    mode_id = GetVPModeID(&screen->ViewPort);
+    is_rtg = mode_id != (ULONG)INVALID_ID && IsCyberModeID(mode_id);
+    UnlockPubScreen(NULL, screen);
+    return is_rtg;
 }
 
 static int add_chooser_node(struct List *list, const char *text)
@@ -155,12 +209,20 @@ static void free_chooser_nodes(struct List *list)
         FreeChooserNode(node);
 }
 
+static struct Task *find_player(void)
+{
+    struct Task *task;
+
+    Forbid();
+    task = FindTask((STRPTR)"MintRIVA player");
+    Permit();
+    return task;
+}
+
 static void signal_player(ULONG mask)
 {
     struct Task *task;
 
-    /* FindTask and Signal are protected together so a just-finished player
-     * cannot disappear between the lookup and signal delivery. */
     Forbid();
     task = FindTask((STRPTR)"MintRIVA player");
     if (task)
@@ -168,66 +230,39 @@ static void signal_player(ULONG mask)
     Permit();
 }
 
-static void quote_arg(char *dst, size_t cap, const char *s)
+static void quote_arg(char *dst, size_t cap, const char *src)
 {
     size_t n;
 
     n = 0;
     if (cap)
         dst[n++] = '"';
-    while (*s && n + 3 < cap) {
-        if (*s == '"' || *s == '*')
+
+    while (*src && n + 3 < cap) {
+        if (*src == '"' || *src == '*')
             dst[n++] = '*';
-        dst[n++] = *s++;
+        dst[n++] = *src++;
     }
+
     if (n + 1 < cap)
         dst[n++] = '"';
     dst[n] = 0;
 }
 
-static void start_player(Object *file, Object *mode, Object *lace, Object *twox)
+static void set_info(Object *info, struct Window *window, const char *text)
 {
-    char path[512];
-    char quoted[1040];
-    char args[1200];
-    ULONG selected;
-    ULONG checked_lace;
-    ULONG checked_2x;
-    STRPTR p;
-
-    selected = 0;
-    checked_lace = 0;
-    checked_2x = 0;
-    p = NULL;
-
-    GetAttr(GETFILE_FullFile, file, (ULONG *)&p);
-    if (!p || !*p)
+    if (!info || !window)
         return;
 
-    strncpy(path, (const char *)p, sizeof(path) - 1);
-    path[sizeof(path) - 1] = 0;
-
-    GetAttr(CHOOSER_Selected, mode, &selected);
-    GetAttr(CHECKBOX_Checked, lace, &checked_lace);
-    GetAttr(CHECKBOX_Checked, twox, &checked_2x);
-    quote_arg(quoted, sizeof(quoted), path);
-    snprintf(args, sizeof(args), "%s%s%s%s", quoted,
-             selected == 0 ? " --aga" :
-             selected == 1 ? " --aga --ham6" :
-             selected == 2 ? " --aga --ham" : "",
-             checked_lace && selected < 3 ? " --lace" : "",
-             checked_2x && selected < 3 ? " --2x" : "");
-
-    signal_player(SIGBREAKF_CTRL_C);
-    CreateNewProcTags(NP_CommandName, (ULONG)"mrplay",
-                      NP_Arguments, (ULONG)args,
-                      NP_StackSize, 320000UL,
-                      NP_Cli, TRUE,
-                      NP_Name, (ULONG)"MintRIVA player",
-                      TAG_END);
+    SetGadgetAttrs((struct Gadget *)info, window, NULL,
+                   STRINGA_TextVal, (ULONG)(text ? text : ""),
+                   STRINGA_BufferPos, 0,
+                   STRINGA_DispPos, 0,
+                   TAG_DONE);
 }
 
-static void update_file_info(Object *file, Object *info, struct Window *w)
+static void update_file_info(Object *file, Object *info,
+                             struct Window *window)
 {
     static char text[640];
     STRPTR path;
@@ -242,25 +277,113 @@ static void update_file_info(Object *file, Object *info, struct Window *w)
 
     ext = strrchr((const char *)path, '.');
     lock = Lock(path, ACCESS_READ);
-    if (lock && Examine(lock, &fib))
+    if (lock && Examine(lock, &fib)) {
         snprintf(text, sizeof(text), "%s | type: %s | %ld bytes", path,
-                 ext && ext[1] ? ext + 1 : "unknown", (long)fib.fib_Size);
-    else
+                 ext && ext[1] ? ext + 1 : "unknown",
+                 (long)fib.fib_Size);
+    } else {
         snprintf(text, sizeof(text), "%s | type: %s", path,
                  ext && ext[1] ? ext + 1 : "unknown");
+    }
     if (lock)
         UnLock(lock);
 
-    SetGadgetAttrs((struct Gadget *)info, w, NULL,
-                   STRINGA_TextVal, (ULONG)text,
-                   STRINGA_BufferPos, 0,
-                   STRINGA_DispPos, 0,
+    set_info(info, window, text);
+}
+
+static void update_mode_controls(Object *mode, Object *lace, Object *twox,
+                                 struct Window *window)
+{
+    ULONG selected;
+    ULONG disable_chipset_options;
+
+    selected = 0;
+    GetAttr(CHOOSER_Selected, mode, &selected);
+    disable_chipset_options = selected == 3 ? TRUE : FALSE;
+
+    SetGadgetAttrs((struct Gadget *)lace, window, NULL,
+                   GA_Disabled, disable_chipset_options,
                    TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)twox, window, NULL,
+                   GA_Disabled, disable_chipset_options,
+                   TAG_DONE);
+}
+
+static void start_player(Object *file, Object *mode, Object *lace,
+                         Object *twox, Object *info, struct Window *window)
+{
+    char path[512];
+    char quoted[1040];
+    char args[1200];
+    ULONG selected;
+    ULONG checked_lace;
+    ULONG checked_2x;
+    STRPTR full_file;
+    BPTR seglist;
+    struct Process *process;
+
+    selected = 0;
+    checked_lace = 0;
+    checked_2x = 0;
+    full_file = NULL;
+
+    GetAttr(GETFILE_FullFile, file, (ULONG *)&full_file);
+    if (!full_file || !*full_file) {
+        set_info(info, window, "Choose a video first.");
+        return;
+    }
+
+    if (find_player()) {
+        set_info(info, window,
+                 "A MintRIVA player is already running; stop it first.");
+        return;
+    }
+
+    strncpy(path, (const char *)full_file, sizeof(path) - 1);
+    path[sizeof(path) - 1] = 0;
+
+    GetAttr(CHOOSER_Selected, mode, &selected);
+    GetAttr(CHECKBOX_Checked, lace, &checked_lace);
+    GetAttr(CHECKBOX_Checked, twox, &checked_2x);
+    quote_arg(quoted, sizeof(quoted), path);
+
+    snprintf(args, sizeof(args), "%s%s%s%s\n", quoted,
+             selected == 0 ? " --aga" :
+             selected == 1 ? " --aga --ham6" :
+             selected == 2 ? " --aga --ham" : "",
+             checked_lace && selected < 3 ? " --lace" : "",
+             checked_2x && selected < 3 ? " --2x" : "");
+
+    /* NP_CommandName only labels a CLI; it does not load an executable.
+     * Load mrplay explicitly and pass its seglist to CreateNewProcTags(). */
+    seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
+    if (!seglist)
+        seglist = LoadSeg((CONST_STRPTR)"mrplay");
+    if (!seglist) {
+        set_info(info, window,
+                 "Could not load mrplay (keep it beside mrgui or in PATH).");
+        return;
+    }
+
+    process = CreateNewProcTags(
+        NP_Seglist, seglist,
+        NP_FreeSeglist, TRUE,
+        NP_Arguments, (ULONG)args,
+        NP_StackSize, MRPLAY_STACK_SIZE,
+        NP_Cli, TRUE,
+        NP_CommandName, (ULONG)"mrplay",
+        NP_Name, (ULONG)"MintRIVA player",
+        TAG_END);
+
+    if (!process) {
+        UnLoadSeg(seglist);
+        set_info(info, window, "Could not create the mrplay process.");
+    }
 }
 
 int main(void)
 {
-    Object *wo;
+    Object *window_object;
     Object *file;
     Object *mode;
     Object *lace;
@@ -275,15 +398,16 @@ int main(void)
     Object *pause_button;
     Object *stop_button;
     Object *ff_button;
-    struct Window *w;
+    struct Window *window;
     struct List modes;
     ULONG sigmask;
     ULONG result;
     ULONG signals;
     UWORD code;
     int status;
+    int have_rtg;
 
-    wo = NULL;
+    window_object = NULL;
     file = NULL;
     mode = NULL;
     lace = NULL;
@@ -298,8 +422,9 @@ int main(void)
     pause_button = NULL;
     stop_button = NULL;
     ff_button = NULL;
-    w = NULL;
+    window = NULL;
     status = RETURN_FAIL;
+    have_rtg = 0;
 
     modes.lh_Head = (struct Node *)&modes.lh_Tail;
     modes.lh_Tail = NULL;
@@ -311,10 +436,11 @@ int main(void)
         goto cleanup;
     }
 
+    have_rtg = default_screen_is_rtg();
     if (!add_chooser_node(&modes, "AGA") ||
         !add_chooser_node(&modes, "HAM6") ||
         !add_chooser_node(&modes, "HAM8") ||
-        !add_chooser_node(&modes, "CGX"))
+        (have_rtg && !add_chooser_node(&modes, "CGX")))
         goto cleanup;
 
     file = (Object *)NewObject(GETFILE_GetClass(), NULL,
@@ -328,7 +454,7 @@ int main(void)
                                GA_ID, G_MODE,
                                GA_RelVerify, TRUE,
                                CHOOSER_Labels, (ULONG)&modes,
-                               CHOOSER_Selected, 3,
+                               CHOOSER_Selected, have_rtg ? 3 : 0,
                                TAG_DONE);
     lace = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_LACE,
@@ -341,6 +467,7 @@ int main(void)
     info = (Object *)NewObject(STRING_GetClass(), NULL,
                                GA_ReadOnly, TRUE,
                                STRINGA_TextVal, (ULONG)"No file selected",
+                               STRINGA_MaxChars, 640,
                                TAG_DONE);
     file_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                      LABEL_Text, (ULONG)"File",
@@ -413,57 +540,75 @@ int main(void)
     if (!layout)
         goto cleanup;
 
-    wo = (Object *)NewObject(WINDOW_GetClass(), NULL,
-                              WA_Title, (ULONG)"MintRIVA Control",
-                              WA_Activate, TRUE,
-                              WA_DepthGadget, TRUE,
-                              WA_DragBar, TRUE,
-                              WA_CloseGadget, TRUE,
-                              WA_SizeGadget, TRUE,
-                              WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW |
-                                        IDCMP_IDCMPUPDATE | IDCMP_REFRESHWINDOW,
-                              WINDOW_Position, WPOS_CENTERSCREEN,
-                              WINDOW_ParentGroup, (ULONG)layout,
-                              TAG_DONE);
-    if (!wo)
+    window_object = (Object *)NewObject(WINDOW_GetClass(), NULL,
+                                         WA_Title,
+                                         (ULONG)"MintRIVA Control",
+                                         WA_Activate, TRUE,
+                                         WA_DepthGadget, TRUE,
+                                         WA_DragBar, TRUE,
+                                         WA_CloseGadget, TRUE,
+                                         WA_SizeGadget, TRUE,
+                                         WA_IDCMP,
+                                         IDCMP_GADGETUP |
+                                         IDCMP_CLOSEWINDOW |
+                                         IDCMP_IDCMPUPDATE |
+                                         IDCMP_REFRESHWINDOW,
+                                         WINDOW_Position, WPOS_CENTERSCREEN,
+                                         WINDOW_ParentGroup, (ULONG)layout,
+                                         TAG_DONE);
+    if (!window_object)
         goto cleanup;
 
-    w = (struct Window *)RA_OpenWindow(wo);
-    if (!w)
+    window = (struct Window *)RA_OpenWindow(window_object);
+    if (!window)
         goto cleanup;
 
-    GetAttr(WINDOW_SigMask, wo, &sigmask);
+    update_mode_controls(mode, lace, twox, window);
+    GetAttr(WINDOW_SigMask, window_object, &sigmask);
+
     for (;;) {
         signals = Wait(sigmask | SIGBREAKF_CTRL_C);
         if (signals & SIGBREAKF_CTRL_C)
             break;
 
-        while ((result = RA_HandleInput(wo, &code)) != WMHI_LASTMSG) {
+        while ((result = RA_HandleInput(window_object, &code)) !=
+               WMHI_LASTMSG) {
             switch (result & WMHI_CLASSMASK) {
             case WMHI_CLOSEWINDOW:
                 goto done;
+
             case WMHI_GADGETUP:
                 switch (result & WMHI_GADGETMASK) {
                 case G_FILE:
-                    if (gfRequestFile(file, w))
-                        update_file_info(file, info, w);
+                    if (gfRequestFile(file, window))
+                        update_file_info(file, info, window);
                     break;
+
+                case G_MODE:
+                    update_mode_controls(mode, lace, twox, window);
+                    break;
+
                 case G_PLAY:
-                    start_player(file, mode, lace, twox);
+                    start_player(file, mode, lace, twox, info, window);
                     break;
+
                 case G_PAUSE:
                     signal_player(SIGBREAKF_CTRL_D);
                     break;
+
                 case G_STOP:
                     signal_player(SIGBREAKF_CTRL_C);
                     break;
+
                 case G_FF:
                     signal_player(SIGBREAKF_CTRL_E);
                     break;
+
                 default:
                     break;
                 }
                 break;
+
             default:
                 break;
             }
@@ -475,12 +620,12 @@ done:
     signal_player(SIGBREAKF_CTRL_C);
 
 cleanup:
-    /* Dispose only the highest successfully-created owner.  A window owns its
-     * parent layout; the root layout owns its child layouts and gadgets. */
-    if (wo) {
-        if (w)
-            RA_CloseWindow(wo);
-        DisposeObject(wo);
+    /* Dispose only the highest successfully-created owner.  The window owns
+     * the root layout; layouts own their child layouts and gadgets. */
+    if (window_object) {
+        if (window)
+            RA_CloseWindow(window_object);
+        DisposeObject(window_object);
     } else if (layout) {
         DisposeObject(layout);
     } else {
