@@ -28,6 +28,7 @@ typedef struct {
     uint32_t           cursor;
     mr_video_info      video;
     mr_audio_info      audio;
+    uint8_t            rawvideo_config[4]; /* LE source row stride         */
 } mr_mov;
 
 mr_status mr_mov_open(mr_mov *m, const uint8_t *buf, size_t len);

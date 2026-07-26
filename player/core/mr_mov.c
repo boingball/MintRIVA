@@ -148,6 +148,7 @@ static uint32_t track_handler(const uint8_t *mdia, uint32_t mdia_sz)
 static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
                              const uint8_t *mdia, uint32_t mdia_sz)
 {
+    uint32_t first_sample = m->nsamples;
     const uint8_t *end = stbl + stbl_sz;
     uint32_t sz;
     const uint8_t *stsd = find_atom(stbl, end, T('s','t','s','d'), &sz);
@@ -222,8 +223,29 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         if (!m->video.scale) m->video.scale = m->video.rate ? m->video.rate : 1;
     }
 
-    return read_stbl_segments(m, stbl, end, 1 /*video*/, 0 /*per-sample*/,
-                              m->video.rate /*mdhd timescale*/);
+    {
+        mr_status st = read_stbl_segments(m, stbl, end, 1 /*video*/,
+                                         0 /*per-sample*/,
+                                         m->video.rate /*mdhd timescale*/);
+        /* For uncompressed video, stsz is the authoritative stored frame
+         * size.  Derive rowBytes from it rather than assuming width*2: old
+         * QuickTime files commonly align scanlines. */
+        if (st == MR_OK &&
+            (m->video.fourcc == MR_FOURCC('2','v','u','y') ||
+             m->video.fourcc == MR_FOURCC('U','Y','V','Y')) &&
+            first_sample < m->nsamples && m->video.height > 0 &&
+            m->samples[first_sample].size % (uint32_t)m->video.height == 0) {
+            uint32_t stride = m->samples[first_sample].size /
+                              (uint32_t)m->video.height;
+            m->rawvideo_config[0] = (uint8_t)stride;
+            m->rawvideo_config[1] = (uint8_t)(stride >> 8);
+            m->rawvideo_config[2] = (uint8_t)(stride >> 16);
+            m->rawvideo_config[3] = (uint8_t)(stride >> 24);
+            m->video.config = m->rawvideo_config;
+            m->video.config_len = 4;
+        }
+        return st;
+    }
 }
 
 /* Append a segment to the growing interleaved index. */

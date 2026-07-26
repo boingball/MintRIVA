@@ -24,6 +24,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
 | Microsoft RLE8 — palettised AVI | ✅ native palette and delta-frame decoder (RLE4 deferred) |
+| Raw UYVY422 (`2vuy`/`UYVY`) | ✅ uncompressed QuickTime/MOV video |
 | Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
 | MPEG-2 Main Profile video | ✅ libmpeg2; TS + B-frames ffmpeg-validated |

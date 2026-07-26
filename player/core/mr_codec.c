@@ -11,6 +11,7 @@ static const mr_codec *const g_codecs[] = {
     &mr_codec_msmpeg4v2,
     &mr_codec_msvideo1,
     &mr_codec_rle,
+    &mr_codec_rawvideo,
 #ifdef MR_HAVE_H264
     &mr_codec_h264,
 #endif
