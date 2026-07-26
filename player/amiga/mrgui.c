@@ -221,12 +221,13 @@ static void start_player(Object *file, Object *mode, Object *lace, Object *twox)
     signal_player(SIGBREAKF_CTRL_C);
     CreateNewProcTags(NP_CommandName, (ULONG)"mrplay",
                       NP_Arguments, (ULONG)args,
+                      NP_StackSize, 320000UL,
                       NP_Cli, TRUE,
                       NP_Name, (ULONG)"MintRIVA player",
                       TAG_END);
 }
 
-static void update_file_info(Object *file, Object *info)
+static void update_file_info(Object *file, Object *info, struct Window *w)
 {
     static char text[640];
     STRPTR path;
@@ -250,7 +251,11 @@ static void update_file_info(Object *file, Object *info)
     if (lock)
         UnLock(lock);
 
-    SetAttrs(info, STRINGA_TextVal, (ULONG)text, TAG_END);
+    SetGadgetAttrs((struct Gadget *)info, w, NULL,
+                   STRINGA_TextVal, (ULONG)text,
+                   STRINGA_BufferPos, 0,
+                   STRINGA_DispPos, 0,
+                   TAG_DONE);
 }
 
 int main(void)
@@ -440,7 +445,8 @@ int main(void)
             case WMHI_GADGETUP:
                 switch (result & WMHI_GADGETMASK) {
                 case G_FILE:
-                    update_file_info(file, info);
+                    if (gfRequestFile(file, w))
+                        update_file_info(file, info, w);
                     break;
                 case G_PLAY:
                     start_player(file, mode, lace, twox);
