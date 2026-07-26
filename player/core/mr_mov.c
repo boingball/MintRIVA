@@ -7,6 +7,7 @@
  * is parsed - no edit lists, no fragmented MP4.
  */
 #include "mr_mov.h"
+#include "mr_rawvideo.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -148,6 +149,7 @@ static uint32_t track_handler(const uint8_t *mdia, uint32_t mdia_sz)
 static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
                              const uint8_t *mdia, uint32_t mdia_sz)
 {
+    uint32_t first_sample = m->nsamples;
     const uint8_t *end = stbl + stbl_sz;
     uint32_t sz;
     const uint8_t *stsd = find_atom(stbl, end, T('s','t','s','d'), &sz);
@@ -222,8 +224,25 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         if (!m->video.scale) m->video.scale = m->video.rate ? m->video.rate : 1;
     }
 
-    return read_stbl_segments(m, stbl, end, 1 /*video*/, 0 /*per-sample*/,
-                              m->video.rate /*mdhd timescale*/);
+    {
+        mr_status st = read_stbl_segments(m, stbl, end, 1 /*video*/,
+                                         0 /*per-sample*/,
+                                         m->video.rate /*mdhd timescale*/);
+        /* stsz describes the complete packet, not rowBytes. QuickTime raw
+         * packets may contain a large codec-private/padding tail, so never
+         * distribute sample size across the displayed rows. */
+        if (st == MR_OK && mr_rawvideo_is_uyvy422(m->video.fourcc) &&
+            first_sample < m->nsamples && m->video.height > 0) {
+            uint32_t stride = mr_rawvideo_uyvy422_stride(m->video.width);
+            m->rawvideo_config[0] = (uint8_t)stride;
+            m->rawvideo_config[1] = (uint8_t)(stride >> 8);
+            m->rawvideo_config[2] = (uint8_t)(stride >> 16);
+            m->rawvideo_config[3] = (uint8_t)(stride >> 24);
+            m->video.config = m->rawvideo_config;
+            m->video.config_len = 4;
+        }
+        return st;
+    }
 }
 
 /* Append a segment to the growing interleaved index. */

@@ -53,6 +53,8 @@ mr_status mr_decoder_open_config(mr_decoder *dec, const mr_codec *codec,
 mr_status mr_decoder_decode(mr_decoder *dec, const uint8_t *data, uint32_t len);
 /* Drain one reordered frame at end of stream (MR_EAGAIN when none left). */
 mr_status mr_decoder_flush(mr_decoder *dec);
+/* Re-open the codec with the same stream setup, discarding reference frames. */
+mr_status mr_decoder_reset(mr_decoder *dec);
 void      mr_decoder_close(mr_decoder *dec);
 
 /* Individual codec descriptors (defined in their .c files). */
@@ -61,6 +63,9 @@ extern const mr_codec mr_codec_mjpeg;
 extern const mr_codec mr_codec_mpeg2;
 extern const mr_codec mr_codec_mpeg4;
 extern const mr_codec mr_codec_msmpeg4v2;
+extern const mr_codec mr_codec_msvideo1;
+extern const mr_codec mr_codec_rle;
+extern const mr_codec mr_codec_rawvideo;
 #ifdef MR_HAVE_H264
 extern const mr_codec mr_codec_h264;
 #endif
