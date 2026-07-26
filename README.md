@@ -33,6 +33,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
 | Separate ReAction controller (`mrgui`) | ✅ file picker, mode/options and transport controls |
+| IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
 | PCM / MP2 / MP3 / AAC-LC audio to Paula | ✅ host-validated; hardware test pending for MP3/AAC |
 
 ## Building & testing the portable core (dev host)
@@ -112,6 +113,28 @@ fragmented MP4 are not supported yet.
 TS currently supports MPEG-1/2 or AVC/H.264 video with ADTS AAC audio; AC3 is
 not decoded. Raw MJPEG/M4V and MPEG-1 program streams still use the original
 whole-file input path and therefore do not accept URLs.
+
+### IPTV browser
+
+The ReAction controller includes an **IPTV...** launcher for the separate
+`iptvgui` directory window.  Its default public directory is iptv-org
+(`channels.json`, `streams.json`, `countries.json`, and `categories.json`).
+MintRIVA does not host or redistribute television channels: iptv-org is a
+collection of publicly available links, and individual links may be offline,
+geo-blocked, or require request headers.
+
+The directory reader is bounded and retains only the metadata used for local
+country/category/search filtering.  Cached JSON is used immediately, refreshed
+after 24 hours, and replaced only after a complete download parses successfully;
+a failed refresh leaves the prior cache intact.  Manual HTTP/HTTPS media URLs,
+M3U8 playlists, and simple `#EXTM3U` lists use the normal MintRIVA URL/player
+pipeline.  Playback still depends on the existing demuxers and codecs. HLS
+prefers supported low-resolution variants (maximum width 640 by default), and
+cannot make DRM, login-only, unsupported-codec, or dead streams playable.
+
+Per-stream `Referer` and `User-Agent` values are retained by the IPTV model.
+Builds whose HTTP source cannot attach those headers report that limitation
+rather than leaking a channel's headers into later playback.
 
 ## Layout
 

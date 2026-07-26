@@ -77,7 +77,8 @@ enum {
     G_MODE,
     G_C2P,
     G_LACE,
-    G_2X
+    G_2X,
+    G_IPTV
 };
 
 static int open_reaction_classes(void)
@@ -238,6 +239,24 @@ static void stop_player_and_wait(void)
     signal_player(SIGBREAKF_CTRL_F);
     for (guard = 0; guard < 250 && find_player(); guard++)
         Delay(1);
+}
+
+static void set_info(Object *info, struct Window *window, const char *text);
+
+static void open_iptv_browser(Object *info, struct Window *window)
+{
+    LONG result;
+
+    /* Keep the directory browser in its own process so downloads and list
+     * filtering can never stall the controller's transport event loop. */
+    result = SystemTags((CONST_STRPTR)"PROGDIR:iptvgui",
+                        SYS_Asynch, TRUE,
+                        SYS_Input, 0,
+                        SYS_Output, 0,
+                        TAG_END);
+    if (result == -1)
+        set_info(info, window,
+                 "Could not start iptvgui (keep it beside mrgui)." );
 }
 
 static void quote_arg(char *dst, size_t cap, const char *src)
@@ -420,6 +439,7 @@ int main(void)
     Object *pause_button;
     Object *stop_button;
     Object *ff_button;
+    Object *iptv_button;
     struct Window *window;
     struct List modes;
     struct List c2p_modes;
@@ -447,6 +467,7 @@ int main(void)
     pause_button = NULL;
     stop_button = NULL;
     ff_button = NULL;
+    iptv_button = NULL;
     window = NULL;
     status = RETURN_FAIL;
     have_rtg = 0;
@@ -552,8 +573,14 @@ int main(void)
                                     GA_ID, G_FF,
                                     GA_Text, (ULONG)"Fast forward",
                                     GA_RelVerify, TRUE,
-                                    TAG_DONE);
-    if (!play_button || !pause_button || !stop_button || !ff_button)
+                                       TAG_DONE);
+    iptv_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
+                                      GA_ID, G_IPTV,
+                                      GA_Text, (ULONG)"IPTV...",
+                                      GA_RelVerify, TRUE,
+                                      TAG_DONE);
+    if (!play_button || !pause_button || !stop_button || !ff_button ||
+        !iptv_button)
         goto cleanup;
 
     buttons = (Object *)NewObject(LAYOUT_GetClass(), NULL,
@@ -563,6 +590,7 @@ int main(void)
                                    LAYOUT_AddChild, (ULONG)pause_button,
                                    LAYOUT_AddChild, (ULONG)stop_button,
                                    LAYOUT_AddChild, (ULONG)ff_button,
+                                   LAYOUT_AddChild, (ULONG)iptv_button,
                                    TAG_DONE);
     if (!buttons)
         goto cleanup;
@@ -647,6 +675,10 @@ int main(void)
                     signal_player(SIGBREAKF_CTRL_E);
                     break;
 
+                case G_IPTV:
+                    open_iptv_browser(info, window);
+                    break;
+
                 default:
                     break;
                 }
@@ -700,6 +732,8 @@ cleanup:
                 DisposeObject(stop_button);
             if (ff_button)
                 DisposeObject(ff_button);
+            if (iptv_button)
+                DisposeObject(iptv_button);
         }
 
         if (file)

@@ -172,3 +172,18 @@ plugin and consequently discards the reference frame.
 Compatibility roadmap: H.263 baseline is supported; H.263+ annexes are partial
 and explicitly rejected as documented in README.md; H.261 is not yet supported;
 Indeo 3, Sorenson Video 1, WMV1/2, and VP3/Theora are planned.
+# IPTV directory
+
+`player/iptv/` is deliberately independent of ReAction and of the media
+pipeline.  Its bounded token reader extracts only channel and stream metadata,
+joins exact IDs before `@` feed variants, and keeps at most eight candidates.
+The lightweight filter excludes NSFW, closed, and streamless records.  The M3U
+fallback recognizes only `EXTM3U`/`EXTINF`, `tvg-id`, `tvg-name`, and
+`group-title`; it is not a vendor IPTV-client implementation.
+
+The ReAction browser is a separate process/window. Directory network work is
+therefore isolated from the main transport event loop, while selection is sent
+back through the same URL launch path used by command-line playback. Downloads
+use the existing HTTP/AmiSSL implementation and a temporary-parse-rename cache
+transaction, retaining a previously valid cache after any failure. Directory
+JSON never enters the preferences file.
