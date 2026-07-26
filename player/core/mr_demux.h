@@ -35,7 +35,8 @@ typedef struct {
     uint16_t format_tag;  /* WAVE tag (AVI) or mapped from MOV codec        */
     uint16_t channels;
     uint32_t sample_rate;
-    uint16_t bits;
+    uint16_t bits_per_sample;
+    uint16_t block_align; /* bytes in one complete interleaved sample frame */
     /* Container codec setup bytes.  MP4 AAC stores its AudioSpecificConfig
      * here; packet decoders may ignore this for self-describing formats such
      * as PCM, MP3 and ADTS AAC. */

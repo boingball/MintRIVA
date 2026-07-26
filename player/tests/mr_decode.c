@@ -178,7 +178,7 @@ int main(int argc, char **argv)
         printf("audio: tag=0x%04x %lu Hz %u ch %u-bit\n",
                (unsigned)ai->format_tag,
                (unsigned long)ai->sample_rate,
-               (unsigned)ai->channels, (unsigned)ai->bits);
+               (unsigned)ai->channels, (unsigned)ai->bits_per_sample);
 
     const mr_codec *codec = mr_codec_find(fc);
     if (!codec) { printf("no decoder for this fourcc\n");

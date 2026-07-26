@@ -105,7 +105,7 @@ static void parse_mp2_audio(mr_ps *p, const uint8_t *b, size_t len)
         p->audio.format_tag = MR_AUDIO_FORMAT_MP2;
         p->audio.sample_rate = rates[sri] / (version == 2 ? 2 : 1);
         p->audio.channels = mode == 3 ? 1 : 2;
-        p->audio.bits = 16;
+        p->audio.bits_per_sample = 16;
         p->audio.valid = 1;
         return;
     }

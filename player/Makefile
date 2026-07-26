@@ -86,14 +86,14 @@ mr_ps_check: tests/mr_ps_check.c core/mr_ps.c core/mr_ps.h \
              core/mr_demux.h core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_ps_check.c core/mr_ps.c
 
-mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c \
+mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
                 audio/mr_audio_decode.h $(CORE)
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
 	      -f $(MINTAMP_ROOT)/decoders/aac/aacdec.h || { \
 	  echo "ERROR: initialise the MintAMP submodule first:"; \
 	  echo "  git submodule update --init --recursive"; exit 1; }
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ \
-	    tests/mr_audio_check.c audio/mr_audio_decode.c $(CORE) \
+	    tests/mr_audio_check.c audio/mr_audio_decode.c audio/mr_pcm.c $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) -lm
 mr_audio_check: | check-libavc
 
@@ -114,8 +114,9 @@ mr_codec_registry_check: tests/mr_codec_registry_check.c core/mr_codec.c core/mr
 mr_rawvideo_check: tests/mr_rawvideo_check.c core/mr_rawvideo.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-mr_pcm_u8_check: tests/mr_pcm_u8_check.c amiga/mr_audio.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_pcm_u8_check.c
+mr_pcm_u8_check: tests/mr_pcm_u8_check.c audio/mr_pcm.c audio/mr_pcm.h \
+                 core/mr_demux.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_pcm_u8_check.c audio/mr_pcm.c
 
 check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check
 	./mr_codec_registry_check
