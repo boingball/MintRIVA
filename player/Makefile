@@ -29,6 +29,8 @@ CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
            core/mr_mpeg2.c $(LIBMPEG2_SRC) \
            core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h264.c \
+           core/mr_msvideo1.c core/mr_rle.c \
+           core/mr_rawvideo.c \
            $(LIBAVC_SRC)
 TESTSRC  = tests/mr_decode.c
 MINTAMP_ROOT ?= vendor/MintAMP
@@ -49,6 +51,8 @@ HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
            core/mr_mpeg1.h core/mr_mpeg2.h \
            core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
            core/mr_msmpeg4v2.h core/mr_h264.h core/mr_types.h
+HEADERS  += core/mr_msvideo1.h core/mr_rle.h
+HEADERS  += core/mr_rawvideo.h
 
 all: mr_decode
 
@@ -100,7 +104,20 @@ check-libavc:
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
-check: mr_decode mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check
+mr_legacy_video_check: tests/mr_legacy_video_check.c \
+                       core/mr_msvideo1.c core/mr_rle.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+mr_rawvideo_check: tests/mr_rawvideo_check.c core/mr_rawvideo.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+mr_pcm_u8_check: tests/mr_pcm_u8_check.c amiga/mr_audio.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_pcm_u8_check.c
+
+check: mr_decode mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check
+	./mr_pcm_u8_check
+	./mr_rawvideo_check
+	./mr_legacy_video_check
 	./mr_scale_check
 	./mr_c2p_check
 	./mr_ham_check
@@ -180,5 +197,8 @@ check-https: mr_decode_ssl
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_c2p_check mr_ham_check \
 	      mr_mpeg1_probe_check mr_ps_check
+	rm -f mr_legacy_video_check
+	rm -f mr_rawvideo_check
+	rm -f mr_pcm_u8_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean

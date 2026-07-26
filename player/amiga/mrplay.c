@@ -15,6 +15,7 @@
  */
 #include "../core/mr_demux.h"
 #include "../core/mr_codec.h"
+#include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
 #include "../audio/mr_audio_decode.h"
 #include "amiga_display.h"
@@ -235,6 +236,7 @@ int main(int argc, char **argv)
     long ticks;
     int frames = 0;
     int want_time = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
+    int raw_diag_printed = 0;
     unsigned long clock_base = 0;
     clock_t t_dec = 0, t_show = 0;
 
@@ -304,6 +306,12 @@ int main(int argc, char **argv)
     if (!codec) { printf("no decoder for this video codec\n");
                   mr_demux_close(dx); free(buf); return 10; }
 
+    if (want_time)
+        printf("video fourcc='%c%c%c%c'\n", (int)(vi->fourcc & 255),
+               (int)((vi->fourcc >> 8) & 255),
+               (int)((vi->fourcc >> 16) & 255),
+               (int)((vi->fourcc >> 24) & 255));
+
     if (mr_decoder_open_config(&dec, codec, vi->width, vi->height,
                                vi->config, vi->config_len) != MR_OK) {
         printf("decoder init failed\n");
@@ -330,6 +338,10 @@ int main(int argc, char **argv)
         const mr_audio_info *ai = mr_demux_audio(dx);
         if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM &&
             (ai->bits == 8 || ai->bits == 16)) {
+            if (want_time && ai->bits == 8)
+                printf("audio: PCM U8 %s %lu Hz\n",
+                       ai->channels == 1 ? "mono" : "stereo",
+                       (unsigned long)ai->sample_rate);
             audio = audio_open(ai->sample_rate, ai->channels, ai->bits);
             if (audio) printf("audio: Paula out, %lu Hz (src %u-bit %u ch)\n",
                               (unsigned long)ai->sample_rate,
@@ -383,6 +395,7 @@ int main(int argc, char **argv)
         if (mr_demux_next_packet(dx, &pkt) != MR_OK) {   /* end of stream    */
             if (loop) {
                 mr_demux_rewind(dx);
+                if (mr_decoder_reset(&dec) != MR_OK) break;
                 if (audio_dec) mr_audio_decoder_reset(audio_dec);
                 frames = 0;
                 clock_base = audio ? audio_elapsed_ms(audio) : 0;
@@ -402,6 +415,25 @@ int main(int argc, char **argv)
             continue;
         }
         if (pkt.len == 0) continue;
+        if (want_time && !raw_diag_printed &&
+            mr_rawvideo_is_uyvy422(vi->fourcc)) {
+            /* Query decoder-owned state, proving MOV config survived through
+             * mr_decoder_open_config rather than merely printing the demuxer. */
+            uint32_t stride = mr_rawvideo_source_stride(&dec);
+            uint32_t rows = (vi->height > 0 &&
+                             stride <= pkt.len / (uint32_t)vi->height)
+                          ? stride * (uint32_t)vi->height : pkt.len;
+            if (!strcmp(mr_demux_container_name(dx), "AVI"))
+                printf("raw UYVY422 AVI: %dx%d stride=%lu packet=%lu\n",
+                       vi->width, vi->height, (unsigned long)stride,
+                       (unsigned long)pkt.len);
+            else
+                printf("raw UYVY422: %dx%d, stride=%lu, packet=%lu, "
+                       "trailing=%lu\n", vi->width, vi->height,
+                       (unsigned long)stride, (unsigned long)pkt.len,
+                       (unsigned long)(rows <= pkt.len ? pkt.len - rows : 0));
+            raw_diag_printed = 1;
+        }
         {
             clock_t a = clock();
             mr_status ds = mr_decoder_decode(&dec, pkt.data, pkt.len);

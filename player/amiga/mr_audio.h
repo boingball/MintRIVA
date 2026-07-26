@@ -15,6 +15,12 @@
 
 typedef struct mr_audio mr_audio;
 
+/* RIFF/WAVE PCM with 8 bits per sample is unsigned, centred at 0x80. */
+static inline short audio_pcm_u8_to_s16(unsigned char sample)
+{
+    return (short)(((int)sample - 128) * 256);
+}
+
 /* Open Paula output for source PCM of this rate/channels/bits (8 or 16).
  * Returns NULL if unsupported or on failure. */
 mr_audio     *audio_open(unsigned rate, int channels, int bits);

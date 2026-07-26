@@ -2,6 +2,7 @@
  * MintRIVA - minimal AVI (RIFF) demuxer implementation.
  */
 #include "mr_avi.h"
+#include "mr_rawvideo.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -61,6 +62,28 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
                 /* BITMAPINFOHEADER */
                 a->video.width  = (int)mr_rl32(body + 4);
                 a->video.height = (int)mr_rl32(body + 8);
+                {
+                    uint16_t bits = mr_rl16(body + 14);
+                    uint32_t colors = mr_rl32(body + 32);
+                    uint32_t i;
+                    a->video_config[0] = (uint8_t)bits;
+                    a->video_config[1] = (uint8_t)(bits >> 8);
+                    a->video.config_len = 2;
+                    if (bits <= 8) {
+                        if (!colors) colors = 1u << bits;
+                        if (colors > 256) colors = 256;
+                        if (40u + colors * 4u <= size) {
+                            for (i = 0; i < colors; i++) {
+                                const uint8_t *q = body + 40 + i * 4;
+                                a->video_config[2 + i * 3] = q[2];
+                                a->video_config[3 + i * 3] = q[1];
+                                a->video_config[4 + i * 3] = q[0];
+                            }
+                            a->video.config_len += colors * 3;
+                        }
+                    }
+                    a->video.config = a->video_config;
+                }
                 /* Prefer a fourcc in biCompression, but keep fccHandler when
                  * biCompression is a numeric BI_* constant. */
                 {
@@ -68,6 +91,14 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
                     if (comp && (is_printable_fourcc(comp) ||
                                  !a->video.fourcc))
                         a->video.fourcc = comp;
+                }
+                if (mr_rawvideo_is_uyvy422(a->video.fourcc)) {
+                    uint32_t stride = mr_rawvideo_uyvy422_stride(a->video.width);
+                    a->video_config[0] = (uint8_t)stride;
+                    a->video_config[1] = (uint8_t)(stride >> 8);
+                    a->video_config[2] = (uint8_t)(stride >> 16);
+                    a->video_config[3] = (uint8_t)(stride >> 24);
+                    a->video.config_len = 4;
                 }
                 a->video.valid = 1;
             } else if (cur_type == CC_auds && size >= 16) {

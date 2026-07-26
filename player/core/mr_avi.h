@@ -29,6 +29,9 @@ typedef struct {
 
     mr_video_info  video;
     mr_audio_info  audio;
+    /* Decoder setup copied from BITMAPINFOHEADER: LE bit count followed by
+     * RGB palette triples.  Keeping it here also makes file-backed AVI safe. */
+    uint8_t        video_config[2 + 256 * 3];
 } mr_avi;
 
 mr_status mr_avi_open(mr_avi *a, const uint8_t *buf, size_t len);
