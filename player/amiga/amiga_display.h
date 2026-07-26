@@ -54,6 +54,10 @@ void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms);
 /* Most recent AGA frame's conversion and blit times (rather than totals). */
 void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms);
 
+/* Return non-zero when the opened AGA screen is using Kalms, optionally
+ * returning its accumulated conversion time. */
+int display_aga_kalms_timing(unsigned long *conversion_ms);
+
 /* Open a display able to show w*h frames: tries RTG (cybergraphics) first, then
  * falls back to AGA. Returns NULL only if neither works. */
 amiga_display *display_open(int w, int h, const char *title);

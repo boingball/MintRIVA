@@ -36,6 +36,7 @@
 
 /* Encode vs blit time, for mrplay --time. */
 static clock_t s_enc = 0, s_blit = 0, s_frame_enc = 0, s_frame_blit = 0;
+static int s_kalms_active = 0;
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms)
 {
     if (enc_ms)  *enc_ms  = (unsigned long)(s_enc  * 1000 / CLOCKS_PER_SEC);
@@ -45,6 +46,12 @@ void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms)
 {
     if (enc_ms)  *enc_ms  = (unsigned long)(s_frame_enc  * 1000 / CLOCKS_PER_SEC);
     if (blit_ms) *blit_ms = (unsigned long)(s_frame_blit * 1000 / CLOCKS_PER_SEC);
+}
+int display_aga_kalms_timing(unsigned long *conversion_ms)
+{
+    if (conversion_ms)
+        *conversion_ms = (unsigned long)(s_blit * 1000 / CLOCKS_PER_SEC);
+    return s_kalms_active;
 }
 
 typedef struct {
@@ -132,6 +139,7 @@ static void *aga_open(int w, int h, const char *title)
     ULONG modeid;
 
     s_enc = s_blit = s_frame_enc = s_frame_blit = 0;
+    s_kalms_active = 0;
 
     /*
      * AGA raster pixels are not square: HIRES doubles horizontal resolution
@@ -223,6 +231,7 @@ static void *aga_open(int w, int h, const char *title)
              * d0/d1/d3/d5. Geometry is immutable for this screen, so the
              * self-modifying initialiser is called exactly once here. */
             c2p1x1_8_c5_030_smcinit(s->pw, s->dh, s->y0, spacing);
+            s_kalms_active = 1;
         } else {
             s->use_kalms_c2p = 0;
             /* An incompatible planar allocation must never reach Kalms: use
@@ -233,10 +242,10 @@ static void *aga_open(int w, int h, const char *title)
             s->temprp.BitMap = s->tempbm;
         }
         if (g_aga_time) {
-            printf("AGA C2P backend: Kalms c2p1x1_8_c5_030\n");
-            printf("Kalms plane layout: %s\n", compatible ? "compatible" : "incompatible");
-            if (!compatible)
-                printf("Kalms fallback: WPA (planes are not eight equally spaced contiguous planes, row length differs, or bplsize exceeds 16 KiB)\n");
+            if (compatible)
+                printf("AGA C2P backend: Kalms c2p1x1_8_c5_030 (plane layout compatible)\n");
+            else
+                printf("AGA C2P backend: WPA (Kalms plane layout incompatible: planes are not eight equally spaced contiguous planes, row length differs, or bplsize exceeds 16 KiB)\n");
         }
     }
 
@@ -261,6 +270,7 @@ static void *aga_open(int w, int h, const char *title)
     return s;
 
 fail:
+    s_kalms_active = 0;
     if (s->enc) free(s->enc);
     if (s->scaled) free(s->scaled);
     if (s->chunky) free(s->chunky);
@@ -347,10 +357,9 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                          (UWORD)(s->x0 + dw - 1), (UWORD)(s->y0 + ddy0 + ddh - 1),
                          (UBYTE *)crow, &s->temprp);
     }
+    /* Kalms is timed and accumulated by the same counters as every other AGA
+     * blit backend. Keep diagnostics out of this frame-rendering hot path. */
     s_frame_blit = clock() - a; s_blit += s_frame_blit; }
-    if (s->use_kalms_c2p && g_aga_time)
-        printf("Kalms conversion: %lu ms\n",
-               (unsigned long)(s_frame_blit * 1000 / CLOCKS_PER_SEC));
 }
 
 static int aga_poll(void *handle)
@@ -384,6 +393,7 @@ static void aga_close(void *handle)
     if (s->tempbm) FreeBitMap(s->tempbm);
     if (s->win) CloseWindow(s->win);
     if (s->scr) CloseScreen(s->scr);
+    s_kalms_active = 0;
     free(s);
 }
 

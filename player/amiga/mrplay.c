@@ -182,7 +182,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                            fr.dirty_y0, fr.dirty_y1);
           t_show += clock() - a; }
         frames++;
-        if (want_time) {
+        if (want_time && !display_aga_kalms_timing(NULL)) {
             unsigned long e = 0, bl = 0;
             display_aga_frame_timing(&e, &bl);
             printf("frame/%d: conversion=%lu ms, blit=%lu ms\n", frames, e, bl);
@@ -196,6 +196,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         printf("timing/%d frames: decode=%lu ms, display=%lu ms (encode=%lu, blit=%lu)\n",
                frames, (unsigned long)(t_dec * 1000 / CLOCKS_PER_SEC),
                (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC), e, bl);
+        if (display_aga_kalms_timing(&bl))
+            printf("Kalms conversion: %lu ms\n", bl);
     }
     if (audio) {
         int g = 0;
@@ -480,7 +482,7 @@ int main(int argc, char **argv)
                          dec.frame.dirty_y0, dec.frame.dirty_y1);
         t_show += clock() - a;
         frames++;
-        if (want_time) {
+        if (want_time && !display_aga_kalms_timing(NULL)) {
             unsigned long enc_ms = 0, blit_ms = 0;
             display_aga_frame_timing(&enc_ms, &blit_ms);
             printf("frame/%d: conversion=%lu ms, blit=%lu ms\n",
@@ -496,6 +498,8 @@ int main(int argc, char **argv)
                (unsigned long)(t_dec  * 1000 / CLOCKS_PER_SEC),
                (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC),
                enc_ms, blit_ms);
+        if (display_aga_kalms_timing(&blit_ms))
+            printf("Kalms conversion: %lu ms\n", blit_ms);
     }
     /* Let any queued audio drain (bounded, so a wedged clock can't loop). */
     if (audio) {

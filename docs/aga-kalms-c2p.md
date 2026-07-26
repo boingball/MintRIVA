@@ -18,6 +18,10 @@ falls back to `WritePixelArray8`; `--time` prints the layout result and reason.
 This deliberately avoids assumptions about how graphics.library allocated the
 planes.
 
+For a compatible layout, `--time` prints the backend selection once when the
+screen opens and one accumulated `Kalms conversion: ... ms` result after
+playback. No diagnostics are emitted from the frame-rendering hot path.
+
 ## Attribution and licence
 
 The converter is from **Mikael Kalms' C2P collection**. Kalms' upstream
