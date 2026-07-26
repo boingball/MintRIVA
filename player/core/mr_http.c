@@ -1316,3 +1316,65 @@ mr_source *mr_http_source_open(const char *url)
                               http_read_at, http_close, h->url);
     return source;
 }
+
+int mr_http_download_file(const char *url, const char *path, size_t max_size)
+{
+    http_source *h;
+    FILE *file = NULL;
+    unsigned char buffer[16384];
+    size_t total = 0;
+    int ok = 0;
+    if (!url || !*url || strlen(url) >= HTTP_URL_MAX || !path || !*path ||
+        !max_size) {
+        mr_source_set_error("invalid HTTP download arguments");
+        return 0;
+    }
+    h = (http_source *)calloc(1, sizeof *h);
+    if (!h) {
+        mr_source_set_error("not enough memory for HTTP download");
+        return 0;
+    }
+    h->sock = -1;
+    memcpy(h->url, url, strlen(url) + 1);
+    if (!platform_open(h) || !begin_response(h, 0)) goto done;
+    file = fopen(path, "wb");
+    if (!file) {
+        mr_source_set_error("cannot create HTTP download file");
+        goto done;
+    }
+    for (;;) {
+        size_t want = sizeof buffer;
+        int n;
+        if (total >= max_size) want = 1;
+        else if (want > max_size - total) want = max_size - total;
+        n = copy_response_bytes(h, buffer, want);
+        if (n <= 0) break;
+        if (total >= max_size || (size_t)n > max_size - total) {
+            mr_source_set_error("HTTP download exceeds size limit");
+            goto done;
+        }
+        if (fwrite(buffer, 1, (size_t)n, file) != (size_t)n) {
+            mr_source_set_error("cannot write HTTP download file");
+            goto done;
+        }
+        total += (size_t)n;
+    }
+    if (!total || (h->response_left_known && h->response_left) ||
+        (!h->response_left_known && h->chunked && !h->chunk_done)) {
+        mr_source_set_error("HTTP download ended before response completed");
+        goto done;
+    }
+    if (fclose(file) != 0) {
+        file = NULL;
+        mr_source_set_error("cannot finish HTTP download file");
+        goto done;
+    }
+    file = NULL;
+    ok = 1;
+done:
+    if (file) fclose(file);
+    platform_close(h);
+    free(h);
+    if (!ok) remove(path);
+    return ok;
+}

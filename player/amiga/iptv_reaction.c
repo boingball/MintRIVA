@@ -3,6 +3,7 @@
  * Keeping this in a second process gives directory parsing its own event loop;
  * selected URLs are still played by the normal mrplay executable.
  */
+#include "../core/mr_http.h"
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 
@@ -166,42 +167,7 @@ static int cache_is_fresh(void) {
 }
 
 static int download_file(const char *url, const char *path) {
-  mr_source *source;
-  FILE *file;
-  unsigned char buffer[16384];
-  size_t length, offset, count;
-  source = mr_http_source_open(url);
-  if (!source)
-    return 0;
-  length = mr_source_length(source);
-  if (!length || length == MR_SOURCE_LEN_UNKNOWN || length > IPTV_FILE_MAX) {
-    mr_source_close(source);
-    return 0;
-  }
-  file = fopen(path, "wb");
-  if (!file) {
-    mr_source_close(source);
-    return 0;
-  }
-  for (offset = 0; offset < length; offset += count) {
-    count = length - offset;
-    if (count > sizeof(buffer))
-      count = sizeof(buffer);
-    if (!mr_source_read_at(source, offset, buffer, count) ||
-        fwrite(buffer, 1, count, file) != count) {
-      fclose(file);
-      remove(path);
-      mr_source_close(source);
-      return 0;
-    }
-  }
-  if (fclose(file) != 0) {
-    remove(path);
-    mr_source_close(source);
-    return 0;
-  }
-  mr_source_close(source);
-  return 1;
+  return mr_http_download_file(url, path, IPTV_FILE_MAX);
 }
 
 static int refresh_cache(void) {

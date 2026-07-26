@@ -193,3 +193,6 @@ stream JSON after 24 hours. It downloads through the shared HTTP/AmiSSL source
 into bounded `.tmp` files, parses both files before installation, and keeps
 `.old` files until both renames succeed so an interrupted or malformed refresh
 cannot destroy the last usable directory.
+The complete-response helper in `mr_http.c` accepts both Content-Length and
+chunked/length-less responses, which avoids treating GitHub Pages' transfer
+framing as a cache failure.

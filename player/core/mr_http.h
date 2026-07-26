@@ -23,6 +23,10 @@
 
 mr_source *mr_http_source_open(const char *url);
 
+/* Download a complete response to a file using the shared redirect, TLS,
+ * timeout and chunk decoder. The destination is removed on failure. */
+int mr_http_download_file(const char *url, const char *path, size_t max_size);
+
 /* Resolve a possibly-relative URL (an HLS variant/segment) against a base URL.
  * Handles absolute, scheme-relative (//host), root-relative (/path) and
  * directory-relative forms. Returns 1 on success. */
