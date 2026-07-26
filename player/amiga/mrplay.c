@@ -383,6 +383,7 @@ int main(int argc, char **argv)
         if (mr_demux_next_packet(dx, &pkt) != MR_OK) {   /* end of stream    */
             if (loop) {
                 mr_demux_rewind(dx);
+                if (mr_decoder_reset(&dec) != MR_OK) break;
                 if (audio_dec) mr_audio_decoder_reset(audio_dec);
                 frames = 0;
                 clock_base = audio ? audio_elapsed_ms(audio) : 0;

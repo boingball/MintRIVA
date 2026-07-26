@@ -96,6 +96,9 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 - [x] File-backed AVI/MOV packet streaming: metadata + one compressed packet
       in RAM instead of loading the complete media file
 - [x] Cinepak decoder, ffmpeg-validated on AVI + MOV (`mr_cinepak.c`)
+- [x] Microsoft Video 1 (MSVC/CRAM, plus compatible WHAM) in AVI
+- [x] Microsoft RLE8 palettised AVI (BI_RLE4 is the next extension and remains
+      explicitly unsupported rather than partially decoded)
 - [x] Amiga (m68k) build + verified decoding on real hardware
 - [x] `mrplay`: RTG window output via cybergraphics WritePixelArray
       (`player/amiga/`) - **video playing on real hardware**

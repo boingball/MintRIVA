@@ -9,6 +9,8 @@ static const mr_codec *const g_codecs[] = {
     &mr_codec_mpeg2,
     &mr_codec_mpeg4,
     &mr_codec_msmpeg4v2,
+    &mr_codec_msvideo1,
+    &mr_codec_rle,
 #ifdef MR_HAVE_H264
     &mr_codec_h264,
 #endif
@@ -61,6 +63,19 @@ mr_status mr_decoder_flush(mr_decoder *dec)
     if (!dec || !dec->codec || !dec->codec->flush)
         return MR_EAGAIN;
     return dec->codec->flush(dec);
+}
+
+mr_status mr_decoder_reset(mr_decoder *dec)
+{
+    const mr_codec *codec;
+    int width, height;
+    const uint8_t *config;
+    uint32_t config_len;
+    if (!dec || !dec->codec) return MR_ERR;
+    codec = dec->codec; width = dec->width; height = dec->height;
+    config = dec->config; config_len = dec->config_len;
+    if (codec->close) codec->close(dec);
+    return mr_decoder_open_config(dec, codec, width, height, config, config_len);
 }
 
 void mr_decoder_close(mr_decoder *dec)
