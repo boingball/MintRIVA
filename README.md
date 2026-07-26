@@ -29,6 +29,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | MPEG-TS/M2TS MPEG-1/2 or H.264 + ADTS AAC | ✅ 188/192-byte packets; ffmpeg-validated |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
+| Separate ReAction controller (`mrgui`) | ✅ file picker, mode/options and transport controls |
 | PCM / MP2 / MP3 / AAC-LC audio to Paula | ✅ host-validated; hardware test pending for MP3/AAC |
 
 ## Building & testing the portable core (dev host)
@@ -82,6 +83,21 @@ For compatibility with typical classic Amiga AmiSSL installations, that mode
 uses TLS and SNI but does not verify the server certificate by default. Build
 with `SSL=1 SSLCERTS=1` to enable the default CA roots and hostname
 verification.
+
+## ReAction controller
+
+The Amiga build also creates `mrgui`, a separate Workbench-friendly controller
+in the style of MintAMP's ReAction interface. Keep `mrgui` and `mrplay` in the
+same directory (or put `mrplay` on the command path), run `mrgui`, choose a
+movie and select **AGA**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
+apply to the three chipset modes; CGX playback opens a size-gadget window and
+scales the video as that window is resized. Play starts the selected movie,
+Pause toggles playback, Stop exits it, and Fast forward toggles unpaced decode.
+
+The controller's file gadget identifies the selected file. On launch, `mrplay`
+also reports the container type, video codec/FourCC, dimensions, frame rate and
+audio format to its console, which is useful metadata when testing unfamiliar
+files.
 
 URL input currently means a finite, directly addressable media file: the
 server must supply `Content-Length` or `Content-Range`, and must honour byte

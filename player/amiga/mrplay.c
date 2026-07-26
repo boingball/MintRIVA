@@ -21,6 +21,7 @@
 #include "mr_audio.h"
 
 #include <proto/dos.h>
+#include <proto/exec.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,6 +67,25 @@ static void decoded_audio_sink(void *user, const int16_t *pcm,
                     (int)channels);
 }
 
+/* The separate ReAction controller uses the standard break signals, which
+ * avoids a resident broker or a custom public-port ABI. Shell Ctrl-C remains
+ * stop; Ctrl-D toggles pause and Ctrl-E requests a forward seek. */
+static int control_signal_event(void)
+{
+    ULONG sig = SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D |
+                             SIGBREAKF_CTRL_E);
+    if (sig & SIGBREAKF_CTRL_C) return MR_EV_QUIT;
+    if (sig & SIGBREAKF_CTRL_D) return MR_EV_PAUSE;
+    if (sig & SIGBREAKF_CTRL_E) return MR_EV_SEEK_FWD;
+    return MR_EV_NONE;
+}
+
+static int player_event(amiga_display *disp)
+{
+    int ev = control_signal_event();
+    return ev != MR_EV_NONE ? ev : display_poll_event(disp);
+}
+
 /* MPEG-1 program streams (.mpg/.mpeg) play through pl_mpeg (video + MP2 audio),
  * reusing the display and Paula audio backends. Separate from the AVI/MOV +
  * codec path because .mpg is a self-contained stream. */
@@ -75,7 +95,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     amiga_display *disp;
     mr_audio      *audio = NULL;
     unsigned       sr;
-    int            w, h, frames = 0, paused = 0, quit = 0;
+    int            w, h, frames = 0, paused = 0, quit = 0, fast_forward = 0;
     unsigned long  period, clock_base = 0;
     long           ntick;
     unsigned char *abuf;                         /* heap, not stack (4.6 KB)  */
@@ -111,7 +131,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     while (!quit) {
         int got;
         while (paused && !quit) {
-            int ev = display_poll_event(disp);
+            int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1; else if (ev == MR_EV_PAUSE) paused = 0;
             Delay(2);
         }
@@ -137,18 +157,22 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         if (audio) {                             /* pace to the audio clock   */
             unsigned long target = clock_base + (unsigned long)frames * period;
             for (;;) {
-                int ev = display_poll_event(disp);
+                int ev = player_event(disp);
                 if (ev == MR_EV_QUIT)  { quit = 1; break; }
                 if (ev == MR_EV_PAUSE) { paused = 1; break; }
+                if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
                 audio_service(audio);
+                if (fast_forward) break;
                 if (audio_elapsed_ms(audio) >= target) break;
                 if (audio_starved(audio)) break;
                 Delay(1);
             }
         } else {
-            int ev = display_poll_event(disp);
-            if (ev == MR_EV_QUIT) quit = 1; else if (ev == MR_EV_PAUSE) paused = 1;
-            Delay(ntick);
+            int ev = player_event(disp);
+            if (ev == MR_EV_QUIT) quit = 1;
+            else if (ev == MR_EV_PAUSE) paused = 1;
+            else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
+            if (!fast_forward) Delay(ntick);
         }
         if (quit) break;
 
@@ -170,7 +194,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     if (audio) {
         int g = 0;
         while (!audio_starved(audio) && g++ < 4000) {
-            if (display_poll_event(disp) == MR_EV_QUIT) {
+            if (player_event(disp) == MR_EV_QUIT) {
                 quit = 1;
                 break;
             }
@@ -181,7 +205,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     if (!quit) {
         printf("played %d frames - press ESC or close the window to exit\n",
                frames);
-        while (display_poll_event(disp) != MR_EV_QUIT) {
+        while (player_event(disp) != MR_EV_QUIT) {
             if (audio) audio_service(audio);
             Delay(2);
         }
@@ -207,7 +231,7 @@ int main(int argc, char **argv)
     mr_packet pkt;
     long ticks;
     int frames = 0;
-    int want_time = 0, loop = 0, paused = 0, quit = 0;
+    int want_time = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
     unsigned long clock_base = 0;
     clock_t t_dec = 0, t_show = 0;
 
@@ -280,6 +304,14 @@ int main(int argc, char **argv)
         mr_demux_close(dx); free(buf); return 10;
     }
 
+    printf("media: file=%s, container=%s, video=%s (%c%c%c%c), "
+           "%dx%d, %lu.%03lu fps\n", argv[1], mr_demux_container_name(dx),
+           codec->name, (int)(vi->fourcc & 255), (int)((vi->fourcc >> 8) & 255),
+           (int)((vi->fourcc >> 16) & 255), (int)((vi->fourcc >> 24) & 255),
+           vi->width, vi->height,
+           (unsigned long)(vi->rate / (vi->scale ? vi->scale : 1)),
+           (unsigned long)(((vi->rate % (vi->scale ? vi->scale : 1)) * 1000) /
+                           (vi->scale ? vi->scale : 1)));
     printf("%dx%d, opening display...\n", vi->width, vi->height);
     disp = display_open(vi->width, vi->height, "MintRIVA");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
@@ -335,7 +367,7 @@ int main(int argc, char **argv)
     while (!quit) {
         /* Frozen while paused: keep taking input, do no work. */
         while (paused && !quit) {
-            int ev = display_poll_event(disp);
+            int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
             else if (ev == MR_EV_PAUSE) paused = 0;
             Delay(2);
@@ -378,19 +410,22 @@ int main(int argc, char **argv)
         if (audio) {
             unsigned long target = clock_base + (unsigned long)frames * period;
             for (;;) {
-                int ev = display_poll_event(disp);
+                int ev = player_event(disp);
                 if (ev == MR_EV_QUIT)  { quit = 1; break; }
                 if (ev == MR_EV_PAUSE) { paused = 1; break; }
+                if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
                 audio_service(audio);
+                if (fast_forward) break;
                 if (audio_elapsed_ms(audio) >= target) break;
                 if (audio_starved(audio)) break;
                 Delay(1);
             }
         } else {
-            int ev = display_poll_event(disp);
+            int ev = player_event(disp);
             if (ev == MR_EV_QUIT)  quit = 1;
             else if (ev == MR_EV_PAUSE) paused = 1;
-            Delay(ticks);
+            else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
+            if (!fast_forward) Delay(ticks);
         }
         if (quit) break;
 
@@ -418,13 +453,13 @@ int main(int argc, char **argv)
             unsigned long target = clock_base + (unsigned long)frames * period;
             while (audio_elapsed_ms(audio) < target &&
                    !audio_starved(audio)) {
-                int ev = display_poll_event(disp);
+                int ev = player_event(disp);
                 if (ev == MR_EV_QUIT) { quit = 1; break; }
                 audio_service(audio);
                 Delay(1);
             }
         } else {
-            int ev = display_poll_event(disp);
+            int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
             Delay(ticks);
         }
@@ -451,7 +486,7 @@ int main(int argc, char **argv)
     if (audio) {
         int guard = 0;
         while (!audio_starved(audio) && guard++ < 4000) {
-            if (display_poll_event(disp) == MR_EV_QUIT) {
+            if (player_event(disp) == MR_EV_QUIT) {
                 quit = 1;
                 break;
             }
@@ -463,7 +498,7 @@ int main(int argc, char **argv)
     if (!quit) {
         printf("played %d frames - press ESC or close the window to exit\n",
                frames);
-        while (display_poll_event(disp) != MR_EV_QUIT) {
+        while (player_event(disp) != MR_EV_QUIT) {
             if (audio) audio_service(audio);
             Delay(2);
         }

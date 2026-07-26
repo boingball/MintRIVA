@@ -2,6 +2,7 @@
 #
 # Two programs:
 #   mrplay    - the player: opens an RTG window and plays an AVI/MOV clip.
+#   mrgui     - separate ReAction controller for mrplay.
 #   mr_decode - decoder test harness: dumps frames to PPM (no display), used to
 #               verify decoding on real hardware.
 #
@@ -57,6 +58,7 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
 HARN  = tests/mr_decode.c
 PLAY  = amiga/mrplay.c amiga/display.c amiga/display_cgx.c \
         amiga/display_aga.c amiga/audio_paula.c audio/mr_audio_decode.c
+GUI   = amiga/mrgui.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
               $(wildcard $(MINTAMP_ROOT)/real/*.c)
@@ -93,7 +95,7 @@ CFLAGS  = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra \
           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 LDFLAGS = -noixemul -lgcc
 
-all: mrplay mr_decode
+all: mrplay mrgui mr_decode
 
 check-cc:
 	@test -n "$(CC)" && test -x "$(CC)" || { \
@@ -106,6 +108,9 @@ check-cc:
 mrplay: check-cc check-mintamp $(PLAY) $(CORE) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ $(PLAY) $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LDFLAGS)
+
+mrgui: check-cc $(GUI)
+	$(CC) $(CFLAGS) -o $@ $(GUI) -lauto $(LDFLAGS)
 
 check-mintamp:
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
@@ -134,6 +139,6 @@ mr_decode: $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f mrplay mr_decode
+	rm -f mrplay mrgui mr_decode
 
 .PHONY: all clean check-cc check-mintamp check-libavc
