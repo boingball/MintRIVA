@@ -416,8 +416,10 @@ const char *mr_audio_decoder_name(const mr_audio_decoder *d)
 {
     if (!d) return "none";
     return d->kind == AUDIO_KIND_PCM
-             ? (d->pcm_info.bits_per_sample == 8 ? "PCM U8" :
-                d->pcm_info.bits_per_sample == 16 ? "PCM S16LE" :
+             ? (d->pcm_info.bits_per_sample == 8
+                    ? (d->pcm_info.pcm_signed ? "PCM S8" : "PCM U8") :
+                d->pcm_info.bits_per_sample == 16
+                    ? (d->pcm_info.pcm_big_endian ? "PCM S16BE" : "PCM S16LE") :
                 d->pcm_info.bits_per_sample == 24 ? "PCM S24LE" : "PCM S32LE")
          : d->kind == AUDIO_KIND_MP3 ? "MP3"
          : d->kind == AUDIO_KIND_MP2 ? "MP2"

@@ -104,10 +104,15 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
             } else if (cur_type == CC_auds && size >= 16) {
                 /* WAVEFORMATEX */
                 a->audio.format_tag  = mr_rl16(body + 0);
+                a->audio.codec_tag   = a->audio.format_tag;
                 a->audio.channels    = mr_rl16(body + 2);
                 a->audio.sample_rate = mr_rl32(body + 4);
                 a->audio.block_align = mr_rl16(body + 12);
                 a->audio.bits_per_sample = mr_rl16(body + 14);
+                /* WAVE_FORMAT_PCM defines 8-bit samples as offset binary;
+                 * wider integer PCM is signed and little-endian. */
+                a->audio.pcm_signed = a->audio.bits_per_sample != 8;
+                a->audio.pcm_big_endian = 0;
                 a->audio.valid = 1;
             }
         }

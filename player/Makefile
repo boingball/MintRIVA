@@ -121,6 +121,8 @@ mr_pcm_u8_check: tests/mr_pcm_u8_check.c audio/mr_pcm.c audio/mr_pcm.h \
 check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check
 	./mr_codec_registry_check
 	./mr_pcm_u8_check
+	./mr_decode ../testfiles/mov+cinepak+pcm_s8++grosspnt.mov 2>&1 \
+	    | grep -F "audio: PCM S8 mono 11025 Hz (twos)"
 	./mr_rawvideo_check
 	./mr_legacy_video_check
 	./mr_scale_check
