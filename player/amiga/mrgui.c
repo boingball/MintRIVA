@@ -119,13 +119,13 @@ int main(void)
 
     file = GetFileObject, GA_ID, G_FILE, GA_RelVerify, TRUE,
         GETFILE_TitleText, (ULONG)"Choose a video", GETFILE_ReadOnly, TRUE,
-        GETFILE_DrawersOnly, FALSE, End;
+        GETFILE_DrawersOnly, FALSE, GetFileEnd;
     mode = ChooserObject, GA_ID, G_MODE, GA_RelVerify, TRUE,
-        CHOOSER_Labels, (ULONG)&modes, CHOOSER_Selected, 3, End;
-    lace = CheckBoxObject, GA_ID, G_LACE, GA_Text, (ULONG)"Laced", End;
-    twox = CheckBoxObject, GA_ID, G_2X, GA_Text, (ULONG)"2x", End;
+        CHOOSER_Labels, (ULONG)&modes, CHOOSER_Selected, 3, ChooserEnd;
+    lace = CheckBoxObject, GA_ID, G_LACE, GA_Text, (ULONG)"Laced", CheckBoxEnd;
+    twox = CheckBoxObject, GA_ID, G_2X, GA_Text, (ULONG)"2x", CheckBoxEnd;
     info = StringObject, GA_ReadOnly, TRUE,
-        STRINGA_TextVal, (ULONG)"No file selected", End;
+        STRINGA_TextVal, (ULONG)"No file selected", StringEnd;
 
     wo = WindowObject,
         WA_Title, (ULONG)"MintRIVA Control",
@@ -133,26 +133,26 @@ int main(void)
         WINDOW_Position, WPOS_CENTERSCREEN,
         WINDOW_Layout, VLayoutObject,
             LAYOUT_AddChild, file,
-            CHILD_Label, LabelObject, LABEL_Text, (ULONG)"File", End,
+            CHILD_Label, LabelObject, LABEL_Text, (ULONG)"File", LabelEnd,
             LAYOUT_AddChild, HLayoutObject,
                 LAYOUT_AddChild, mode,
-                CHILD_Label, LabelObject, LABEL_Text, (ULONG)"Display", End,
+                CHILD_Label, LabelObject, LABEL_Text, (ULONG)"Display", LabelEnd,
                 LAYOUT_AddChild, lace,
                 LAYOUT_AddChild, twox,
-            End,
+            LayoutEnd,
             LAYOUT_AddChild, HLayoutObject,
                 LAYOUT_AddChild, ButtonObject, GA_ID, G_PLAY,
-                    GA_Text, (ULONG)"Play", GA_RelVerify, TRUE, End,
+                    GA_Text, (ULONG)"Play", GA_RelVerify, TRUE, ButtonEnd,
                 LAYOUT_AddChild, ButtonObject, GA_ID, G_PAUSE,
-                    GA_Text, (ULONG)"Pause", GA_RelVerify, TRUE, End,
+                    GA_Text, (ULONG)"Pause", GA_RelVerify, TRUE, ButtonEnd,
                 LAYOUT_AddChild, ButtonObject, GA_ID, G_STOP,
-                    GA_Text, (ULONG)"Stop", GA_RelVerify, TRUE, End,
+                    GA_Text, (ULONG)"Stop", GA_RelVerify, TRUE, ButtonEnd,
                 LAYOUT_AddChild, ButtonObject, GA_ID, G_FF,
-                    GA_Text, (ULONG)"Fast forward", GA_RelVerify, TRUE, End,
-            End,
+                    GA_Text, (ULONG)"Fast forward", GA_RelVerify, TRUE, ButtonEnd,
+            LayoutEnd,
             LAYOUT_AddChild, info,
-        End,
-    End;
+        LayoutEnd,
+    WindowEnd;
     if (!wo || !(w = (struct Window *)RA_OpenWindow(wo))) {
         if (wo) DisposeObject(wo);
         FreeChooserNodes(&modes);
