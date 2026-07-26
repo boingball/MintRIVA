@@ -4,16 +4,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int parse_generated(mr_iptv_directory *directory, size_t count) {
-  size_t capacity = count * 40 + 2, used = 1, i;
+static int parse_generated(mr_iptv_directory *directory, size_t count,
+                           size_t excluded_prefix) {
+  size_t capacity = count * 64 + 2, used = 1, i;
   char *json = (char *)malloc(capacity);
   int result;
   assert(json);
   json[0] = '[';
   for (i = 0; i < count; i++)
-    used += (size_t)snprintf(json + used, capacity - used,
-                             "%s{\"id\":\"C%lu\",\"name\":\"N\"}", i ? "," : "",
-                             (unsigned long)i);
+    used += (size_t)snprintf(
+        json + used, capacity - used,
+        "%s{\"id\":\"C%lu\",\"name\":\"N\",\"is_nsfw\":%s}", i ? "," : "",
+        (unsigned long)i, i < excluded_prefix ? "true" : "false");
   json[used++] = ']';
   result = mr_iptv_parse_channels(directory, json, used);
   free(json);
@@ -63,8 +65,9 @@ int main(void) {
       "\"http_referrer\":null,\"user_agent\":null}]\t";
   mr_iptv_init(&d);
   assert(mr_iptv_parse_channels(&d, c, strlen(c)));
-  assert(d.channel_count == 6);
+  assert(d.channel_count == 4);
   assert(mr_iptv_join_streams(&d, s, strlen(s)));
+  assert(d.channel_count == 2);
   assert(d.channels[0].stream_count == 2);
   assert(d.channels[1].stream_count == 1);
   assert(!strcmp(d.channels[1].name, "Fun ?"));
@@ -76,7 +79,7 @@ int main(void) {
   f.search = "net";
   assert(mr_iptv_filter_channels(&d, &f, ids, 8) == 1);
   assert(!mr_iptv_parse_channels(&d, "[{", 2));
-  assert(d.channel_count == 6);
+  assert(d.channel_count == 2);
   assert(!mr_iptv_join_streams(&d, "[", 1));
   mr_iptv_free(&d);
   mr_iptv_init(&d);
@@ -122,16 +125,21 @@ int main(void) {
       &d, "[{\"channel\":\"Example.uk\",\"url\":none}]",
       sizeof("[{\"channel\":\"Example.uk\",\"url\":none}]") - 1));
   assert(strstr(mr_iptv_last_error(), "field url"));
-  assert(parse_generated(&d, 8191) && d.channel_count == 8191);
-  assert(parse_generated(&d, 8192) && d.channel_count == 8192);
-  assert(parse_generated(&d, 8193) && d.channel_count == 8193);
+  assert(parse_generated(&d, 8191, 0) && d.channel_count == 8191);
+  assert(parse_generated(&d, 8192, 0) && d.channel_count == 8192);
+  assert(parse_generated(&d, 8193, 0) && d.channel_count == 8193);
   assert(d.channel_capacity == 16384);
-  assert(parse_generated(&d, 16384) && d.channel_count == 16384);
-  assert(parse_generated(&d, 20000) && d.channel_count == 20000);
-  assert(!parse_generated(&d, 20001));
-  assert(strstr(mr_iptv_last_error(), "channel limit reached"));
-  assert(!strstr(mr_iptv_last_error(), "expected valid JSON"));
+  assert(parse_generated(&d, 16384, 0) && d.channel_count == 16384);
+  assert(parse_generated(&d, 19999, 0) && d.channel_count == 19999);
+  assert(parse_generated(&d, 20000, 0) && d.channel_count == 20000);
+  assert(parse_generated(&d, 20001, 0));
   assert(d.channel_count == 20000);
+  assert(d.parsed_channel_count == 20001 && d.skipped_channel_count == 1);
+  assert(parse_generated(&d, 25000, 0));
+  assert(d.channel_count == 20000 && d.skipped_channel_count == 5000);
+  assert(parse_generated(&d, 20100, 100));
+  assert(d.channel_count == 20000 && d.skipped_channel_count == 100);
+  assert(!strcmp(d.channels[19999].id, "C20099"));
   mr_iptv_free(&d);
   puts("IPTV parser/filter checks passed");
   return 0;

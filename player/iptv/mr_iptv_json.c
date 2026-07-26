@@ -10,7 +10,8 @@
 #endif
 
 #define JSON_MAX_DEPTH 24
-#define IPTV_MAX_CHANNELS 20000
+#define IPTV_MAX_JSON_CHANNEL_OBJECTS 100000
+#define IPTV_MAX_RETAINED_CHANNELS 20000
 #define IPTV_MAX_STREAMS 30000
 typedef struct {
   const char *start, *p, *end;
@@ -263,11 +264,11 @@ static int grow_channels(mr_iptv_directory *d, size_t *requested) {
   void *new_channels;
   if (d->channel_count < d->channel_capacity)
     return 1;
-  if (d->channel_capacity >= IPTV_MAX_CHANNELS)
+  if (d->channel_capacity >= IPTV_MAX_RETAINED_CHANNELS)
     return 0;
   new_capacity = d->channel_capacity ? d->channel_capacity * 2 : 64;
-  if (new_capacity > IPTV_MAX_CHANNELS)
-    new_capacity = IPTV_MAX_CHANNELS;
+  if (new_capacity > IPTV_MAX_RETAINED_CHANNELS)
+    new_capacity = IPTV_MAX_RETAINED_CHANNELS;
   if (new_capacity <= d->channel_capacity ||
       new_capacity > ((size_t)-1) / sizeof(*d->channels))
     return 0;
@@ -375,15 +376,23 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
       goto fail;
     }
     j.p++;
-    if (c.id[0] && c.name[0]) {
-      if (d.channel_count == d.channel_capacity) {
-        size_t requested = d.channel_capacity;
-        if (!grow_channels(&d, &requested)) {
-          if (d.channel_capacity >= IPTV_MAX_CHANNELS)
-            snprintf(last_error, sizeof(last_error),
-                     "channels.json: channel limit reached at %lu entries",
-                     (unsigned long)d.channel_count);
-          else {
+    d.parsed_channel_count++;
+    if (d.parsed_channel_count > IPTV_MAX_JSON_CHANNEL_OBJECTS) {
+      snprintf(last_error, sizeof(last_error),
+               "channels.json: JSON object safety limit reached at %lu entries",
+               (unsigned long)d.parsed_channel_count);
+      goto fail;
+    }
+    if (c.id[0] && c.name[0] && !c.is_nsfw && !c.closed && !c.replaced) {
+      if (d.channel_count >= IPTV_MAX_RETAINED_CHANNELS) {
+        d.skipped_channel_count++;
+        free(c.alt_names);
+        free(c.categories);
+        c_active = 0;
+      } else {
+        if (d.channel_count == d.channel_capacity) {
+          size_t requested = d.channel_capacity;
+          if (!grow_channels(&d, &requested)) {
             fprintf(stderr, "IPTV: growing channels %lu -> %lu\n",
                     (unsigned long)d.channel_capacity,
                     (unsigned long)requested);
@@ -400,13 +409,14 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
                      "entries (requested %lu bytes)",
                      (unsigned long)d.channel_capacity,
                      (unsigned long)(requested * sizeof(*d.channels)));
+            goto fail;
           }
-          goto fail;
         }
+        d.channels[d.channel_count++] = c;
+        c_active = 0;
       }
-      d.channels[d.channel_count++] = c;
-      c_active = 0;
     } else {
+      d.skipped_channel_count++;
       free(c.alt_names);
       free(c.categories);
       c_active = 0;
@@ -467,7 +477,7 @@ static int add_stream(mr_iptv_channel *channel, const mr_iptv_stream *stream) {
 int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
   parser j = {data, data, data + len, "streams.json", NULL, {0}, 1, 0};
   pending *all = NULL;
-  size_t n = 0, cap = 0, i, k;
+  size_t n = 0, cap = 0, i, k, parsed_streams = 0, retained = 0;
   last_error[0] = 0;
   ws(&j);
   if (j.p == j.end || *j.p != '[') {
@@ -485,6 +495,7 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
       goto fail;
     }
     j.p++;
+    parsed_streams++;
     ws(&j);
     while (j.p < j.end && *j.p != '}') {
       char key[40];
@@ -587,7 +598,26 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
         goto fail;
       }
     }
+    if (!c->stream_count) {
+      free(c->alt_names);
+      free(c->categories);
+      free(c->streams);
+      d->skipped_channel_count++;
+    } else {
+      if (retained != i)
+        d->channels[retained] = *c;
+      retained++;
+    }
   }
+  d->channel_count = retained;
+  d->parsed_stream_count = parsed_streams;
+  printf("IPTV: parsed %lu channels\n", (unsigned long)d->parsed_channel_count);
+  printf("IPTV: parsed %lu streams\n", (unsigned long)d->parsed_stream_count);
+  printf("IPTV: retained %lu playable channels",
+         (unsigned long)d->channel_count);
+  if (d->skipped_channel_count)
+    printf("; %lu channels skipped", (unsigned long)d->skipped_channel_count);
+  printf("\n");
   free(all);
   return 1;
 fail:

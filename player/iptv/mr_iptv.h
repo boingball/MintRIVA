@@ -29,6 +29,7 @@ typedef struct {
 typedef struct {
   mr_iptv_channel *channels;
   size_t channel_count, channel_capacity;
+  size_t parsed_channel_count, skipped_channel_count, parsed_stream_count;
 } mr_iptv_directory;
 
 typedef struct {

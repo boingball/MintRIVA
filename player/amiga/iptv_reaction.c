@@ -581,8 +581,14 @@ int main(void) {
                      LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
       SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
                      loaded ? FALSE : TRUE, TAG_DONE);
-      snprintf(status_text, sizeof(status_text), "%lu channels shown",
-               (unsigned long)selected);
+      if (directory.skipped_channel_count)
+        snprintf(status_text, sizeof(status_text),
+                 "%lu channels shown; %lu non-playable/limited skipped",
+                 (unsigned long)selected,
+                 (unsigned long)directory.skipped_channel_count);
+      else
+        snprintf(status_text, sizeof(status_text), "%lu channels shown",
+                 (unsigned long)selected);
       set_status(status, window, status_text);
     }
   }
@@ -642,8 +648,14 @@ int main(void) {
                          LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
           SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
                          GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
-          snprintf(status_text, sizeof(status_text), "%lu channels shown",
-                   (unsigned long)selected);
+          if (directory.skipped_channel_count)
+            snprintf(status_text, sizeof(status_text),
+                     "%lu channels shown; %lu non-playable/limited skipped",
+                     (unsigned long)selected,
+                     (unsigned long)directory.skipped_channel_count);
+          else
+            snprintf(status_text, sizeof(status_text), "%lu channels shown",
+                     (unsigned long)selected);
           set_status(status, window, status_text);
         }
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {

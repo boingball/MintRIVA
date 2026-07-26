@@ -211,3 +211,8 @@ Alternate-name and category arrays are likewise allocated only when present,
 reducing the fixed channel record to roughly 432 bytes on the host build. The
 20,000-channel table therefore needs about 8.6 MiB plus only the metadata that
 actually exists, rather than a large contiguous maximum-field reservation.
+The parser validates up to 100,000 JSON channel objects but retains at most
+20,000 useful metadata records. NSFW, closed, replaced, unnamed, and ID-less
+records are discarded immediately; after stream joining the table is compacted
+again to channels with a valid URL. Crossing the retained limit is counted and
+reported as a warning while syntax validation continues to the end of the file.
