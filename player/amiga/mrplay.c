@@ -182,11 +182,6 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                            fr.dirty_y0, fr.dirty_y1);
           t_show += clock() - a; }
         frames++;
-        if (want_time && !display_aga_kalms_timing(NULL)) {
-            unsigned long e = 0, bl = 0;
-            display_aga_frame_timing(&e, &bl);
-            printf("frame/%d: conversion=%lu ms, blit=%lu ms\n", frames, e, bl);
-        }
         if (audio) audio_service(audio);
     }
 
@@ -269,7 +264,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
-            else if (!strcmp(argv[i], "--time")) { want_time = 1; display_set_timing(1); }
+            else if (!strcmp(argv[i], "--time")) want_time = 1;
         }
     }
     printf("mrplay: opening %s\n", argv[1]);
@@ -482,12 +477,6 @@ int main(int argc, char **argv)
                          dec.frame.dirty_y0, dec.frame.dirty_y1);
         t_show += clock() - a;
         frames++;
-        if (want_time && !display_aga_kalms_timing(NULL)) {
-            unsigned long enc_ms = 0, blit_ms = 0;
-            display_aga_frame_timing(&enc_ms, &blit_ms);
-            printf("frame/%d: conversion=%lu ms, blit=%lu ms\n",
-                   frames, enc_ms, blit_ms);
-        }
     }
     }
     if (want_time && frames > 0) {

@@ -27,7 +27,6 @@ extern int g_aga_scale;  /* 1 or 2 (pixel doubling)                        */
 extern int g_aga_c2p;    /* 0 = WPA8, 1 = portable, 2 = RiVA, 3 = Kalms     */
 extern int g_aga_lace;   /* 1 = allow interlaced screens (taller fit)       */
 extern int g_aga_akiko;  /* 1 = use CD32 Akiko hardware C2P                  */
-extern int g_aga_time;   /* 1 = print backend diagnostics                    */
 
 /* Library bases opened once by display.c and shared by the backends. */
 #include <exec/types.h>

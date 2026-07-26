@@ -14,13 +14,14 @@ Before enabling the routine, MintRIVA checks the real `BitMap->Planes[]` array:
 the screen must have eight planes, its row length must match the padded chunky
 width, and every plane must be at the same positive `bplsize` displacement from
 plane zero. Kalms documents a 16 KiB maximum `bplsize`. An incompatible layout
-falls back to `WritePixelArray8`; `--time` prints the layout result and reason.
+falls back silently to `WritePixelArray8`.
 This deliberately avoids assumptions about how graphics.library allocated the
 planes.
 
-For a compatible layout, `--time` prints the backend selection once when the
-screen opens and one accumulated `Kalms conversion: ... ms` result after
-playback. No diagnostics are emitted from the frame-rendering hot path.
+For a compatible layout, `--time` prints one accumulated
+`Kalms conversion: ... ms` result after playback. Timing for every AGA backend
+is reported only in the final totals; no diagnostics are emitted while opening
+the display or rendering frames.
 
 ## Attribution and licence
 

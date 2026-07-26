@@ -45,9 +45,6 @@ void display_set_lace(int on);
  * CD32 only; no effect (and unsafe) elsewhere, so gate it on --cd32. */
 void display_set_akiko(int on);
 
-/* Enable display-backend diagnostics printed by --time. */
-void display_set_timing(int on);
-
 /* Accumulated AGA encode / blit time in ms (0 if the AGA backend wasn't used). */
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms);
 

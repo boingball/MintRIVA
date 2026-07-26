@@ -29,7 +29,6 @@
 #include <proto/graphics.h>
 
 #include <stdlib.h>
-#include <stdio.h>
 #include <time.h>
 
 #define ESC_RAWKEY 0x45
@@ -240,12 +239,6 @@ static void *aga_open(int w, int h, const char *title)
             if (!s->tempbm) goto fail;
             InitRastPort(&s->temprp);
             s->temprp.BitMap = s->tempbm;
-        }
-        if (g_aga_time) {
-            if (compatible)
-                printf("AGA C2P backend: Kalms c2p1x1_8_c5_030 (plane layout compatible)\n");
-            else
-                printf("AGA C2P backend: WPA (Kalms plane layout incompatible: planes are not eight equally spaced contiguous planes, row length differs, or bplsize exceeds 16 KiB)\n");
         }
     }
 
