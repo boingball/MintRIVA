@@ -25,6 +25,7 @@
 typedef struct {
     struct Window *win;
     int            bl, bt;   /* blit origin inside the window borders       */
+    int            iw, ih;   /* current resizeable inner dimensions         */
     int            quit;
 } cgx_state;
 
@@ -61,13 +62,19 @@ static void *cgx_open(int w, int h, const char *title)
         WA_InnerWidth,  (ULONG)w,
         WA_InnerHeight, (ULONG)h,
         WA_Flags,       WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
-                        WFLG_ACTIVATE | WFLG_NOCAREREFRESH,
-        WA_IDCMP,       IDCMP_CLOSEWINDOW | IDCMP_RAWKEY,
+                        WFLG_SIZEGADGET | WFLG_ACTIVATE | WFLG_NOCAREREFRESH,
+        WA_MinWidth,    160,
+        WA_MinHeight,   100,
+        WA_MaxWidth,    (ULONG)-1,
+        WA_MaxHeight,   (ULONG)-1,
+        WA_IDCMP,       IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
         TAG_END);
     if (!s->win) { FreeVec(s); return NULL; }
 
     s->bl = s->win->BorderLeft;
     s->bt = s->win->BorderTop;
+    s->iw = s->win->Width - s->win->BorderLeft - s->win->BorderRight;
+    s->ih = s->win->Height - s->win->BorderTop - s->win->BorderBottom;
     return s;
 }
 
@@ -79,10 +86,19 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     if (dy0 < 0) dy0 = 0;
     if (dy1 > hh) dy1 = hh;
     if (dy1 <= dy0) return;                       /* nothing changed         */
-    /* blit only the changed band, sourced from that row of the frame */
-    WritePixelArray((APTR)(rgb + (size_t)dy0 * stride), 0, 0, (UWORD)stride,
-                    s->win->RPort, (UWORD)s->bl, (UWORD)(s->bt + dy0),
-                    (UWORD)w, (UWORD)(dy1 - dy0), RECTFMT_RGB);
+    if (s->iw == w && s->ih == hh) {
+        /* At native size retain the dirty-row fast path. */
+        WritePixelArray((APTR)(rgb + (size_t)dy0 * stride), 0, 0,
+                        (UWORD)stride, s->win->RPort, (UWORD)s->bl,
+                        (UWORD)(s->bt + dy0), (UWORD)w,
+                        (UWORD)(dy1 - dy0), RECTFMT_RGB);
+    } else {
+        /* CGX/P96 performs the resize while blitting.  A resize invalidates
+         * the whole destination, so partial dirty bands are not meaningful. */
+        ScalePixelArray((APTR)rgb, (UWORD)w, (UWORD)hh, (UWORD)stride,
+                        s->win->RPort, (UWORD)s->bl, (UWORD)s->bt,
+                        (UWORD)s->iw, (UWORD)s->ih, RECTFMT_RGB);
+    }
 }
 
 static int cgx_poll(void *h)
@@ -95,6 +111,10 @@ static int cgx_poll(void *h)
         ULONG cls = msg->Class; UWORD code = msg->Code;
         ReplyMsg((struct Message *)msg);
         if (cls == IDCMP_CLOSEWINDOW) s->quit = 1;
+        else if (cls == IDCMP_NEWSIZE) {
+            s->iw = s->win->Width - s->win->BorderLeft - s->win->BorderRight;
+            s->ih = s->win->Height - s->win->BorderTop - s->win->BorderBottom;
+        }
         else if (cls == IDCMP_RAWKEY && !(code & 0x80)) {  /* key down only  */
             switch (code) {
             case 0x45: s->quit = 1; break;             /* ESC              */
