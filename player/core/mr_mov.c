@@ -378,7 +378,7 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
     uint16_t version = rb16(e + 16);
     if (entry_sz < 36 || entry_sz > sz - 8) return;
     m->audio.channels    = rb16(e + 24);
-    m->audio.bits        = rb16(e + 26);
+    m->audio.bits_per_sample = rb16(e + 26);
     m->audio.sample_rate = rb32(e + 32) >> 16;  /* 16.16 fixed              */
     /* map common uncompressed PCM 4CCs to the WAVE PCM tag */
     if (fmt == T('s','o','w','t') || fmt == T('t','w','o','s') ||
@@ -419,6 +419,9 @@ static void parse_audio(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
         }
     }
     m->audio.valid = 1;
+    if (m->audio.format_tag == MR_AUDIO_FORMAT_PCM)
+        m->audio.block_align = (uint16_t)(m->audio.channels *
+                                         ((m->audio.bits_per_sample + 7) / 8));
 
     /* Compressed access units must keep their sample boundaries.  PCM remains
      * coalesced per chunk to avoid flooding the player with tiny packets. */

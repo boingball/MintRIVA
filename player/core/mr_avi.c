@@ -106,7 +106,8 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
                 a->audio.format_tag  = mr_rl16(body + 0);
                 a->audio.channels    = mr_rl16(body + 2);
                 a->audio.sample_rate = mr_rl32(body + 4);
-                a->audio.bits        = mr_rl16(body + 14);
+                a->audio.block_align = mr_rl16(body + 12);
+                a->audio.bits_per_sample = mr_rl16(body + 14);
                 a->audio.valid = 1;
             }
         }

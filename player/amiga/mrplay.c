@@ -332,21 +332,33 @@ int main(int argc, char **argv)
                  mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
 
-    /* PCM feeds Paula directly. MP3/AAC packets go through MintAMP's fixed-
-     * point Helix decoders first; AAC-LC mp4a setup comes from the demuxed ASC. */
+    /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
+     * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
     {
         const mr_audio_info *ai = mr_demux_audio(dx);
-        if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM &&
-            (ai->bits == 8 || ai->bits == 16)) {
-            if (want_time && ai->bits == 8)
-                printf("audio: PCM U8 %s %lu Hz\n",
+        if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
+            audio_dec = mr_audio_decoder_open(ai);
+            if (want_time && audio_dec)
+                printf("audio: %s %s %lu Hz\n",
+                       mr_audio_decoder_name(audio_dec),
                        ai->channels == 1 ? "mono" : "stereo",
                        (unsigned long)ai->sample_rate);
-            audio = audio_open(ai->sample_rate, ai->channels, ai->bits);
-            if (audio) printf("audio: Paula out, %lu Hz (src %u-bit %u ch)\n",
-                              (unsigned long)ai->sample_rate,
-                              (unsigned)ai->bits, (unsigned)ai->channels);
-            else       printf("audio: Paula open failed, playing silent\n");
+            if (audio_dec)
+                audio = audio_open(mr_audio_decoder_rate(audio_dec),
+                                   (int)mr_audio_decoder_channels(audio_dec), 16);
+            if (audio && audio_dec)
+                printf("audio: Paula out, %u Hz (%s, %u ch)\n",
+                       mr_audio_decoder_rate(audio_dec),
+                       mr_audio_decoder_name(audio_dec),
+                       mr_audio_decoder_channels(audio_dec));
+            else {
+                printf("audio: unsupported PCM layout or Paula open failed, "
+                       "playing silent\n");
+                if (audio_dec) {
+                    mr_audio_decoder_close(audio_dec);
+                    audio_dec = NULL;
+                }
+            }
         } else if (ai->valid &&
                    (ai->format_tag == MR_AUDIO_FORMAT_MP2 ||
                     ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
@@ -408,8 +420,6 @@ int main(int argc, char **argv)
                 if (audio_dec)
                     mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
                                           decoded_audio_sink, audio);
-                else
-                    audio_write(audio, pkt.data, pkt.len);
                 audio_service(audio);
             }
             continue;

@@ -417,7 +417,7 @@ static void parse_adts_info(mr_ts *t, const uint8_t *p, size_t len)
                 t->audio.format_tag = MR_AUDIO_FORMAT_AAC;
                 t->audio.sample_rate = rates[sri];
                 t->audio.channels = (uint16_t)ch;
-                t->audio.bits = 16;
+                t->audio.bits_per_sample = 16;
                 t->audio.valid = 1;
                 return;
             }

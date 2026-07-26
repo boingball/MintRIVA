@@ -6,6 +6,7 @@
  * setup and Paula-friendly 2:1 output decimation above its ~28 kHz ceiling.
  */
 #include "mr_audio_decode.h"
+#include "mr_pcm.h"
 
 #include "mp3dec.h"
 #include "aacdec.h"
@@ -19,6 +20,7 @@
 #define PAULA_RATE_MAX 28000U
 
 enum audio_kind {
+    AUDIO_KIND_PCM,
     AUDIO_KIND_MP3,
     AUDIO_KIND_MP2,
     AUDIO_KIND_AAC_RAW,
@@ -34,6 +36,7 @@ struct mr_audio_decoder {
     unsigned source_rate;
     unsigned output_rate;
     unsigned channels;
+    mr_audio_info pcm_info;
     unsigned stride;
     unsigned char *pending;
     size_t pending_len;
@@ -170,7 +173,8 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
 {
     mr_audio_decoder *d;
     if (!info || !info->valid) return NULL;
-    if (info->format_tag != MR_AUDIO_FORMAT_MP3 &&
+    if (info->format_tag != MR_AUDIO_FORMAT_PCM &&
+        info->format_tag != MR_AUDIO_FORMAT_MP3 &&
         info->format_tag != MR_AUDIO_FORMAT_MP2 &&
         info->format_tag != MR_AUDIO_FORMAT_AAC)
         return NULL;
@@ -182,7 +186,11 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
     d->stride = info->sample_rate > PAULA_RATE_MAX ? 2 : 1;
     d->output_rate = info->sample_rate / d->stride;
 
-    if (info->format_tag == MR_AUDIO_FORMAT_MP2) {
+    if (info->format_tag == MR_AUDIO_FORMAT_PCM) {
+        if (!mr_pcm_supported(info)) goto fail;
+        d->kind = AUDIO_KIND_PCM;
+        d->pcm_info = *info;
+    } else if (info->format_tag == MR_AUDIO_FORMAT_MP2) {
         d->kind = AUDIO_KIND_MP2;
         d->mp2_buffer = plm_buffer_create_with_capacity(8192);
         if (!d->mp2_buffer) goto fail;
@@ -342,6 +350,29 @@ long mr_audio_decoder_feed(mr_audio_decoder *d,
 {
     if (!d || (!data && len)) return -1;
     if (!len) return 0;
+    if (d->kind == AUDIO_KIND_PCM) {
+        long produced = 0;
+        size_t frame_bytes = d->pcm_info.block_align;
+        size_t frames_left = len / frame_bytes;
+        const uint8_t *p = data;
+        while (frames_left) {
+            size_t capacity = PCM_SHORTS_MAX / d->pcm_info.channels;
+            size_t batch = frames_left < capacity ? frames_left : capacity;
+            long decoded = mr_pcm_decode_s16(&d->pcm_info, p,
+                                             batch * frame_bytes, d->pcm,
+                                             capacity);
+            long got;
+            if (decoded < 0) return -1;
+            got = emit_pcm(d, (unsigned)decoded * d->pcm_info.channels,
+                           d->source_rate, d->pcm_info.channels,
+                           sink, sink_user);
+            if (got < 0) return -1;
+            produced += got;
+            p += batch * frame_bytes;
+            frames_left -= batch;
+        }
+        return produced;
+    }
     if (d->kind == AUDIO_KIND_MP3)
         return feed_mp3(d, data, len, sink, sink_user);
     if (d->kind == AUDIO_KIND_MP2)
@@ -355,6 +386,7 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
 {
     if (!d) return 0;
     d->pending_len = 0;
+    if (d->kind == AUDIO_KIND_PCM) return 1;
     if (d->kind == AUDIO_KIND_MP3) {
         MP3FreeDecoder(d->mp3);
         d->mp3 = MP3InitDecoder();
@@ -383,7 +415,11 @@ unsigned mr_audio_decoder_channels(const mr_audio_decoder *d)
 const char *mr_audio_decoder_name(const mr_audio_decoder *d)
 {
     if (!d) return "none";
-    return d->kind == AUDIO_KIND_MP3 ? "MP3"
+    return d->kind == AUDIO_KIND_PCM
+             ? (d->pcm_info.bits_per_sample == 8 ? "PCM U8" :
+                d->pcm_info.bits_per_sample == 16 ? "PCM S16LE" :
+                d->pcm_info.bits_per_sample == 24 ? "PCM S24LE" : "PCM S32LE")
+         : d->kind == AUDIO_KIND_MP3 ? "MP3"
          : d->kind == AUDIO_KIND_MP2 ? "MP2"
          : d->kind == AUDIO_KIND_AAC_RAW ? "AAC-LC/mp4a"
          : "AAC-LC/ADTS";
