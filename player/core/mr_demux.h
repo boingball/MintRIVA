@@ -2,7 +2,7 @@
  * MintRIVA - container-agnostic demux interface.
  *
  * The player shouldn't care whether frames come from AVI or QuickTime MOV, so
- * both parsers fill these neutral info/packet structs and are reached through
+ * all parsers fill these neutral info/packet structs and are reached through
  * one auto-detecting front end (mr_demux_open sniffs the signature). Adding a
  * container = adding a backend here, exactly like adding a codec behind
  * mr_codec.h.
@@ -28,6 +28,7 @@ typedef struct {
 #define MR_AUDIO_CONFIG_MAX 16
 #define MR_AUDIO_FORMAT_PCM 0x0001
 #define MR_AUDIO_FORMAT_MP3 0x0055
+#define MR_AUDIO_FORMAT_MP2 0x0050
 #define MR_AUDIO_FORMAT_AAC 0x00ff
 
 typedef struct {
@@ -56,6 +57,7 @@ typedef enum {
     MR_CONTAINER_AVI,
     MR_CONTAINER_MOV,
     MR_CONTAINER_TS,
+    MR_CONTAINER_PS,
     MR_CONTAINER_RAW_MJPEG,
     MR_CONTAINER_RAW_MPEG4
 } mr_container;
@@ -68,7 +70,7 @@ mr_demux    *mr_demux_open(const uint8_t *buf, size_t len);
 /* Path-backed AVI/MOV/TS opener. path may be a local filename or an http(s)
  * URL. Container metadata is retained in memory, while compressed packets are
  * read into reusable buffers on demand. HTTP seeking uses byte ranges. Raw
- * streams and MPEG-1 remain on the memory path. */
+ * streams and MPEG program streams remain on the memory path. */
 mr_demux    *mr_demux_open_file(const char *path);
 /* True when the file signature is one of the file-backed containers. Useful
  * after an open failure so callers do not try to slurp a huge but unsupported

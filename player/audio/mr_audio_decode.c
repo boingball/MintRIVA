@@ -9,6 +9,8 @@
 
 #include "mp3dec.h"
 #include "aacdec.h"
+#include <stdio.h> /* FILE declaration used by pl_mpeg's public header */
+#include "../core/pl_mpeg.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +20,7 @@
 
 enum audio_kind {
     AUDIO_KIND_MP3,
+    AUDIO_KIND_MP2,
     AUDIO_KIND_AAC_RAW,
     AUDIO_KIND_AAC_ADTS
 };
@@ -26,6 +29,8 @@ struct mr_audio_decoder {
     enum audio_kind kind;
     HMP3Decoder mp3;
     HAACDecoder aac;
+    plm_buffer_t *mp2_buffer;
+    plm_audio_t *mp2;
     unsigned source_rate;
     unsigned output_rate;
     unsigned channels;
@@ -166,6 +171,7 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
     mr_audio_decoder *d;
     if (!info || !info->valid) return NULL;
     if (info->format_tag != MR_AUDIO_FORMAT_MP3 &&
+        info->format_tag != MR_AUDIO_FORMAT_MP2 &&
         info->format_tag != MR_AUDIO_FORMAT_AAC)
         return NULL;
 
@@ -176,7 +182,13 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
     d->stride = info->sample_rate > PAULA_RATE_MAX ? 2 : 1;
     d->output_rate = info->sample_rate / d->stride;
 
-    if (info->format_tag == MR_AUDIO_FORMAT_MP3) {
+    if (info->format_tag == MR_AUDIO_FORMAT_MP2) {
+        d->kind = AUDIO_KIND_MP2;
+        d->mp2_buffer = plm_buffer_create_with_capacity(8192);
+        if (!d->mp2_buffer) goto fail;
+        d->mp2 = plm_audio_create_with_buffer(d->mp2_buffer, 1);
+        if (!d->mp2) goto fail;
+    } else if (info->format_tag == MR_AUDIO_FORMAT_MP3) {
         d->kind = AUDIO_KIND_MP3;
         d->mp3 = MP3InitDecoder();
         if (!d->mp3) goto fail;
@@ -265,6 +277,25 @@ static long feed_aac_raw(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
                     sink, user);
 }
 
+static long feed_mp2(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
+                     mr_audio_pcm_sink sink, void *user)
+{
+    long produced = 0;
+    plm_samples_t *samples;
+    if (plm_buffer_write(d->mp2_buffer,
+                         (uint8_t *)(uintptr_t)data, len) != len)
+        return -1;
+    while ((samples = plm_audio_decode(d->mp2)) != NULL) {
+        unsigned shorts = samples->count * 2;
+        long got;
+        memcpy(d->pcm, samples->interleaved, shorts * sizeof d->pcm[0]);
+        got = emit_pcm(d, shorts, d->source_rate, 2, sink, user);
+        if (got < 0) return -1;
+        produced += got;
+    }
+    return produced;
+}
+
 static long feed_aac_adts(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
                           mr_audio_pcm_sink sink, void *user)
 {
@@ -313,6 +344,8 @@ long mr_audio_decoder_feed(mr_audio_decoder *d,
     if (!len) return 0;
     if (d->kind == AUDIO_KIND_MP3)
         return feed_mp3(d, data, len, sink, sink_user);
+    if (d->kind == AUDIO_KIND_MP2)
+        return feed_mp2(d, data, len, sink, sink_user);
     if (d->kind == AUDIO_KIND_AAC_RAW)
         return feed_aac_raw(d, data, len, sink, sink_user);
     return feed_aac_adts(d, data, len, sink, sink_user);
@@ -326,6 +359,13 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
         MP3FreeDecoder(d->mp3);
         d->mp3 = MP3InitDecoder();
         return d->mp3 != NULL;
+    }
+    if (d->kind == AUDIO_KIND_MP2) {
+        plm_audio_destroy(d->mp2);
+        d->mp2_buffer = plm_buffer_create_with_capacity(8192);
+        d->mp2 = d->mp2_buffer
+               ? plm_audio_create_with_buffer(d->mp2_buffer, 1) : NULL;
+        return d->mp2 != NULL;
     }
     return AACFlushCodec(d->aac) == 0;
 }
@@ -344,6 +384,7 @@ const char *mr_audio_decoder_name(const mr_audio_decoder *d)
 {
     if (!d) return "none";
     return d->kind == AUDIO_KIND_MP3 ? "MP3"
+         : d->kind == AUDIO_KIND_MP2 ? "MP2"
          : d->kind == AUDIO_KIND_AAC_RAW ? "AAC-LC/mp4a"
          : "AAC-LC/ADTS";
 }
@@ -353,6 +394,8 @@ void mr_audio_decoder_close(mr_audio_decoder *d)
     if (!d) return;
     if (d->mp3) MP3FreeDecoder(d->mp3);
     if (d->aac) AACFreeDecoder(d->aac);
+    if (d->mp2) plm_audio_destroy(d->mp2);
+    else if (d->mp2_buffer) plm_buffer_destroy(d->mp2_buffer);
     free(d->pending);
     free(d);
 }

@@ -81,7 +81,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     unsigned char *abuf;                         /* heap, not stack (4.6 KB)  */
     clock_t        t_dec = 0, t_show = 0;
     mr_frame       fr;
-    double         pts, fps;
+    int64_t        pts_us;
+    unsigned       fps_millihz;
 
     mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len);
     if (!mp) { printf("cannot open MPEG-1 stream\n"); return 10; }
@@ -99,8 +100,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         printf(audio ? "audio: Paula out, %u Hz (MP2 stereo)\n"
                      : "audio: Paula open failed, silent\n", sr);
     }
-    fps    = mr_mpeg1_framerate(mp);
-    period = (fps > 0.0) ? (unsigned long)(1000.0 / fps + 0.5) : 40;
+    fps_millihz = mr_mpeg1_framerate_millihz(mp);
+    period = fps_millihz ? (1000000UL + fps_millihz / 2) / fps_millihz : 40;
     if (period < 1) period = 1;
     ntick = (long)((period + 19) / 20);
     if (ntick < 1) ntick = 1;
@@ -116,7 +117,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
         if (quit) break;
 
-        { clock_t a = clock(); got = mr_mpeg1_next(mp, &fr, &pts); t_dec += clock() - a; }
+        { clock_t a = clock(); got = mr_mpeg1_next(mp, &fr, &pts_us); t_dec += clock() - a; }
         if (!got) {
             if (loop) { mr_mpeg1_rewind(mp); frames = 0;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
@@ -157,7 +158,6 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
           t_show += clock() - a; }
         frames++;
         if (audio) audio_service(audio);
-        (void)pts;
     }
 
     if (want_time && frames > 0) {
@@ -260,10 +260,9 @@ int main(int argc, char **argv)
             free(buf);
             return rc;
         }
-
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {
-            printf("unsupported container (need AVI, MOV/MP4, MPEG-TS, "
+            printf("unsupported container (need AVI, MOV/MP4, MPEG-TS/PS, "
                    "raw MJPEG/M4V or MPEG-1)\n");
             free(buf);
             return 10;
@@ -299,7 +298,8 @@ int main(int argc, char **argv)
                               (unsigned)ai->bits, (unsigned)ai->channels);
             else       printf("audio: Paula open failed, playing silent\n");
         } else if (ai->valid &&
-                   (ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
+                   (ai->format_tag == MR_AUDIO_FORMAT_MP2 ||
+                    ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
                     ai->format_tag == MR_AUDIO_FORMAT_AAC)) {
             audio_dec = mr_audio_decoder_open(ai);
             if (audio_dec)
@@ -313,6 +313,7 @@ int main(int argc, char **argv)
             else {
                 printf("audio: unsupported %s setup or Paula open failed, "
                        "playing silent\n",
+                       ai->format_tag == MR_AUDIO_FORMAT_MP2 ? "MP2" :
                        ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" : "AAC");
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);

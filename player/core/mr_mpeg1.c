@@ -2,7 +2,7 @@
  * MintRIVA - MPEG-1 source, wrapping pl_mpeg.
  *
  * This translation unit carries pl_mpeg's implementation (PL_MPEG_IMPLEMENTATION),
- * so it is the one place its (float-using MP2) code is compiled.
+ * so it is the one place its integer-only MP2 code is compiled.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,11 +21,49 @@ struct mr_mpeg1 {
     unsigned rate_eff;           /* effective audio rate after decimation   */
 };
 
+enum mr_mpeg_ps_kind {
+    MR_MPEG_PS_UNKNOWN,
+    MR_MPEG_PS_MPEG1_VIDEO,
+    MR_MPEG_PS_MPEG2_VIDEO
+};
+
+static enum mr_mpeg_ps_kind mpeg_ps_kind(const uint8_t *buf, size_t len)
+{
+    size_t i;
+    int saw_sequence = 0;
+
+    /* A pack header alone identifies the container, not its video codec.
+     * In particular, DVD-style MPEG-2 program streams use the same start
+     * code and must not be handed to pl_mpeg's MPEG-1 video decoder. */
+    if (!buf || len < 4 || buf[0] != 0x00 || buf[1] != 0x00 ||
+        buf[2] != 0x01 || buf[3] != 0xBA)
+        return MR_MPEG_PS_UNKNOWN;
+
+    for (i = 4; i + 4 < len; i++) {
+        unsigned code;
+        if (buf[i] != 0x00 || buf[i + 1] != 0x00 || buf[i + 2] != 0x01)
+            continue;
+        code = buf[i + 3];
+        if (code == 0xB3) {              /* sequence header */
+            saw_sequence = 1;
+        } else if (saw_sequence && code == 0xB5 &&
+                   (buf[i + 4] >> 4) == 1) { /* MPEG-2 sequence extension */
+            return MR_MPEG_PS_MPEG2_VIDEO;
+        } else if (saw_sequence && code == 0x00) { /* first picture */
+            return MR_MPEG_PS_MPEG1_VIDEO;
+        }
+    }
+    return MR_MPEG_PS_UNKNOWN;
+}
+
 int mr_mpeg1_probe(const uint8_t *buf, size_t len)
 {
-    /* MPEG program stream pack header: 00 00 01 BA */
-    return len >= 4 && buf[0] == 0x00 && buf[1] == 0x00 &&
-           buf[2] == 0x01 && buf[3] == 0xBA;
+    return mpeg_ps_kind(buf, len) == MR_MPEG_PS_MPEG1_VIDEO;
+}
+
+int mr_mpeg2_ps_probe(const uint8_t *buf, size_t len)
+{
+    return mpeg_ps_kind(buf, len) == MR_MPEG_PS_MPEG2_VIDEO;
 }
 
 mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len)
@@ -53,14 +91,14 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len)
 
 int mr_mpeg1_width(mr_mpeg1 *m)  { return m ? m->w : 0; }
 int mr_mpeg1_height(mr_mpeg1 *m) { return m ? m->h : 0; }
-double mr_mpeg1_framerate(mr_mpeg1 *m) { return m ? plm_get_framerate(m->plm) : 0; }
+unsigned mr_mpeg1_framerate_millihz(mr_mpeg1 *m) { return m ? plm_get_framerate(m->plm) : 0; }
 
 unsigned mr_mpeg1_samplerate(mr_mpeg1 *m)
 {
     return m ? m->rate_eff : 0;
 }
 
-int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts)
+int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
 {
     plm_frame_t *fr;
     if (!m) return 0;
@@ -74,7 +112,7 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, double *pts)
     out->data   = m->fb;
     out->dirty_y0 = 0;                          /* inter frames, but simplest */
     out->dirty_y1 = m->h;                       /* is a full repaint          */
-    if (pts) *pts = fr->time;
+    if (pts_us) *pts_us = fr->time;
     return 1;
 }
 
@@ -92,9 +130,7 @@ int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
     for (j = 0; j < s->count; j += decim) {
         int ch;
         for (ch = 0; ch < 2; ch++) {
-            float f = s->interleaved[j * 2 + ch];
-            int v = (int)(f * 32767.0f);
-            if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+            int v = s->interleaved[j * 2 + ch];
             *dst++ = (unsigned char)(v & 0xff);
             *dst++ = (unsigned char)((v >> 8) & 0xff);
         }

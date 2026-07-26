@@ -1,13 +1,14 @@
 /*
  * MintRIVA - container auto-detect front end.
  *
- * Sniffs the buffer signature and delegates to the AVI or MOV backend, exposing
- * both through the neutral mr_demux interface so the player is container-blind.
+ * Sniffs the buffer signature and delegates to the matching backend through
+ * the neutral mr_demux interface so the player is container-blind.
  */
 #include "mr_demux.h"
 #include "mr_avi.h"
 #include "mr_mov.h"
 #include "mr_ts.h"
+#include "mr_ps.h"
 #include "mr_source.h"
 #include "mr_raw_mjpeg.h"
 #include "mr_raw_mpeg4.h"
@@ -20,6 +21,7 @@ struct mr_demux {
         mr_avi avi;
         mr_mov mov;
         mr_ts ts;
+        mr_ps ps;
         mr_raw_mjpeg raw_mjpeg;
         mr_raw_mpeg4 raw_mpeg4;
     } u;
@@ -28,6 +30,7 @@ struct mr_demux {
 
 /* AVI  = 'RIFF' .... 'AVI '   ;  MOV = an early 'ftyp'/'moov'/'mdat' atom;
  * TS has 0x47 sync bytes every 188 bytes (or at +4 in 192-byte M2TS packets);
+ * PS starts with an MPEG pack header (00 00 01 BA);
  * raw MJPEG begins directly with a JPEG SOI marker. */
 static mr_container sniff(const uint8_t *b, size_t len)
 {
@@ -53,6 +56,8 @@ static mr_container sniff(const uint8_t *b, size_t len)
         return MR_CONTAINER_TS;
     if (len >= 389 && b[4] == 0x47 && b[196] == 0x47 && b[388] == 0x47)
         return MR_CONTAINER_TS;
+    if (len >= 4 && b[0] == 0 && b[1] == 0 && b[2] == 1 && b[3] == 0xba)
+        return MR_CONTAINER_PS;
     if (len >= 2 && b[0] == 0xff && b[1] == 0xd8)
         return MR_CONTAINER_RAW_MJPEG;
     if (len >= 4 && b[0] == 0 && b[1] == 0 && b[2] == 1 &&
@@ -77,6 +82,8 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
         st = mr_mov_open(&d->u.mov, buf, len);
     else if (kind == MR_CONTAINER_TS)
         st = mr_ts_open(&d->u.ts, buf, len);
+    else if (kind == MR_CONTAINER_PS)
+        st = mr_ps_open(&d->u.ps, buf, len);
     else if (kind == MR_CONTAINER_RAW_MJPEG)
         st = mr_raw_mjpeg_open(&d->u.raw_mjpeg, buf, len);
     else
@@ -85,6 +92,7 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
         if (kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
         else if (kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
         else if (kind == MR_CONTAINER_TS) mr_ts_close(&d->u.ts);
+        else if (kind == MR_CONTAINER_PS) mr_ps_close(&d->u.ps);
         free(d);
         return NULL;
     }
@@ -187,6 +195,8 @@ mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
         return mr_mov_next_packet(&d->u.mov, pkt);
     if (d->kind == MR_CONTAINER_TS)
         return mr_ts_next_packet(&d->u.ts, pkt);
+    if (d->kind == MR_CONTAINER_PS)
+        return mr_ps_next_packet(&d->u.ps, pkt);
     if (d->kind == MR_CONTAINER_RAW_MJPEG)
         return mr_raw_mjpeg_next_packet(&d->u.raw_mjpeg, pkt);
     return mr_raw_mpeg4_next_packet(&d->u.raw_mpeg4, pkt);
@@ -197,6 +207,7 @@ void mr_demux_rewind(mr_demux *d)
     if (d->kind == MR_CONTAINER_AVI) mr_avi_rewind(&d->u.avi);
     else if (d->kind == MR_CONTAINER_MOV) mr_mov_rewind(&d->u.mov);
     else if (d->kind == MR_CONTAINER_TS) mr_ts_rewind(&d->u.ts);
+    else if (d->kind == MR_CONTAINER_PS) mr_ps_rewind(&d->u.ps);
     else if (d->kind == MR_CONTAINER_RAW_MJPEG)
         mr_raw_mjpeg_rewind(&d->u.raw_mjpeg);
     else mr_raw_mpeg4_rewind(&d->u.raw_mpeg4);
@@ -208,6 +219,7 @@ void mr_demux_close(mr_demux *d)
     if (d->kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
     else if (d->kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
     else if (d->kind == MR_CONTAINER_TS) mr_ts_close(&d->u.ts);
+    else if (d->kind == MR_CONTAINER_PS) mr_ps_close(&d->u.ps);
     if (d->owned_source) mr_source_close(d->owned_source);
     free(d);
 }
@@ -217,6 +229,7 @@ const mr_video_info *mr_demux_video(const mr_demux *d)
     if (d->kind == MR_CONTAINER_AVI) return &d->u.avi.video;
     if (d->kind == MR_CONTAINER_MOV) return &d->u.mov.video;
     if (d->kind == MR_CONTAINER_TS) return &d->u.ts.video;
+    if (d->kind == MR_CONTAINER_PS) return &d->u.ps.video;
     if (d->kind == MR_CONTAINER_RAW_MJPEG) return &d->u.raw_mjpeg.video;
     return &d->u.raw_mpeg4.video;
 }
@@ -226,6 +239,7 @@ const mr_audio_info *mr_demux_audio(const mr_demux *d)
     if (d->kind == MR_CONTAINER_AVI) return &d->u.avi.audio;
     if (d->kind == MR_CONTAINER_MOV) return &d->u.mov.audio;
     if (d->kind == MR_CONTAINER_TS) return &d->u.ts.audio;
+    if (d->kind == MR_CONTAINER_PS) return &d->u.ps.audio;
     if (d->kind == MR_CONTAINER_RAW_MJPEG) return &d->u.raw_mjpeg.audio;
     return &d->u.raw_mpeg4.audio;
 }
@@ -235,6 +249,7 @@ const char *mr_demux_container_name(const mr_demux *d)
     return d->kind == MR_CONTAINER_AVI ? "AVI"
          : d->kind == MR_CONTAINER_MOV ? "MOV"
          : d->kind == MR_CONTAINER_TS ? "MPEG-TS"
+         : d->kind == MR_CONTAINER_PS ? "MPEG-PS"
          : d->kind == MR_CONTAINER_RAW_MJPEG ? "raw MJPEG"
          : d->kind == MR_CONTAINER_RAW_MPEG4 ? "raw M4V" : "?";
 }

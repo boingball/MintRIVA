@@ -23,7 +23,7 @@ CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
            -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_demux.c core/mr_avi.c core/mr_mov.c \
-           core/mr_ts.c \
+           core/mr_ts.c core/mr_ps.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
@@ -43,7 +43,7 @@ MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
 HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
            core/mr_demux.h core/mr_avi.h core/mr_mov.h \
-           core/mr_ts.h \
+           core/mr_ts.h core/mr_ps.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
            core/mr_mpeg1.h core/mr_mpeg2.h \
@@ -52,9 +52,9 @@ HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
 
 all: mr_decode
 
-# pl_mpeg (in mr_mpeg1.c) uses libm; MR_HAVE_MPEG1 enables the harness path.
+# pl_mpeg is integer-only; MR_HAVE_MPEG1 enables the harness path.
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE) -lm
+	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE)
 
 # Optional host HTTPS build used by the local TLS integration test. The Amiga
 # build uses AmiSSL instead; this only validates the shared HTTP/TLS parser and
@@ -66,6 +66,14 @@ mr_decode_ssl: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
 mr_scale_check: tests/mr_scale_check.c core/mr_scale.c core/mr_scale.h \
                 core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_scale_check.c core/mr_scale.c
+
+mr_mpeg1_probe_check: tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
+                      core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c
+
+mr_ps_check: tests/mr_ps_check.c core/mr_ps.c core/mr_ps.h \
+             core/mr_demux.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_ps_check.c core/mr_ps.c
 
 mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c \
                 audio/mr_audio_decode.h $(CORE)
@@ -85,8 +93,10 @@ check-libavc:
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
-check: mr_decode mr_scale_check
+check: mr_decode mr_scale_check mr_mpeg1_probe_check mr_ps_check
 	./mr_scale_check
+	./mr_mpeg1_probe_check
+	./mr_ps_check
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
@@ -159,6 +169,7 @@ check-https: mr_decode_ssl
 	sh tests/run_http_check.sh ./mr_decode_ssl https
 
 clean:
-	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check
+	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check \
+	      mr_mpeg1_probe_check mr_ps_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean

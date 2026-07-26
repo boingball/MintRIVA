@@ -86,10 +86,10 @@ mat4 bt601 = mat4(
 );
 gl_FragColor = vec4(y, cb, cr, 1.0) * bt601;
 
-Audio data is decoded into a struct with either one single float array with the
+Audio data is decoded into a struct with either one single signed 16-bit array with the
 samples for the left and right channel interleaved, or if the 
 PLM_AUDIO_SEPARATE_CHANNELS is defined *before* including this library, into
-two separate float arrays - one for each channel.
+two separate signed 16-bit arrays - one for each channel.
 
 
 Data can be supplied to the high level interface, the demuxer and the decoders
@@ -165,14 +165,16 @@ typedef struct plm_audio_t plm_audio_t;
 
 // Demuxed MPEG PS packet
 // The type maps directly to the various MPEG-PES start codes. PTS is the
-// presentation time stamp of the packet in seconds. Note that not all packets
+// presentation time stamp of the packet in microseconds. Note that not all packets
 // have a PTS value, indicated by PLM_PACKET_INVALID_TS.
 
-#define PLM_PACKET_INVALID_TS -1
+#define PLM_PACKET_INVALID_TS INT64_C(-1)
+#define PLM_TIME_SCALE INT64_C(1000000)
+#define PLM_RATE_SCALE INT64_C(1000)
 
 typedef struct {
 	int type;
-	double pts;
+	int64_t pts;
 	size_t length;
 	uint8_t *data;
 } plm_packet_t;
@@ -198,7 +200,7 @@ typedef struct {
 // different from the internal size of the 3 planes.
 
 typedef struct {
-	double time;
+	int64_t time;
 	unsigned int width;
 	unsigned int height;
 	plm_plane_t y;
@@ -215,7 +217,7 @@ typedef void(*plm_video_decode_callback)
 
 
 // Decoded Audio Samples
-// Samples are stored as normalized (-1, 1) float either interleaved, or if
+// Samples are stored as signed 16-bit PCM either interleaved, or if
 // PLM_AUDIO_SEPARATE_CHANNELS is defined, in two separate arrays.
 // The `count` is always PLM_AUDIO_SAMPLES_PER_FRAME and just there for
 // convenience.
@@ -223,13 +225,13 @@ typedef void(*plm_video_decode_callback)
 #define PLM_AUDIO_SAMPLES_PER_FRAME 1152
 
 typedef struct {
-	double time;
+	int64_t time;
 	unsigned int count;
 	#ifdef PLM_AUDIO_SEPARATE_CHANNELS
-		float left[PLM_AUDIO_SAMPLES_PER_FRAME];
-		float right[PLM_AUDIO_SAMPLES_PER_FRAME];
+		int16_t left[PLM_AUDIO_SAMPLES_PER_FRAME];
+		int16_t right[PLM_AUDIO_SAMPLES_PER_FRAME];
 	#else
-		float interleaved[PLM_AUDIO_SAMPLES_PER_FRAME * 2];
+		int16_t interleaved[PLM_AUDIO_SAMPLES_PER_FRAME * 2];
 	#endif
 } plm_samples_t;
 
@@ -335,12 +337,12 @@ int plm_get_num_video_streams(plm_t *self);
 
 int plm_get_width(plm_t *self);
 int plm_get_height(plm_t *self);
-double plm_get_pixel_aspect_ratio(plm_t *self);
+int64_t plm_get_pixel_aspect_ratio(plm_t *self);
 
 
-// Get the framerate of the video stream in frames per second.
+// Get the framerate of the video stream in milli-frames per second.
 
-double plm_get_framerate(plm_t *self);
+int64_t plm_get_framerate(plm_t *self);
 
 
 // Get or set whether audio decoding is enabled. Default TRUE.
@@ -364,23 +366,23 @@ void plm_set_audio_stream(plm_t *self, int stream_index);
 int plm_get_samplerate(plm_t *self);
 
 
-// Get or set the audio lead time in seconds - the time in which audio samples
+// Get or set the audio lead time in microseconds - the time in which audio samples
 // are decoded in advance (or behind) the video decode time. Typically this
 // should be set to the duration of the buffer of the audio API that you use
 // for output. E.g. for SDL2: (SDL_AudioSpec.samples / samplerate)
 
-double plm_get_audio_lead_time(plm_t *self);
-void plm_set_audio_lead_time(plm_t *self, double lead_time);
+int64_t plm_get_audio_lead_time(plm_t *self);
+void plm_set_audio_lead_time(plm_t *self, int64_t lead_time);
 
 
-// Get the current internal time in seconds.
+// Get the current internal time in microseconds.
 
-double plm_get_time(plm_t *self);
+int64_t plm_get_time(plm_t *self);
 
 
-// Get the video duration of the underlying source in seconds.
+// Get the video duration of the underlying source in microseconds.
 
-double plm_get_duration(plm_t *self);
+int64_t plm_get_duration(plm_t *self);
 
 
 // Rewind all buffers back to the beginning.
@@ -414,12 +416,12 @@ void plm_set_video_decode_callback(plm_t *self, plm_video_decode_callback fp, vo
 void plm_set_audio_decode_callback(plm_t *self, plm_audio_decode_callback fp, void *user);
 
 
-// Advance the internal timer by seconds and decode video/audio up to this time.
+// Advance the internal timer by microseconds and decode video/audio up to this time.
 // This will call the video_decode_callback and audio_decode_callback any number
 // of times. A frame-skip is not implemented, i.e. everything up to current time
 // will be decoded.
 
-void plm_decode(plm_t *self, double seconds);
+void plm_decode(plm_t *self, int64_t microseconds);
 
 
 // Decode and return one video frame. Returns NULL if no frame could be decoded
@@ -453,14 +455,14 @@ plm_samples_t *plm_decode_audio(plm_t *self);
 // satisfied.
 // Returns TRUE if seeking succeeded or FALSE if no frame could be found.
 
-int plm_seek(plm_t *self, double time, int seek_exact);
+int plm_seek(plm_t *self, int64_t time, int seek_exact);
 
 
 // Similar to plm_seek(), but will not call the video_decode_callback,
 // audio_decode_callback or make any attempts to sync audio.
 // Returns the found frame or NULL if no frame could be found.
 
-plm_frame_t *plm_seek_frame(plm_t *self, double time, int seek_exact);
+plm_frame_t *plm_seek_frame(plm_t *self, int64_t time, int seek_exact);
 
 
 
@@ -645,20 +647,20 @@ int plm_demux_has_ended(plm_demux_t *self);
 // Note that the specified time is considered 0-based, regardless of the first 
 // PTS in the data source.
 
-plm_packet_t *plm_demux_seek(plm_demux_t *self, double time, int type, int force_intra);
+plm_packet_t *plm_demux_seek(plm_demux_t *self, int64_t time, int type, int force_intra);
 
 
 // Get the PTS of the first packet of this type. Returns PLM_PACKET_INVALID_TS
 // if not packet of this packet type can be found.
 
-double plm_demux_get_start_time(plm_demux_t *self, int type);
+int64_t plm_demux_get_start_time(plm_demux_t *self, int type);
 
 
 // Get the duration for the specified packet type - i.e. the span between the
 // the first PTS and the last PTS in the data source. This only makes sense when
 // the underlying data source is a file or fixed memory.
 
-double plm_demux_get_duration(plm_demux_t *self, int type);
+int64_t plm_demux_get_duration(plm_demux_t *self, int type);
 
 
 // Decode and return the next packet. The returned packet_t is valid until
@@ -689,10 +691,10 @@ void plm_video_destroy(plm_video_t *self);
 int plm_video_has_header(plm_video_t *self);
 
 
-// Get the framerate in frames per second.
+// Get the framerate in milli-frames per second.
 
-double plm_video_get_framerate(plm_video_t *self);
-double plm_video_get_pixel_aspect_ratio(plm_video_t *self);
+int64_t plm_video_get_framerate(plm_video_t *self);
+int64_t plm_video_get_pixel_aspect_ratio(plm_video_t *self);
 
 
 // Get the display width/height.
@@ -708,16 +710,16 @@ int plm_video_get_height(plm_video_t *self);
 void plm_video_set_no_delay(plm_video_t *self, int no_delay);
 
 
-// Get the current internal time in seconds.
+// Get the current internal time in microseconds.
 
-double plm_video_get_time(plm_video_t *self);
+int64_t plm_video_get_time(plm_video_t *self);
 
 
-// Set the current internal time in seconds. This is only useful when you
+// Set the current internal time in microseconds. This is only useful when you
 // manipulate the underlying video buffer and want to enforce a correct
 // timestamps.
 
-void plm_video_set_time(plm_video_t *self, double time);
+void plm_video_set_time(plm_video_t *self, int64_t time);
 
 
 // Rewind the internal buffer. See plm_buffer_rewind().
@@ -778,16 +780,16 @@ int plm_audio_has_header(plm_audio_t *self);
 int plm_audio_get_samplerate(plm_audio_t *self);
 
 
-// Get the current internal time in seconds.
+// Get the current internal time in microseconds.
 
-double plm_audio_get_time(plm_audio_t *self);
+int64_t plm_audio_get_time(plm_audio_t *self);
 
 
-// Set the current internal time in seconds. This is only useful when you
+// Set the current internal time in microseconds. This is only useful when you
 // manipulate the underlying video buffer and want to enforce a correct
 // timestamps.
 
-void plm_audio_set_time(plm_audio_t *self, double time);
+void plm_audio_set_time(plm_audio_t *self, int64_t time);
 
 
 // Rewind the internal buffer. See plm_buffer_rewind().
@@ -852,7 +854,7 @@ plm_samples_t *plm_audio_decode(plm_audio_t *self);
 
 struct plm_t {
 	plm_demux_t *demux;
-	double time;
+	int64_t time;
 	int has_ended;
 	int loop;
 	int has_decoders;
@@ -865,7 +867,7 @@ struct plm_t {
 	int audio_enabled;
 	int audio_stream_index;
 	int audio_packet_type;
-	double audio_lead_time;
+	int64_t audio_lead_time;
 	plm_buffer_t *audio_buffer;
 	plm_audio_t *audio_decoder;
 
@@ -1055,13 +1057,13 @@ int plm_get_height(plm_t *self) {
 		: 0;
 }
 
-double plm_get_framerate(plm_t *self) {
+int64_t plm_get_framerate(plm_t *self) {
 	return (plm_init_decoders(self) && self->video_decoder)
 		? plm_video_get_framerate(self->video_decoder)
 		: 0;
 }
 
-double plm_get_pixel_aspect_ratio(plm_t *self) {
+int64_t plm_get_pixel_aspect_ratio(plm_t *self) {
 	return (plm_init_decoders(self) && self->video_decoder)
 		? plm_video_get_pixel_aspect_ratio(self->video_decoder)
 		: 0;
@@ -1077,19 +1079,19 @@ int plm_get_samplerate(plm_t *self) {
 		: 0;
 }
 
-double plm_get_audio_lead_time(plm_t *self) {
+int64_t plm_get_audio_lead_time(plm_t *self) {
 	return self->audio_lead_time;
 }
 
-void plm_set_audio_lead_time(plm_t *self, double lead_time) {
+void plm_set_audio_lead_time(plm_t *self, int64_t lead_time) {
 	self->audio_lead_time = lead_time;
 }
 
-double plm_get_time(plm_t *self) {
+int64_t plm_get_time(plm_t *self) {
 	return self->time;
 }
 
-double plm_get_duration(plm_t *self) {
+int64_t plm_get_duration(plm_t *self) {
 	return plm_demux_get_duration(self->demux, PLM_DEMUX_PACKET_VIDEO_1);
 }
 
@@ -1129,7 +1131,7 @@ void plm_set_audio_decode_callback(plm_t *self, plm_audio_decode_callback fp, vo
 	self->audio_decode_callback_user_data = user;
 }
 
-void plm_decode(plm_t *self, double tick) {
+void plm_decode(plm_t *self, int64_t tick) {
 	if (!plm_init_decoders(self)) {
 		return;
 	}
@@ -1146,8 +1148,8 @@ void plm_decode(plm_t *self, double tick) {
 	int decode_video_failed = FALSE;
 	int decode_audio_failed = FALSE;
 
-	double video_target_time = self->time + tick;
-	double audio_target_time = self->time + tick + self->audio_lead_time;
+	int64_t video_target_time = self->time + tick;
+	int64_t audio_target_time = self->time + tick + self->audio_lead_time;
 
 	do {
 		did_decode = FALSE;
@@ -1272,7 +1274,7 @@ void plm_read_packets(plm_t *self, int requested_type) {
 	}
 }
 
-plm_frame_t *plm_seek_frame(plm_t *self, double time, int seek_exact) {
+plm_frame_t *plm_seek_frame(plm_t *self, int64_t time, int seek_exact) {
 	if (!plm_init_decoders(self)) {
 		return NULL;
 	}
@@ -1283,8 +1285,8 @@ plm_frame_t *plm_seek_frame(plm_t *self, double time, int seek_exact) {
 
 	int type = self->video_packet_type;
 
-	double start_time = plm_demux_get_start_time(self->demux, type);
-	double duration = plm_demux_get_duration(self->demux, type);
+	int64_t start_time = plm_demux_get_start_time(self->demux, type);
+	int64_t duration = plm_demux_get_duration(self->demux, type);
 
 	if (time < 0) {
 		time = 0;
@@ -1327,7 +1329,7 @@ plm_frame_t *plm_seek_frame(plm_t *self, double time, int seek_exact) {
 	return frame;
 }
 
-int plm_seek(plm_t *self, double time, int seek_exact) {
+int plm_seek(plm_t *self, int64_t time, int seek_exact) {
 	plm_frame_t *frame = plm_seek_frame(self, time, seek_exact);
 	
 	if (!frame) {
@@ -1347,7 +1349,7 @@ int plm_seek(plm_t *self, double time, int seek_exact) {
 	// with a PTS greater than the current time is found. plm_decode() is then
 	// called to decode enough audio data to satisfy the audio_lead_time.
 
-	double start_time = plm_demux_get_start_time(self->demux, self->video_packet_type);
+	int64_t start_time = plm_demux_get_start_time(self->demux, self->video_packet_type);
 	plm_audio_rewind(self->audio_decoder);
 
 	plm_packet_t *packet = NULL;
@@ -1790,12 +1792,12 @@ static const int PLM_START_SYSTEM = 0xBB;
 struct plm_demux_t {
 	plm_buffer_t *buffer;
 	int destroy_buffer_when_done;
-	double system_clock_ref;
+	int64_t system_clock_ref;
 
 	size_t last_file_size;
-	double last_decoded_pts;
-	double start_time;
-	double duration;
+	int64_t last_decoded_pts;
+	int64_t start_time;
+	int64_t duration;
 
 	int start_code;
 	int has_pack_header;
@@ -1810,7 +1812,7 @@ struct plm_demux_t {
 
 
 void plm_demux_buffer_seek(plm_demux_t *self, size_t pos);
-double plm_demux_decode_time(plm_demux_t *self);
+int64_t plm_demux_decode_time(plm_demux_t *self);
 plm_packet_t *plm_demux_decode_packet(plm_demux_t *self, int type);
 plm_packet_t *plm_demux_get_packet(plm_demux_t *self);
 
@@ -1959,7 +1961,7 @@ void plm_demux_buffer_seek(plm_demux_t *self, size_t pos) {
 	self->start_code = -1;
 }
 
-double plm_demux_get_start_time(plm_demux_t *self, int type) {
+int64_t plm_demux_get_start_time(plm_demux_t *self, int type) {
 	if (self->start_time != PLM_PACKET_INVALID_TS) {
 		return self->start_time;
 	}
@@ -1984,7 +1986,7 @@ double plm_demux_get_start_time(plm_demux_t *self, int type) {
 	return self->start_time;
 }
 
-double plm_demux_get_duration(plm_demux_t *self, int type) {
+int64_t plm_demux_get_duration(plm_demux_t *self, int type) {
 	size_t file_size = plm_buffer_get_size(self->buffer);
 
 	if (
@@ -2010,7 +2012,7 @@ double plm_demux_get_duration(plm_demux_t *self, int type) {
 		plm_demux_buffer_seek(self, seek_pos);
 		self->current_packet.length = 0;
 
-		double last_pts = PLM_PACKET_INVALID_TS;
+		int64_t last_pts = PLM_PACKET_INVALID_TS;
 		plm_packet_t *packet = NULL;
 		while ((packet = plm_demux_decode(self))) {
 			if (packet->pts != PLM_PACKET_INVALID_TS && packet->type == type) {
@@ -2029,7 +2031,7 @@ double plm_demux_get_duration(plm_demux_t *self, int type) {
 	return self->duration;
 }
 
-plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int force_intra) {
+plm_packet_t *plm_demux_seek(plm_demux_t *self, int64_t seek_time, int type, int force_intra) {
 	if (!plm_demux_has_headers(self)) {
 		return NULL;
 	}
@@ -2050,12 +2052,12 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 	// probably something wrong with the file and we just avoid getting into an
 	// infinite loop. 32 retries should be enough for anybody.
 
-	double duration = plm_demux_get_duration(self, type);
+	int64_t duration = plm_demux_get_duration(self, type);
 	long file_size = plm_buffer_get_size(self->buffer);
-	long byterate = file_size / duration;
+	long byterate = (long)(((int64_t)file_size * PLM_TIME_SCALE) / duration);
 
-	double cur_time = self->last_decoded_pts;
-	double scan_span = 1;
+	int64_t cur_time = self->last_decoded_pts;
+	int64_t scan_span = PLM_TIME_SCALE;
 
 	if (seek_time > duration) {
 		seek_time = duration;
@@ -2069,12 +2071,12 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 		int found_packet_with_pts = FALSE;
 		int found_packet_in_range = FALSE;
 		long last_valid_packet_start = -1;
-		double first_packet_time = PLM_PACKET_INVALID_TS;
+		int64_t first_packet_time = PLM_PACKET_INVALID_TS;
 
 		long cur_pos = plm_buffer_tell(self->buffer);
 
 		// Estimate byte offset and jump to it.
-		long offset = (seek_time - cur_time - scan_span) * byterate;
+		long offset = (long)(((seek_time - cur_time - scan_span) * byterate) / PLM_TIME_SCALE);
 		long seek_pos = cur_pos + offset;
 		if (seek_pos < 0) {
 			seek_pos = 0;
@@ -2102,7 +2104,7 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 			// iteration can be a bit more precise.
 			if (packet->pts > seek_time || packet->pts < seek_time - scan_span) {
 				found_packet_with_pts = TRUE;
-				byterate = (seek_pos - cur_pos) / (packet->pts - cur_time);
+				byterate = (long)(((int64_t)(seek_pos - cur_pos) * PLM_TIME_SCALE) / (packet->pts - cur_time));
 				cur_time = packet->pts;
 				break;
 			}
@@ -2164,7 +2166,7 @@ plm_packet_t *plm_demux_seek(plm_demux_t *self, double seek_time, int type, int 
 		// If we didn't find any packet with a PTS, it probably means we reached
 		// the end of the file. Estimate byterate and cur_time accordingly.
 		else if (!found_packet_with_pts) {
-			byterate = (seek_pos - cur_pos) / (duration - cur_time);
+			byterate = (long)(((int64_t)(seek_pos - cur_pos) * PLM_TIME_SCALE) / (duration - cur_time));
 			cur_time = duration;
 		}
 	}
@@ -2212,14 +2214,14 @@ plm_packet_t *plm_demux_decode(plm_demux_t *self) {
 	return NULL;
 }
 
-double plm_demux_decode_time(plm_demux_t *self) {
+int64_t plm_demux_decode_time(plm_demux_t *self) {
 	int64_t clock = plm_buffer_read(self->buffer, 3) << 30;
 	plm_buffer_skip(self->buffer, 1);
 	clock |= plm_buffer_read(self->buffer, 15) << 15;
 	plm_buffer_skip(self->buffer, 1);
 	clock |= plm_buffer_read(self->buffer, 15);
 	plm_buffer_skip(self->buffer, 1);
-	return (double)clock / 90000.0;
+	return clock * PLM_TIME_SCALE / 90000;
 }
 
 plm_packet_t *plm_demux_decode_packet(plm_demux_t *self, int type) {
@@ -2299,17 +2301,14 @@ static const int PLM_START_USER_DATA = 0xB2;
 #define PLM_START_IS_SLICE(c) \
 	(c >= PLM_START_SLICE_FIRST && c <= PLM_START_SLICE_LAST)
 
-static const float PLM_VIDEO_PIXEL_ASPECT_RATIO[] = {
-	1.0000, /* square pixels */
-	0.6735, /* 3:4? */
-	0.7031, /* MPEG-1 / MPEG-2 video encoding divergence? */
-	0.7615, 0.8055, 0.8437, 0.8935, 0.9157, 0.9815,
-	1.0255, 1.0695, 1.0950, 1.1575, 1.2051,
+static const int16_t PLM_VIDEO_PIXEL_ASPECT_RATIO[] = {
+	10000, 6735, 7031, 7615, 8055, 8437, 8935, 9157, 9815,
+	10255, 10695, 10950, 11575, 12051
 };
 
-static const double PLM_VIDEO_PICTURE_RATE[] = {
-	0.000, 23.976, 24.000, 25.000, 29.970, 30.000, 50.000, 59.940,
-	60.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000
+static const uint16_t PLM_VIDEO_PICTURE_RATE[] = {
+	0, 23976, 24000, 25000, 29970, 30000, 50000, 59940,
+	60000, 0, 0, 0, 0, 0, 0, 0
 };
 
 static const uint8_t PLM_VIDEO_ZIG_ZAG[] = {
@@ -2699,9 +2698,9 @@ typedef struct {
 } plm_video_motion_t;
 
 struct plm_video_t {
-	double framerate;
-	double pixel_aspect_ratio;
-	double time;
+	int64_t framerate;
+	int64_t pixel_aspect_ratio;
+	int64_t time;
 	int frames_decoded;
 	int width;
 	int height;
@@ -2803,13 +2802,13 @@ void plm_video_destroy(plm_video_t *self) {
 	PLM_FREE(self);
 }
 
-double plm_video_get_framerate(plm_video_t *self) {
+int64_t plm_video_get_framerate(plm_video_t *self) {
 	return plm_video_has_header(self)
 		? self->framerate
 		: 0;
 }
 
-double plm_video_get_pixel_aspect_ratio(plm_video_t *self) {
+int64_t plm_video_get_pixel_aspect_ratio(plm_video_t *self) {
 	return plm_video_has_header(self)
 		? self->pixel_aspect_ratio
 		: 0;
@@ -2831,12 +2830,12 @@ void plm_video_set_no_delay(plm_video_t *self, int no_delay) {
 	self->assume_no_b_frames = no_delay;
 }
 
-double plm_video_get_time(plm_video_t *self) {
+int64_t plm_video_get_time(plm_video_t *self) {
 	return self->time;
 }
 
-void plm_video_set_time(plm_video_t *self, double time) {
-	self->frames_decoded = self->framerate * time;
+void plm_video_set_time(plm_video_t *self, int64_t time) {
+	self->frames_decoded = (int)(self->framerate * time / (PLM_TIME_SCALE * PLM_RATE_SCALE));
 	self->time = time;
 }
 
@@ -2913,7 +2912,7 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 	
 	frame->time = self->time;
 	self->frames_decoded++;
-	self->time = (double)self->frames_decoded / self->framerate;
+	self->time = (int64_t)self->frames_decoded * PLM_TIME_SCALE * PLM_RATE_SCALE / self->framerate;
 	
 	return frame;
 }
@@ -3686,93 +3685,94 @@ static const int PLM_AUDIO_SCALEFACTOR_BASE[] = {
 	0x02000000, 0x01965FEA, 0x01428A30
 };
 
-static const float PLM_AUDIO_SYNTHESIS_WINDOW[] = {
-	     0.0,     -0.5,     -0.5,     -0.5,     -0.5,     -0.5,
-	    -0.5,     -1.0,     -1.0,     -1.0,     -1.0,     -1.5,
-	    -1.5,     -2.0,     -2.0,     -2.5,     -2.5,     -3.0,
-	    -3.5,     -3.5,     -4.0,     -4.5,     -5.0,     -5.5,
-	    -6.5,     -7.0,     -8.0,     -8.5,     -9.5,    -10.5,
-	   -12.0,    -13.0,    -14.5,    -15.5,    -17.5,    -19.0,
-	   -20.5,    -22.5,    -24.5,    -26.5,    -29.0,    -31.5,
-	   -34.0,    -36.5,    -39.5,    -42.5,    -45.5,    -48.5,
-	   -52.0,    -55.5,    -58.5,    -62.5,    -66.0,    -69.5,
-	   -73.5,    -77.0,    -80.5,    -84.5,    -88.0,    -91.5,
-	   -95.0,    -98.0,   -101.0,   -104.0,    106.5,    109.0,
-	   111.0,    112.5,    113.5,    114.0,    114.0,    113.5,
-	   112.0,    110.5,    107.5,    104.0,    100.0,     94.5,
-	    88.5,     81.5,     73.0,     63.5,     53.0,     41.5,
-	    28.5,     14.5,     -1.0,    -18.0,    -36.0,    -55.5,
-	   -76.5,    -98.5,   -122.0,   -147.0,   -173.5,   -200.5,
-	  -229.5,   -259.5,   -290.5,   -322.5,   -355.5,   -389.5,
-	  -424.0,   -459.5,   -495.5,   -532.0,   -568.5,   -605.0,
-	  -641.5,   -678.0,   -714.0,   -749.0,   -783.5,   -817.0,
-	  -849.0,   -879.5,   -908.5,   -935.0,   -959.5,   -981.0,
-	 -1000.5,  -1016.0,  -1028.5,  -1037.5,  -1042.5,  -1043.5,
-	 -1040.0,  -1031.5,   1018.5,   1000.0,    976.0,    946.5,
-	   911.0,    869.5,    822.0,    767.5,    707.0,    640.0,
-	   565.5,    485.0,    397.0,    302.5,    201.0,     92.5,
-	   -22.5,   -144.0,   -272.5,   -407.0,   -547.5,   -694.0,
-	  -846.0,  -1003.0,  -1165.0,  -1331.5,  -1502.0,  -1675.5,
-	 -1852.5,  -2031.5,  -2212.5,  -2394.0,  -2576.5,  -2758.5,
-	 -2939.5,  -3118.5,  -3294.5,  -3467.5,  -3635.5,  -3798.5,
-	 -3955.0,  -4104.5,  -4245.5,  -4377.5,  -4499.0,  -4609.5,
-	 -4708.0,  -4792.5,  -4863.5,  -4919.0,  -4958.0,  -4979.5,
-	 -4983.0,  -4967.5,  -4931.5,  -4875.0,  -4796.0,  -4694.5,
-	 -4569.5,  -4420.0,  -4246.0,  -4046.0,  -3820.0,  -3567.0,
-	  3287.0,   2979.5,   2644.0,   2280.5,   1888.0,   1467.5,
-	  1018.5,    541.0,     35.0,   -499.0,  -1061.0,  -1650.0,
-	 -2266.5,  -2909.0,  -3577.0,  -4270.0,  -4987.5,  -5727.5,
-	 -6490.0,  -7274.0,  -8077.5,  -8899.5,  -9739.0, -10594.5,
-	-11464.5, -12347.0, -13241.0, -14144.5, -15056.0, -15973.5,
-	-16895.5, -17820.0, -18744.5, -19668.0, -20588.0, -21503.0,
-	-22410.5, -23308.5, -24195.0, -25068.5, -25926.5, -26767.0,
-	-27589.0, -28389.0, -29166.5, -29919.0, -30644.5, -31342.0,
-	-32009.5, -32645.0, -33247.0, -33814.5, -34346.0, -34839.5,
-	-35295.0, -35710.0, -36084.5, -36417.5, -36707.5, -36954.0,
-	-37156.5, -37315.0, -37428.0, -37496.0,  37519.0,  37496.0,
-	 37428.0,  37315.0,  37156.5,  36954.0,  36707.5,  36417.5,
-	 36084.5,  35710.0,  35295.0,  34839.5,  34346.0,  33814.5,
-	 33247.0,  32645.0,  32009.5,  31342.0,  30644.5,  29919.0,
-	 29166.5,  28389.0,  27589.0,  26767.0,  25926.5,  25068.5,
-	 24195.0,  23308.5,  22410.5,  21503.0,  20588.0,  19668.0,
-	 18744.5,  17820.0,  16895.5,  15973.5,  15056.0,  14144.5,
-	 13241.0,  12347.0,  11464.5,  10594.5,   9739.0,   8899.5,
-	  8077.5,   7274.0,   6490.0,   5727.5,   4987.5,   4270.0,
-	  3577.0,   2909.0,   2266.5,   1650.0,   1061.0,    499.0,
-	   -35.0,   -541.0,  -1018.5,  -1467.5,  -1888.0,  -2280.5,
-	 -2644.0,  -2979.5,   3287.0,   3567.0,   3820.0,   4046.0,
-	  4246.0,   4420.0,   4569.5,   4694.5,   4796.0,   4875.0,
-	  4931.5,   4967.5,   4983.0,   4979.5,   4958.0,   4919.0,
-	  4863.5,   4792.5,   4708.0,   4609.5,   4499.0,   4377.5,
-	  4245.5,   4104.5,   3955.0,   3798.5,   3635.5,   3467.5,
-	  3294.5,   3118.5,   2939.5,   2758.5,   2576.5,   2394.0,
-	  2212.5,   2031.5,   1852.5,   1675.5,   1502.0,   1331.5,
-	  1165.0,   1003.0,    846.0,    694.0,    547.5,    407.0,
-	   272.5,    144.0,     22.5,    -92.5,   -201.0,   -302.5,
-	  -397.0,   -485.0,   -565.5,   -640.0,   -707.0,   -767.5,
-	  -822.0,   -869.5,   -911.0,   -946.5,   -976.0,  -1000.0,
-	  1018.5,   1031.5,   1040.0,   1043.5,   1042.5,   1037.5,
-	  1028.5,   1016.0,   1000.5,    981.0,    959.5,    935.0,
-	   908.5,    879.5,    849.0,    817.0,    783.5,    749.0,
-	   714.0,    678.0,    641.5,    605.0,    568.5,    532.0,
-	   495.5,    459.5,    424.0,    389.5,    355.5,    322.5,
-	   290.5,    259.5,    229.5,    200.5,    173.5,    147.0,
-	   122.0,     98.5,     76.5,     55.5,     36.0,     18.0,
-	     1.0,    -14.5,    -28.5,    -41.5,    -53.0,    -63.5,
-	   -73.0,    -81.5,    -88.5,    -94.5,   -100.0,   -104.0,
-	  -107.5,   -110.5,   -112.0,   -113.5,   -114.0,   -114.0,
-	  -113.5,   -112.5,   -111.0,   -109.0,    106.5,    104.0,
-	   101.0,     98.0,     95.0,     91.5,     88.0,     84.5,
-	    80.5,     77.0,     73.5,     69.5,     66.0,     62.5,
-	    58.5,     55.5,     52.0,     48.5,     45.5,     42.5,
-	    39.5,     36.5,     34.0,     31.5,     29.0,     26.5,
-	    24.5,     22.5,     20.5,     19.0,     17.5,     15.5,
-	    14.5,     13.0,     12.0,     10.5,      9.5,      8.5,
-	     8.0,      7.0,      6.5,      5.5,      5.0,      4.5,
-	     4.0,      3.5,      3.5,      3.0,      2.5,      2.5,
-	     2.0,      2.0,      1.5,      1.5,      1.0,      1.0,
-	     1.0,      1.0,      0.5,      0.5,      0.5,      0.5,
-	     0.5,      0.5
+/* ISO synthesis window at 2x scale, preserving its half-integer entries. */
+static const int32_t PLM_AUDIO_SYNTHESIS_WINDOW[] = {
+	     0,     -1,     -1,     -1,     -1,     -1,
+	    -1,     -2,     -2,     -2,     -2,     -3,
+	    -3,     -4,     -4,     -5,     -5,     -6,
+	    -7,     -7,     -8,     -9,     -10,     -11,
+	    -13,     -14,     -16,     -17,     -19,    -21,
+	   -24,    -26,    -29,    -31,    -35,    -38,
+	   -41,    -45,    -49,    -53,    -58,    -63,
+	   -68,    -73,    -79,    -85,    -91,    -97,
+	   -104,    -111,    -117,    -125,    -132,    -139,
+	   -147,    -154,    -161,    -169,    -176,    -183,
+	   -190,    -196,   -202,   -208,    213,    218,
+	   222,    225,    227,    228,    228,    227,
+	   224,    221,    215,    208,    200,     189,
+	    177,     163,     146,     127,     106,     83,
+	    57,     29,     -2,    -36,    -72,    -111,
+	   -153,    -197,   -244,   -294,   -347,   -401,
+	  -459,   -519,   -581,   -645,   -711,   -779,
+	  -848,   -919,   -991,   -1064,   -1137,   -1210,
+	  -1283,   -1356,   -1428,   -1498,   -1567,   -1634,
+	  -1698,   -1759,   -1817,   -1870,   -1919,   -1962,
+	 -2001,  -2032,  -2057,  -2075,  -2085,  -2087,
+	 -2080,  -2063,   2037,   2000,    1952,    1893,
+	   1822,    1739,    1644,    1535,    1414,    1280,
+	   1131,    970,    794,    605,    402,     185,
+	   -45,   -288,   -545,   -814,   -1095,   -1388,
+	  -1692,  -2006,  -2330,  -2663,  -3004,  -3351,
+	 -3705,  -4063,  -4425,  -4788,  -5153,  -5517,
+	 -5879,  -6237,  -6589,  -6935,  -7271,  -7597,
+	 -7910,  -8209,  -8491,  -8755,  -8998,  -9219,
+	 -9416,  -9585,  -9727,  -9838,  -9916,  -9959,
+	 -9966,  -9935,  -9863,  -9750,  -9592,  -9389,
+	 -9139,  -8840,  -8492,  -8092,  -7640,  -7134,
+	  6574,   5959,   5288,   4561,   3776,   2935,
+	  2037,    1082,     70,   -998,  -2122,  -3300,
+	 -4533,  -5818,  -7154,  -8540,  -9975,  -11455,
+	 -12980,  -14548,  -16155,  -17799,  -19478, -21189,
+	-22929, -24694, -26482, -28289, -30112, -31947,
+	-33791, -35640, -37489, -39336, -41176, -43006,
+	-44821, -46617, -48390, -50137, -51853, -53534,
+	-55178, -56778, -58333, -59838, -61289, -62684,
+	-64019, -65290, -66494, -67629, -68692, -69679,
+	-70590, -71420, -72169, -72835, -73415, -73908,
+	-74313, -74630, -74856, -74992,  75038,  74992,
+	 74856,  74630,  74313,  73908,  73415,  72835,
+	 72169,  71420,  70590,  69679,  68692,  67629,
+	 66494,  65290,  64019,  62684,  61289,  59838,
+	 58333,  56778,  55178,  53534,  51853,  50137,
+	 48390,  46617,  44821,  43006,  41176,  39336,
+	 37489,  35640,  33791,  31947,  30112,  28289,
+	 26482,  24694,  22929,  21189,   19478,   17799,
+	  16155,   14548,   12980,   11455,   9975,   8540,
+	  7154,   5818,   4533,   3300,   2122,    998,
+	   -70,   -1082,  -2037,  -2935,  -3776,  -4561,
+	 -5288,  -5959,   6574,   7134,   7640,   8092,
+	  8492,   8840,   9139,   9389,   9592,   9750,
+	  9863,   9935,   9966,   9959,   9916,   9838,
+	  9727,   9585,   9416,   9219,   8998,   8755,
+	  8491,   8209,   7910,   7597,   7271,   6935,
+	  6589,   6237,   5879,   5517,   5153,   4788,
+	  4425,   4063,   3705,   3351,   3004,   2663,
+	  2330,   2006,    1692,    1388,    1095,    814,
+	   545,    288,     45,    -185,   -402,   -605,
+	  -794,   -970,   -1131,   -1280,   -1414,   -1535,
+	  -1644,   -1739,   -1822,   -1893,   -1952,  -2000,
+	  2037,   2063,   2080,   2087,   2085,   2075,
+	  2057,   2032,   2001,    1962,    1919,    1870,
+	   1817,    1759,    1698,    1634,    1567,    1498,
+	   1428,    1356,    1283,    1210,    1137,    1064,
+	   991,    919,    848,    779,    711,    645,
+	   581,    519,    459,    401,    347,    294,
+	   244,     197,     153,     111,     72,     36,
+	     2,    -29,    -57,    -83,    -106,    -127,
+	   -146,    -163,    -177,    -189,   -200,   -208,
+	  -215,   -221,   -224,   -227,   -228,   -228,
+	  -227,   -225,   -222,   -218,    213,    208,
+	   202,     196,     190,     183,     176,     169,
+	    161,     154,     147,     139,     132,     125,
+	    117,     111,     104,     97,     91,     85,
+	    79,     73,     68,     63,     58,     53,
+	    49,     45,     41,     38,     35,     31,
+	    29,     26,     24,     21,      19,      17,
+	     16,      14,      13,      11,      10,      9,
+	     8,      7,      7,      6,      5,      5,
+	     4,      4,      3,      3,      2,      2,
+	     2,      2,      1,      1,      1,      1,
+	     1,      1
 };
 
 // Quantizer lookup, step 1: bitrate classes
@@ -3857,7 +3857,7 @@ static const plm_quantizer_spec_t PLM_AUDIO_QUANT_TAB[] = {
 };
 
 struct plm_audio_t {
-	double time;
+	int64_t time;
 	int samples_decoded;
 	int samplerate_index;
 	int bitrate_index;
@@ -3878,9 +3878,9 @@ struct plm_audio_t {
 	int sample[2][32][3];
 
 	plm_samples_t samples;
-	float D[1024];
-	float V[2][1024];
-	float U[32];
+	int32_t D[1024];
+	int32_t V[2][1024];
+	int64_t U[32];
 };
 
 int plm_audio_find_frame_sync(plm_audio_t *self);
@@ -3888,7 +3888,8 @@ int plm_audio_decode_header(plm_audio_t *self);
 void plm_audio_decode_frame(plm_audio_t *self);
 const plm_quantizer_spec_t *plm_audio_read_allocation(plm_audio_t *self, int sb, int tab3);
 void plm_audio_read_samples(plm_audio_t *self, int ch, int sb, int part); 
-void plm_audio_idct36(int s[32][3], int ss, float *d, int dp);
+void plm_audio_idct36(int s[32][3], int ss, int32_t *d, int dp);
+static int16_t plm_audio_clamp(int64_t value);
 
 plm_audio_t *plm_audio_create_with_buffer(plm_buffer_t *buffer, int destroy_when_done) {
 	plm_audio_t *self = (plm_audio_t *)PLM_MALLOC(sizeof(plm_audio_t));
@@ -3899,8 +3900,8 @@ plm_audio_t *plm_audio_create_with_buffer(plm_buffer_t *buffer, int destroy_when
 	self->destroy_buffer_when_done = destroy_when_done;
 	self->samplerate_index = 3; // Indicates 0
 
-	memcpy(self->D, PLM_AUDIO_SYNTHESIS_WINDOW, 512 * sizeof(float));
-	memcpy(self->D + 512, PLM_AUDIO_SYNTHESIS_WINDOW, 512 * sizeof(float));
+	memcpy(self->D, PLM_AUDIO_SYNTHESIS_WINDOW, 512 * sizeof(int32_t));
+	memcpy(self->D + 512, PLM_AUDIO_SYNTHESIS_WINDOW, 512 * sizeof(int32_t));
 
 	// Attempt to decode first header
 	self->next_frame_data_size = plm_audio_decode_header(self);
@@ -3930,13 +3931,12 @@ int plm_audio_get_samplerate(plm_audio_t *self) {
 		: 0;
 }
 
-double plm_audio_get_time(plm_audio_t *self) {
+int64_t plm_audio_get_time(plm_audio_t *self) {
 	return self->time;
 }
 
-void plm_audio_set_time(plm_audio_t *self, double time) {
-	self->samples_decoded = time * 
-		(double)PLM_AUDIO_SAMPLE_RATE[self->samplerate_index];
+void plm_audio_set_time(plm_audio_t *self, int64_t time) {
+	self->samples_decoded = (int)(time * PLM_AUDIO_SAMPLE_RATE[self->samplerate_index] / PLM_TIME_SCALE);
 	self->time = time;
 }
 
@@ -3973,8 +3973,8 @@ plm_samples_t *plm_audio_decode(plm_audio_t *self) {
 	self->samples.time = self->time;
 
 	self->samples_decoded += PLM_AUDIO_SAMPLES_PER_FRAME;
-	self->time = (double)self->samples_decoded / 
-		(double)PLM_AUDIO_SAMPLE_RATE[self->samplerate_index];
+	self->time = (int64_t)self->samples_decoded * PLM_TIME_SCALE /
+		PLM_AUDIO_SAMPLE_RATE[self->samplerate_index];
 	
 	return &self->samples;
 }
@@ -4195,7 +4195,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 					int v_index = (self->v_pos % 128) >> 1;
 					while (v_index < 1024) {
 						for (int i = 0; i < 32; ++i) {
-							self->U[i] += self->D[d_index++] * self->V[ch][v_index++];
+							self->U[i] += (int64_t)self->D[d_index++] * self->V[ch][v_index++];
 						}
 
 						v_index += 128 - 32;
@@ -4206,7 +4206,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 					v_index = (128 - 32 + 1024) - v_index;
 					while (v_index < 1024) {
 						for (int i = 0; i < 32; ++i) {
-							self->U[i] += self->D[d_index++] * self->V[ch][v_index++];
+							self->U[i] += (int64_t)self->D[d_index++] * self->V[ch][v_index++];
 						}
 
 						v_index += 128 - 32;
@@ -4215,16 +4215,16 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 
 					// Output samples
 					#ifdef PLM_AUDIO_SEPARATE_CHANNELS
-						float *out_channel = ch == 0
+						int16_t *out_channel = ch == 0
 							? self->samples.left
 							: self->samples.right;
 						for (int j = 0; j < 32; j++) {
-							out_channel[out_pos + j] = self->U[j] / -1090519040.0f;
+							out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
 						}
 					#else
 						for (int j = 0; j < 32; j++) {
 							self->samples.interleaved[((out_pos + j) << 1) + ch] = 
-								self->U[j] / -1090519040.0f;
+								plm_audio_clamp(self->U[j] / -66562);
 						}
 					#endif
 				} // End of synthesis channel loop
@@ -4295,103 +4295,117 @@ void plm_audio_read_samples(plm_audio_t *self, int ch, int sb, int part) {
 	sample[2] = (val * (sf >> 12) + ((val * (sf & 4095) + 2048) >> 12)) >> 12;
 }
 
-void plm_audio_idct36(int s[32][3], int ss, float *d, int dp) {
-	float t01, t02, t03, t04, t05, t06, t07, t08, t09, t10, t11, t12,
+/* Q15 coefficient multiply with symmetric, half-away-from-zero rounding. */
+static int32_t plm_audio_mul_q15(int32_t value, int32_t coefficient) {
+	int64_t product = (int64_t)value * coefficient;
+	return product < 0
+		? -(int32_t)((-product + 16384) >> 15)
+		:  (int32_t)(( product + 16384) >> 15);
+}
+
+static int16_t plm_audio_clamp(int64_t value) {
+	if (value > 32767) return 32767;
+	if (value < -32768) return -32768;
+	return (int16_t)value;
+}
+
+void plm_audio_idct36(int s[32][3], int ss, int32_t *d, int dp) {
+	int32_t t01, t02, t03, t04, t05, t06, t07, t08, t09, t10, t11, t12,
 		t13, t14, t15, t16, t17, t18, t19, t20, t21, t22, t23, t24,
 		t25, t26, t27, t28, t29, t30, t31, t32, t33;
 
-	t01 = (float)(s[0][ss] + s[31][ss]); t02 = (float)(s[0][ss] - s[31][ss]) * 0.500602998235f;
-	t03 = (float)(s[1][ss] + s[30][ss]); t04 = (float)(s[1][ss] - s[30][ss]) * 0.505470959898f;
-	t05 = (float)(s[2][ss] + s[29][ss]); t06 = (float)(s[2][ss] - s[29][ss]) * 0.515447309923f;
-	t07 = (float)(s[3][ss] + s[28][ss]); t08 = (float)(s[3][ss] - s[28][ss]) * 0.53104259109f;
-	t09 = (float)(s[4][ss] + s[27][ss]); t10 = (float)(s[4][ss] - s[27][ss]) * 0.553103896034f;
-	t11 = (float)(s[5][ss] + s[26][ss]); t12 = (float)(s[5][ss] - s[26][ss]) * 0.582934968206f;
-	t13 = (float)(s[6][ss] + s[25][ss]); t14 = (float)(s[6][ss] - s[25][ss]) * 0.622504123036f;
-	t15 = (float)(s[7][ss] + s[24][ss]); t16 = (float)(s[7][ss] - s[24][ss]) * 0.674808341455f;
-	t17 = (float)(s[8][ss] + s[23][ss]); t18 = (float)(s[8][ss] - s[23][ss]) * 0.744536271002f;
-	t19 = (float)(s[9][ss] + s[22][ss]); t20 = (float)(s[9][ss] - s[22][ss]) * 0.839349645416f;
-	t21 = (float)(s[10][ss] + s[21][ss]); t22 = (float)(s[10][ss] - s[21][ss]) * 0.972568237862f;
-	t23 = (float)(s[11][ss] + s[20][ss]); t24 = (float)(s[11][ss] - s[20][ss]) * 1.16943993343f;
-	t25 = (float)(s[12][ss] + s[19][ss]); t26 = (float)(s[12][ss] - s[19][ss]) * 1.48416461631f;
-	t27 = (float)(s[13][ss] + s[18][ss]); t28 = (float)(s[13][ss] - s[18][ss]) * 2.05778100995f;
-	t29 = (float)(s[14][ss] + s[17][ss]); t30 = (float)(s[14][ss] - s[17][ss]) * 3.40760841847f;
-	t31 = (float)(s[15][ss] + s[16][ss]); t32 = (float)(s[15][ss] - s[16][ss]) * 10.1900081235f;
+	t01 = (s[0][ss] + s[31][ss]); t02 = plm_audio_mul_q15((s[0][ss] - s[31][ss]), 16404);
+	t03 = (s[1][ss] + s[30][ss]); t04 = plm_audio_mul_q15((s[1][ss] - s[30][ss]), 16563);
+	t05 = (s[2][ss] + s[29][ss]); t06 = plm_audio_mul_q15((s[2][ss] - s[29][ss]), 16890);
+	t07 = (s[3][ss] + s[28][ss]); t08 = plm_audio_mul_q15((s[3][ss] - s[28][ss]), 17401);
+	t09 = (s[4][ss] + s[27][ss]); t10 = plm_audio_mul_q15((s[4][ss] - s[27][ss]), 18124);
+	t11 = (s[5][ss] + s[26][ss]); t12 = plm_audio_mul_q15((s[5][ss] - s[26][ss]), 19102);
+	t13 = (s[6][ss] + s[25][ss]); t14 = plm_audio_mul_q15((s[6][ss] - s[25][ss]), 20398);
+	t15 = (s[7][ss] + s[24][ss]); t16 = plm_audio_mul_q15((s[7][ss] - s[24][ss]), 22112);
+	t17 = (s[8][ss] + s[23][ss]); t18 = plm_audio_mul_q15((s[8][ss] - s[23][ss]), 24397);
+	t19 = (s[9][ss] + s[22][ss]); t20 = plm_audio_mul_q15((s[9][ss] - s[22][ss]), 27504);
+	t21 = (s[10][ss] + s[21][ss]); t22 = plm_audio_mul_q15((s[10][ss] - s[21][ss]), 31869);
+	t23 = (s[11][ss] + s[20][ss]); t24 = plm_audio_mul_q15((s[11][ss] - s[20][ss]), 38320);
+	t25 = (s[12][ss] + s[19][ss]); t26 = plm_audio_mul_q15((s[12][ss] - s[19][ss]), 48633);
+	t27 = (s[13][ss] + s[18][ss]); t28 = plm_audio_mul_q15((s[13][ss] - s[18][ss]), 67429);
+	t29 = (s[14][ss] + s[17][ss]); t30 = plm_audio_mul_q15((s[14][ss] - s[17][ss]), 111661);
+	t31 = (s[15][ss] + s[16][ss]); t32 = plm_audio_mul_q15((s[15][ss] - s[16][ss]), 333906);
 
-	t33 = t01 + t31; t31 = (t01 - t31) * 0.502419286188f;
-	t01 = t03 + t29; t29 = (t03 - t29) * 0.52249861494f;
-	t03 = t05 + t27; t27 = (t05 - t27) * 0.566944034816f;
-	t05 = t07 + t25; t25 = (t07 - t25) * 0.64682178336f;
-	t07 = t09 + t23; t23 = (t09 - t23) * 0.788154623451f;
-	t09 = t11 + t21; t21 = (t11 - t21) * 1.06067768599f;
-	t11 = t13 + t19; t19 = (t13 - t19) * 1.72244709824f;
-	t13 = t15 + t17; t17 = (t15 - t17) * 5.10114861869f;
-	t15 = t33 + t13; t13 = (t33 - t13) * 0.509795579104f;
-	t33 = t01 + t11; t01 = (t01 - t11) * 0.601344886935f;
-	t11 = t03 + t09; t09 = (t03 - t09) * 0.899976223136f;
-	t03 = t05 + t07; t07 = (t05 - t07) * 2.56291544774f;
-	t05 = t15 + t03; t15 = (t15 - t03) * 0.541196100146f;
-	t03 = t33 + t11; t11 = (t33 - t11) * 1.30656296488f;
-	t33 = t05 + t03; t05 = (t05 - t03) * 0.707106781187f;
-	t03 = t15 + t11; t15 = (t15 - t11) * 0.707106781187f;
+	t33 = t01 + t31; t31 = plm_audio_mul_q15((t01 - t31), 16463);
+	t01 = t03 + t29; t29 = plm_audio_mul_q15((t03 - t29), 17121);
+	t03 = t05 + t27; t27 = plm_audio_mul_q15((t05 - t27), 18578);
+	t05 = t07 + t25; t25 = plm_audio_mul_q15((t07 - t25), 21195);
+	t07 = t09 + t23; t23 = plm_audio_mul_q15((t09 - t23), 25826);
+	t09 = t11 + t21; t21 = plm_audio_mul_q15((t11 - t21), 34756);
+	t11 = t13 + t19; t19 = plm_audio_mul_q15((t13 - t19), 56441);
+	t13 = t15 + t17; t17 = plm_audio_mul_q15((t15 - t17), 167154);
+	t15 = t33 + t13; t13 = plm_audio_mul_q15((t33 - t13), 16705);
+	t33 = t01 + t11; t01 = plm_audio_mul_q15((t01 - t11), 19705);
+	t11 = t03 + t09; t09 = plm_audio_mul_q15((t03 - t09), 29490);
+	t03 = t05 + t07; t07 = plm_audio_mul_q15((t05 - t07), 83982);
+	t05 = t15 + t03; t15 = plm_audio_mul_q15((t15 - t03), 17734);
+	t03 = t33 + t11; t11 = plm_audio_mul_q15((t33 - t11), 42813);
+	t33 = t05 + t03; t05 = plm_audio_mul_q15((t05 - t03), 23170);
+	t03 = t15 + t11; t15 = plm_audio_mul_q15((t15 - t11), 23170);
 	t03 += t15;
-	t11 = t13 + t07; t13 = (t13 - t07) * 0.541196100146f;
-	t07 = t01 + t09; t09 = (t01 - t09) * 1.30656296488f;
-	t01 = t11 + t07; t07 = (t11 - t07) * 0.707106781187f;
-	t11 = t13 + t09; t13 = (t13 - t09) * 0.707106781187f;
+	t11 = t13 + t07; t13 = plm_audio_mul_q15((t13 - t07), 17734);
+	t07 = t01 + t09; t09 = plm_audio_mul_q15((t01 - t09), 42813);
+	t01 = t11 + t07; t07 = plm_audio_mul_q15((t11 - t07), 23170);
+	t11 = t13 + t09; t13 = plm_audio_mul_q15((t13 - t09), 23170);
 	t11 += t13; t01 += t11;
 	t11 += t07; t07 += t13;
-	t09 = t31 + t17; t31 = (t31 - t17) * 0.509795579104f;
-	t17 = t29 + t19; t29 = (t29 - t19) * 0.601344886935f;
-	t19 = t27 + t21; t21 = (t27 - t21) * 0.899976223136f;
-	t27 = t25 + t23; t23 = (t25 - t23) * 2.56291544774f;
-	t25 = t09 + t27; t09 = (t09 - t27) * 0.541196100146f;
-	t27 = t17 + t19; t19 = (t17 - t19) * 1.30656296488f;
-	t17 = t25 + t27; t27 = (t25 - t27) * 0.707106781187f;
-	t25 = t09 + t19; t19 = (t09 - t19) * 0.707106781187f;
+	t09 = t31 + t17; t31 = plm_audio_mul_q15((t31 - t17), 16705);
+	t17 = t29 + t19; t29 = plm_audio_mul_q15((t29 - t19), 19705);
+	t19 = t27 + t21; t21 = plm_audio_mul_q15((t27 - t21), 29490);
+	t27 = t25 + t23; t23 = plm_audio_mul_q15((t25 - t23), 83982);
+	t25 = t09 + t27; t09 = plm_audio_mul_q15((t09 - t27), 17734);
+	t27 = t17 + t19; t19 = plm_audio_mul_q15((t17 - t19), 42813);
+	t17 = t25 + t27; t27 = plm_audio_mul_q15((t25 - t27), 23170);
+	t25 = t09 + t19; t19 = plm_audio_mul_q15((t09 - t19), 23170);
 	t25 += t19;
-	t09 = t31 + t23; t31 = (t31 - t23) * 0.541196100146f;
-	t23 = t29 + t21; t21 = (t29 - t21) * 1.30656296488f;
-	t29 = t09 + t23; t23 = (t09 - t23) * 0.707106781187f;
-	t09 = t31 + t21; t31 = (t31 - t21) * 0.707106781187f;
+	t09 = t31 + t23; t31 = plm_audio_mul_q15((t31 - t23), 17734);
+	t23 = t29 + t21; t21 = plm_audio_mul_q15((t29 - t21), 42813);
+	t29 = t09 + t23; t23 = plm_audio_mul_q15((t09 - t23), 23170);
+	t09 = t31 + t21; t31 = plm_audio_mul_q15((t31 - t21), 23170);
 	t09 += t31;	t29 += t09;	t09 += t23;	t23 += t31;
 	t17 += t29;	t29 += t25;	t25 += t09;	t09 += t27;
 	t27 += t23;	t23 += t19; t19 += t31;
-	t21 = t02 + t32; t02 = (t02 - t32) * 0.502419286188f;
-	t32 = t04 + t30; t04 = (t04 - t30) * 0.52249861494f;
-	t30 = t06 + t28; t28 = (t06 - t28) * 0.566944034816f;
-	t06 = t08 + t26; t08 = (t08 - t26) * 0.64682178336f;
-	t26 = t10 + t24; t10 = (t10 - t24) * 0.788154623451f;
-	t24 = t12 + t22; t22 = (t12 - t22) * 1.06067768599f;
-	t12 = t14 + t20; t20 = (t14 - t20) * 1.72244709824f;
-	t14 = t16 + t18; t16 = (t16 - t18) * 5.10114861869f;
-	t18 = t21 + t14; t14 = (t21 - t14) * 0.509795579104f;
-	t21 = t32 + t12; t32 = (t32 - t12) * 0.601344886935f;
-	t12 = t30 + t24; t24 = (t30 - t24) * 0.899976223136f;
-	t30 = t06 + t26; t26 = (t06 - t26) * 2.56291544774f;
-	t06 = t18 + t30; t18 = (t18 - t30) * 0.541196100146f;
-	t30 = t21 + t12; t12 = (t21 - t12) * 1.30656296488f;
-	t21 = t06 + t30; t30 = (t06 - t30) * 0.707106781187f;
-	t06 = t18 + t12; t12 = (t18 - t12) * 0.707106781187f;
+	t21 = t02 + t32; t02 = plm_audio_mul_q15((t02 - t32), 16463);
+	t32 = t04 + t30; t04 = plm_audio_mul_q15((t04 - t30), 17121);
+	t30 = t06 + t28; t28 = plm_audio_mul_q15((t06 - t28), 18578);
+	t06 = t08 + t26; t08 = plm_audio_mul_q15((t08 - t26), 21195);
+	t26 = t10 + t24; t10 = plm_audio_mul_q15((t10 - t24), 25826);
+	t24 = t12 + t22; t22 = plm_audio_mul_q15((t12 - t22), 34756);
+	t12 = t14 + t20; t20 = plm_audio_mul_q15((t14 - t20), 56441);
+	t14 = t16 + t18; t16 = plm_audio_mul_q15((t16 - t18), 167154);
+	t18 = t21 + t14; t14 = plm_audio_mul_q15((t21 - t14), 16705);
+	t21 = t32 + t12; t32 = plm_audio_mul_q15((t32 - t12), 19705);
+	t12 = t30 + t24; t24 = plm_audio_mul_q15((t30 - t24), 29490);
+	t30 = t06 + t26; t26 = plm_audio_mul_q15((t06 - t26), 83982);
+	t06 = t18 + t30; t18 = plm_audio_mul_q15((t18 - t30), 17734);
+	t30 = t21 + t12; t12 = plm_audio_mul_q15((t21 - t12), 42813);
+	t21 = t06 + t30; t30 = plm_audio_mul_q15((t06 - t30), 23170);
+	t06 = t18 + t12; t12 = plm_audio_mul_q15((t18 - t12), 23170);
 	t06 += t12;
-	t18 = t14 + t26; t26 = (t14 - t26) * 0.541196100146f;
-	t14 = t32 + t24; t24 = (t32 - t24) * 1.30656296488f;
-	t32 = t18 + t14; t14 = (t18 - t14) * 0.707106781187f;
-	t18 = t26 + t24; t24 = (t26 - t24) * 0.707106781187f;
+	t18 = t14 + t26; t26 = plm_audio_mul_q15((t14 - t26), 17734);
+	t14 = t32 + t24; t24 = plm_audio_mul_q15((t32 - t24), 42813);
+	t32 = t18 + t14; t14 = plm_audio_mul_q15((t18 - t14), 23170);
+	t18 = t26 + t24; t24 = plm_audio_mul_q15((t26 - t24), 23170);
 	t18 += t24; t32 += t18;
 	t18 += t14; t26 = t14 + t24;
-	t14 = t02 + t16; t02 = (t02 - t16) * 0.509795579104f;
-	t16 = t04 + t20; t04 = (t04 - t20) * 0.601344886935f;
-	t20 = t28 + t22; t22 = (t28 - t22) * 0.899976223136f;
-	t28 = t08 + t10; t10 = (t08 - t10) * 2.56291544774f;
-	t08 = t14 + t28; t14 = (t14 - t28) * 0.541196100146f;
-	t28 = t16 + t20; t20 = (t16 - t20) * 1.30656296488f;
-	t16 = t08 + t28; t28 = (t08 - t28) * 0.707106781187f;
-	t08 = t14 + t20; t20 = (t14 - t20) * 0.707106781187f;
+	t14 = t02 + t16; t02 = plm_audio_mul_q15((t02 - t16), 16705);
+	t16 = t04 + t20; t04 = plm_audio_mul_q15((t04 - t20), 19705);
+	t20 = t28 + t22; t22 = plm_audio_mul_q15((t28 - t22), 29490);
+	t28 = t08 + t10; t10 = plm_audio_mul_q15((t08 - t10), 83982);
+	t08 = t14 + t28; t14 = plm_audio_mul_q15((t14 - t28), 17734);
+	t28 = t16 + t20; t20 = plm_audio_mul_q15((t16 - t20), 42813);
+	t16 = t08 + t28; t28 = plm_audio_mul_q15((t08 - t28), 23170);
+	t08 = t14 + t20; t20 = plm_audio_mul_q15((t14 - t20), 23170);
 	t08 += t20;
-	t14 = t02 + t10; t02 = (t02 - t10) * 0.541196100146f;
-	t10 = t04 + t22; t22 = (t04 - t22) * 1.30656296488f;
-	t04 = t14 + t10; t10 = (t14 - t10) * 0.707106781187f;
-	t14 = t02 + t22; t02 = (t02 - t22) * 0.707106781187f;
+	t14 = t02 + t10; t02 = plm_audio_mul_q15((t02 - t10), 17734);
+	t10 = t04 + t22; t22 = plm_audio_mul_q15((t04 - t22), 42813);
+	t04 = t14 + t10; t10 = plm_audio_mul_q15((t14 - t10), 23170);
+	t14 = t02 + t22; t02 = plm_audio_mul_q15((t02 - t22), 23170);
 	t14 += t02;	t04 += t14;	t14 += t10;	t10 += t02;
 	t16 += t04;	t04 += t08;	t08 += t14;	t14 += t28;
 	t28 += t10;	t10 += t20;	t20 += t02;	t21 += t16;
@@ -4432,7 +4446,7 @@ void plm_audio_idct36(int s[32][3], int ss, float *d, int dp) {
 	d[dp + 12] = t13; d[dp + 19] = -t24;
 	d[dp + 13] = t24; d[dp + 18] = -t31;
 	d[dp + 14] = t31; d[dp + 17] = -t02;
-	d[dp + 15] = t02; d[dp + 16] = 0.0;
+	d[dp + 15] = t02; d[dp + 16] = 0;
 }
 
 
