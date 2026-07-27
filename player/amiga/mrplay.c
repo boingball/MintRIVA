@@ -852,6 +852,8 @@ int main(int argc, char **argv)
         int network_source = mr_source_is_url(media_path);
         int startup_depth = network_source ? 1 : 2;
         int target_depth = network_source ? 1 : 3;
+        enum { MCLOCK_MONO = 0, MCLOCK_AUDIO = 1 };
+        int prev_master_source = -1;
 
     while (!quit && (!input_eof || qcount || loop)) {
         queued_video *front = qcount ? &vq[qhead] : NULL;
@@ -864,6 +866,11 @@ int main(int argc, char **argv)
         unsigned long audio_ms = 0;
         int startup_refill = 0;
         int have_deadline = 0;
+        int starved = 1;
+        uint64_t audio_elapsed_raw_us = 0;
+        uint64_t audio_media_clock_us = 0;
+        uint64_t mono_media_clock_us = now - mono_base_us;
+        int master_source = MCLOCK_MONO;
 
         /* Build the startup cushion in the software FIFO before starting
          * Paula; otherwise each small packet starts playing immediately and
@@ -992,9 +999,16 @@ int main(int argc, char **argv)
             }
         }
         if (playback_started && front) {
-            if (audio && !audio_starved(audio))
-                master_clock_us = audio_elapsed_us(audio) - clock_base_us;
-            else master_clock_us = now - mono_base_us;
+            starved = audio ? audio_starved(audio) : 1;
+            audio_elapsed_raw_us = audio ? audio_elapsed_us(audio) : 0;
+            audio_media_clock_us = audio ?
+                (audio_elapsed_raw_us >= clock_base_us
+                    ? audio_elapsed_raw_us - clock_base_us : 0)
+                : 0;
+            mono_media_clock_us = now - mono_base_us;
+            master_source = (audio && !starved) ? MCLOCK_AUDIO : MCLOCK_MONO;
+            master_clock_us = (master_source == MCLOCK_AUDIO)
+                ? audio_media_clock_us : mono_media_clock_us;
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             have_deadline = 1;
         }
@@ -1034,9 +1048,16 @@ int main(int argc, char **argv)
             if (quit) break;
             now = monotonic_us();
             trace_phase(&trace, "deadline-drop");
-            if (audio && !audio_starved(audio))
-                master_clock_us = audio_elapsed_us(audio) - clock_base_us;
-            else master_clock_us = now - mono_base_us;
+            starved = audio ? audio_starved(audio) : 1;
+            audio_elapsed_raw_us = audio ? audio_elapsed_us(audio) : 0;
+            audio_media_clock_us = audio ?
+                (audio_elapsed_raw_us >= clock_base_us
+                    ? audio_elapsed_raw_us - clock_base_us : 0)
+                : 0;
+            mono_media_clock_us = now - mono_base_us;
+            master_source = (audio && !starved) ? MCLOCK_AUDIO : MCLOCK_MONO;
+            master_clock_us = (master_source == MCLOCK_AUDIO)
+                ? audio_media_clock_us : mono_media_clock_us;
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             if (late_us > 0) stats.late++;
             stats.dropped_in_pass = 0;
@@ -1048,6 +1069,36 @@ int main(int argc, char **argv)
                 qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
                 front = &vq[qhead];
                 late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
+            }
+            {
+                int source_changed = prev_master_source >= 0 &&
+                                     prev_master_source != master_source;
+                int64_t delta_clocks_us = (int64_t)audio_media_clock_us -
+                                          (int64_t)mono_media_clock_us;
+                uint64_t abs_delta_us = delta_clocks_us < 0
+                    ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
+                int big_delta = abs_delta_us > period_us;
+                int multi_drop = stats.dropped_in_pass > 1;
+                if (source_changed || big_delta || multi_drop) {
+                    printf("clock-trace src=%c->%c starved=%d "
+                           "audio-elapsed=%lu clock-base=%lu "
+                           "audio-clock=%lu mono-clock=%lu delta=%ld "
+                           "front-pts=%lu late=%ld qcount=%d drops=%u\n",
+                           prev_master_source == MCLOCK_AUDIO ? 'A' :
+                               prev_master_source == MCLOCK_MONO ? 'M' : '?',
+                           master_source == MCLOCK_AUDIO ? 'A' : 'M',
+                           starved,
+                           (unsigned long)audio_elapsed_raw_us,
+                           (unsigned long)clock_base_us,
+                           (unsigned long)audio_media_clock_us,
+                           (unsigned long)mono_media_clock_us,
+                           (long)delta_clocks_us,
+                           (unsigned long)(front ? front->pts_us : 0),
+                           (long)late_us,
+                           qcount,
+                           stats.dropped_in_pass);
+                }
+                prev_master_source = master_source;
             }
             stats.frame_pts_us = front->pts_us;
             stats.audio_clock_us = master_clock_us;
@@ -1101,6 +1152,36 @@ int main(int argc, char **argv)
                 if (audio) service_audio_for_display(&trace);
             }
             continue;
+        }
+
+        if (have_deadline) {
+            int source_changed = prev_master_source >= 0 &&
+                                 prev_master_source != master_source;
+            int64_t delta_clocks_us = (int64_t)audio_media_clock_us -
+                                      (int64_t)mono_media_clock_us;
+            uint64_t abs_delta_us = delta_clocks_us < 0
+                ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
+            int big_delta = abs_delta_us > period_us;
+            if (source_changed || big_delta) {
+                printf("clock-trace src=%c->%c starved=%d "
+                       "audio-elapsed=%lu clock-base=%lu "
+                       "audio-clock=%lu mono-clock=%lu delta=%ld "
+                       "front-pts=%lu late=%ld qcount=%d drops=%u\n",
+                       prev_master_source == MCLOCK_AUDIO ? 'A' :
+                           prev_master_source == MCLOCK_MONO ? 'M' : '?',
+                       master_source == MCLOCK_AUDIO ? 'A' : 'M',
+                       starved,
+                       (unsigned long)audio_elapsed_raw_us,
+                       (unsigned long)clock_base_us,
+                       (unsigned long)audio_media_clock_us,
+                       (unsigned long)mono_media_clock_us,
+                       (long)delta_clocks_us,
+                       (unsigned long)(front ? front->pts_us : 0),
+                       (long)late_us,
+                       qcount,
+                       0U);
+            }
+            prev_master_source = master_source;
         }
 
         if (input_eof && !qcount && loop) {
