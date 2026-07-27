@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define MR_SOURCE_NAME_MAX 1024
 #define MR_SOURCE_ERROR_MAX 192
@@ -18,6 +19,7 @@ struct mr_source {
     int   (*read_at)(void *, size_t, void *, size_t);
     void  (*close)(void *);
     char    final_name[MR_SOURCE_NAME_MAX];
+    int     network;
 };
 
 typedef struct {
@@ -27,6 +29,24 @@ typedef struct {
 } file_source;
 
 static char g_source_error[MR_SOURCE_ERROR_MAX];
+static mr_source_timing g_timing;
+
+static unsigned long elapsed_ms(clock_t start)
+{
+    clock_t elapsed = clock() - start;
+    return (unsigned long)((elapsed * 1000UL) / CLOCKS_PER_SEC);
+}
+
+void mr_source_timing_get(mr_source_timing *timing)
+{
+    if (timing) *timing = g_timing;
+}
+void mr_source_timing_reset(void) { memset(&g_timing, 0, sizeof g_timing); }
+void mr_source_timing_add_network(unsigned long ms) { g_timing.network_ms += ms; }
+void mr_source_mark_network(mr_source *s) { if (s) s->network = 1; }
+void mr_source_timing_add_hls_segment(unsigned long ms) { g_timing.hls_segment_ms += ms; }
+void mr_source_timing_add_hls_playlist(unsigned long ms) { g_timing.hls_playlist_ms += ms; }
+
 
 void mr_source_set_error(const char *message)
 {
@@ -173,7 +193,14 @@ int mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len)
     if (s->len != MR_SOURCE_LEN_UNKNOWN &&
         (off > s->len || len > s->len - off))
         return 0;
-    return s->read_at(s->ctx, off, dst, len);
+    {
+        clock_t started = clock();
+        int ok = s->read_at(s->ctx, off, dst, len);
+        unsigned long ms = elapsed_ms(started);
+        g_timing.read_ms += ms;
+        if (s->network) g_timing.network_ms += ms;
+        return ok;
+    }
 }
 
 size_t mr_source_length(const mr_source *s)

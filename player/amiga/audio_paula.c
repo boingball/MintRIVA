@@ -245,6 +245,17 @@ unsigned long audio_elapsed_ms(mr_audio *a)
     return (a->played * 1000UL) / a->rate;
 }
 
+unsigned long audio_buffered_ms(mr_audio *a)
+{
+    unsigned long samples;
+    int i;
+    if (!a || !a->rate) return 0;
+    samples = a->count;
+    for (i = 0; i < NBUF; i++)
+        if (a->busy[i]) samples += (unsigned long)a->nsub[i];
+    return samples * 1000UL / a->rate;
+}
+
 int audio_starved(mr_audio *a)
 {
     if (!a) return 1;

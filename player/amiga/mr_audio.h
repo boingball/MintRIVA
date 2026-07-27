@@ -43,6 +43,9 @@ unsigned long audio_elapsed_ms(mr_audio *a);
  * uses this to avoid stalling video on an audio clock that has stopped. */
 int           audio_starved(mr_audio *a);
 
+/* PCM queued in the software FIFO plus audio.device writes in flight. */
+unsigned long audio_buffered_ms(mr_audio *a);
+
 void          audio_close(mr_audio *a);
 
 #endif /* MR_AUDIO_H */

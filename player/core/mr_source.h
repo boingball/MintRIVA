@@ -10,6 +10,13 @@
 #include "mr_types.h"
 
 typedef struct mr_source mr_source;
+
+typedef struct mr_source_timing {
+    unsigned long read_ms;          /* all source reads (disk or network) */
+    unsigned long network_ms;       /* HTTP reads/open waits */
+    unsigned long hls_segment_ms;   /* HLS segment open/read waits */
+    unsigned long hls_playlist_ms;  /* HLS playlist fetch/refetch waits */
+} mr_source_timing;
 struct mr_http_options;
 
 /* Sentinel length for a forward-only (non-seekable) stream whose total size
@@ -26,6 +33,15 @@ size_t     mr_source_length(const mr_source *s);
 int        mr_source_is_streaming(const mr_source *s);
 const char *mr_source_final_name(const mr_source *s);
 void       mr_source_close(mr_source *s);
+
+/* Process-local cumulative blocking-I/O counters.  They are intentionally
+ * queried by the player only at rolling-report boundaries, never per frame. */
+void       mr_source_timing_get(mr_source_timing *timing);
+void       mr_source_timing_reset(void);
+void       mr_source_timing_add_network(unsigned long ms);
+void       mr_source_mark_network(mr_source *s);
+void       mr_source_timing_add_hls_segment(unsigned long ms);
+void       mr_source_timing_add_hls_playlist(unsigned long ms);
 
 /* Last source-open diagnostic. Borrowed static text; intended for the
  * single-threaded CLI/player startup path. */

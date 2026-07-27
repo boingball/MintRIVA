@@ -1394,6 +1394,7 @@ mr_source *mr_http_source_open_ex(const char *url,
     source = mr_source_create(h,
                               h->streaming ? MR_SOURCE_LEN_UNKNOWN : h->total_len,
                               http_read_at, http_close, h->url);
+    mr_source_mark_network(source);
     return source;
 }
 
