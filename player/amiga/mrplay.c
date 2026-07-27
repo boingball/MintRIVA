@@ -137,32 +137,48 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
     return 1;
 }
 
+static unsigned long average_hundredths(uint64_t usec, unsigned count)
+{
+    return count ? (unsigned long)(usec / ((uint64_t)count * 10ULL)) : 0;
+}
+
+static unsigned long rate_hundredths(unsigned count, uint64_t elapsed_us)
+{
+    return elapsed_us
+         ? (unsigned long)((uint64_t)count * 100000000ULL / elapsed_us) : 0;
+}
+
 static void report_stats(playback_stats *st, mr_audio *audio, int depth,
                          uint64_t now)
 {
-    double seconds = (double)(now - st->since_us) / 1000000.0;
+    uint64_t elapsed_us = now - st->since_us;
+    unsigned long vd = average_hundredths(st->video_decode_us, st->decoded);
+    unsigned long dm = average_hundredths(st->demux_us, st->samples);
+    unsigned long ad = average_hundredths(st->audio_decode_us, st->samples);
+    unsigned long cv = average_hundredths(st->convert_us, st->presented);
+    unsigned long sc = average_hundredths(st->scale_us, st->presented);
+    unsigned long ds = average_hundredths(st->display_us, st->presented);
+    unsigned long la = average_hundredths(st->latency_us, st->presented);
+    unsigned long pf = rate_hundredths(st->presented, elapsed_us);
+    unsigned long df = rate_hundredths(st->decoded, elapsed_us);
     mr_source_timing io;
-    if (seconds < 0.001) seconds = 0.001;
     mr_source_timing_get(&io);
-    printf("rtg timing: vdecode=%.2f/%lu ms network-blocked=%lu ms "
-           "hls-segment=%lu ms demux=%.2f ms adecode=%.2f ms "
-           "convert=%.2f ms scale=%.2f ms display=%.2f/%lu ms "
+    printf("rtg timing: vdecode=%lu.%02lu/%lu ms network-blocked=%lu ms "
+           "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
+           "convert=%lu.%02lu ms scale=%lu.%02lu ms display=%lu.%02lu/%lu ms "
            "audio-buffered=%lu ms vqueue=%d late=%u dropped=%u "
-           "presented=%.2f fps decoded=%.2f fps sleep=%lu/%lu ms "
-           "sleep-max-error=%lu us latency=%.2f ms\n",
-           st->decoded ? (double)st->video_decode_us / st->decoded / 1000.0 : 0.0,
-           st->video_decode_max_us / 1000, (unsigned long)(st->network_us / 1000) + io.network_ms,
-           io.hls_segment_ms,
-           st->samples ? (double)st->demux_us / st->samples / 1000.0 : 0.0,
-           st->samples ? (double)st->audio_decode_us / st->samples / 1000.0 : 0.0,
-           st->presented ? (double)st->convert_us / st->presented / 1000.0 : 0.0,
-           st->presented ? (double)st->scale_us / st->presented / 1000.0 : 0.0,
-           st->presented ? (double)st->display_us / st->presented / 1000.0 : 0.0,
-           st->display_max_us / 1000, audio ? audio_buffered_ms(audio) : 0,
-           depth, st->late, st->dropped, st->presented / seconds,
-           st->decoded / seconds, (unsigned long)(st->sleep_requested_us / 1000),
+           "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
+           "sleep-max-error=%lu us latency=%lu.%02lu ms\n",
+           vd / 100, vd % 100, st->video_decode_max_us / 1000,
+           (unsigned long)(st->network_us / 1000) + io.network_ms,
+           io.hls_segment_ms, dm / 100, dm % 100, ad / 100, ad % 100,
+           cv / 100, cv % 100, sc / 100, sc % 100,
+           ds / 100, ds % 100, st->display_max_us / 1000,
+           audio ? audio_buffered_ms(audio) : 0, depth, st->late, st->dropped,
+           pf / 100, pf % 100, df / 100, df % 100,
+           (unsigned long)(st->sleep_requested_us / 1000),
            (unsigned long)(st->sleep_actual_us / 1000), st->sleep_max_error_us,
-           st->presented ? (double)st->latency_us / st->presented / 1000.0 : 0.0);
+           la / 100, la % 100);
     memset(st, 0, sizeof *st); st->since_us = now;
     mr_source_timing_reset();
 }
@@ -600,8 +616,12 @@ int main(int argc, char **argv)
         struct EClockVal ev;
         ULONG hz = TimerBase ? ReadEClock(&ev) : 0;
         if (want_time)
-            printf("timer: EClock=%lu Hz (%.3f us nominal), DOS tick=20.000 ms\n",
-                   (unsigned long)hz, hz ? 1000000.0 / hz : 0.0);
+            {
+                unsigned long gran_ns = hz ? 1000000000UL / hz : 0;
+                printf("timer: EClock=%lu Hz (%lu.%03lu us nominal), "
+                       "DOS tick=20.000 ms\n", (unsigned long)hz,
+                       gran_ns / 1000, gran_ns % 1000);
+            }
     }
 
     while (!quit && (!input_eof || qcount || loop)) {
