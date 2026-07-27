@@ -70,6 +70,7 @@ struct mr_audio {
     unsigned long   minimum_active_ms;
     int             had_buffered_audio;
     int             running;
+    int             ever_started;
     int             hardware_starved;
     clock_t         no_active_since;
     clock_t         longest_no_active;
@@ -470,6 +471,7 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
     diag->audio_clock_us = audio_elapsed_us(a);
     diag->fifo_buffered_ms = a->count * 1000UL / a->output_rate;
     diag->clock_largest_step_us = a->clock_largest_step_us;
+    diag->startup_clock_largest_step_us = a->startup_clock_largest_step_us;
     {
         int i;
         for (i = 0; i < NBUF; i++) {
@@ -509,6 +511,11 @@ int audio_active_requests(mr_audio *a)
 void audio_set_running(mr_audio *a, int running)
 {
     if (!a) return;
+    if (running && !a->ever_started) {
+        a->startup_clock_largest_step_us = a->clock_largest_step_us;
+        a->clock_largest_step_us = 0;
+        a->ever_started = 1;
+    }
     a->running = running != 0;
     a->hardware_starved = 0;
     a->no_active_since = 0;

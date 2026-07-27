@@ -38,6 +38,7 @@ typedef struct mr_audio_diagnostics {
     unsigned long hardware_queued_ms;
     unsigned long total_buffered_ms;
     uint64_t clock_largest_step_us;
+    uint64_t startup_clock_largest_step_us;
     uint64_t oldest_request_sequence;
     unsigned char request_timeline_state[2]; /* enum mr_audio_request_state */
 } mr_audio_diagnostics;
