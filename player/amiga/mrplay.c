@@ -82,6 +82,186 @@ static void playback_timer_close(void)
     timer_request = NULL; timer_port = NULL;
 }
 
+/* ---- Media-clock source tags ------------------------------------------- */
+#define MCLOCK_MONO     0   /* no audio: caller uses raw monotonic elapsed   */
+#define MCLOCK_AUDIO    1   /* audio healthy: signed offset from audio raw    */
+#define MCLOCK_HOLDOVER 2   /* audio starved: advance from frozen media time  */
+
+/*
+ * Consecutive non-starved scheduler iterations required before holdover exit
+ * may be attempted.  This stability condition is necessary but not sufficient:
+ * the audio raw counter must also have reached or passed last_output_us before
+ * the signed offset can represent the media/audio relationship without clamping
+ * the mapped candidate behind the continuous media timeline.
+ */
+#define MCLOCK_RESUME_STABLE_ITERS 3U
+
+/*
+ * Stateful media-clock controller.
+ *
+ * Bridges audio underruns with a monotonic holdover so that the media timeline
+ * never jumps forward to raw wall-clock time when Paula is starved.
+ *
+ * On resume, audio_to_media_offset_us maps the raw audio counter back onto the
+ * continuous holdover position regardless of whether raw audio is ahead of or
+ * behind the frozen media time.  This signed representation replaces the old
+ * unsigned clock_base_us which could only subtract from the audio counter and
+ * therefore had to reset to zero whenever media was ahead of raw audio.
+ */
+typedef struct {
+    uint64_t last_output_us;           /* last returned value (monotonic gate)*/
+    uint64_t holdover_media_us;        /* media time captured on starvation   */
+    uint64_t holdover_started_mono_us; /* monotonic time at holdover entry    */
+    int64_t  audio_to_media_offset_us; /* media = audio_raw + this (signed)   */
+    unsigned healthy_audio_samples;    /* non-starved iters since holdover     */
+    int      holdover_active;
+    int      source;                   /* MCLOCK_MONO / AUDIO / HOLDOVER       */
+} media_clock;
+
+/*
+ * Rebase the media clock to a new (audio_raw, target_media_us) correspondence.
+ * Call on playback start, pause/resume, or loop restart.
+ */
+static void media_clock_rebase(media_clock *mc, uint64_t audio_raw,
+                               uint64_t target_media_us)
+{
+    mc->audio_to_media_offset_us = (int64_t)target_media_us - (int64_t)audio_raw;
+    mc->holdover_active  = 0;
+    mc->healthy_audio_samples = 0;
+    mc->last_output_us   = target_media_us;
+    mc->source           = MCLOCK_AUDIO;
+}
+
+/*
+ * Estimate current media time without advancing mc->last_output_us.
+ * Used for post-rescue frame-drop evaluation before the main clock tick.
+ */
+
+/* Clamp a signed microsecond value to a non-negative uint64_t. */
+static uint64_t s64_to_us(int64_t v) { return v > 0 ? (uint64_t)v : 0; }
+
+static uint64_t media_clock_rescue_estimate(const media_clock *mc,
+                                            uint64_t audio_raw, uint64_t now)
+{
+    uint64_t candidate;
+    if (mc->holdover_active) {
+        candidate = mc->holdover_media_us +
+                    (now - mc->holdover_started_mono_us);
+    } else {
+        candidate = s64_to_us((int64_t)audio_raw + mc->audio_to_media_offset_us);
+    }
+    return candidate < mc->last_output_us ? mc->last_output_us : candidate;
+}
+
+/*
+ * Advance the stateful media clock by one scheduler iteration.
+ *
+ * - Healthy audio   → MCLOCK_AUDIO: candidate = audio_raw + offset (signed).
+ * - Starvation      → MCLOCK_HOLDOVER: advance from frozen media time using
+ *                     monotonic elapsed since starvation began.
+ * - Audio resumes   → require MCLOCK_RESUME_STABLE_ITERS non-starved iters
+ *                     AND audio_raw >= last_output_us before exiting holdover.
+ *                     Both conditions are necessary; stability alone is not
+ *                     sufficient.  While waiting, remain in MCLOCK_HOLDOVER.
+ *
+ * The returned value is monotonically non-decreasing (never < last_output_us).
+ * When !have_audio, sets source=MCLOCK_MONO and returns last_output_us — the
+ * caller should substitute its own mono_media_clock_us in that case.
+ */
+static uint64_t current_media_clock_us(media_clock *mc, int have_audio,
+                                       int starved, uint64_t audio_raw,
+                                       uint64_t now, int want_time)
+{
+    uint64_t candidate;
+
+    if (!have_audio) {
+        mc->source = MCLOCK_MONO;
+        return mc->last_output_us;
+    }
+
+    if (starved) {
+        if (!mc->holdover_active) {
+            mc->holdover_media_us         = mc->last_output_us;
+            mc->holdover_started_mono_us  = now;
+            mc->holdover_active           = 1;
+            mc->healthy_audio_samples     = 0;
+            if (want_time)
+                printf("clock-holdover entered media=%lu us\n",
+                       (unsigned long)mc->holdover_media_us);
+        }
+        /* Reset stability counter on every starved iteration so that partial
+         * recovery attempts that re-stall require a fresh run of stable iters. */
+        mc->healthy_audio_samples = 0;
+        mc->source = MCLOCK_HOLDOVER;
+        candidate = mc->holdover_media_us +
+                    (now - mc->holdover_started_mono_us);
+        if (candidate < mc->last_output_us) candidate = mc->last_output_us;
+        mc->last_output_us = candidate;
+        return candidate;
+    }
+
+    /* Audio not starved. */
+    if (mc->holdover_active) {
+        mc->healthy_audio_samples++;
+
+        /* Stability gate: need MCLOCK_RESUME_STABLE_ITERS good iterations. */
+        if (mc->healthy_audio_samples < MCLOCK_RESUME_STABLE_ITERS) {
+            mc->source = MCLOCK_HOLDOVER;
+            candidate = mc->holdover_media_us +
+                        (now - mc->holdover_started_mono_us);
+            if (candidate < mc->last_output_us) candidate = mc->last_output_us;
+            mc->last_output_us = candidate;
+            return candidate;
+        }
+
+        if (audio_raw < mc->last_output_us) {
+            /*
+             * Audio has resumed but has not yet caught up to the holdover
+             * media position.  Stay in holdover — do not reset the base or
+             * change source.  Exiting now would leave the mapped audio
+             * candidate behind last_output_us, causing the monotonic clamp
+             * to freeze the clock until audio catches up.
+             */
+            if (want_time)
+                printf("clock-holdover audio-raw=%lu us < resume-at=%lu us, "
+                       "remaining in holdover\n",
+                       (unsigned long)audio_raw,
+                       (unsigned long)mc->last_output_us);
+            mc->source = MCLOCK_HOLDOVER;
+            candidate = mc->holdover_media_us +
+                        (now - mc->holdover_started_mono_us);
+            if (candidate < mc->last_output_us) candidate = mc->last_output_us;
+            mc->last_output_us = candidate;
+            return candidate;
+        }
+
+        /*
+         * Both gates passed: exit holdover.  Compute a signed offset so that
+         * the audio counter maps exactly onto the current continuous media
+         * position, supporting both "media behind audio" (negative) and
+         * "media ahead of audio" (positive) cases.
+         */
+        mc->audio_to_media_offset_us = (int64_t)mc->last_output_us -
+                                       (int64_t)audio_raw;
+        mc->holdover_active = 0;
+        if (want_time)
+            printf("clock-holdover exit audio-raw=%lu us resume-at=%lu us "
+                   "offset=%ld us\n",
+                   (unsigned long)audio_raw,
+                   (unsigned long)mc->last_output_us,
+                   (long)mc->audio_to_media_offset_us);
+    }
+
+    /* Normal audio mode: audio_raw mapped through signed offset. */
+    mc->source = MCLOCK_AUDIO;
+    candidate = s64_to_us((int64_t)audio_raw + mc->audio_to_media_offset_us);
+    if (candidate < mc->last_output_us) candidate = mc->last_output_us;
+    mc->last_output_us = candidate;
+    return candidate;
+}
+
+/* ---- end media-clock controller ---------------------------------------- */
+
 typedef struct queued_video {
     unsigned char *rgb;
     size_t capacity;
@@ -588,7 +768,8 @@ int main(int argc, char **argv)
     const char *referer = NULL;
     mr_http_options http_options;
     int have_http_options = 0;
-    uint64_t clock_base_us = 0;
+    media_clock mc;
+    memset(&mc, 0, sizeof mc);
     int64_t container_pts_adjust_us = 0;
     uint64_t last_container_pts_us = 0;
     int have_container_pts = 0;
@@ -852,7 +1033,6 @@ int main(int argc, char **argv)
         int network_source = mr_source_is_url(media_path);
         int startup_depth = network_source ? 1 : 2;
         int target_depth = network_source ? 1 : 3;
-        enum { MCLOCK_MONO = 0, MCLOCK_AUDIO = 1 };
         int prev_master_source = -1;
 
     while (!quit && (!input_eof || qcount || loop)) {
@@ -870,7 +1050,6 @@ int main(int argc, char **argv)
         uint64_t audio_elapsed_raw_us = 0;
         uint64_t audio_media_clock_us = 0;
         uint64_t mono_media_clock_us = now - mono_base_us;
-        int master_source = MCLOCK_MONO;
 
         /* Build the startup cushion in the software FIFO before starting
          * Paula; otherwise each small packet starts playing immediately and
@@ -962,7 +1141,10 @@ int main(int argc, char **argv)
                 stats.rescue_newest_retained_pts_us =
                     rescue_newest_retained_pts_us;
                 if (qcount && playback_started) {
-                    uint64_t rescue_clock = audio_elapsed_us(audio) - clock_base_us;
+                    uint64_t rescue_clock =
+                        media_clock_rescue_estimate(&mc,
+                                                    audio_elapsed_us(audio),
+                                                    now);
                     queued_video *new_front = &vq[qhead];
                     int64_t post_late = (int64_t)rescue_clock -
                                         (int64_t)new_front->pts_us;
@@ -1001,14 +1183,16 @@ int main(int argc, char **argv)
         if (playback_started && front) {
             starved = audio ? audio_starved(audio) : 1;
             audio_elapsed_raw_us = audio ? audio_elapsed_us(audio) : 0;
-            audio_media_clock_us = audio ?
-                (audio_elapsed_raw_us >= clock_base_us
-                    ? audio_elapsed_raw_us - clock_base_us : 0)
-                : 0;
             mono_media_clock_us = now - mono_base_us;
-            master_source = (audio && !starved) ? MCLOCK_AUDIO : MCLOCK_MONO;
-            master_clock_us = (master_source == MCLOCK_AUDIO)
-                ? audio_media_clock_us : mono_media_clock_us;
+            if (audio) {
+                audio_media_clock_us = current_media_clock_us(
+                    &mc, 1, starved, audio_elapsed_raw_us, now, want_time);
+                master_clock_us = audio_media_clock_us;
+            } else {
+                audio_media_clock_us = 0;
+                mc.source = MCLOCK_MONO;
+                master_clock_us = mono_media_clock_us;
+            }
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             have_deadline = 1;
         }
@@ -1030,9 +1214,8 @@ int main(int argc, char **argv)
                 else if (ev == MR_EV_PAUSE) {
                     paused = 0; mono_base_us = monotonic_us() - front->pts_us;
                     if (audio) {
-                        uint64_t elapsed = audio_elapsed_us(audio);
-                        clock_base_us = elapsed > front->pts_us
-                                      ? elapsed - front->pts_us : 0;
+                        media_clock_rebase(&mc, audio_elapsed_us(audio),
+                                           front->pts_us);
                         stats.timing_rebases++;
                         audio_set_running(audio, 1);
                     }
@@ -1050,14 +1233,16 @@ int main(int argc, char **argv)
             trace_phase(&trace, "deadline-drop");
             starved = audio ? audio_starved(audio) : 1;
             audio_elapsed_raw_us = audio ? audio_elapsed_us(audio) : 0;
-            audio_media_clock_us = audio ?
-                (audio_elapsed_raw_us >= clock_base_us
-                    ? audio_elapsed_raw_us - clock_base_us : 0)
-                : 0;
             mono_media_clock_us = now - mono_base_us;
-            master_source = (audio && !starved) ? MCLOCK_AUDIO : MCLOCK_MONO;
-            master_clock_us = (master_source == MCLOCK_AUDIO)
-                ? audio_media_clock_us : mono_media_clock_us;
+            if (audio) {
+                audio_media_clock_us = current_media_clock_us(
+                    &mc, 1, starved, audio_elapsed_raw_us, now, want_time);
+                master_clock_us = audio_media_clock_us;
+            } else {
+                audio_media_clock_us = 0;
+                mc.source = MCLOCK_MONO;
+                master_clock_us = mono_media_clock_us;
+            }
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             if (late_us > 0) stats.late++;
             stats.dropped_in_pass = 0;
@@ -1072,7 +1257,7 @@ int main(int argc, char **argv)
             }
             {
                 int source_changed = prev_master_source >= 0 &&
-                                     prev_master_source != master_source;
+                                     prev_master_source != mc.source;
                 int64_t delta_clocks_us = (int64_t)audio_media_clock_us -
                                           (int64_t)mono_media_clock_us;
                 uint64_t abs_delta_us = delta_clocks_us < 0
@@ -1081,15 +1266,17 @@ int main(int argc, char **argv)
                 int multi_drop = stats.dropped_in_pass > 1;
                 if (source_changed || big_delta || multi_drop) {
                     printf("clock-trace src=%c->%c starved=%d "
-                           "audio-elapsed=%lu clock-base=%lu "
+                           "audio-elapsed=%lu offset=%ld "
                            "audio-clock=%lu mono-clock=%lu delta=%ld "
                            "front-pts=%lu late=%ld qcount=%d drops=%u\n",
                            prev_master_source == MCLOCK_AUDIO ? 'A' :
+                               prev_master_source == MCLOCK_HOLDOVER ? 'H' :
                                prev_master_source == MCLOCK_MONO ? 'M' : '?',
-                           master_source == MCLOCK_AUDIO ? 'A' : 'M',
+                           mc.source == MCLOCK_AUDIO ? 'A' :
+                               mc.source == MCLOCK_HOLDOVER ? 'H' : 'M',
                            starved,
                            (unsigned long)audio_elapsed_raw_us,
-                           (unsigned long)clock_base_us,
+                           (long)mc.audio_to_media_offset_us,
                            (unsigned long)audio_media_clock_us,
                            (unsigned long)mono_media_clock_us,
                            (long)delta_clocks_us,
@@ -1098,7 +1285,7 @@ int main(int argc, char **argv)
                            qcount,
                            stats.dropped_in_pass);
                 }
-                prev_master_source = master_source;
+                prev_master_source = mc.source;
             }
             stats.frame_pts_us = front->pts_us;
             stats.audio_clock_us = master_clock_us;
@@ -1156,7 +1343,7 @@ int main(int argc, char **argv)
 
         if (have_deadline) {
             int source_changed = prev_master_source >= 0 &&
-                                 prev_master_source != master_source;
+                                 prev_master_source != mc.source;
             int64_t delta_clocks_us = (int64_t)audio_media_clock_us -
                                       (int64_t)mono_media_clock_us;
             uint64_t abs_delta_us = delta_clocks_us < 0
@@ -1164,15 +1351,17 @@ int main(int argc, char **argv)
             int big_delta = abs_delta_us > period_us;
             if (source_changed || big_delta) {
                 printf("clock-trace src=%c->%c starved=%d "
-                       "audio-elapsed=%lu clock-base=%lu "
+                       "audio-elapsed=%lu offset=%ld "
                        "audio-clock=%lu mono-clock=%lu delta=%ld "
                        "front-pts=%lu late=%ld qcount=%d drops=%u\n",
                        prev_master_source == MCLOCK_AUDIO ? 'A' :
+                           prev_master_source == MCLOCK_HOLDOVER ? 'H' :
                            prev_master_source == MCLOCK_MONO ? 'M' : '?',
-                       master_source == MCLOCK_AUDIO ? 'A' : 'M',
+                       mc.source == MCLOCK_AUDIO ? 'A' :
+                           mc.source == MCLOCK_HOLDOVER ? 'H' : 'M',
                        starved,
                        (unsigned long)audio_elapsed_raw_us,
-                       (unsigned long)clock_base_us,
+                       (long)mc.audio_to_media_offset_us,
                        (unsigned long)audio_media_clock_us,
                        (unsigned long)mono_media_clock_us,
                        (long)delta_clocks_us,
@@ -1181,7 +1370,7 @@ int main(int argc, char **argv)
                        qcount,
                        0U);
             }
-            prev_master_source = master_source;
+            prev_master_source = mc.source;
         }
 
         if (input_eof && !qcount && loop) {
@@ -1193,7 +1382,10 @@ int main(int argc, char **argv)
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
-            clock_base_us = audio ? audio_elapsed_us(audio) : 0;
+            if (audio)
+                media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
+            else
+                memset(&mc, 0, sizeof mc);
             continue;
         }
 
@@ -1362,7 +1554,8 @@ int main(int argc, char **argv)
                     if (playback_started) {
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
-                        clock_base_us = audio ? audio_elapsed_us(audio) : 0;
+                        if (audio)
+                            media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
                         if (audio) {
                             service_audio_for_display(&trace);
                             audio_set_running(audio, 1);
@@ -1409,8 +1602,11 @@ int main(int argc, char **argv)
         if (ds != MR_OK) break;
 
         if (audio) {
-            unsigned long target = (unsigned long)(clock_base_us / 1000ULL) +
-                                   (unsigned long)frames * period;
+            /* Target audio raw time for frame N: invert the signed offset.
+             * audio_raw = media_target - audio_to_media_offset_us */
+            int64_t flush_media_us = (int64_t)frames * (int64_t)(period * 1000UL);
+            int64_t flush_audio_us = flush_media_us - mc.audio_to_media_offset_us;
+            unsigned long target = (unsigned long)(s64_to_us(flush_audio_us) / 1000ULL);
             while (audio_elapsed_ms(audio) < target &&
                    !audio_starved(audio)) {
                 int ev = player_event(disp);
