@@ -29,6 +29,7 @@ typedef struct mr_audio_diagnostics {
     unsigned long longest_service_gap_ms;
     unsigned long longest_no_active_ms;
     unsigned long fifo_samples;
+    unsigned long fifo_dropped_samples;
     unsigned long request_samples[2];
     unsigned char request_state[2]; /* 0 idle, 1 active, 2 completed */
     unsigned char active_requests;
@@ -41,6 +42,7 @@ typedef struct mr_audio_diagnostics {
     uint64_t startup_clock_largest_step_us;
     uint64_t oldest_request_sequence;
     unsigned char request_timeline_state[2]; /* enum mr_audio_request_state */
+    unsigned char timeline_covered;
 } mr_audio_diagnostics;
 
 /* RIFF/WAVE PCM with 8 bits per sample is unsigned, centred at 0x80. */

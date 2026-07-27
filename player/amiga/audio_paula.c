@@ -17,9 +17,12 @@
 #include <exec/io.h>
 #include <devices/audio.h>
 #include <devices/timer.h>
+#include <dos/dos.h>
+#include <dos/dostags.h>
 #include <proto/exec.h>
 #include <clib/alib_protos.h>   /* BeginIO() prototype (amiga.lib helper) */
 #include <proto/timer.h>
+#include <proto/dos.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +52,12 @@ struct mr_audio {
     int             nsub[NBUF];    /* samples submitted in that buffer      */
     audio_request_timeline request[NBUF];
     int             opened;        /* audio.device open (io[0])             */
+    struct Task    *parent_task;
+    struct Task    *worker_task;
+    BYTE            ready_sig, stopped_sig, wake_sig;
+    int             ready_ok;
+    volatile int    shutdown;
+    unsigned        actual_active;
 
     unsigned        period;
     unsigned        rate;
@@ -59,6 +68,7 @@ struct mr_audio {
     signed char    *fifo;          /* ring of converted 8-bit mono samples  */
     unsigned        fifo_size;
     unsigned        head, tail, count;
+    unsigned long   fifo_dropped_samples;
 
     uint64_t        completed_samples;
     uint64_t        next_sequence, timeline_end_us, last_reported_clock_us;
@@ -88,7 +98,7 @@ static uint64_t audio_now_us(void)
 
 static int request_active(mr_audio *a, int i)
 {
-    return a->busy[i] && !CheckIO((struct IORequest *)a->io[i]);
+    return a->busy[i] && a->request[i].state != AUDIO_REQ_COMPLETE;
 }
 
 static int active_request_count(mr_audio *a)
@@ -126,11 +136,16 @@ static unsigned request_estimated_played(mr_audio *a, int i, uint64_t now)
     return duration ? (unsigned)(elapsed * r->submitted_samples / duration) : 0;
 }
 
+static void audio_worker_entry(void);
+
 /* ---- ring FIFO ---------------------------------------------------------- */
 
 static void fifo_push(mr_audio *a, signed char s)
 {
-    if (a->count >= a->fifo_size) return;      /* full: drop (shouldn't hit) */
+    if (a->count >= a->fifo_size) {
+        a->fifo_dropped_samples++;             /* explicit bounded overflow */
+        return;
+    }
     a->fifo[a->head] = s;
     a->head = (a->head + 1) % a->fifo_size;
     a->count++;
@@ -151,15 +166,14 @@ static int fifo_pop_into(mr_audio *a, signed char *dst, int n)
 
 mr_audio *audio_open(unsigned rate, int channels, int bits)
 {
-    static UBYTE anychan[4] = { 1, 2, 4, 8 };  /* let the device pick one   */
     mr_audio *a;
-    int i;
 
     if (rate == 0 || (bits != 8 && bits != 16) || channels < 1)
         return NULL;
 
     a = (mr_audio *)calloc(1, sizeof *a);
     if (!a) return NULL;
+    a->ready_sig = a->stopped_sig = a->wake_sig = -1;
     a->rate = rate;
     a->src_channels = channels;
     a->src_bits = bits;
@@ -169,42 +183,11 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     if (a->period < MIN_PERIOD) a->period = MIN_PERIOD;
     a->output_rate = (unsigned)(PAL_CLOCK / a->period);
 
-    a->port = CreateMsgPort();
-    if (!a->port) { audio_close(a); return NULL; }
-
-    a->io[0] = (struct IOAudio *)CreateIORequest(a->port, sizeof(struct IOAudio));
-    if (!a->io[0]) { audio_close(a); return NULL; }
-    a->io[0]->ioa_Request.io_Message.mn_Node.ln_Pri = ADALLOC_MAXPREC;
-    a->io[0]->ioa_Data   = anychan;
-    a->io[0]->ioa_Length = sizeof anychan;
-    if (OpenDevice((CONST_STRPTR)"audio.device", 0,
-                   (struct IORequest *)a->io[0], 0) != 0) {
-        audio_close(a); return NULL;
-    }
-    a->opened = 1;
-
-    /* Second request shares the opened unit/channel; copy but preserve its own
-     * message node so Exec's port lists stay intact. */
-    a->io[1] = (struct IOAudio *)CreateIORequest(a->port, sizeof(struct IOAudio));
-    if (!a->io[1]) { audio_close(a); return NULL; }
-    {
-        struct Message keep = a->io[1]->ioa_Request.io_Message;
-        memcpy(a->io[1], a->io[0], sizeof(struct IOAudio));
-        a->io[1]->ioa_Request.io_Message = keep;
-        a->io[1]->ioa_Request.io_Message.mn_ReplyPort = a->port;
-    }
-
     /* libavc is a synchronous API and has no safe slice-yield hook. Keep two
      * genuinely submitted requests, each long enough to span the observed
      * 40-54 ms core decode calls plus scheduler overhead. */
     a->bufsz = (int)(a->output_rate * PAULA_REQUEST_MS / 1000);
     if (a->bufsz < 256) a->bufsz = 256;
-    for (i = 0; i < NBUF; i++) {
-        a->chip[i] = (signed char *)AllocMem((ULONG)a->bufsz,
-                                             MEMF_CHIP | MEMF_CLEAR);
-        if (!a->chip[i]) { audio_close(a); return NULL; }
-    }
-
     /* Several seconds of cushion: coarsely-interleaved files deliver audio in
      * multi-second chunks (e.g. CDR-Dinner's ~2.3 s), with video-only runs
      * between them. A one-second FIFO dropped the tail of each burst and then
@@ -216,29 +199,36 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->fifo = (signed char *)malloc(a->fifo_size);
     if (!a->fifo) { audio_close(a); return NULL; }
 
+    a->parent_task = FindTask(NULL);
+    a->ready_sig = AllocSignal(-1);
+    a->stopped_sig = AllocSignal(-1);
+    if (a->ready_sig < 0 || a->stopped_sig < 0) { audio_close(a); return NULL; }
+    if (!CreateNewProcTags(NP_Entry, (ULONG)audio_worker_entry,
+                           NP_Name, (ULONG)"MintRIVA Paula output",
+                           NP_Priority, 5,
+                           NP_StackSize, 16384UL,
+                           NP_UserData, (ULONG)a,
+                           TAG_END)) {
+        audio_close(a); return NULL;
+    }
+    Wait(1UL << a->ready_sig);
+    if (!a->ready_ok) { audio_close(a); return NULL; }
+
     return a;
 }
 
 void audio_close(mr_audio *a)
 {
-    int i;
     if (!a) return;
-
-    /* Reap any in-flight write before touching its chip buffer / the device. */
-    for (i = 0; i < NBUF; i++) {
-        if (a->busy[i] && a->io[i]) {
-            AbortIO((struct IORequest *)a->io[i]);
-            WaitIO((struct IORequest *)a->io[i]);
-            a->busy[i] = 0;
-        }
+    if (a->worker_task) {
+        Forbid();
+        a->shutdown = 1;
+        Permit();
+        if (a->wake_sig >= 0) Signal(a->worker_task, 1UL << a->wake_sig);
+        Wait(1UL << a->stopped_sig);
     }
-    if (a->opened && a->io[0])
-        CloseDevice((struct IORequest *)a->io[0]);
-    for (i = 0; i < NBUF; i++)
-        if (a->io[i]) DeleteIORequest((struct IORequest *)a->io[i]);
-    if (a->port) DeleteMsgPort(a->port);
-    for (i = 0; i < NBUF; i++)
-        if (a->chip[i]) FreeMem(a->chip[i], (ULONG)a->bufsz);
+    if (a->ready_sig >= 0) FreeSignal(a->ready_sig);
+    if (a->stopped_sig >= 0) FreeSignal(a->stopped_sig);
     free(a->fifo);
     free(a);
 }
@@ -257,6 +247,7 @@ void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
     if (framebytes <= 0) return;
     n = bytes / (unsigned)framebytes;
 
+    Forbid();
     for (k = 0; k < n; k++) {
         const unsigned char *p = pcm + (size_t)k * framebytes;
         int s;
@@ -277,6 +268,9 @@ void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
         }
         fifo_push(a, (signed char)s);
     }
+    Permit();
+    if (a->worker_task && a->wake_sig >= 0)
+        Signal(a->worker_task, 1UL << a->wake_sig);
 }
 
 void audio_write_s16(mr_audio *a, const short *pcm,
@@ -284,15 +278,19 @@ void audio_write_s16(mr_audio *a, const short *pcm,
 {
     unsigned k;
     if (!a || !pcm || channels < 1) return;
+    Forbid();
     for (k = 0; k < frames; k++) {
         int s = pcm[(size_t)k * channels];
         if (channels >= 2)
             s = (s + pcm[(size_t)k * channels + 1]) / 2;
         fifo_push(a, (signed char)(s >> 8));
     }
+    Permit();
+    if (a->worker_task && a->wake_sig >= 0)
+        Signal(a->worker_task, 1UL << a->wake_sig);
 }
 
-void audio_service(mr_audio *a)
+static void audio_pump(mr_audio *a)
 {
     int i;
     clock_t service_now;
@@ -333,9 +331,12 @@ void audio_service(mr_audio *a)
     }
     /* Submit idle buffers from the FIFO. */
     for (i = 0; i < NBUF; i++) {
-        if (!a->busy[i] && a->request[i].state == AUDIO_REQ_IDLE && a->count > 0) {
+        if (!a->busy[i] && a->request[i].state == AUDIO_REQ_IDLE) {
             int had_outstanding = oldest_request(a) >= 0;
-            int n = fifo_pop_into(a, a->chip[i], a->bufsz);
+            int n;
+            Forbid();
+            n = fifo_pop_into(a, a->chip[i], a->bufsz);
+            Permit();
             if (n <= 0) continue;
             a->io[i]->ioa_Request.io_Command = CMD_WRITE;
             a->io[i]->ioa_Request.io_Flags   = ADIOF_PERVOL;
@@ -369,19 +370,15 @@ void audio_service(mr_audio *a)
     }
     {
         int active = active_request_count(a);
-        int timeline_active = 0;
         unsigned long active_samples = 0;
         for (i = 0; i < NBUF; i++)
             if (request_active(a, i)) active_samples += (unsigned long)a->nsub[i];
-        for (i = 0; i < NBUF; i++)
-            if (a->request[i].state == AUDIO_REQ_PLAYING ||
-                a->request[i].state == AUDIO_REQ_QUEUED) timeline_active++;
         if (a->running) {
             unsigned long active_ms = active_samples * 1000UL / a->rate;
             if (active_ms < a->minimum_active_ms)
                 a->minimum_active_ms = active_ms;
         }
-        if (a->running && timeline_active == 0) {
+        if (a->running && active == 0) {
             clock_t gap;
             if (!a->hardware_starved) {
                 a->hardware_starvations++;
@@ -397,11 +394,97 @@ void audio_service(mr_audio *a)
     }
 }
 
+void audio_service(mr_audio *a)
+{
+    /* Compatibility no-op. PCM writes and audio.device completions signal the
+     * worker directly; video scheduling is no longer part of output upkeep. */
+    (void)a;
+}
+
+static void audio_worker_cleanup(mr_audio *a)
+{
+    int i;
+    for (i = 0; i < NBUF; i++) {
+        if (a->busy[i] && a->io[i]) {
+            AbortIO((struct IORequest *)a->io[i]);
+            WaitIO((struct IORequest *)a->io[i]);
+            a->busy[i] = 0;
+        }
+    }
+    if (a->opened && a->io[0]) {
+        CloseDevice((struct IORequest *)a->io[0]);
+        a->opened = 0;
+    }
+    for (i = 0; i < NBUF; i++) {
+        if (a->io[i]) DeleteIORequest((struct IORequest *)a->io[i]);
+        a->io[i] = NULL;
+    }
+    if (a->port) { DeleteMsgPort(a->port); a->port = NULL; }
+    for (i = 0; i < NBUF; i++) {
+        if (a->chip[i]) FreeMem(a->chip[i], (ULONG)a->bufsz);
+        a->chip[i] = NULL;
+    }
+    if (a->wake_sig >= 0) { FreeSignal(a->wake_sig); a->wake_sig = -1; }
+}
+
+static void audio_worker_entry(void)
+{
+    static UBYTE anychan[4] = { 1, 2, 4, 8 };
+    struct Task *self = FindTask(NULL);
+    mr_audio *a = (mr_audio *)self->tc_UserData;
+    int i;
+    if (!a) return;
+    a->worker_task = self;
+    a->wake_sig = AllocSignal(-1);
+    a->port = CreateMsgPort();
+    if (a->wake_sig < 0 || !a->port) goto failed;
+    a->io[0] = (struct IOAudio *)CreateIORequest(a->port, sizeof(struct IOAudio));
+    if (!a->io[0]) goto failed;
+    a->io[0]->ioa_Request.io_Message.mn_Node.ln_Pri = ADALLOC_MAXPREC;
+    a->io[0]->ioa_Data = anychan;
+    a->io[0]->ioa_Length = sizeof anychan;
+    if (OpenDevice((CONST_STRPTR)"audio.device", 0,
+                   (struct IORequest *)a->io[0], 0) != 0) goto failed;
+    a->opened = 1;
+    a->io[1] = (struct IOAudio *)CreateIORequest(a->port, sizeof(struct IOAudio));
+    if (!a->io[1]) goto failed;
+    {
+        struct Message keep = a->io[1]->ioa_Request.io_Message;
+        memcpy(a->io[1], a->io[0], sizeof(struct IOAudio));
+        a->io[1]->ioa_Request.io_Message = keep;
+        a->io[1]->ioa_Request.io_Message.mn_ReplyPort = a->port;
+    }
+    for (i = 0; i < NBUF; i++) {
+        a->chip[i] = (signed char *)AllocMem((ULONG)a->bufsz,
+                                             MEMF_CHIP | MEMF_CLEAR);
+        if (!a->chip[i]) goto failed;
+    }
+    a->ready_ok = 1;
+    Signal(a->parent_task, 1UL << a->ready_sig);
+    for (;;) {
+        ULONG signals;
+        audio_pump(a);
+        if (a->shutdown) break;
+        signals = (1UL << a->port->mp_SigBit) | (1UL << a->wake_sig);
+        Wait(signals);
+    }
+    audio_worker_cleanup(a);
+    a->worker_task = NULL;
+    Signal(a->parent_task, 1UL << a->stopped_sig);
+    return;
+failed:
+    audio_worker_cleanup(a);
+    a->worker_task = NULL;
+    a->ready_ok = 0;
+    Signal(a->parent_task, 1UL << a->ready_sig);
+}
+
 uint64_t audio_elapsed_us(mr_audio *a)
 {
     uint64_t samples, clock_us, now, step;
     int oldest, used = 0;
     if (!a || !a->output_rate) return 0;
+    Forbid();
     now = audio_now_us();
     samples = a->completed_samples;
     oldest = oldest_request(a);
@@ -426,6 +509,7 @@ uint64_t audio_elapsed_us(mr_audio *a)
     step = clock_us - a->last_reported_clock_us;
     if (step > a->clock_largest_step_us) a->clock_largest_step_us = step;
     a->last_reported_clock_us = clock_us;
+    Permit();
     return clock_us;
 }
 
@@ -440,6 +524,7 @@ unsigned long audio_buffered_ms(mr_audio *a)
     uint64_t now;
     int i;
     if (!a || !a->output_rate) return 0;
+    Forbid();
     now = audio_now_us();
     samples = a->count;
     for (i = 0; i < NBUF; i++) {
@@ -449,15 +534,20 @@ unsigned long audio_buffered_ms(mr_audio *a)
             if (played < r->submitted_samples) samples += r->submitted_samples - played;
         }
     }
-    return samples * 1000UL / a->output_rate;
+    samples = samples * 1000UL / a->output_rate;
+    Permit();
+    return samples;
 }
 
 void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
 {
     uint64_t now;
+    uint64_t clock_snapshot;
     if (!diag) return;
     memset(diag, 0, sizeof *diag);
     if (!a) return;
+    clock_snapshot = audio_elapsed_us(a);
+    Forbid();
     now = audio_now_us();
     diag->hardware_starvations = a->hardware_starvations;
     diag->minimum_buffered_ms = a->minimum_buffered_ms == ULONG_MAX
@@ -469,7 +559,8 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
     diag->longest_no_active_ms =
         (unsigned long)(a->longest_no_active * 1000 / CLOCKS_PER_SEC);
     diag->fifo_samples = a->count;
-    diag->audio_clock_us = audio_elapsed_us(a);
+    diag->fifo_dropped_samples = a->fifo_dropped_samples;
+    diag->audio_clock_us = clock_snapshot;
     diag->fifo_buffered_ms = a->count * 1000UL / a->output_rate;
     diag->clock_largest_step_us = a->clock_largest_step_us;
     diag->startup_clock_largest_step_us = a->startup_clock_largest_step_us;
@@ -479,7 +570,7 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
             audio_request_timeline *r = &a->request[i];
             diag->request_samples[i] = a->busy[i] ? (unsigned long)a->nsub[i] : 0;
             diag->request_state[i] = !a->busy[i] ? 0 :
-                (CheckIO((struct IORequest *)a->io[i]) ? 2 : 1);
+                (r->state == AUDIO_REQ_COMPLETE ? 2 : 1);
             if (diag->request_state[i] == 1) diag->active_requests++;
             diag->request_timeline_state[i] = (unsigned char)r->state;
             if ((r->state == AUDIO_REQ_PLAYING || r->state == AUDIO_REQ_QUEUED) &&
@@ -502,16 +593,22 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
     }
     diag->total_buffered_ms = diag->fifo_buffered_ms +
         diag->hardware_playing_remaining_ms + diag->hardware_queued_ms;
+    diag->timeline_covered = (unsigned char)(oldest_request(a) >= 0);
+    Permit();
 }
 
 int audio_active_requests(mr_audio *a)
 {
-    return a ? active_request_count(a) : 0;
+    int n;
+    if (!a) return 0;
+    Forbid(); n = active_request_count(a); Permit();
+    return n;
 }
 
 void audio_set_running(mr_audio *a, int running)
 {
     if (!a) return;
+    Forbid();
     if (running && !a->ever_started) {
         a->startup_clock_largest_step_us = a->clock_largest_step_us;
         a->clock_largest_step_us = 0;
@@ -520,10 +617,13 @@ void audio_set_running(mr_audio *a, int running)
     a->running = running != 0;
     a->hardware_starved = 0;
     a->no_active_since = 0;
+    Permit();
 }
 
 int audio_starved(mr_audio *a)
 {
+    int starved;
     if (!a) return 1;
-    return oldest_request(a) < 0 && a->count == 0;
+    Forbid(); starved = oldest_request(a) < 0 && a->count == 0; Permit();
+    return starved;
 }

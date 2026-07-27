@@ -192,7 +192,6 @@ static void paced_sleep(uint64_t usec, scheduler_trace *trace,
     while ((end = monotonic_us()) - begin < usec) {
         uint64_t left = usec - (end - begin);
         if (trace->audio) service_audio_for_display(trace);
-        if (trace->audio && audio_active_requests(trace->audio) < 2) continue;
         /* A one-tick Delay is a forced 20 ms oversleep for short deadlines.
          * Spin on EClock and service Paula until at least two ticks remain. */
         if (left > 40000) {
@@ -281,11 +280,12 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     printf("audio diagnostics: hw-starvations=%lu minimum-buffered=%lu ms "
            "minimum-active=%lu ms "
            "longest-service-gap=%lu ms longest-no-active=%lu ms "
-           "fifo=%lu req0=%u/%lu req1=%u/%lu active=%u\n",
+           "fifo=%lu fifo-dropped=%lu req0=%u/%lu req1=%u/%lu active=%u\n",
            audio_diag.hardware_starvations, audio_diag.minimum_buffered_ms,
            audio_diag.minimum_active_ms,
            audio_diag.longest_service_gap_ms, audio_diag.longest_no_active_ms,
-           audio_diag.fifo_samples, (unsigned)audio_diag.request_state[0],
+           audio_diag.fifo_samples, audio_diag.fifo_dropped_samples,
+           (unsigned)audio_diag.request_state[0],
            audio_diag.request_samples[0], (unsigned)audio_diag.request_state[1],
            audio_diag.request_samples[1], (unsigned)audio_diag.active_requests);
     if (audio) service_audio_for_display(trace);
@@ -301,6 +301,11 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            (unsigned long)audio_diag.startup_clock_largest_step_us,
            (unsigned)audio_diag.request_timeline_state[0],
            (unsigned)audio_diag.request_timeline_state[1]);
+    printf("audio hardware: timeline-covered=%u actual-active-requests=%u "
+           "actual-no-active-duration=%lu ms\n",
+           (unsigned)audio_diag.timeline_covered,
+           (unsigned)audio_diag.active_requests,
+           audio_diag.longest_no_active_ms);
     if (audio) service_audio_for_display(trace);
     printf("demux timing: calls=%lu max-call=%lu us max-scanned=%lu "
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
@@ -967,12 +972,11 @@ int main(int argc, char **argv)
                     }
                 }
                 if (audio) service_audio_for_display(&trace);
-                if (!audio || audio_active_requests(audio) >= 2) {
+                {
                     uint64_t delay_begin = monotonic_us();
                     Delay(1);
                     trace.delay_ticks = 1;
                     trace.sleep_actual_us = monotonic_us() - delay_begin;
-                    if (audio) service_audio_for_display(&trace);
                 }
             }
             if (quit) break;
@@ -1236,14 +1240,11 @@ int main(int argc, char **argv)
         } else {
             int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
-            if (audio && audio_active_requests(audio) < 2)
-                service_audio_for_display(&trace);
-            else {
+            {
                 uint64_t delay_begin = monotonic_us();
                 Delay(1);
                 trace.delay_ticks = 1;
                 trace.sleep_actual_us = monotonic_us() - delay_begin;
-                if (audio) service_audio_for_display(&trace);
             }
         }
     }
