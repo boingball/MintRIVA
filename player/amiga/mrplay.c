@@ -1264,7 +1264,7 @@ int main(int argc, char **argv)
                     ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
                 int big_delta = abs_delta_us > period_us;
                 int multi_drop = stats.dropped_in_pass > 1;
-                if (source_changed || big_delta || multi_drop) {
+                if (want_time && (source_changed || big_delta || multi_drop)) {
                     printf("clock-trace src=%c->%c starved=%d "
                            "audio-elapsed=%lu offset=%ld "
                            "audio-clock=%lu mono-clock=%lu delta=%ld "
@@ -1349,7 +1349,7 @@ int main(int argc, char **argv)
             uint64_t abs_delta_us = delta_clocks_us < 0
                 ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
             int big_delta = abs_delta_us > period_us;
-            if (source_changed || big_delta) {
+            if (want_time && (source_changed || big_delta)) {
                 printf("clock-trace src=%c->%c starved=%d "
                        "audio-elapsed=%lu offset=%ld "
                        "audio-clock=%lu mono-clock=%lu delta=%ld "
