@@ -437,9 +437,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                 Delay(1);
             }
         } else {
-            int ev;
-            trace_phase(&trace, "event-processing");
-            ev = player_event(disp);
+            int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
             else if (ev == MR_EV_PAUSE) paused = 1;
             else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
