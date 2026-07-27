@@ -18,6 +18,7 @@
 #include <devices/audio.h>
 #include <devices/timer.h>
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <dos/dostags.h>
 #include <proto/exec.h>
 #include <clib/alib_protos.h>   /* BeginIO() prototype (amiga.lib helper) */
@@ -167,6 +168,7 @@ static int fifo_pop_into(mr_audio *a, signed char *dst, int n)
 mr_audio *audio_open(unsigned rate, int channels, int bits)
 {
     mr_audio *a;
+    struct Process *worker;
 
     if (rate == 0 || (bits != 8 && bits != 16) || channels < 1)
         return NULL;
@@ -203,14 +205,24 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->ready_sig = AllocSignal(-1);
     a->stopped_sig = AllocSignal(-1);
     if (a->ready_sig < 0 || a->stopped_sig < 0) { audio_close(a); return NULL; }
-    if (!CreateNewProcTags(NP_Entry, (ULONG)audio_worker_entry,
-                           NP_Name, (ULONG)"MintRIVA Paula output",
-                           NP_Priority, 5,
-                           NP_StackSize, 16384UL,
-                           NP_UserData, (ULONG)a,
-                           TAG_END)) {
+    worker = CreateNewProcTags(NP_Entry, (ULONG)audio_worker_entry,
+                               NP_Name, (ULONG)"MintRIVA Paula output",
+                               NP_Priority, 5,
+                               NP_StackSize, 16384UL,
+                               TAG_END);
+    if (!worker) {
         audio_close(a); return NULL;
     }
+    /* NP_UserData is not available in the AmigaOS 3.x NDK used by the
+     * 68030 build.  Hand the context to the newly-created process through
+     * the standard Task user-data field, then release its private bootstrap
+     * wait.  Signals remain pending if the child has not reached Wait() yet.
+     * Forbid() makes publishing the pointer and wakeup one atomic handoff. */
+    Forbid();
+    a->worker_task = &worker->pr_Task;
+    worker->pr_Task.tc_UserData = a;
+    Signal(a->worker_task, SIGBREAKF_CTRL_F);
+    Permit();
     Wait(1UL << a->ready_sig);
     if (!a->ready_ok) { audio_close(a); return NULL; }
 
@@ -431,8 +443,11 @@ static void audio_worker_entry(void)
 {
     static UBYTE anychan[4] = { 1, 2, 4, 8 };
     struct Task *self = FindTask(NULL);
-    mr_audio *a = (mr_audio *)self->tc_UserData;
+    mr_audio *a;
     int i;
+    /* Parent publishes tc_UserData after CreateNewProcTags() returns. */
+    Wait(SIGBREAKF_CTRL_F);
+    a = (mr_audio *)self->tc_UserData;
     if (!a) return;
     a->worker_task = self;
     a->wake_sig = AllocSignal(-1);
