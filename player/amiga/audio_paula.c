@@ -63,6 +63,7 @@ struct mr_audio {
     uint64_t        completed_samples;
     uint64_t        next_sequence, timeline_end_us, last_reported_clock_us;
     uint64_t        clock_largest_step_us;
+    uint64_t        startup_clock_largest_step_us;
     clock_t         last_service;
     clock_t         longest_service_gap;
     unsigned long   hardware_starvations;
