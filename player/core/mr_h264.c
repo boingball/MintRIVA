@@ -396,9 +396,13 @@ static mr_status h264_decode(mr_decoder *dec,
     st = avcc_sample_to_annexb(s, data, len, &annexb_len);
     s->timing.input_us = h264_elapsed_us(mark);
     if (st != MR_OK) return st;
+    if (s->service) s->service(s->service_opaque);
     mark = clock();
     ret = decode_annexb(s, s->packet, annexb_len, &out);
     s->timing.core_us = h264_elapsed_us(mark);
+    /* libavc's frame call is synchronous, but this boundary is safe: all
+     * decoder state has returned to the adapter and RGB output has not begun. */
+    if (s->service) s->service(s->service_opaque);
 #ifdef MR_H264_DEBUG
     fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu ret=%d consumed=%lu "
             "decoded=%lu output=%lu error=%08lx type=%d\n",
@@ -414,6 +418,7 @@ static mr_status h264_decode(mr_decoder *dec,
         mark = clock();
         st = emit_rgb(dec, &out.s_ivd_video_decode_op_t);
         s->timing.output_us = h264_elapsed_us(mark);
+        if (s->service) s->service(s->service_opaque);
         return st;
     }
     return ret == IV_SUCCESS ? MR_EAGAIN : MR_EFORMAT;
