@@ -100,9 +100,50 @@ typedef struct playback_stats {
     mr_display_timing last_rtg;
 } playback_stats;
 
+typedef struct scheduler_trace {
+    mr_audio *audio;
+    const char *phase, *previous_phase;
+    uint64_t phase_started_us, previous_duration_us, last_service_us;
+    uint64_t sleep_requested_us, sleep_actual_us;
+    unsigned long delay_ticks;
+    int enabled;
+} scheduler_trace;
+
+static uint64_t monotonic_us(void);
+
+static void trace_phase(scheduler_trace *trace, const char *phase)
+{
+    uint64_t now;
+    if (!trace) return;
+    now = monotonic_us();
+    if (trace->phase) {
+        trace->previous_phase = trace->phase;
+        trace->previous_duration_us = now - trace->phase_started_us;
+    }
+    trace->phase = phase;
+    trace->phase_started_us = now;
+}
+
 static void service_audio_for_display(void *opaque)
 {
-    audio_service((mr_audio *)opaque);
+    scheduler_trace *trace = (scheduler_trace *)opaque;
+    uint64_t now = monotonic_us();
+    if (trace->enabled && trace->last_service_us &&
+        now - trace->last_service_us > 20000ULL) {
+        printf("audio-gap=%lu ms phase=%s phase-duration=%lu ms previous-phase=%s "
+               "previous-duration=%lu ms sleep-request=%lu ms "
+               "sleep-actual=%lu ms delay-ticks=%lu\n",
+               (unsigned long)((now - trace->last_service_us) / 1000),
+               trace->phase ? trace->phase : "unknown",
+               (unsigned long)((now - trace->phase_started_us) / 1000),
+               trace->previous_phase ? trace->previous_phase : "none",
+               (unsigned long)(trace->previous_duration_us / 1000),
+               (unsigned long)(trace->sleep_requested_us / 1000),
+               (unsigned long)(trace->sleep_actual_us / 1000),
+               trace->delay_ticks);
+    }
+    audio_service(trace->audio);
+    trace->last_service_us = monotonic_us();
 }
 
 /* EClock is per-machine monotonic and normally much finer than the 20 ms DOS
@@ -117,23 +158,38 @@ static uint64_t monotonic_us(void)
            (uint64_t)clock() * 1000000ULL / CLOCKS_PER_SEC;
 }
 
-static void paced_sleep(uint64_t usec, mr_audio *audio, playback_stats *st)
+static void paced_sleep(uint64_t usec, scheduler_trace *trace,
+                        playback_stats *st)
 {
     uint64_t begin, end;
     if (!usec) return;
     begin = monotonic_us();
+    trace_phase(trace, "paced-sleep");
+    trace->sleep_requested_us = usec;
+    trace->sleep_actual_us = 0;
+    trace->delay_ticks = 0;
     st->sleep_requested_us += usec;
     /* Delay is only the coarse backoff. Recheck the absolute deadline so an
      * oversleep is measured rather than carried into the next frame. */
     while ((end = monotonic_us()) - begin < usec) {
         uint64_t left = usec - (end - begin);
-        if (audio) audio_service(audio);
-        if (audio && audio_active_requests(audio) < 2) continue;
-        if (left > 22000) Delay((LONG)((left - 10000) / 20000));
-        else Delay(1);
+        if (trace->audio) service_audio_for_display(trace);
+        if (trace->audio && audio_active_requests(trace->audio) < 2) continue;
+        /* A one-tick Delay is a forced 20 ms oversleep for short deadlines.
+         * Spin on EClock and service Paula until at least two ticks remain. */
+        if (left > 40000) {
+            LONG ticks = (LONG)((left - 20000) / 20000);
+            uint64_t delay_begin = monotonic_us();
+            if (ticks < 1) ticks = 1;
+            trace->delay_ticks = (unsigned long)ticks;
+            Delay(ticks);
+            trace->sleep_actual_us += monotonic_us() - delay_begin;
+            if (trace->audio) service_audio_for_display(trace);
+        }
     }
     end = monotonic_us();
     st->sleep_actual_us += end - begin;
+    trace->sleep_actual_us = end - begin;
     if (end - begin > usec && end - begin - usec > st->sleep_max_error_us)
         st->sleep_max_error_us = (unsigned long)(end - begin - usec);
 }
@@ -213,20 +269,9 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            audio_diag.fifo_samples, (unsigned)audio_diag.request_state[0],
            audio_diag.request_samples[0], (unsigned)audio_diag.request_state[1],
            audio_diag.request_samples[1], (unsigned)audio_diag.active_requests);
-    printf("demux timing: calls=%lu total=%lu us max-call=%lu us "
-           "source=%lu us sync=%lu us assembly=%lu us copy=%lu us "
-           "audio=%lu us video=%lu us scanned=%lu service=%lu "
-           "max(source/sync/assembly/copy/audio/video)="
-           "%lu/%lu/%lu/%lu/%lu/%lu us max-scanned=%lu\n",
-           demux_timing.calls, demux_timing.call_us,
-           demux_timing.call_max_us, demux_timing.source_us,
-           demux_timing.sync_us, demux_timing.assembly_us,
-           demux_timing.copy_us, demux_timing.audio_us,
-           demux_timing.video_us, demux_timing.packets_scanned,
-           demux_timing.service_calls, demux_timing.source_max_us,
-           demux_timing.sync_max_us, demux_timing.assembly_max_us,
-           demux_timing.copy_max_us, demux_timing.audio_max_us,
-           demux_timing.video_max_us, demux_timing.scanned_max);
+    printf("demux timing: calls=%lu max-call=%lu us max-scanned=%lu "
+           "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
+           demux_timing.scanned_max, demux_timing.service_calls);
     if (st->last_rtg.src_w) {
         unsigned n = st->presented ? st->presented : 1;
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
@@ -392,7 +437,9 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                 Delay(1);
             }
         } else {
-            int ev = player_event(disp);
+            int ev;
+            trace_phase(&trace, "event-processing");
+            ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
             else if (ev == MR_EV_PAUSE) paused = 1;
             else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
@@ -476,6 +523,7 @@ int main(int argc, char **argv)
     int audio_feed_credit = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
     playback_stats stats;
+    scheduler_trace trace;
 
     /* Unbuffered so every diagnostic reaches the shell immediately, even if a
      * later step hangs or crashes (libnix stdout can otherwise block-buffer). */
@@ -681,8 +729,11 @@ int main(int argc, char **argv)
     }
 
     ticks = frame_ticks(vi->rate, vi->scale);
-    display_set_service(disp, audio ? service_audio_for_display : NULL, audio);
-    mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, audio);
+    memset(&trace, 0, sizeof trace);
+    trace.audio = audio; trace.enabled = want_time;
+    trace.phase = "startup"; trace.phase_started_us = monotonic_us();
+    display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
+    mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -727,7 +778,8 @@ int main(int argc, char **argv)
         /* Build the startup cushion in the software FIFO before starting
          * Paula; otherwise each small packet starts playing immediately and
          * the prebuffer can never grow to the warning threshold. */
-        if (audio && playback_started) audio_service(audio);
+        trace_phase(&trace, "scheduler");
+        if (audio && playback_started) service_audio_for_display(&trace);
         if (audio) audio_ms = audio_buffered_ms(audio);
         if (playback_started && front) {
             if (audio && !audio_starved(audio))
@@ -741,7 +793,9 @@ int main(int argc, char **argv)
         if (have_deadline && late_us >= -(int64_t)PRESENTATION_GUARD_US &&
             (!audio || audio_ms >= AUDIO_REFILL_WARNING_MS ||
              (audio_ms >= AUDIO_REFILL_CRITICAL_MS && audio_feed_credit))) {
-            int ev = player_event(disp);
+            int ev;
+            trace_phase(&trace, "event-processing");
+            ev = player_event(disp);
             if (ev == MR_EV_QUIT) { quit = 1; break; }
             if (ev == MR_EV_PAUSE) { paused = 1; }
             if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
@@ -757,11 +811,18 @@ int main(int argc, char **argv)
                         stats.timing_rebases++;
                     }
                 }
-                if (audio) audio_service(audio);
-                if (!audio || audio_active_requests(audio) >= 2) Delay(1);
+                if (audio) service_audio_for_display(&trace);
+                if (!audio || audio_active_requests(audio) >= 2) {
+                    uint64_t delay_begin = monotonic_us();
+                    Delay(1);
+                    trace.delay_ticks = 1;
+                    trace.sleep_actual_us = monotonic_us() - delay_begin;
+                    if (audio) service_audio_for_display(&trace);
+                }
             }
             if (quit) break;
             now = monotonic_us();
+            trace_phase(&trace, "deadline-drop");
             if (audio && !audio_starved(audio))
                 master_clock_us = (uint64_t)audio_elapsed_ms(audio) * 1000ULL -
                                   (uint64_t)clock_base * 1000ULL;
@@ -786,9 +847,11 @@ int main(int argc, char **argv)
             now = monotonic_us();
             {
                 unsigned long audio_before = audio ? audio_buffered_ms(audio) : 0;
+            trace_phase(&trace, "cgx-prepare/transfer");
+            if (audio) service_audio_for_display(&trace);
             display_show_rgb(disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
-                if (audio) audio_service(audio);
+                if (audio) service_audio_for_display(&trace);
                 if (want_time) {
                     mr_display_timing rt;
                     if (display_rtg_frame_timing(disp, &rt)) {
@@ -855,10 +918,11 @@ int main(int argc, char **argv)
                 int64_t due_before = late_us;
                 uint64_t refill_started = monotonic_us();
                 uint64_t a;
-                if (audio) audio_service(audio);
+                trace_phase(&trace, "demux-read");
+                if (audio) service_audio_for_display(&trace);
                 a = monotonic_us();
                 mr_status next = mr_demux_next_packet(dx, &pkt);
-                if (audio) audio_service(audio);
+                if (audio) service_audio_for_display(&trace);
                 uint64_t b = monotonic_us();
                 uint64_t blocked = b - a;
                 stats.demux_us += blocked; stats.refill_block_us += blocked;
@@ -867,22 +931,29 @@ int main(int argc, char **argv)
                 if (next != MR_OK) input_eof = 1;
                 else if (!pkt.is_video) {
                     if (audio && audio_dec) {
+                        uint64_t audio_end;
+                        trace_phase(&trace, "audio-decode");
+                        service_audio_for_display(&trace);
                         a = monotonic_us();
                         mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
                                               decoded_audio_sink, audio);
-                        audio_service(audio);
-                        stats.audio_decode_us += monotonic_us() - a;
+                        audio_end = monotonic_us();
+                        service_audio_for_display(&trace);
+                        stats.audio_decode_us += audio_end - a;
                         audio_feed_credit = 1;
                     }
                 } else if (pkt.len) {
                     mr_status decode_status;
-                    if (audio) audio_service(audio);
+                    uint64_t decode_end;
+                    trace_phase(&trace, "h264-decode");
+                    if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
-                    if (audio) audio_service(audio);
+                    decode_end = monotonic_us();
+                    if (audio) service_audio_for_display(&trace);
                     if (decode_status == MR_OK) {
                         unsigned long decode_us =
-                            (unsigned long)(monotonic_us() - a);
+                            (unsigned long)(decode_end - a);
                         uint64_t synthetic_pts = vi->rate
                             ? decoded_index *
                               (uint64_t)(vi->scale ? vi->scale : 1) *
@@ -909,12 +980,14 @@ int main(int argc, char **argv)
                         if (qcount < VIDEO_QUEUE_CAP) {
                             queued_video *tail =
                                 &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
+                            trace_phase(&trace, "frame-copy");
+                            if (audio) service_audio_for_display(&trace);
                             a = monotonic_us();
-                            if (audio) audio_service(audio);
                             if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
                                             decode_us)) { quit = 1; break; }
-                            if (audio) audio_service(audio);
-                            stats.rtg_prepare_us += monotonic_us() - a;
+                            decode_end = monotonic_us();
+                            if (audio) service_audio_for_display(&trace);
+                            stats.rtg_prepare_us += decode_end - a;
                             qcount++;
                         } else {
                             /* Decode reference state to reach following audio,
@@ -940,7 +1013,7 @@ int main(int argc, char **argv)
                         mono_base_us = now - vq[qhead].pts_us;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0;
                         if (audio) {
-                            audio_service(audio);
+                            service_audio_for_display(&trace);
                             audio_set_running(audio, 1);
                         }
                     }
@@ -952,19 +1025,26 @@ int main(int argc, char **argv)
         if (audio && audio_buffered_ms(audio) < AUDIO_REFILL_WARNING_MS &&
             !input_eof) {
             /* Do not burn a 20 ms DOS tick while audio is in refill mode. */
-            audio_service(audio);
+            service_audio_for_display(&trace);
             continue;
         } else if (qcount && playback_started) {
             uint64_t wait_us = late_us < -(int64_t)PRESENTATION_GUARD_US
                 ? (uint64_t)(-late_us) - PRESENTATION_GUARD_US : 0;
             if (wait_us > 20000) wait_us = 20000;
-            paced_sleep(wait_us, audio, &stats);
+            if (audio) service_audio_for_display(&trace);
+            paced_sleep(wait_us, &trace, &stats);
         } else {
             int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
             if (audio && audio_active_requests(audio) < 2)
-                audio_service(audio);
-            else Delay(1);
+                service_audio_for_display(&trace);
+            else {
+                uint64_t delay_begin = monotonic_us();
+                Delay(1);
+                trace.delay_ticks = 1;
+                trace.sleep_actual_us = monotonic_us() - delay_begin;
+                if (audio) service_audio_for_display(&trace);
+            }
         }
     }
     }
