@@ -23,6 +23,7 @@
 #include <proto/cybergraphics.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
 
 typedef struct {
     struct Window *win;
@@ -92,6 +93,15 @@ static unsigned long elapsed_us(clock_t begin)
     return (unsigned long)((clock() - begin) * 1000000UL / CLOCKS_PER_SEC);
 }
 
+static void report_slow(const char *operation, unsigned long usec,
+                        mr_display_service_fn service, void *opaque)
+{
+    if (usec <= 10000) return;
+    if (service) service(opaque);
+    printf("cgx-slow operation=%s duration=%lu us\n", operation, usec);
+    if (service) service(opaque);
+}
+
 static int ensure_scaled(cgx_state *s, int w, int h)
 {
     size_t stride, bytes;
@@ -149,25 +159,45 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         clock() - s->resize_at >= CLOCKS_PER_SEC / 10) {
         s->iw = s->pending_w; s->ih = s->pending_h;
     }
+    s->timing.resize_us = elapsed_us(mark);
+    report_slow("resize-handling", s->timing.resize_us, service, service_opaque);
+    mark = clock();
     if (dy0 < 0) dy0 = 0;
     if (dy1 > hh) dy1 = hh;
     if (dy1 <= dy0) return;                       /* nothing changed         */
     s->timing.clip_us = elapsed_us(mark);
+    report_slow("clipping-setup", s->timing.clip_us, service, service_opaque);
+    mark = clock();
     s->timing.src_w = w; s->timing.src_h = hh;
     s->timing.dst_w = s->iw; s->timing.dst_h = s->ih;
     s->timing.src_format = s->timing.dst_format = "RGB24";
     native = s->iw == w && s->ih == hh;
+    s->timing.geometry_us = elapsed_us(mark);
+    report_slow("geometry-format-setup", s->timing.geometry_us,
+                service, service_opaque);
     if (!native) {
+        int buffer_reused = s->scaled && s->scaled_w == s->iw &&
+                            s->scaled_h == s->ih;
         mark = clock();
+        if (service) service(service_opaque);
         if (!ensure_scaled(s, s->iw, s->ih)) return;
+        if (service) service(service_opaque);
+        s->timing.allocation_us = elapsed_us(mark);
+        report_slow(buffer_reused ? "destination-buffer-check"
+                                  : "destination-buffer-allocation",
+                    s->timing.allocation_us, service, service_opaque);
+        mark = clock();
         scale_rgb24(s, rgb, w, hh, stride, service, service_opaque);
         s->timing.scale_us = elapsed_us(mark);
+        report_slow("software-scale", s->timing.scale_us,
+                    service, service_opaque);
         s->timing.pixels = (unsigned long)s->iw * (unsigned long)s->ih;
         s->timing.bytes = (unsigned long)s->scaled_size;
         s->timing.copies = 1;
         rgb = s->scaled; stride = s->scaled_stride; dy0 = 0; dy1 = s->ih;
         w = s->iw;
     }
+    s->timing.prepare_us = elapsed_us(total);
     if (service) service(service_opaque);
     mark = clock();
     if (native) {

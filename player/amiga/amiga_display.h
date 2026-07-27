@@ -19,6 +19,7 @@ typedef void (*mr_display_service_fn)(void *opaque);
 typedef struct mr_display_timing {
     unsigned long prepare_us, scale_us, convert_us, copy_us, blit_us;
     unsigned long clip_us, total_us, pixels, bytes;
+    unsigned long geometry_us, resize_us, allocation_us, setup_us;
     unsigned int src_w, src_h, dst_w, dst_h, copies;
     const char *src_format, *dst_format;
 } mr_display_timing;

@@ -92,6 +92,8 @@ typedef struct playback_stats {
     unsigned decoded, presented, late, dropped, samples;
     uint64_t rtg_prepare_us, rtg_scale_us, rtg_convert_us, rtg_copy_us;
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
+    uint64_t frame_copy_us;
+    unsigned long rtg_prepare_max_us, rtg_blit_max_us;
     unsigned dropped_after_scale;
     unsigned long audio_before, audio_after;
     uint64_t frame_pts_us, audio_clock_us;
@@ -129,7 +131,7 @@ static void service_audio_for_display(void *opaque)
     scheduler_trace *trace = (scheduler_trace *)opaque;
     uint64_t now = monotonic_us();
     if (trace->enabled && trace->last_service_us &&
-        now - trace->last_service_us > 20000ULL) {
+        now - trace->last_service_us > 40000ULL) {
         printf("audio-gap=%lu ms phase=%s phase-duration=%lu ms previous-phase=%s "
                "previous-duration=%lu ms sleep-request=%lu ms "
                "sleep-actual=%lu ms delay-ticks=%lu\n",
@@ -222,7 +224,7 @@ static unsigned long rate_hundredths(unsigned count, uint64_t elapsed_us)
 }
 
 static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
-                         int depth, uint64_t now)
+                         scheduler_trace *trace, int depth, uint64_t now)
 {
     uint64_t elapsed_us = now - st->since_us;
     unsigned long vd = average_hundredths(st->video_decode_us, st->decoded);
@@ -259,6 +261,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            la / 100, la % 100,
            (unsigned long)(st->refill_block_us / 1000),
            (unsigned long)(st->refill_delayed_ready_us / 1000));
+    if (audio) service_audio_for_display(trace);
     printf("audio diagnostics: hw-starvations=%lu minimum-buffered=%lu ms "
            "minimum-active=%lu ms "
            "longest-service-gap=%lu ms longest-no-active=%lu ms "
@@ -269,14 +272,17 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            audio_diag.fifo_samples, (unsigned)audio_diag.request_state[0],
            audio_diag.request_samples[0], (unsigned)audio_diag.request_state[1],
            audio_diag.request_samples[1], (unsigned)audio_diag.active_requests);
+    if (audio) service_audio_for_display(trace);
     printf("demux timing: calls=%lu max-call=%lu us max-scanned=%lu "
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
            demux_timing.scanned_max, demux_timing.service_calls);
+    if (audio) service_audio_for_display(trace);
     if (st->last_rtg.src_w) {
         unsigned n = st->presented ? st->presented : 1;
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
                "prepare=%lu us scale=%lu us convert=%lu us copy=%lu us "
-               "cgx-blit=%lu us clip=%lu us display-total=%lu us "
+               "prepare-max=%lu us cgx-blit=%lu us cgx-blit-max=%lu us "
+               "clip=%lu us display-total=%lu us "
                "audio-before=%lu ms audio-after=%lu ms "
                "pixels=%lu bytes=%lu copies=%u displayed=%u "
                "dropped-before-scale=%u dropped-after-scale=%u "
@@ -289,7 +295,9 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                (unsigned long)(st->rtg_scale_us / n),
                (unsigned long)(st->rtg_convert_us / n),
                (unsigned long)(st->rtg_copy_us / n),
+               st->rtg_prepare_max_us,
                (unsigned long)(st->rtg_blit_us / n),
+               st->rtg_blit_max_us,
                (unsigned long)(st->rtg_clip_us / n),
                (unsigned long)(st->rtg_total_us / n),
                st->audio_before, st->audio_after,
@@ -300,6 +308,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                (unsigned long)st->audio_clock_us,
                (long)st->calculated_lateness_us, st->queue_head,
                st->dropped_in_pass, st->timing_rebases);
+        if (audio) service_audio_for_display(trace);
     }
     memset(st, 0, sizeof *st); st->since_us = now;
     mr_source_timing_reset();
@@ -860,6 +869,10 @@ int main(int argc, char **argv)
                         stats.rtg_blit_us += rt.blit_us;
                         stats.rtg_clip_us += rt.clip_us;
                         stats.rtg_total_us += rt.total_us;
+                        if (rt.prepare_us > stats.rtg_prepare_max_us)
+                            stats.rtg_prepare_max_us = rt.prepare_us;
+                        if (rt.blit_us > stats.rtg_blit_max_us)
+                            stats.rtg_blit_max_us = rt.blit_us;
                         stats.last_rtg = rt;
                         stats.audio_before = audio_before;
                         stats.audio_after = audio ? audio_buffered_ms(audio) : 0;
@@ -879,8 +892,12 @@ int main(int argc, char **argv)
             audio_feed_credit = 0;
             qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
             now = monotonic_us();
-            if (want_time && now - stats.since_us >= STATS_INTERVAL_US)
-                report_stats(&stats, audio, dx, qcount, now);
+            if (want_time && now - stats.since_us >= STATS_INTERVAL_US) {
+                trace_phase(&trace, "scheduler-diagnostics");
+                if (audio) service_audio_for_display(&trace);
+                report_stats(&stats, audio, dx, &trace, qcount, now);
+                if (audio) service_audio_for_display(&trace);
+            }
             continue;
         }
 
@@ -985,7 +1002,7 @@ int main(int argc, char **argv)
                                             decode_us)) { quit = 1; break; }
                             decode_end = monotonic_us();
                             if (audio) service_audio_for_display(&trace);
-                            stats.rtg_prepare_us += decode_end - a;
+                            stats.frame_copy_us += decode_end - a;
                             qcount++;
                         } else {
                             /* Decode reference state to reach following audio,
