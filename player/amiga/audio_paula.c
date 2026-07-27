@@ -57,6 +57,17 @@ struct mr_audio {
     int             hardware_starved;
     clock_t         no_active_since;
     clock_t         longest_no_active;
+    unsigned long   request_completions[NBUF];
+    unsigned long   request_submissions[NBUF];
+    unsigned long   request_reclaimed_samples[NBUF];
+    unsigned long   request_submitted_samples[NBUF];
+    unsigned char   request_last_checkio[NBUF];
+    unsigned char   request_previous_busy[NBUF];
+    unsigned long   request_last_reclaimed[NBUF];
+    unsigned long   request_last_submitted[NBUF];
+    unsigned long   transition_fifo_remaining;
+    unsigned char   transition_active_before;
+    unsigned char   transition_active_after;
 };
 
 static int request_active(mr_audio *a, int i)
@@ -68,6 +79,30 @@ static int active_request_count(mr_audio *a)
 {
     int i, n = 0;
     for (i = 0; i < NBUF; i++) if (request_active(a, i)) n++;
+    return n;
+}
+
+static int fifo_pop_into(mr_audio *a, signed char *dst, int n);
+
+static int submit_request(mr_audio *a, int i)
+{
+    int n;
+    if (a->busy[i] || a->count == 0) return 0;
+    n = fifo_pop_into(a, a->chip[i], a->bufsz);
+    if (n <= 0) return 0;
+    a->io[i]->ioa_Request.io_Command = CMD_WRITE;
+    a->io[i]->ioa_Request.io_Flags   = ADIOF_PERVOL;
+    a->io[i]->ioa_Data   = (UBYTE *)a->chip[i];
+    a->io[i]->ioa_Length = (ULONG)n;
+    a->io[i]->ioa_Period = a->period;
+    a->io[i]->ioa_Volume = 64;
+    a->io[i]->ioa_Cycles = 1;
+    BeginIO((struct IORequest *)a->io[i]);
+    a->busy[i] = 1;
+    a->nsub[i] = n;
+    a->request_submissions[i]++;
+    a->request_submitted_samples[i] += (unsigned long)n;
+    a->request_last_submitted[i] = (unsigned long)n;
     return n;
 }
 
@@ -138,7 +173,11 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
         a->io[1]->ioa_Request.io_Message.mn_ReplyPort = a->port;
     }
 
-    a->bufsz = (int)(rate / 20);               /* ~50 ms per buffer         */
+    /* A service interval can include a 50-85 ms H.264 decode. Two 50 ms
+     * requests can both expire inside that interval on audio.device drivers
+     * which start queued writes eagerly. A 100 ms request keeps at least one
+     * hardware write alive until the post-decode service point. */
+    a->bufsz = (int)(rate / 10);               /* ~100 ms per buffer        */
     if (a->bufsz < 256) a->bufsz = 256;
     for (i = 0; i < NBUF; i++) {
         a->chip[i] = (signed char *)AllocMem((ULONG)a->bufsz,
@@ -245,34 +284,36 @@ void audio_service(mr_audio *a)
         a->longest_service_gap = service_now - a->last_service;
     a->last_service = service_now;
     active_at_entry = active_request_count(a);
+    a->transition_active_before = (unsigned char)active_at_entry;
+    for (i = 0; i < NBUF; i++) {
+        a->request_previous_busy[i] = (unsigned char)(a->busy[i] != 0);
+        a->request_last_reclaimed[i] = 0;
+        a->request_last_submitted[i] = 0;
+    }
     if (a->running && active_at_entry == 0) {
         if (!a->no_active_since) a->no_active_since = service_now;
     } else a->no_active_since = 0;
 
-    /* Reap finished writes. */
+    /* Reap and replace each completed request as one transaction. Do not
+     * clear both busy flags and postpone all submissions until afterwards. */
     for (i = 0; i < NBUF; i++) {
-        if (a->busy[i] && CheckIO((struct IORequest *)a->io[i])) {
+        int completed = a->busy[i] && CheckIO((struct IORequest *)a->io[i]);
+        a->request_last_checkio[i] = completed != 0;
+        if (completed) {
+            int reclaimed = a->nsub[i];
             WaitIO((struct IORequest *)a->io[i]);
             a->busy[i] = 0;
-            a->played += (unsigned long)a->nsub[i];
+            a->played += (unsigned long)reclaimed;
+            a->request_completions[i]++;
+            a->request_reclaimed_samples[i] += (unsigned long)reclaimed;
+            a->request_last_reclaimed[i] = (unsigned long)reclaimed;
+            submit_request(a, i);
         }
     }
-    /* Submit idle buffers from the FIFO. */
+    /* Startup or a previously empty FIFO may leave idle requests which did
+     * not transition through completion in this call. Fill those now. */
     for (i = 0; i < NBUF; i++) {
-        if (!a->busy[i] && a->count > 0) {
-            int n = fifo_pop_into(a, a->chip[i], a->bufsz);
-            if (n <= 0) continue;
-            a->io[i]->ioa_Request.io_Command = CMD_WRITE;
-            a->io[i]->ioa_Request.io_Flags   = ADIOF_PERVOL;
-            a->io[i]->ioa_Data   = (UBYTE *)a->chip[i];
-            a->io[i]->ioa_Length = (ULONG)n;
-            a->io[i]->ioa_Period = a->period;
-            a->io[i]->ioa_Volume = 64;
-            a->io[i]->ioa_Cycles = 1;
-            BeginIO((struct IORequest *)a->io[i]);
-            a->busy[i] = 1;
-            a->nsub[i] = n;
-        }
+        submit_request(a, i);
     }
     buffered = audio_buffered_ms(a);
     if ((buffered || a->had_buffered_audio) &&
@@ -305,6 +346,8 @@ void audio_service(mr_audio *a)
             a->hardware_starved = 0;
             a->no_active_since = 0;
         }
+        a->transition_active_after = (unsigned char)active;
+        a->transition_fifo_remaining = a->count;
     }
 }
 
@@ -347,8 +390,19 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
             diag->request_state[i] = !a->busy[i] ? 0 :
                 (CheckIO((struct IORequest *)a->io[i]) ? 2 : 1);
             if (diag->request_state[i] == 1) diag->active_requests++;
+            diag->request_completions[i] = a->request_completions[i];
+            diag->request_submissions[i] = a->request_submissions[i];
+            diag->request_reclaimed_samples[i] = a->request_reclaimed_samples[i];
+            diag->request_submitted_samples[i] = a->request_submitted_samples[i];
+            diag->request_last_checkio[i] = a->request_last_checkio[i];
+            diag->request_previous_busy[i] = a->request_previous_busy[i];
+            diag->request_last_reclaimed[i] = a->request_last_reclaimed[i];
+            diag->request_last_submitted[i] = a->request_last_submitted[i];
         }
     }
+    diag->transition_fifo_remaining = a->transition_fifo_remaining;
+    diag->transition_active_before = a->transition_active_before;
+    diag->transition_active_after = a->transition_active_after;
 }
 
 int audio_active_requests(mr_audio *a)

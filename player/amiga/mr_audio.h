@@ -24,6 +24,17 @@ typedef struct mr_audio_diagnostics {
     unsigned long request_samples[2];
     unsigned char request_state[2]; /* 0 idle, 1 active, 2 completed */
     unsigned char active_requests;
+    unsigned long request_completions[2];
+    unsigned long request_submissions[2];
+    unsigned long request_reclaimed_samples[2];
+    unsigned long request_submitted_samples[2];
+    unsigned char request_last_checkio[2];
+    unsigned char request_previous_busy[2];
+    unsigned long request_last_reclaimed[2];
+    unsigned long request_last_submitted[2];
+    unsigned long transition_fifo_remaining;
+    unsigned char transition_active_before;
+    unsigned char transition_active_after;
 } mr_audio_diagnostics;
 
 /* RIFF/WAVE PCM with 8 bits per sample is unsigned, centred at 0x80. */
