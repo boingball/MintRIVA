@@ -33,6 +33,7 @@ typedef struct {
   size_t channel_count, channel_capacity;
   size_t parsed_channel_count, skipped_channel_count, parsed_stream_count;
   size_t country_match_count, eligible_channel_count, matched_stream_count;
+  size_t channel_table_realloc_count, stream_storage_allocation_count;
 } mr_iptv_directory;
 
 typedef struct {
@@ -43,6 +44,20 @@ void mr_iptv_init(mr_iptv_directory *directory);
 void mr_iptv_free(mr_iptv_directory *directory);
 int mr_iptv_parse_channels(mr_iptv_directory *, const char *, size_t);
 int mr_iptv_join_streams(mr_iptv_directory *, const char *, size_t);
+int mr_iptv_parse_channel_object(const char *json, size_t length,
+                                 mr_iptv_channel *channel, char *error,
+                                 size_t error_size);
+int mr_iptv_parse_channel_object_for_country(
+    const char *json, size_t length, const char *country,
+    mr_iptv_channel *channel, char *error, size_t error_size);
+int mr_iptv_parse_stream_object(const char *json, size_t length,
+                                char *channel_id, size_t channel_id_size,
+                                mr_iptv_stream *stream, char *error,
+                                size_t error_size);
+int mr_iptv_parse_stream_channel_object(const char *json, size_t length,
+                                        char *channel_id,
+                                        size_t channel_id_size, char *error,
+                                        size_t error_size);
 int mr_iptv_parse_m3u(mr_iptv_directory *, const char *, size_t);
 int mr_iptv_channel_visible(const mr_iptv_channel *, const mr_iptv_filter *);
 size_t mr_iptv_filter_channels(const mr_iptv_directory *,

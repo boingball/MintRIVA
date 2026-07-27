@@ -26,10 +26,10 @@ static int next_nonspace(object_reader *r) {
   return c;
 }
 
-/* Return one complete object wrapped as a single-element JSON array. stdio's
- * fixed buffer deliberately makes strings/escapes cross refill boundaries. */
+/* Return one complete object. stdio's fixed buffer deliberately makes
+ * strings/escapes cross refill boundaries. */
 static int next_object(object_reader *r, char *out, size_t cap, size_t *len) {
-  size_t n = 1;
+  size_t n = 0;
   int c, depth = 0, quoted = 0, escaped = 0;
   if (!r->started) {
     setvbuf(r->file, (char *)r->io, _IOFBF, sizeof(r->io));
@@ -49,9 +49,8 @@ static int next_object(object_reader *r, char *out, size_t cap, size_t *len) {
   }
   if (c != '{')
     return -1;
-  out[0] = '[';
   for (;;) {
-    if (n + 2 >= cap)
+    if (n + 1 >= cap)
       return -1;
     out[n++] = (char)c;
     if (quoted) {
@@ -74,7 +73,6 @@ static int next_object(object_reader *r, char *out, size_t cap, size_t *len) {
       return -1;
     r->offset++;
   }
-  out[n++] = ']';
   out[n] = 0;
   c = next_nonspace(r);
   if (c == ']') {
@@ -96,28 +94,6 @@ static uint32_t hash_id(const char *s) {
   return h;
 }
 
-static int hint_channel(const char *json, char *out, size_t cap) {
-  const char *p = strstr(json, "\"channel\"");
-  size_t n = 0;
-  if (!p || !(p = strchr(p + 9, ':')))
-    return 0;
-  p++;
-  while (*p && isspace((unsigned char)*p))
-    p++;
-  if (*p != '"')
-    return 0;
-  p++;
-  while (*p && *p != '"') {
-    if (*p == '\\' && p[1])
-      p++;
-    if (n + 1 < cap)
-      out[n++] = *p;
-    p++;
-  }
-  out[n] = 0;
-  return *p == '"' && n != 0;
-}
-
 static int stream_score(const mr_iptv_stream *s) {
   int score = 0;
   if (!s->http_referrer[0] && !s->user_agent[0])
@@ -131,14 +107,16 @@ static int stream_score(const mr_iptv_stream *s) {
   return score;
 }
 
-static int keep_stream(mr_iptv_channel *c, const mr_iptv_stream *s) {
+static int keep_stream(mr_iptv_directory *d, mr_iptv_channel *c,
+                       const mr_iptv_stream *s) {
   unsigned i, worst = 0;
-  mr_iptv_stream *items;
   if (c->stream_count < 4) {
-    items = realloc(c->streams, (c->stream_count + 1) * sizeof(*items));
-    if (!items)
-      return 0;
-    c->streams = items;
+    if (!c->streams) {
+      c->streams = calloc(4, sizeof(*c->streams));
+      if (!c->streams)
+        return 0;
+      d->stream_storage_allocation_count++;
+    }
     c->streams[c->stream_count++] = *s;
     return 1;
   }
@@ -150,22 +128,38 @@ static int keep_stream(mr_iptv_channel *c, const mr_iptv_stream *s) {
   return 1;
 }
 
-static void trim_metadata(mr_iptv_channel *c) {
-  if (c->alt_count > 2) {
-    void *items;
-    c->alt_count = 2;
-    items = realloc(c->alt_names, 2 * sizeof(*c->alt_names));
-    if (items)
-      c->alt_names = items;
-  }
-  if (c->category_count > 2) {
-    void *items;
-    c->category_count = 2;
-    items = realloc(c->categories, 2 * sizeof(*c->categories));
-    if (items)
-      c->categories = items;
-  }
+static int reserve_country_channels(mr_iptv_directory *d, size_t required) {
+  size_t capacity;
+  void *items;
+  if (required <= d->channel_capacity)
+    return 1;
+  capacity = d->channel_capacity ? d->channel_capacity : 64;
+  while (capacity < required && capacity < COUNTRY_CHANNEL_MAX)
+    capacity *= 2;
+  if (capacity > COUNTRY_CHANNEL_MAX)
+    capacity = COUNTRY_CHANNEL_MAX;
+  if (capacity < required || capacity > (size_t)-1 / sizeof(*d->channels))
+    return 0;
+  items = realloc(d->channels, capacity * sizeof(*d->channels));
+  if (!items)
+    return 0;
+  d->channels = items;
+  d->channel_capacity = capacity;
+  d->channel_table_realloc_count++;
+  return 1;
 }
+
+#if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
+#include <exec/memory.h>
+#include <proto/exec.h>
+static void report_fast_ram(const char *phase) {
+  printf("IPTV: Fast RAM %s: %lu KB; largest %lu KB\n", phase,
+         (unsigned long)(AvailMem(MEMF_FAST) / 1024),
+         (unsigned long)(AvailMem(MEMF_FAST | MEMF_LARGEST) / 1024));
+}
+#else
+static void report_fast_ram(const char *phase) { (void)phase; }
+#endif
 
 static int find_channel(const mr_iptv_directory *d, const uint32_t *table,
                         size_t size, const char *id) {
@@ -190,12 +184,16 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
                                const char *channels_path,
                                const char *streams_path, const char *country) {
   object_reader cr = {0}, sr = {0};
-  mr_iptv_directory d, one, dummy;
+  mr_iptv_directory d;
+  mr_iptv_channel parsed_channel;
+  mr_iptv_stream parsed_stream;
   char *object = NULL, channel[MR_IPTV_ID_MAX];
+  char parse_error[256];
   uint32_t *hash = NULL;
   size_t len, hash_size = 1, i, slot, retained = 0;
   int rc, match, preserve_error = 0;
   mr_iptv_init(&d);
+  report_fast_ram("before load");
   cr.file = fopen(channels_path, "rb");
   if (!cr.file)
     goto fail;
@@ -203,32 +201,34 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
   if (!object)
     goto fail;
   while ((rc = next_object(&cr, object, OBJECT_MAX, &len)) > 0) {
-    mr_iptv_init(&one);
-    if (!mr_iptv_parse_channels(&one, object, len)) {
+    if (!mr_iptv_parse_channel_object_for_country(
+            object, len, country, &parsed_channel, parse_error,
+            sizeof(parse_error))) {
       preserve_error = 1;
-      goto fail_one;
+      mr_iptv_set_error(parse_error);
+      goto fail;
     }
     d.parsed_channel_count++;
-    if (one.channel_count &&
-        (!country || !*country || !strcmp(one.channels[0].country, country))) {
-      mr_iptv_channel *items;
+    if (parsed_channel.id[0] && parsed_channel.name[0] &&
+        !parsed_channel.is_nsfw && !parsed_channel.closed &&
+        !parsed_channel.replaced &&
+        (!country || !*country || !strcmp(parsed_channel.country, country))) {
       d.country_match_count++;
       d.eligible_channel_count++;
       if (d.channel_count == COUNTRY_CHANNEL_MAX) {
         d.skipped_channel_count++;
-        mr_iptv_free(&one);
+        free(parsed_channel.alt_names);
+        free(parsed_channel.categories);
         continue;
       }
-      items = realloc(d.channels, (d.channel_count + 1) * sizeof(*items));
-      if (!items)
-        goto fail_one;
-      d.channels = items;
-      trim_metadata(&one.channels[0]);
-      d.channels[d.channel_count++] = one.channels[0];
-      free(one.channels);
+      if (!reserve_country_channels(&d, d.channel_count + 1)) {
+        free(parsed_channel.alt_names);
+        free(parsed_channel.categories);
+        goto fail;
+      }
+      d.channels[d.channel_count++] = parsed_channel;
     } else {
       d.skipped_channel_count++;
-      mr_iptv_free(&one);
     }
   }
   fclose(cr.file);
@@ -238,6 +238,7 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
   printf("IPTV: parsed %lu channels\n", (unsigned long)d.parsed_channel_count);
   printf("IPTV: retained %lu channels for %s\n", (unsigned long)d.channel_count,
          country ? country : "All");
+  report_fast_ram("after country channels");
   if (!d.country_match_count) {
     char message[128];
     snprintf(message, sizeof(message), "No channel records matched country %s",
@@ -262,30 +263,28 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
     goto fail;
   while ((rc = next_object(&sr, object, OBJECT_MAX, &len)) > 0) {
     d.parsed_stream_count++;
-    match = hint_channel(object, channel, sizeof(channel))
-                ? find_channel(&d, hash, hash_size, channel)
-                : -1;
-    mr_iptv_init(&dummy);
-    if (match >= 0) {
-      dummy.channels = calloc(1, sizeof(*dummy.channels));
-      if (!dummy.channels)
-        goto fail;
-      dummy.channel_count = dummy.channel_capacity = 1;
-      strcpy(dummy.channels[0].id, d.channels[match].id);
-    }
-    if (!mr_iptv_join_streams(&dummy, object, len)) {
+    if (!mr_iptv_parse_stream_channel_object(
+            object, len, channel, sizeof(channel), parse_error,
+            sizeof(parse_error))) {
       preserve_error = 1;
-      mr_iptv_free(&dummy);
+      mr_iptv_set_error(parse_error);
       goto fail;
     }
-    if (match >= 0 && dummy.channel_count && dummy.channels[0].stream_count &&
-        !keep_stream(&d.channels[match], &dummy.channels[0].streams[0])) {
-      mr_iptv_free(&dummy);
+    match = channel[0] ? find_channel(&d, hash, hash_size, channel) : -1;
+    if (match < 0)
+      continue;
+    if (!mr_iptv_parse_stream_object(object, len, channel, sizeof(channel),
+                                     &parsed_stream, parse_error,
+                                     sizeof(parse_error))) {
+      preserve_error = 1;
+      mr_iptv_set_error(parse_error);
       goto fail;
     }
-    if (match >= 0 && dummy.channel_count && dummy.channels[0].stream_count)
+    if (match >= 0 && mr_iptv_valid_url(parsed_stream.url) &&
+        !keep_stream(&d, &d.channels[match], &parsed_stream))
+      goto fail;
+    if (match >= 0 && mr_iptv_valid_url(parsed_stream.url))
       d.matched_stream_count++;
-    mr_iptv_free(&dummy);
   }
   fclose(sr.file);
   sr.file = NULL;
@@ -304,6 +303,7 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
     }
   }
   d.channel_count = retained;
+  report_fast_ram("after stream join");
   if (!d.channel_count) {
     char message[160];
     snprintf(message, sizeof(message),
@@ -315,11 +315,14 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
     goto fail;
   }
   {
-    size_t streams_kept = 0, pool_bytes = 0, metadata_bytes = 0;
+    size_t streams_kept = 0, stream_slots = 0, pool_bytes = 0;
+    size_t metadata_bytes = 0;
     size_t channel_bytes, stream_bytes, hash_bytes, working_bytes;
     for (i = 0; i < d.channel_count; i++) {
       unsigned k;
       streams_kept += d.channels[i].stream_count;
+      if (d.channels[i].streams)
+        stream_slots += 4;
       pool_bytes += strlen(d.channels[i].id) + strlen(d.channels[i].name) +
                     strlen(d.channels[i].network) + 3;
       metadata_bytes +=
@@ -332,8 +335,8 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
     }
     printf("IPTV: retained %lu channels, %lu streams\n",
            (unsigned long)d.channel_count, (unsigned long)streams_kept);
-    channel_bytes = d.channel_count * sizeof(*d.channels);
-    stream_bytes = streams_kept * sizeof(mr_iptv_stream);
+    channel_bytes = d.channel_capacity * sizeof(*d.channels);
+    stream_bytes = stream_slots * sizeof(mr_iptv_stream);
     hash_bytes = hash_size * sizeof(*hash);
     working_bytes = channel_bytes + stream_bytes + metadata_bytes + hash_bytes +
                     OBJECT_MAX + 2 * READER_BUFFER;
@@ -346,6 +349,10 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
            (unsigned)((OBJECT_MAX + 2 * READER_BUFFER) / 1024));
     printf("IPTV: estimated directory working memory %lu KB\n",
            (unsigned long)((working_bytes + 1023) / 1024));
+    printf("IPTV: channel table reallocations %lu; stream allocations %lu; "
+           "global stream reallocations 0\n",
+           (unsigned long)d.channel_table_realloc_count,
+           (unsigned long)d.stream_storage_allocation_count);
   }
   printf("IPTV: parsed %lu streams; matched %lu streams\n",
          (unsigned long)d.parsed_stream_count,
@@ -357,8 +364,6 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
   mr_iptv_free(out);
   *out = d;
   return 1;
-fail_one:
-  mr_iptv_free(&one);
 fail:
   if (!preserve_error)
     mr_iptv_set_error("IPTV streaming directory parse failed");

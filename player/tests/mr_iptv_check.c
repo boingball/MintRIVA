@@ -72,9 +72,10 @@ static void write_streaming_fixture(const char *channels_path,
 }
 
 static size_t directory_bytes(const mr_iptv_directory *directory) {
-  size_t bytes = directory->channel_count * sizeof(*directory->channels), i;
+  size_t bytes = directory->channel_capacity * sizeof(*directory->channels), i;
   for (i = 0; i < directory->channel_count; i++)
-    bytes += directory->channels[i].stream_count * sizeof(mr_iptv_stream) +
+    bytes += (directory->channels[i].streams ? 4 : 0) *
+                 sizeof(mr_iptv_stream) +
              (directory->channels[i].alt_count +
               directory->channels[i].category_count) *
                  MR_IPTV_NAME_MAX;
@@ -141,6 +142,33 @@ int main(void) {
   assert(!mr_iptv_parse_channels(&d, "[{", 2));
   assert(d.channel_count == 2);
   assert(!mr_iptv_join_streams(&d, "[", 1));
+  {
+    const char *object =
+        "{\"id\":\"Direct.uk\",\"name\":\"Direct\",\"country\":\"UK\","
+        "\"network\":\"Net\",\"alt_names\":[\"One\",\"Two\",\"Three\"],"
+        "\"categories\":[\"news\"],\"is_nsfw\":false,\"closed\":null,"
+        "\"replaced_by\":null}";
+    const char *stream_object =
+        "{\"channel\":\"Direct.uk\",\"url\":\"https://test/live.m3u8\","
+        "\"http_referrer\":null,\"user_agent\":\"Agent\"}";
+    mr_iptv_channel direct;
+    mr_iptv_stream direct_stream;
+    char channel_id[MR_IPTV_ID_MAX], error[256];
+    assert(mr_iptv_parse_channel_object_for_country(
+        object, strlen(object), "UK", &direct, error, sizeof(error)));
+    assert(!strcmp(direct.id, "Direct.uk") && direct.alt_count == 2);
+    free(direct.alt_names);
+    free(direct.categories);
+    assert(mr_iptv_parse_stream_object(
+        stream_object, strlen(stream_object), channel_id, sizeof(channel_id),
+        &direct_stream, error, sizeof(error)));
+    assert(!strcmp(channel_id, "Direct.uk"));
+    assert(!strcmp(direct_stream.user_agent, "Agent"));
+    assert(!mr_iptv_parse_stream_object("{\"channel\":", 11, channel_id,
+                                        sizeof(channel_id), &direct_stream,
+                                        error, sizeof(error)));
+    assert(error[0]);
+  }
   mr_iptv_free(&d);
   mr_iptv_init(&d);
   assert(mr_iptv_parse_m3u(&d, m, strlen(m)));
@@ -209,6 +237,8 @@ int main(void) {
   assert(d.eligible_channel_count == 300);
   assert(d.matched_stream_count == 500);
   assert(d.channel_count == 300);
+  assert(d.channel_table_realloc_count < 10);
+  assert(d.stream_storage_allocation_count == d.channel_count);
   assert(directory_bytes(&d) < 4 * 1024 * 1024);
   assert(directory_bytes(&d) + 3 * 16384 + 65536 < 8 * 1024 * 1024);
   for (channel_index = 0; channel_index < (int)d.channel_count; channel_index++)

@@ -156,6 +156,12 @@ owned by one playback source so they cannot leak into a later channel. The IPTV
 window's **Next Stream** button advances through the retained alternatives
 without silently looping.
 
+For a real-hardware fragmentation check, record both `AvailMem(MEMF_FAST)` and
+`AvailMem(MEMF_FAST|MEMF_LARGEST)`, then open `iptvgui`, wait for the list, and
+close it ten times. The loader prints those values around each loading phase and
+after ListBrowser construction; neither total Fast RAM nor the largest block
+should show a meaningful downward trend across completed open/close cycles.
+
 ## Layout
 
 ```

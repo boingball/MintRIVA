@@ -225,6 +225,15 @@ streams, then streamless channels are removed in place. Changing country
 reprocesses the cache without another network request.
 The ReAction chooser owns a single label/code mapping table; iptv-org's `UK`
 code is authoritative for United Kingdom filtering (not ISO `GB`).
+The country loader parses each 64 KiB-bounded object directly into caller-owned
+records. It no longer constructs a temporary directory or pending stream table
+per object. Nonmatching countries complete the required-field pass without
+allocating alternate names or categories; retained channels grow geometrically,
+and the first matching stream allocates four final candidate slots once. A
+successful refresh transfers its already-validated directory into the GUI after
+the atomic cache rename instead of reparsing both downloaded files.
+Classic builds log total and largest Fast RAM before loading, after country
+selection, after stream joining, and after visible ListBrowser nodes are built.
 IPTV request metadata crosses the player boundary only as the typed
 `--user-agent` and `--referer` options. `mr_http_options` rejects CR/LF and
 overlong values, is copied into each HTTP/HLS source instance, and is reused by

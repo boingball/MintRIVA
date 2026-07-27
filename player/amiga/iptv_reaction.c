@@ -11,6 +11,7 @@
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <exec/libraries.h>
+#include <exec/memory.h>
 #include <exec/types.h>
 #include <gadgets/button.h>
 #include <gadgets/chooser.h>
@@ -219,7 +220,8 @@ static void download_error(char *error, size_t error_size, const char *stage) {
 }
 
 static int refresh_cache(char *error, size_t error_size, Object *status,
-                         struct Window *window) {
+                         struct Window *window, const char *country,
+                         mr_iptv_directory *result) {
   char channels_tmp[192], streams_tmp[192], channels_path[192];
   char streams_path[192], channels_old[192], streams_old[192], meta_path[192];
   char channels_failed[192], streams_failed[192];
@@ -287,7 +289,7 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
   mr_iptv_init(&check);
   check_initialized = 1;
   if (!mr_iptv_load_country_files(&check, channels_tmp, streams_tmp,
-                                  country_choices[0].iptv_code)) {
+                                  country)) {
     snprintf(error, error_size, "%s", mr_iptv_last_error());
     remove(channels_failed);
     rename(channels_tmp, channels_failed);
@@ -331,6 +333,9 @@ static int refresh_cache(char *error, size_t error_size, Object *status,
     snprintf(error, error_size, "Writing cache.meta failed: write error");
     goto done;
   }
+  mr_iptv_free(result);
+  *result = check;
+  check_initialized = 0;
   valid = 1;
 done:
   if (check_initialized)
@@ -389,6 +394,12 @@ static void set_status(Object *status, struct Window *window,
                  (ULONG)text, TAG_DONE);
 }
 
+static void report_list_fast_ram(void) {
+  printf("IPTV: Fast RAM after list nodes: %lu KB; largest %lu KB\n",
+         (unsigned long)(AvailMem(MEMF_FAST) / 1024),
+         (unsigned long)(AvailMem(MEMF_FAST | MEMF_LARGEST) / 1024));
+}
+
 static int start_stream(const mr_iptv_stream *stream) {
   char args[MR_IPTV_URL_MAX * 4 + MR_HTTP_USER_AGENT_MAX * 2 + 64];
   mr_http_options options;
@@ -434,7 +445,7 @@ int main(void) {
   Object *url_label = NULL;
   struct Window *window = NULL;
   struct List channel_nodes, countries, categories;
-  mr_iptv_directory directory;
+  mr_iptv_directory directory, refreshed_directory;
   ULONG sigmask, signals, result, selected, country_index, category_index;
   size_t country_choice_index;
   UWORD code;
@@ -453,6 +464,7 @@ int main(void) {
   categories.lh_Tail = NULL;
   categories.lh_TailPred = (struct Node *)&categories.lh_Head;
   mr_iptv_init(&directory);
+  mr_iptv_init(&refreshed_directory);
   if (!open_classes())
     goto cleanup;
   for (country_choice_index = 0;
@@ -469,8 +481,10 @@ int main(void) {
   refresh_attempted = cache_ready && !cache_is_fresh();
   loaded =
       cache_ready ? load_cache(&directory, country_choices[0].iptv_code) : 0;
-  if (loaded)
+  if (loaded) {
     rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
+    report_list_fast_ram();
+  }
 
   search = (Object *)NewObject(STRING_GetClass(), NULL, GA_ID, G_SEARCH,
                                GA_RelVerify, TRUE, STRINGA_MaxChars,
@@ -571,7 +585,8 @@ int main(void) {
                    TRUE, TAG_DONE);
     SetGadgetAttrs((struct Gadget *)next_button, window, NULL, GA_Disabled,
                    TRUE, TAG_DONE);
-    if (!refresh_cache(refresh_error, sizeof(refresh_error), status, window)) {
+    if (!refresh_cache(refresh_error, sizeof(refresh_error), status, window,
+                       country_choices[0].iptv_code, &refreshed_directory)) {
       set_status(status, window, refresh_error);
     } else {
       SetGadgetAttrs((struct Gadget *)channels, window, NULL,
@@ -580,8 +595,11 @@ int main(void) {
       active_channel = NULL;
       active_stream = 0;
       mr_iptv_free(&directory);
-      loaded = load_cache(&directory, country_choices[0].iptv_code);
+      directory = refreshed_directory;
+      mr_iptv_init(&refreshed_directory);
+      loaded = directory.channel_count != 0;
       selected = rebuild_nodes(&channel_nodes, &directory, "", 0, 0);
+      report_list_fast_ram();
       SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                      LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
       SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
@@ -633,6 +651,7 @@ int main(void) {
         selected =
             rebuild_nodes(&channel_nodes, &directory, text ? (char *)text : "",
                           country_index, category_index);
+        report_list_fast_ram();
         SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                        LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
         if ((result & WMHI_GADGETMASK) == G_COUNTRY)
@@ -648,13 +667,15 @@ int main(void) {
         set_status(status, window, status_text);
       } else if ((result & WMHI_GADGETMASK) == G_REFRESH) {
         STRPTR search_text = NULL;
+        GetAttr(CHOOSER_Selected, country, &country_index);
         set_status(status, window, "Downloading channel directory...");
         SetGadgetAttrs((struct Gadget *)play_button, window, NULL, GA_Disabled,
                        TRUE, TAG_DONE);
         SetGadgetAttrs((struct Gadget *)next_button, window, NULL, GA_Disabled,
                        TRUE, TAG_DONE);
         if (!refresh_cache(refresh_error, sizeof(refresh_error), status,
-                           window)) {
+                           window, country_code(country_index),
+                           &refreshed_directory)) {
           set_status(status, window, refresh_error);
           SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
                          GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
@@ -662,7 +683,6 @@ int main(void) {
                          GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
         } else {
           GetAttr(STRINGA_TextVal, search, (ULONG *)&search_text);
-          GetAttr(CHOOSER_Selected, country, &country_index);
           GetAttr(CHOOSER_Selected, category, &category_index);
           SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                          LISTBROWSER_Labels, ~0UL, TAG_DONE);
@@ -670,10 +690,13 @@ int main(void) {
           active_channel = NULL;
           active_stream = 0;
           mr_iptv_free(&directory);
-          loaded = load_cache(&directory, country_code(country_index));
+          directory = refreshed_directory;
+          mr_iptv_init(&refreshed_directory);
+          loaded = directory.channel_count != 0;
           selected = rebuild_nodes(&channel_nodes, &directory,
                                    search_text ? (char *)search_text : "",
                                    country_index, category_index);
+          report_list_fast_ram();
           SetGadgetAttrs((struct Gadget *)channels, window, NULL,
                          LISTBROWSER_Labels, (ULONG)&channel_nodes, TAG_DONE);
           SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
@@ -772,6 +795,7 @@ cleanup:
   free_chooser(&countries);
   free_chooser(&categories);
   mr_iptv_free(&directory);
+  mr_iptv_free(&refreshed_directory);
   close_classes();
   return rc;
 }

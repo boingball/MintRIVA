@@ -263,6 +263,205 @@ static int str_array(parser *j, char (**a)[MR_IPTV_NAME_MAX], unsigned *count,
       return j->error = 1, 0;
   }
 }
+
+static void object_error(char *error, size_t error_size) {
+  if (error && error_size)
+    snprintf(error, error_size, "%s", mr_iptv_last_error());
+}
+
+static int object_begin(parser *j) {
+  ws(j);
+  if (j->p == j->end || *j->p++ != '{')
+    return expected(j, "'{'");
+  ws(j);
+  return 1;
+}
+
+static int object_next_field(parser *j, char *key, size_t key_size) {
+  ws(j);
+  if (j->p < j->end && *j->p == '}')
+    return 0;
+  if (!string(j, key, key_size) ||
+      (ws(j), j->p == j->end || *j->p++ != ':'))
+    return expected(j, "':'");
+  snprintf(j->field_storage, sizeof(j->field_storage), "%s", key);
+  j->field = j->field_storage;
+  return 1;
+}
+
+static int object_field_done(parser *j) {
+  ws(j);
+  if (j->p < j->end && *j->p == ',') {
+    j->p++;
+    return 1;
+  }
+  if (j->p < j->end && *j->p == '}')
+    return 1;
+  return expected(j, "',' or '}'");
+}
+
+static int channel_object_pass(const char *json, size_t length,
+                               mr_iptv_channel *channel, int metadata) {
+  parser j = {json, json, json + length, "channel object", NULL, {0}, 1, 0};
+  char key[40];
+  if (!object_begin(&j))
+    return 0;
+  while (j.p < j.end && *j.p != '}') {
+    int next = object_next_field(&j, key, sizeof(key));
+    unsigned b;
+    if (next <= 0)
+      return 0;
+    if (!metadata && !strcmp(key, "id")) {
+      if (!string(&j, channel->id, sizeof(channel->id))) return 0;
+    } else if (!metadata && !strcmp(key, "name")) {
+      if (!string(&j, channel->name, sizeof(channel->name))) return 0;
+    } else if (!metadata && !strcmp(key, "country")) {
+      if (!string(&j, channel->country, sizeof(channel->country))) return 0;
+    } else if (!metadata && !strcmp(key, "is_nsfw")) {
+      if (!boolean(&j, &b)) return expected(&j, "boolean");
+      channel->is_nsfw = b;
+    } else if (!metadata && !strcmp(key, "closed")) {
+      char value[8];
+      if (!nullable_string(&j, value, sizeof(value))) return 0;
+      channel->closed = value[0] != 0;
+    } else if (!metadata && !strcmp(key, "replaced_by")) {
+      char value[8];
+      if (!nullable_string(&j, value, sizeof(value))) return 0;
+      channel->replaced = value[0] != 0;
+    } else if (metadata && !strcmp(key, "network")) {
+      if (!nullable_string(&j, channel->network, sizeof(channel->network)))
+        return 0;
+    } else if (metadata && !strcmp(key, "alt_names")) {
+      if (!str_array(&j, &channel->alt_names, &channel->alt_count, 2)) return 0;
+    } else if (metadata && !strcmp(key, "categories")) {
+      if (!str_array(&j, &channel->categories, &channel->category_count, 2))
+        return 0;
+    } else if (!skip(&j, 1)) {
+      return expected(&j, "valid JSON value");
+    }
+    if (!object_field_done(&j))
+      return 0;
+    ws(&j);
+  }
+  if (j.p == j.end || *j.p++ != '}')
+    return expected(&j, "'}'");
+  ws(&j);
+  if (j.p != j.end)
+    return expected(&j, "end of object");
+  return 1;
+}
+
+int mr_iptv_parse_channel_object_for_country(
+    const char *json, size_t length, const char *country,
+    mr_iptv_channel *channel, char *error, size_t error_size) {
+  int useful;
+  last_error[0] = 0;
+  if (!json || !channel) {
+    mr_iptv_set_error("invalid channel object arguments");
+    object_error(error, error_size);
+    return 0;
+  }
+  memset(channel, 0, sizeof(*channel));
+  if (!channel_object_pass(json, length, channel, 0)) {
+    object_error(error, error_size);
+    return 0;
+  }
+  useful = channel->id[0] && channel->name[0] && !channel->is_nsfw &&
+           !channel->closed && !channel->replaced &&
+           (!country || !*country || !strcmp(channel->country, country));
+  if (useful && !channel_object_pass(json, length, channel, 1)) {
+    free(channel->alt_names);
+    free(channel->categories);
+    memset(channel, 0, sizeof(*channel));
+    object_error(error, error_size);
+    return 0;
+  }
+  return 1;
+}
+
+int mr_iptv_parse_channel_object(const char *json, size_t length,
+                                 mr_iptv_channel *channel, char *error,
+                                 size_t error_size) {
+  return mr_iptv_parse_channel_object_for_country(
+      json, length, NULL, channel, error, error_size);
+}
+
+int mr_iptv_parse_stream_channel_object(const char *json, size_t length,
+                                        char *channel_id,
+                                        size_t channel_id_size, char *error,
+                                        size_t error_size) {
+  parser j = {json, json, json + length, "stream object", NULL, {0}, 1, 0};
+  char key[40];
+  last_error[0] = 0;
+  if (!json || !channel_id || !channel_id_size) {
+    mr_iptv_set_error("invalid stream object arguments");
+    object_error(error, error_size);
+    return 0;
+  }
+  channel_id[0] = 0;
+  if (!object_begin(&j)) goto fail;
+  while (j.p < j.end && *j.p != '}') {
+    if (object_next_field(&j, key, sizeof(key)) <= 0) goto fail;
+    if (!strcmp(key, "channel")) {
+      if (!nullable_string(&j, channel_id, channel_id_size)) goto fail;
+    } else if (!skip(&j, 1)) {
+      expected(&j, "valid JSON value");
+      goto fail;
+    }
+    if (!object_field_done(&j)) goto fail;
+    ws(&j);
+  }
+  if (j.p == j.end || *j.p++ != '}') { expected(&j, "'}'"); goto fail; }
+  ws(&j);
+  if (j.p != j.end) { expected(&j, "end of object"); goto fail; }
+  return 1;
+fail:
+  object_error(error, error_size);
+  return 0;
+}
+
+int mr_iptv_parse_stream_object(const char *json, size_t length,
+                                char *channel_id, size_t channel_id_size,
+                                mr_iptv_stream *stream, char *error,
+                                size_t error_size) {
+  parser j = {json, json, json + length, "stream object", NULL, {0}, 1, 0};
+  char key[40];
+  last_error[0] = 0;
+  if (!json || !channel_id || !channel_id_size || !stream) {
+    mr_iptv_set_error("invalid stream object arguments");
+    object_error(error, error_size);
+    return 0;
+  }
+  channel_id[0] = 0;
+  memset(stream, 0, sizeof(*stream));
+  if (!object_begin(&j)) goto fail;
+  while (j.p < j.end && *j.p != '}') {
+    if (object_next_field(&j, key, sizeof(key)) <= 0) goto fail;
+    if (!strcmp(key, "channel")) {
+      if (!nullable_string(&j, channel_id, channel_id_size)) goto fail;
+    } else if (!strcmp(key, "url")) {
+      if (!string(&j, stream->url, sizeof(stream->url))) goto fail;
+    } else if (!strcmp(key, "http_referrer")) {
+      if (!nullable_string(&j, stream->http_referrer,
+                           sizeof(stream->http_referrer))) goto fail;
+    } else if (!strcmp(key, "user_agent")) {
+      if (!nullable_string(&j, stream->user_agent,
+                           sizeof(stream->user_agent))) goto fail;
+    } else if (!skip(&j, 1)) {
+      expected(&j, "valid JSON value");
+      goto fail;
+    }
+    if (!object_field_done(&j)) goto fail;
+    ws(&j);
+  }
+  if (j.p == j.end || *j.p++ != '}') { expected(&j, "'}'"); goto fail; }
+  ws(&j);
+  if (j.p != j.end) { expected(&j, "end of object"); goto fail; }
+  return 1;
+fail:
+  object_error(error, error_size);
+  return 0;
+}
 static int grow_channels(mr_iptv_directory *d, size_t *requested) {
   size_t new_capacity;
   void *new_channels;
