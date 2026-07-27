@@ -283,7 +283,8 @@ fail:
 }
 
 static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
-                     int stride, int dy0, int dy1)
+                     int stride, int dy0, int dy1,
+                     mr_display_service_fn service, void *service_opaque)
 {
     aga_state *s = (aga_state *)handle;
     int pw = s->pw, dw = s->dw, sc = s->scale;
@@ -399,5 +400,5 @@ static void aga_close(void *handle)
 }
 
 const display_backend backend_aga = {
-    "AGA", aga_open, aga_show, aga_poll, aga_close
+    "AGA", aga_open, aga_show, NULL, aga_poll, aga_close
 };

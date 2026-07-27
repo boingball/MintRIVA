@@ -45,6 +45,10 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define VIDEO_QUEUE_CAP 4
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
+/* Paula has two approximately 50 ms device buffers. Below one buffer a video
+ * operation is unsafe; below both, an already-late frame is expendable. */
+#define AUDIO_DISPLAY_CRITICAL_MS 50UL
+#define AUDIO_DISPLAY_WARNING_MS  100UL
 
 static struct MsgPort *timer_port;
 static struct timerequest *timer_request;
@@ -88,7 +92,17 @@ typedef struct playback_stats {
     uint64_t latency_us, refill_block_us, refill_delayed_ready_us;
     unsigned long video_decode_max_us, display_max_us, sleep_max_error_us;
     unsigned decoded, presented, late, dropped, samples;
+    uint64_t rtg_prepare_us, rtg_scale_us, rtg_convert_us, rtg_copy_us;
+    uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
+    unsigned dropped_after_scale;
+    unsigned long audio_before, audio_after;
+    mr_display_timing last_rtg;
 } playback_stats;
+
+static void service_audio_for_display(void *opaque)
+{
+    audio_service((mr_audio *)opaque);
+}
 
 /* EClock is per-machine monotonic and normally much finer than the 20 ms DOS
  * tick. Keeping all scheduling in integer microseconds avoids truncating a
@@ -183,6 +197,29 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
            la / 100, la % 100,
            (unsigned long)(st->refill_block_us / 1000),
            (unsigned long)(st->refill_delayed_ready_us / 1000));
+    if (st->last_rtg.src_w) {
+        unsigned n = st->presented ? st->presented : 1;
+        printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
+               "prepare=%lu us scale=%lu us convert=%lu us copy=%lu us "
+               "cgx-blit=%lu us clip=%lu us display-total=%lu us "
+               "audio-before=%lu ms audio-after=%lu ms "
+               "pixels=%lu bytes=%lu copies=%u displayed=%u "
+               "dropped-before-scale=%u dropped-after-scale=%u\n",
+               st->last_rtg.src_w, st->last_rtg.src_h,
+               st->last_rtg.dst_w, st->last_rtg.dst_h,
+               st->last_rtg.src_format, st->last_rtg.dst_format,
+               (unsigned long)(st->rtg_prepare_us / n),
+               (unsigned long)(st->rtg_scale_us / n),
+               (unsigned long)(st->rtg_convert_us / n),
+               (unsigned long)(st->rtg_copy_us / n),
+               (unsigned long)(st->rtg_blit_us / n),
+               (unsigned long)(st->rtg_clip_us / n),
+               (unsigned long)(st->rtg_total_us / n),
+               st->audio_before, st->audio_after,
+               st->last_rtg.pixels, st->last_rtg.bytes,
+               st->last_rtg.copies, st->presented, st->dropped,
+               st->dropped_after_scale);
+    }
     memset(st, 0, sizeof *st); st->since_us = now;
     mr_source_timing_reset();
 }
@@ -604,6 +641,7 @@ int main(int argc, char **argv)
     }
 
     ticks = frame_ticks(vi->rate, vi->scale);
+    display_set_service(disp, audio ? service_audio_for_display : NULL, audio);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -677,15 +715,44 @@ int main(int argc, char **argv)
             else
                 late_us = (int64_t)(now - mono_base_us) - (int64_t)front->pts_us;
             if (late_us > 0) stats.late++;
-            if (!fast_forward && late_us > (int64_t)period_us && qcount > 1) {
+            if (!fast_forward && qcount > 1 &&
+                (late_us > (int64_t)period_us ||
+                 (audio && audio_buffered_ms(audio) < AUDIO_DISPLAY_WARNING_MS &&
+                  late_us > 0))) {
                 stats.dropped++; qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
                 if (late_us > (int64_t)(period_us * 4) && !audio)
                     mono_base_us = now - vq[qhead].pts_us;
                 continue;
             }
+            /* Audio remains master. A critical cushion means scaling this
+             * frame could consume the only in-flight Paula buffer. */
+            if (audio && audio_buffered_ms(audio) < AUDIO_DISPLAY_CRITICAL_MS &&
+                late_us > 0) {
+                stats.dropped++; qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
+                audio_service(audio);
+                continue;
+            }
             now = monotonic_us();
+            {
+                unsigned long audio_before = audio ? audio_buffered_ms(audio) : 0;
             display_show_rgb(disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
+                if (want_time) {
+                    mr_display_timing rt;
+                    if (display_rtg_frame_timing(disp, &rt)) {
+                        stats.rtg_prepare_us += rt.prepare_us;
+                        stats.rtg_scale_us += rt.scale_us;
+                        stats.rtg_convert_us += rt.convert_us;
+                        stats.rtg_copy_us += rt.copy_us;
+                        stats.rtg_blit_us += rt.blit_us;
+                        stats.rtg_clip_us += rt.clip_us;
+                        stats.rtg_total_us += rt.total_us;
+                        stats.last_rtg = rt;
+                        stats.audio_before = audio_before;
+                        stats.audio_after = audio ? audio_buffered_ms(audio) : 0;
+                    }
+                }
+            }
             {
                 unsigned long show_us = (unsigned long)(monotonic_us() - now);
                 unsigned long enc_ms = 0, blit_ms = 0;
@@ -758,8 +825,10 @@ int main(int argc, char **argv)
                         stats.video_decode_us += decode_us; stats.decoded++;
                         if (decode_us > stats.video_decode_max_us)
                             stats.video_decode_max_us = decode_us;
+                        a = monotonic_us();
                         if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
                                         decode_us)) { quit = 1; break; }
+                        stats.rtg_prepare_us += monotonic_us() - a;
                         qcount++; decoded_index++;
                     }
                 }

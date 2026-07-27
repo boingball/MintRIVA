@@ -14,6 +14,14 @@
 #define AMIGA_DISPLAY_H
 
 typedef struct amiga_display amiga_display;
+typedef void (*mr_display_service_fn)(void *opaque);
+
+typedef struct mr_display_timing {
+    unsigned long prepare_us, scale_us, convert_us, copy_us, blit_us;
+    unsigned long clip_us, total_us, pixels, bytes;
+    unsigned int src_w, src_h, dst_w, dst_h, copies;
+    const char *src_format, *dst_format;
+} mr_display_timing;
 
 /* Force the AGA backend (skip the RTG/cybergraphics attempt). Call before
  * display_open; default is RTG-first with automatic AGA fallback. */
@@ -66,6 +74,9 @@ const char *display_backend_name(amiga_display *d);
  * source rows [dy0,dy1) are redrawn; pass 0..h to draw the whole frame. */
 void display_show_rgb(amiga_display *d, const unsigned char *rgb,
                       int w, int h, int stride, int dy0, int dy1);
+void display_set_service(amiga_display *d, mr_display_service_fn fn,
+                         void *opaque);
+int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing);
 
 /* Input events reported by display_poll_event. */
 enum {
