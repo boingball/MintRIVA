@@ -50,6 +50,8 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define VIDEO_DECODE_BUDGET_MAX_US 250000ULL
 #define DISPLAY_BUDGET_MIN_US 2000ULL
 #define DISPLAY_BUDGET_MAX_US 60000ULL
+#define NETWORK_DECODE_EXTRA_MARGIN_US 2000ULL
+#define SCHEDULER_MAX_SLEEP_US 20000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
 #define AUDIO_RESCUE_ENTRY_MS 100UL
 #define AUDIO_RESCUE_TARGET_MS 200UL
@@ -1294,7 +1296,8 @@ int main(int argc, char **argv)
                     can_decode = 0;
                     stats.video_decodes_rejected_budget++;
                 } else if (network_source && !refill_audio &&
-                           time_until_deadline <= required_margin + 2000ULL) {
+                           time_until_deadline <=
+                               required_margin + NETWORK_DECODE_EXTRA_MARGIN_US) {
                     can_decode = 0;
                     stats.video_decodes_rejected_budget++;
                 }
@@ -1353,8 +1356,8 @@ int main(int argc, char **argv)
                         stats.max_consecutive_decodes_without_event_poll)
                         stats.max_consecutive_decodes_without_event_poll =
                             decodes_since_event_poll;
-                    if (!deadline_evaluated) decodes_since_deadline_eval++;
-                    else decodes_since_deadline_eval = 1;
+                    if (deadline_evaluated) decodes_since_deadline_eval = 0;
+                    decodes_since_deadline_eval++;
                     if (decodes_since_deadline_eval >
                         stats.max_consecutive_decodes_without_deadline_eval)
                         stats.max_consecutive_decodes_without_deadline_eval =
@@ -1490,7 +1493,7 @@ int main(int argc, char **argv)
         } else if (!did_work && qcount && playback_started) {
             uint64_t wait_us = late_us < -(int64_t)PRESENTATION_GUARD_US
                 ? (uint64_t)(-late_us) - PRESENTATION_GUARD_US : 0;
-            if (wait_us > 20000) wait_us = 20000;
+            if (wait_us > SCHEDULER_MAX_SLEEP_US) wait_us = SCHEDULER_MAX_SLEEP_US;
             if (audio) service_audio_for_display(&trace);
             paced_sleep(wait_us, &trace, &stats);
             did_work = 1;
