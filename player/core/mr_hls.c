@@ -20,6 +20,7 @@
 #include "mr_types.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
@@ -148,20 +149,35 @@ static int append_seg(hls_source *h, const char *url)
 /* Pick the lowest-bandwidth variant from a master playlist; resolve it against
  * base_url into `out`. Returns 1 if a variant was found. */
 static int pick_variant(char *text, const char *base_url,
-                        char *out, size_t out_size)
+                        char *out, size_t out_size,
+                        const mr_http_options *options)
 {
     char line[HLS_URL_MAX];
     char *p = text;
     unsigned long best_bw = 0;
     int have = 0, pending = 0;
     unsigned long pending_bw = 0;
+    unsigned pending_width = 0, pending_height = 0, pending_fps = 0;
     while ((p = next_line(p, line, sizeof line)) != NULL) {
         if (starts(line, "#EXT-X-STREAM-INF")) {
             const char *bw = strstr(line, "BANDWIDTH=");
+            const char *resolution = strstr(line, "RESOLUTION=");
+            const char *fps = strstr(line, "FRAME-RATE=");
             pending = 1;
             pending_bw = bw ? strtoul(bw + 10, NULL, 10) : 0;
+            pending_width = pending_height = pending_fps = 0;
+            if (resolution)
+                sscanf(resolution + 11, "%ux%u", &pending_width,
+                       &pending_height);
+            if (fps)
+                pending_fps = (unsigned)strtoul(fps + 11, NULL, 10);
         } else if (line[0] && line[0] != '#' && pending) {
             pending = 0;
+            if (options &&
+                ((options->hls_max_width && pending_width > options->hls_max_width) ||
+                 (options->hls_max_height && pending_height > options->hls_max_height) ||
+                 (options->hls_max_fps && pending_fps > options->hls_max_fps)))
+                continue;
             if (!have || pending_bw < best_bw || best_bw == 0) {
                 if (mr_http_resolve_url(base_url, line, out, out_size)) {
                     best_bw = pending_bw;
@@ -341,7 +357,7 @@ mr_source *mr_hls_source_open_ex(const char *url,
     /* Master playlist? Resolve to one media variant and refetch. */
     base = url;
     if (strstr(text, "#EXT-X-STREAM-INF")) {
-        if (!pick_variant(text, url, media_url, sizeof media_url)) {
+        if (!pick_variant(text, url, media_url, sizeof media_url, options)) {
             free(text);
             mr_source_set_error("no playable variant in HLS master playlist");
             return NULL;
@@ -367,6 +383,10 @@ mr_source *mr_hls_source_open_ex(const char *url,
             return NULL;
         }
         h->have_options = 1;
+        h->options.hls_low = options->hls_low;
+        h->options.hls_max_width = options->hls_max_width;
+        h->options.hls_max_height = options->hls_max_height;
+        h->options.hls_max_fps = options->hls_max_fps;
     }
     st = merge_playlist(text, base, h, &added);
     free(text);

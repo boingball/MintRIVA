@@ -4,6 +4,7 @@
  * selected URLs are still played by the normal mrplay executable.
  */
 #include "../core/mr_http.h"
+#include "../core/mr_play_options.h"
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 
@@ -400,7 +401,8 @@ static void report_list_fast_ram(void) {
          (unsigned long)(AvailMem(MEMF_FAST | MEMF_LARGEST) / 1024));
 }
 
-static int start_stream(const mr_iptv_stream *stream) {
+static int start_stream(const mr_iptv_stream *stream,
+                        const mr_play_options *play_options) {
   char args[MR_IPTV_URL_MAX * 4 + MR_HTTP_USER_AGENT_MAX * 2 + 64];
   mr_http_options options;
   BPTR seglist;
@@ -408,7 +410,9 @@ static int start_stream(const mr_iptv_stream *stream) {
       !mr_http_options_init(&options, stream->user_agent,
                             stream->http_referrer))
     return 0;
-  if (!mr_iptv_build_mrplay_args(stream, args, sizeof(args)))
+  if (!mr_build_player_arguments(args, sizeof(args), play_options, stream->url,
+                                 stream->user_agent,
+                                 stream->http_referrer))
     return 0;
   seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
   if (!seglist)
@@ -425,18 +429,19 @@ static int start_stream(const mr_iptv_stream *stream) {
   return 1;
 }
 
-static int start_url(const char *url) {
+static int start_url(const char *url, const mr_play_options *play_options) {
   mr_iptv_stream stream;
   memset(&stream, 0, sizeof(stream));
   if (!url || strlen(url) >= sizeof(stream.url))
     return 0;
   strcpy(stream.url, url);
-  return start_stream(&stream);
+  return start_stream(&stream, play_options);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   Object *winobj = NULL, *layout = NULL, *search = NULL, *country = NULL;
   Object *category = NULL, *channels = NULL, *status = NULL, *url = NULL;
+  Object *playback_summary = NULL;
   Object *buttons = NULL;
   Object *refresh_button = NULL, *play_button = NULL, *next_button = NULL;
   Object *open_button = NULL;
@@ -450,7 +455,9 @@ int main(void) {
   size_t country_choice_index;
   UWORD code;
   char status_text[256], refresh_error[256], cache_error[256];
+  char playback_text[160], option_error[160];
   int rc = RETURN_FAIL, loaded, refresh_attempted, cache_ready;
+  mr_play_options play_options;
   mr_iptv_channel *active_channel = NULL;
   unsigned active_stream = 0;
 
@@ -465,6 +472,13 @@ int main(void) {
   categories.lh_TailPred = (struct Node *)&categories.lh_Head;
   mr_iptv_init(&directory);
   mr_iptv_init(&refreshed_directory);
+  mr_play_options_default(&play_options);
+  if (!mr_play_options_parse(&play_options, argc, argv, option_error,
+                             sizeof(option_error))) {
+    fprintf(stderr, "iptvgui: %s\n", option_error);
+    return RETURN_FAIL;
+  }
+  mr_play_options_summary(&play_options, playback_text, sizeof(playback_text));
   if (!open_classes())
     goto cleanup;
   for (country_choice_index = 0;
@@ -514,7 +528,11 @@ int main(void) {
   status = (Object *)NewObject(STRING_GetClass(), NULL, GA_ReadOnly, TRUE,
                                STRINGA_TextVal, (ULONG)status_text,
                                STRINGA_MaxChars, sizeof(status_text), TAG_DONE);
-  if (!search || !country || !category || !channels || !url || !status)
+  playback_summary = (Object *)NewObject(
+      STRING_GetClass(), NULL, GA_ReadOnly, TRUE, STRINGA_TextVal,
+      (ULONG)playback_text, STRINGA_MaxChars, sizeof(playback_text), TAG_DONE);
+  if (!search || !country || !category || !channels || !url || !status ||
+      !playback_summary)
     goto cleanup;
 
   refresh_button = (Object *)NewObject(
@@ -562,7 +580,8 @@ int main(void) {
       (ULONG)category, CHILD_Label, (ULONG)category_label, LAYOUT_AddChild,
       (ULONG)channels, LAYOUT_AddChild, (ULONG)url, CHILD_Label,
       (ULONG)url_label, LAYOUT_AddChild, (ULONG)buttons, CHILD_WeightedHeight,
-      0, LAYOUT_AddChild, (ULONG)status, CHILD_WeightedHeight, 0, TAG_DONE);
+      0, LAYOUT_AddChild, (ULONG)playback_summary, CHILD_WeightedHeight, 0,
+      LAYOUT_AddChild, (ULONG)status, CHILD_WeightedHeight, 0, TAG_DONE);
   if (!layout)
     goto cleanup;
   winobj = (Object *)NewObject(
@@ -713,7 +732,7 @@ int main(void) {
         }
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
-        if (!start_url(text ? (char *)text : ""))
+        if (!start_url(text ? (char *)text : "", &play_options))
           set_status(status, window, "Invalid URL or mrplay could not start.");
       } else if ((result & WMHI_GADGETMASK) == G_PLAY ||
                  (result & WMHI_GADGETMASK) == G_NEXT_STREAM) {
@@ -739,7 +758,7 @@ int main(void) {
                    (unsigned long)active_stream + 1,
                    (unsigned long)channel->stream_count);
           set_status(status, window, status_text);
-          if (!start_stream(&channel->streams[active_stream]))
+          if (!start_stream(&channel->streams[active_stream], &play_options))
             set_status(status, window,
                        "Invalid stream metadata or mrplay could not start.");
         }
@@ -782,6 +801,8 @@ cleanup:
       DisposeObject(url);
     if (status)
       DisposeObject(status);
+    if (playback_summary)
+      DisposeObject(playback_summary);
     if (search_label)
       DisposeObject(search_label);
     if (country_label)

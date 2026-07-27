@@ -1,4 +1,5 @@
 #include "mr_iptv.h"
+#include "../core/mr_play_options.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -77,51 +78,17 @@ int mr_iptv_valid_url(const char *u) {
   return *p && !strchr(p, ' ') && !strchr(p, '\r') && !strchr(p, '\n');
 }
 
-static int append_quoted(char *out, size_t cap, const char *option,
-                         const char *value) {
-  size_t n = strlen(out), i;
-  int written;
-  written = snprintf(out + n, cap > n ? cap - n : 0, "%s%s%s\"",
-                     n ? " " : "", option ? option : "",
-                     option ? " " : "");
-  if (written < 0 || (size_t)written >= (cap > n ? cap - n : 0))
-    return 0;
-  n += (size_t)written;
-  for (i = 0; value[i]; i++) {
-    if (value[i] == '\r' || value[i] == '\n')
-      return 0;
-    if ((value[i] == '"' || value[i] == '*') && n + 1 >= cap)
-      return 0;
-    if (value[i] == '"' || value[i] == '*')
-      out[n++] = '*';
-    if (n + 1 >= cap)
-      return 0;
-    out[n++] = value[i];
-  }
-  if (n + 2 >= cap)
-    return 0;
-  out[n++] = '"';
-  out[n] = 0;
-  return 1;
-}
-
 int mr_iptv_build_mrplay_args(const mr_iptv_stream *stream, char *out,
                               size_t out_size) {
+  mr_play_options options;
   if (!stream || !out || !out_size ||
       !memchr(stream->url, 0, sizeof(stream->url)) ||
       !memchr(stream->user_agent, 0, sizeof(stream->user_agent)) ||
       !memchr(stream->http_referrer, 0, sizeof(stream->http_referrer)) ||
       !mr_iptv_valid_url(stream->url))
     return 0;
-  out[0] = 0;
-  if ((stream->user_agent[0] &&
-       !append_quoted(out, out_size, "--user-agent", stream->user_agent)) ||
-      (stream->http_referrer[0] &&
-       !append_quoted(out, out_size, "--referer", stream->http_referrer)) ||
-      !append_quoted(out, out_size, NULL, stream->url))
-    return 0;
-  if (strlen(out) + 2 > out_size)
-    return 0;
-  strcat(out, "\n");
-  return 1;
+  mr_play_options_default(&options);
+  return mr_build_player_arguments(out, out_size, &options, stream->url,
+                                   stream->user_agent,
+                                   stream->http_referrer);
 }

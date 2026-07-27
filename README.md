@@ -156,6 +156,14 @@ owned by one playback source so they cannot leak into a later channel. The IPTV
 window's **Next Stream** button advances through the retained alternatives
 without silently looping.
 
+IPTV playback inherits a snapshot of the ReAction controller's display, C2P,
+lace, and 2x selections when **IPTV...** is pressed. The IPTV window shows that
+snapshot beside its status; close and reopen it after changing controller
+settings. A Shell-launched `iptvgui` uses safe AGA/Standard, lace-off, 2x-off,
+low-bandwidth HLS defaults. The shared bounded argument builder is also used by
+the main controller's ordinary **Play** action, so both paths map identical
+settings to identical `mrplay` display flags.
+
 For a real-hardware fragmentation check, record both `AvailMem(MEMF_FAST)` and
 `AvailMem(MEMF_FAST|MEMF_LARGEST)`, then open `iptvgui`, wait for the list, and
 close it ten times. The loader prints those values around each loading phase and

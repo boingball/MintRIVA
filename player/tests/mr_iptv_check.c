@@ -1,4 +1,5 @@
 #include "../iptv/mr_iptv.h"
+#include "../core/mr_play_options.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -269,24 +270,82 @@ int main(void) {
   {
     mr_iptv_stream launch;
     char args[4096];
+    mr_play_options options;
     memset(&launch, 0, sizeof(launch));
     strcpy(launch.url, "https://example.test/live.m3u8?a=1&b=2");
-    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+    mr_play_options_default(&options);
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
+    assert(strstr(args, "--aga --wpa --hls-low --hls-max-width=640"));
+    assert(strstr(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    options.c2p = MR_C2P_KALMS;
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
+    assert(strstr(args, "--aga --kalms-c2p"));
+    options.laced = 1;
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
+    assert(strstr(args, "--lace") && !strstr(args, "--2x"));
+    options.laced = 0;
+    options.scale_2x = 1;
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
+    assert(!strstr(args, "--lace") && strstr(args, "--2x"));
+    options.laced = 1;
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
+    assert(strstr(args, "--lace --2x"));
+    options.display = MR_DISPLAY_CGX;
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
+    assert(!strstr(args, "--aga") && !strstr(args, "--kalms-c2p"));
+    options.hls_low = 0;
+    options.hls_max_width = 0;
+    assert(!strcmp(args + strlen(args) - strlen(launch.url) - 3,
+                   "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
     assert(!strcmp(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    mr_play_options_default(&options);
     strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");
-    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
-    assert(!strcmp(args, "--user-agent \"Mozilla/5.0 Test Agent\" "
-                         "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     launch.user_agent, NULL));
+    assert(strstr(args, "--user-agent \"Mozilla/5.0 Test Agent\""));
     launch.user_agent[0] = 0;
     strcpy(launch.http_referrer, "https://example.test/player");
-    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
-    assert(!strcmp(args, "--referer \"https://example.test/player\" "
-                         "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, launch.http_referrer));
+    assert(strstr(args, "--referer \"https://example.test/player\""));
     strcpy(launch.user_agent, "Agent *with* \"quotes\"");
-    assert(mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     launch.user_agent,
+                                     launch.http_referrer));
     assert(strstr(args, "--user-agent \"Agent **with** *\"quotes*\"\""));
     strcpy(launch.user_agent, "bad\nheader");
-    assert(!mr_iptv_build_mrplay_args(&launch, args, sizeof(args)));
+    assert(!mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                      launch.user_agent, NULL));
+    assert(mr_build_iptv_arguments(args, sizeof(args), &options));
+    assert(strstr(args, "--display aga --c2p standard --no-laced "
+                        "--no-scale-2x --hls-low"));
+    {
+      char *inherited[] = {"iptvgui", "--display", "aga", "--c2p",
+                           "kalms", "--laced", "--scale-2x", "--hls-low",
+                           "--hls-max-width=640"};
+      char summary[160], first[4096], second[4096], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 9, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_AGA &&
+             parsed.c2p == MR_C2P_KALMS && parsed.laced && parsed.scale_2x);
+      assert(mr_build_player_arguments(first, sizeof(first), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(mr_build_player_arguments(second, sizeof(second), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(!strcmp(first, second));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "AGA / kalms / Lace on / 2x on"));
+    }
   }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");

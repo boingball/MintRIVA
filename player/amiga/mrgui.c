@@ -40,6 +40,7 @@
 #include <proto/window.h>
 #include <stdio.h>
 #include <string.h>
+#include "../core/mr_play_options.h"
 
 #ifndef MRGUI_CLASS_VERSION
 #define MRGUI_CLASS_VERSION 44
@@ -243,11 +244,38 @@ static void stop_player_and_wait(void)
 
 static void set_info(Object *info, struct Window *window, const char *text);
 
-static void open_iptv_browser(Object *info, struct Window *window)
+static void read_play_options(Object *mode, Object *c2p, Object *lace,
+                              Object *twox, mr_play_options *options)
+{
+    ULONG selected = 0, selected_c2p = 0, checked_lace = 0, checked_2x = 0;
+    mr_play_options_default(options);
+    GetAttr(CHOOSER_Selected, mode, &selected);
+    GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
+    GetAttr(CHECKBOX_Checked, lace, &checked_lace);
+    GetAttr(CHECKBOX_Checked, twox, &checked_2x);
+    options->display = selected == 1 ? MR_DISPLAY_HAM6 :
+                       selected == 2 ? MR_DISPLAY_HAM8 :
+                       selected == 3 ? MR_DISPLAY_CGX : MR_DISPLAY_AGA;
+    options->c2p = selected_c2p == 1 ? MR_C2P_AKIKO :
+                   selected_c2p == 2 ? MR_C2P_KALMS : MR_C2P_STANDARD;
+    options->laced = checked_lace != 0;
+    options->scale_2x = checked_2x != 0;
+}
+
+static void open_iptv_browser(Object *mode, Object *c2p, Object *lace,
+                              Object *twox, Object *info,
+                              struct Window *window)
 {
     BPTR seglist;
     struct Process *process;
-    static const char arguments[] = "\n";
+    char arguments[512];
+    mr_play_options options;
+
+    read_play_options(mode, c2p, lace, twox, &options);
+    if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
+        set_info(info, window, "Could not build IPTV playback options.");
+        return;
+    }
 
     /* Keep the directory browser in its own process so downloads and list
      * filtering can never stall the controller's transport event loop.  Load
@@ -276,25 +304,6 @@ static void open_iptv_browser(Object *info, struct Window *window)
         UnLoadSeg(seglist);
         set_info(info, window, "Could not create the iptvgui process.");
     }
-}
-
-static void quote_arg(char *dst, size_t cap, const char *src)
-{
-    size_t n;
-
-    n = 0;
-    if (cap)
-        dst[n++] = '"';
-
-    while (*src && n + 3 < cap) {
-        if (*src == '"' || *src == '*')
-            dst[n++] = '*';
-        dst[n++] = *src++;
-    }
-
-    if (n + 1 < cap)
-        dst[n++] = '"';
-    dst[n] = 0;
 }
 
 static void set_info(Object *info, struct Window *window, const char *text)
@@ -365,20 +374,12 @@ static void start_player(Object *file, Object *mode, Object *c2p,
                          struct Window *window)
 {
     char path[512];
-    char quoted[1040];
-    char args[1200];
-    ULONG selected;
-    ULONG selected_c2p;
-    ULONG checked_lace;
-    ULONG checked_2x;
+    char args[1600];
+    mr_play_options options;
     STRPTR full_file;
     BPTR seglist;
     struct Process *process;
 
-    selected = 0;
-    selected_c2p = 0;
-    checked_lace = 0;
-    checked_2x = 0;
     full_file = NULL;
 
     GetAttr(GETFILE_FullFile, file, (ULONG *)&full_file);
@@ -396,21 +397,12 @@ static void start_player(Object *file, Object *mode, Object *c2p,
     strncpy(path, (const char *)full_file, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
 
-    GetAttr(CHOOSER_Selected, mode, &selected);
-    GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
-    GetAttr(CHECKBOX_Checked, lace, &checked_lace);
-    GetAttr(CHECKBOX_Checked, twox, &checked_2x);
-    quote_arg(quoted, sizeof(quoted), path);
-
-    snprintf(args, sizeof(args), "%s%s%s%s%s\n", quoted,
-             selected == 0 ? " --aga" :
-             selected == 1 ? " --aga --ham6" :
-             selected == 2 ? " --aga --ham" : "",
-             selected < 3 ? (selected_c2p == 1 ? " --cd32" :
-                             selected_c2p == 2 ? " --kalms-c2p" :
-                             " --wpa") : "",
-             checked_lace && selected < 3 ? " --lace" : "",
-             checked_2x && selected < 3 ? " --2x" : "");
+    read_play_options(mode, c2p, lace, twox, &options);
+    if (!mr_build_player_arguments(args, sizeof(args), &options, path,
+                                   NULL, NULL)) {
+        set_info(info, window, "Could not build player arguments.");
+        return;
+    }
 
     /* NP_CommandName only labels a CLI; it does not load an executable.
      * Load mrplay explicitly and pass its seglist to CreateNewProcTags(). */
@@ -695,7 +687,7 @@ int main(void)
                     break;
 
                 case G_IPTV:
-                    open_iptv_browser(info, window);
+                    open_iptv_browser(mode, c2p, lace, twox, info, window);
                     break;
 
                 default:

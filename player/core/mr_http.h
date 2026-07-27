@@ -27,6 +27,10 @@
 typedef struct mr_http_options {
     char user_agent[MR_HTTP_USER_AGENT_MAX];
     char referer[MR_HTTP_REFERER_MAX];
+    int hls_low;
+    unsigned hls_max_width;
+    unsigned hls_max_height;
+    unsigned hls_max_fps;
 } mr_http_options;
 
 int mr_http_options_init(mr_http_options *options, const char *user_agent,

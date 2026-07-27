@@ -238,6 +238,8 @@ int main(int argc, char **argv)
     int frames = 0;
     int want_time = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
     int raw_diag_printed = 0;
+    int hls_low = 0;
+    unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -256,7 +258,7 @@ int main(int argc, char **argv)
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
-               "[--cd32] [--time]\n");
+               "[--cd32] [--hls-low] [--time]\n");
         return 5;
     }
     {   /* display options anywhere on the command line */
@@ -287,6 +289,13 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
             else if (!strcmp(argv[i], "--time")) want_time = 1;
+            else if (!strcmp(argv[i], "--hls-low")) hls_low = 1;
+            else if (!strncmp(argv[i], "--hls-max-width=", 16))
+                hls_max_width = (unsigned)strtoul(argv[i] + 16, NULL, 10);
+            else if (!strncmp(argv[i], "--hls-max-height=", 17))
+                hls_max_height = (unsigned)strtoul(argv[i] + 17, NULL, 10);
+            else if (!strncmp(argv[i], "--hls-max-fps=", 14))
+                hls_max_fps = (unsigned)strtoul(argv[i] + 14, NULL, 10);
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -298,11 +307,19 @@ int main(int argc, char **argv)
         printf("invalid HTTP options: %s\n", mr_source_last_error());
         return 5;
     }
-    have_http_options = user_agent || referer;
+    http_options.hls_low = hls_low;
+    http_options.hls_max_width = hls_max_width;
+    http_options.hls_max_height = hls_max_height;
+    http_options.hls_max_fps = hls_max_fps;
+    have_http_options = user_agent || referer || hls_low || hls_max_width ||
+                        hls_max_height || hls_max_fps;
     if (want_time) {
         printf("HTTP User-Agent: %s\n",
                user_agent ? user_agent : "MintRIVA/0.1 AmigaOS");
         if (referer) printf("HTTP Referer: %s\n", referer);
+        if (hls_low)
+            printf("HLS preference: low bandwidth (max %ux%u @ %u fps)\n",
+                   hls_max_width, hls_max_height, hls_max_fps);
     }
     printf("mrplay: opening %s\n", media_path);
 

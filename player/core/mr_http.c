@@ -1373,6 +1373,12 @@ mr_source *mr_http_source_open_ex(const char *url,
         free(h);
         return NULL;
     }
+    if (options) {
+        h->options.hls_low = options->hls_low;
+        h->options.hls_max_width = options->hls_max_width;
+        h->options.hls_max_height = options->hls_max_height;
+        h->options.hls_max_fps = options->hls_max_fps;
+    }
     h->cache = (unsigned char *)malloc(HTTP_CACHE_SIZE);
     if (!h->cache) {
         mr_source_set_error("not enough memory for HTTP rewind cache");

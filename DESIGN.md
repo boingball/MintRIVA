@@ -234,6 +234,13 @@ successful refresh transfers its already-validated directory into the GUI after
 the atomic cache rename instead of reparsing both downloaded files.
 Classic builds log total and largest Fast RAM before loading, after country
 selection, after stream joining, and after visible ListBrowser nodes are built.
+`mr_play_options` is the process-boundary contract shared by `mrgui` and
+`iptvgui`. The controller captures its gadgets when IPTV is opened and passes
+explicit display/C2P/lace/scale/HLS arguments to the child. The browser parses
+that immutable snapshot, displays a summary, and uses the same bounded player
+argument builder as ordinary controller playback when it adds a stream URL and
+typed HTTP metadata. Direct browser launches initialize the documented safe
+defaults rather than depending on cross-process globals.
 IPTV request metadata crosses the player boundary only as the typed
 `--user-agent` and `--referer` options. `mr_http_options` rejects CR/LF and
 overlong values, is copied into each HTTP/HLS source instance, and is reused by
