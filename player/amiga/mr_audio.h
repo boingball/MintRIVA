@@ -14,6 +14,12 @@
 #define MR_AUDIO_H
 
 typedef struct mr_audio mr_audio;
+enum mr_audio_request_state {
+    AUDIO_REQ_IDLE = 0,
+    AUDIO_REQ_QUEUED,
+    AUDIO_REQ_PLAYING,
+    AUDIO_REQ_COMPLETE
+};
 typedef struct mr_audio_diagnostics {
     unsigned long hardware_starvations;
     unsigned long minimum_buffered_ms;
@@ -24,6 +30,14 @@ typedef struct mr_audio_diagnostics {
     unsigned long request_samples[2];
     unsigned char request_state[2]; /* 0 idle, 1 active, 2 completed */
     unsigned char active_requests;
+    uint64_t audio_clock_us;
+    unsigned long fifo_buffered_ms;
+    unsigned long hardware_playing_remaining_ms;
+    unsigned long hardware_queued_ms;
+    unsigned long total_buffered_ms;
+    uint64_t clock_largest_step_us;
+    uint64_t oldest_request_sequence;
+    unsigned char request_timeline_state[2]; /* enum mr_audio_request_state */
 } mr_audio_diagnostics;
 
 /* RIFF/WAVE PCM with 8 bits per sample is unsigned, centred at 0x80. */
@@ -49,6 +63,7 @@ void          audio_service(mr_audio *a);
 
 /* Master clock: milliseconds of audio actually played so far. */
 unsigned long audio_elapsed_ms(mr_audio *a);
+uint64_t      audio_elapsed_us(mr_audio *a);
 
 /* True when the FIFO is empty and nothing is in flight (underrun) - the player
  * uses this to avoid stalling video on an audio clock that has stopped. */

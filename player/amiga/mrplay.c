@@ -275,6 +275,18 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            audio_diag.request_samples[0], (unsigned)audio_diag.request_state[1],
            audio_diag.request_samples[1], (unsigned)audio_diag.active_requests);
     if (audio) service_audio_for_display(trace);
+    printf("audio timeline: clock=%lu us fifo=%lu ms playing-remain=%lu ms "
+           "queued=%lu ms total=%lu ms max-step=%lu us oldest=%lu "
+           "req0=%u req1=%u\n",
+           (unsigned long)audio_diag.audio_clock_us,
+           audio_diag.fifo_buffered_ms,
+           audio_diag.hardware_playing_remaining_ms,
+           audio_diag.hardware_queued_ms, audio_diag.total_buffered_ms,
+           (unsigned long)audio_diag.clock_largest_step_us,
+           (unsigned long)audio_diag.oldest_request_sequence,
+           (unsigned)audio_diag.request_timeline_state[0],
+           (unsigned)audio_diag.request_timeline_state[1]);
+    if (audio) service_audio_for_display(trace);
     printf("demux timing: calls=%lu max-call=%lu us max-scanned=%lu "
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
            demux_timing.scanned_max, demux_timing.service_calls);
@@ -533,7 +545,7 @@ int main(int argc, char **argv)
     const char *referer = NULL;
     mr_http_options http_options;
     int have_http_options = 0;
-    unsigned long clock_base = 0;
+    uint64_t clock_base_us = 0;
     int64_t container_pts_adjust_us = 0;
     uint64_t last_container_pts_us = 0;
     int have_container_pts = 0;
@@ -803,8 +815,7 @@ int main(int argc, char **argv)
         if (audio) audio_ms = audio_buffered_ms(audio);
         if (playback_started && front) {
             if (audio && !audio_starved(audio))
-                master_clock_us = (uint64_t)audio_elapsed_ms(audio) * 1000ULL -
-                                  (uint64_t)clock_base * 1000ULL;
+                master_clock_us = audio_elapsed_us(audio) - clock_base_us;
             else master_clock_us = now - mono_base_us;
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             have_deadline = 1;
@@ -815,7 +826,10 @@ int main(int argc, char **argv)
             trace_phase(&trace, "event-processing");
             ev = player_event(disp);
             if (ev == MR_EV_QUIT) { quit = 1; break; }
-            if (ev == MR_EV_PAUSE) { paused = 1; }
+            if (ev == MR_EV_PAUSE) {
+                paused = 1;
+                if (audio) audio_set_running(audio, 0);
+            }
             if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
             while (paused && !quit) {
                 ev = player_event(disp);
@@ -823,10 +837,11 @@ int main(int argc, char **argv)
                 else if (ev == MR_EV_PAUSE) {
                     paused = 0; mono_base_us = monotonic_us() - front->pts_us;
                     if (audio) {
-                        unsigned long elapsed = audio_elapsed_ms(audio);
-                        unsigned long frame_ms = (unsigned long)(front->pts_us / 1000);
-                        clock_base = elapsed > frame_ms ? elapsed - frame_ms : 0;
+                        uint64_t elapsed = audio_elapsed_us(audio);
+                        clock_base_us = elapsed > front->pts_us
+                                      ? elapsed - front->pts_us : 0;
                         stats.timing_rebases++;
+                        audio_set_running(audio, 1);
                     }
                 }
                 if (audio) service_audio_for_display(&trace);
@@ -842,8 +857,7 @@ int main(int argc, char **argv)
             now = monotonic_us();
             trace_phase(&trace, "deadline-drop");
             if (audio && !audio_starved(audio))
-                master_clock_us = (uint64_t)audio_elapsed_ms(audio) * 1000ULL -
-                                  (uint64_t)clock_base * 1000ULL;
+                master_clock_us = audio_elapsed_us(audio) - clock_base_us;
             else master_clock_us = now - mono_base_us;
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             if (late_us > 0) stats.late++;
@@ -920,7 +934,7 @@ int main(int argc, char **argv)
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
-            clock_base = audio ? audio_elapsed_ms(audio) : 0;
+            clock_base_us = audio ? audio_elapsed_us(audio) : 0;
             continue;
         }
 
@@ -1043,7 +1057,7 @@ int main(int argc, char **argv)
                     if (playback_started) {
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
-                        clock_base = audio ? audio_elapsed_ms(audio) : 0;
+                        clock_base_us = audio ? audio_elapsed_us(audio) : 0;
                         if (audio) {
                             service_audio_for_display(&trace);
                             audio_set_running(audio, 1);
@@ -1093,7 +1107,8 @@ int main(int argc, char **argv)
         if (ds != MR_OK) break;
 
         if (audio) {
-            unsigned long target = clock_base + (unsigned long)frames * period;
+            unsigned long target = (unsigned long)(clock_base_us / 1000ULL) +
+                                   (unsigned long)frames * period;
             while (audio_elapsed_ms(audio) < target &&
                    !audio_starved(audio)) {
                 int ev = player_event(disp);
