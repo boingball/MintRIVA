@@ -10,6 +10,7 @@
  *   mr_decode <file.mov> --first-ppm <file>   - dump first decoded RGB frame
  */
 #include "../core/mr_demux.h"
+#include "../core/mr_http.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_ham.h"
@@ -118,6 +119,8 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
 int main(int argc, char **argv)
 {
     int argi = 2, force_memory = 0;
+    const char *user_agent = NULL, *referer = NULL;
+    mr_http_options http_options;
     const char *mode;
     const char *dir;
     if (argc < 2) {
@@ -125,16 +128,32 @@ int main(int argc, char **argv)
                         "[--ppm dir|--check dir|--first-ppm file]\n");
         return 2;
     }
-    if (argc > argi && !strcmp(argv[argi], "--memory")) {
-        force_memory = 1;
-        argi++;
+    while (argc > argi) {
+        if (!strcmp(argv[argi], "--memory")) {
+            force_memory = 1;
+            argi++;
+        } else if (!strcmp(argv[argi], "--user-agent") && argc > argi + 1) {
+            user_agent = argv[argi + 1];
+            argi += 2;
+        } else if (!strcmp(argv[argi], "--referer") && argc > argi + 1) {
+            referer = argv[argi + 1];
+            argi += 2;
+        } else {
+            break;
+        }
     }
     mode = argc > argi ? argv[argi] : NULL;
     dir  = argc > argi + 1 ? argv[argi + 1] : NULL;
 
     size_t len = 0;
     uint8_t *buf = NULL;
-    mr_demux *dx = force_memory ? NULL : mr_demux_open_file(argv[1]);
+    if (!mr_http_options_init(&http_options, user_agent, referer)) {
+        fprintf(stderr, "invalid HTTP options: %s\n", mr_source_last_error());
+        return 2;
+    }
+    mr_demux *dx = force_memory ? NULL :
+        mr_demux_open_file_ex(argv[1], (user_agent || referer)
+                                      ? &http_options : NULL);
 
     if (!dx) {
         if (!force_memory && mr_demux_is_file_backed_container(argv[1])) {

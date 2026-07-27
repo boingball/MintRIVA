@@ -67,6 +67,7 @@ typedef enum {
 } mr_container;
 
 typedef struct mr_demux mr_demux;
+struct mr_http_options;
 
 /* Auto-detect container and open over an in-memory buffer (borrowed, must
  * outlive the demux). Returns NULL if unrecognised/malformed. */
@@ -76,6 +77,8 @@ mr_demux    *mr_demux_open(const uint8_t *buf, size_t len);
  * read into reusable buffers on demand. HTTP seeking uses byte ranges. Raw
  * streams and MPEG program streams remain on the memory path. */
 mr_demux    *mr_demux_open_file(const char *path);
+mr_demux    *mr_demux_open_file_ex(const char *path,
+                                    const struct mr_http_options *options);
 /* True when the file signature is one of the file-backed containers. Useful
  * after an open failure so callers do not try to slurp a huge but unsupported
  * or malformed AVI/MOV/TS into memory as a raw stream. */

@@ -20,6 +20,7 @@
 #include "mr_types.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
@@ -43,6 +44,8 @@ typedef struct {
     int      live;        /* playlist has no ENDLIST: keep re-fetching        */
     char    *playlist_url;/* media playlist URL to re-fetch for new segments  */
     unsigned long next_seq; /* media-sequence of the next not-yet-queued seg  */
+    mr_http_options options; /* inherited by playlists and segments            */
+    int      have_options;
 } hls_source;
 
 /* ---- URL detection ----------------------------------------------------- */
@@ -62,9 +65,9 @@ int mr_source_is_hls(const char *url)
 
 /* ---- small text helpers ------------------------------------------------ */
 
-static char *fetch_text(const char *url)
+static char *fetch_text(const char *url, const mr_http_options *options)
 {
-    mr_source *s = mr_http_source_open(url);
+    mr_source *s = mr_http_source_open_ex(url, options);
     size_t len;
     char *buf;
     if (!s) return NULL;
@@ -146,20 +149,35 @@ static int append_seg(hls_source *h, const char *url)
 /* Pick the lowest-bandwidth variant from a master playlist; resolve it against
  * base_url into `out`. Returns 1 if a variant was found. */
 static int pick_variant(char *text, const char *base_url,
-                        char *out, size_t out_size)
+                        char *out, size_t out_size,
+                        const mr_http_options *options)
 {
     char line[HLS_URL_MAX];
     char *p = text;
     unsigned long best_bw = 0;
     int have = 0, pending = 0;
     unsigned long pending_bw = 0;
+    unsigned pending_width = 0, pending_height = 0, pending_fps = 0;
     while ((p = next_line(p, line, sizeof line)) != NULL) {
         if (starts(line, "#EXT-X-STREAM-INF")) {
             const char *bw = strstr(line, "BANDWIDTH=");
+            const char *resolution = strstr(line, "RESOLUTION=");
+            const char *fps = strstr(line, "FRAME-RATE=");
             pending = 1;
             pending_bw = bw ? strtoul(bw + 10, NULL, 10) : 0;
+            pending_width = pending_height = pending_fps = 0;
+            if (resolution)
+                sscanf(resolution + 11, "%ux%u", &pending_width,
+                       &pending_height);
+            if (fps)
+                pending_fps = (unsigned)strtoul(fps + 11, NULL, 10);
         } else if (line[0] && line[0] != '#' && pending) {
             pending = 0;
+            if (options &&
+                ((options->hls_max_width && pending_width > options->hls_max_width) ||
+                 (options->hls_max_height && pending_height > options->hls_max_height) ||
+                 (options->hls_max_fps && pending_fps > options->hls_max_fps)))
+                continue;
             if (!have || pending_bw < best_bw || best_bw == 0) {
                 if (mr_http_resolve_url(base_url, line, out, out_size)) {
                     best_bw = pending_bw;
@@ -230,7 +248,8 @@ static int open_seg(hls_source *h, size_t i)
      * the second close tear the first's state down twice. Closing first also
      * keeps only one segment's read-ahead buffer resident at a time. */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
-    s = mr_http_source_open(h->segs[i]);
+    s = mr_http_source_open_ex(h->segs[i],
+                               h->have_options ? &h->options : NULL);
     if (!s) return 0;
     len = mr_source_length(s);
     if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
@@ -268,7 +287,8 @@ static int hls_refetch_live(hls_source *h)
      * ever open at once (see open_seg). */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
     for (tries = 0; tries < HLS_LIVE_REFETCH_MAX; tries++) {
-        char *text = fetch_text(h->playlist_url);
+        char *text = fetch_text(h->playlist_url,
+                                h->have_options ? &h->options : NULL);
         int added;
         mr_status st;
         if (!text) return 0;                       /* playlist gone / error    */
@@ -321,29 +341,29 @@ static void hls_close(void *opaque)
 
 /* ---- open -------------------------------------------------------------- */
 
-mr_source *mr_hls_source_open(const char *url)
+mr_source *mr_hls_source_open_ex(const char *url,
+                                 const mr_http_options *options)
 {
     char *text;
     char media_url[HLS_URL_MAX];
     const char *base;
     hls_source *h;
-    mr_source *src;
     mr_status st;
     int added;
 
-    text = fetch_text(url);
+    text = fetch_text(url, options);
     if (!text) return NULL;
 
     /* Master playlist? Resolve to one media variant and refetch. */
     base = url;
     if (strstr(text, "#EXT-X-STREAM-INF")) {
-        if (!pick_variant(text, url, media_url, sizeof media_url)) {
+        if (!pick_variant(text, url, media_url, sizeof media_url, options)) {
             free(text);
             mr_source_set_error("no playable variant in HLS master playlist");
             return NULL;
         }
         free(text);
-        text = fetch_text(media_url);
+        text = fetch_text(media_url, options);
         if (!text) return NULL;
         base = media_url;
         if (strstr(text, "#EXT-X-STREAM-INF")) {
@@ -355,6 +375,19 @@ mr_source *mr_hls_source_open(const char *url)
 
     h = (hls_source *)calloc(1, sizeof *h);
     if (!h) { free(text); mr_source_set_error("out of memory for HLS"); return NULL; }
+    if (options) {
+        if (!mr_http_options_init(&h->options, options->user_agent,
+                                  options->referer)) {
+            free(text);
+            hls_close(h);
+            return NULL;
+        }
+        h->have_options = 1;
+        h->options.hls_low = options->hls_low;
+        h->options.hls_max_width = options->hls_max_width;
+        h->options.hls_max_height = options->hls_max_height;
+        h->options.hls_max_fps = options->hls_max_fps;
+    }
     st = merge_playlist(text, base, h, &added);
     free(text);
     if (st != MR_OK) { hls_close(h); return NULL; }
@@ -380,4 +413,9 @@ mr_source *mr_hls_source_open(const char *url)
      * short read as end of stream. mr_source_create already closes the context
      * (hls_close) if it fails, so we must not close it again here. */
     return mr_source_create(h, MR_SOURCE_LEN_UNKNOWN, hls_read_at, hls_close, url);
+}
+
+mr_source *mr_hls_source_open(const char *url)
+{
+    return mr_hls_source_open_ex(url, NULL);
 }

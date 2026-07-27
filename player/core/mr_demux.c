@@ -99,7 +99,8 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
     return d;
 }
 
-mr_demux *mr_demux_open_file(const char *path)
+mr_demux *mr_demux_open_file_ex(const char *path,
+                                const struct mr_http_options *options)
 {
     uint8_t head[512];
     size_t got;
@@ -110,7 +111,7 @@ mr_demux *mr_demux_open_file(const char *path)
     mr_source *source;
 
     if (!path) return NULL;
-    source = mr_source_open(path);
+    source = mr_source_open_ex(path, options);
     if (!source) return NULL;
     end = mr_source_length(source);
     got = end < sizeof head ? end : sizeof head;
@@ -161,6 +162,11 @@ mr_demux *mr_demux_open_file(const char *path)
         return NULL;
     }
     return d;
+}
+
+mr_demux *mr_demux_open_file(const char *path)
+{
+    return mr_demux_open_file_ex(path, NULL);
 }
 
 int mr_demux_is_file_backed_container(const char *path)

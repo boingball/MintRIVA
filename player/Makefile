@@ -118,7 +118,15 @@ mr_pcm_u8_check: tests/mr_pcm_u8_check.c audio/mr_pcm.c audio/mr_pcm.h \
                  core/mr_demux.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_pcm_u8_check.c audio/mr_pcm.c
 
-check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check
+mr_iptv_check: tests/mr_iptv_check.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
+               iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c iptv/mr_iptv.h \
+               core/mr_play_options.c core/mr_play_options.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_iptv_check.c iptv/mr_iptv.c \
+	    iptv/mr_iptv_json.c iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c \
+	    core/mr_play_options.c
+
+check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_iptv_check
+	./mr_iptv_check
 	./mr_codec_registry_check
 	./mr_pcm_u8_check
 	./mr_decode ../testfiles/mov+cinepak+pcm_s8++grosspnt.mov 2>&1 \
@@ -207,5 +215,6 @@ clean:
 	rm -f mr_legacy_video_check
 	rm -f mr_rawvideo_check mr_codec_registry_check
 	rm -f mr_pcm_u8_check
+	rm -f mr_iptv_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean

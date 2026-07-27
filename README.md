@@ -33,6 +33,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
 | Separate ReAction controller (`mrgui`) | ✅ file picker, mode/options and transport controls |
+| IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
 | PCM / MP2 / MP3 / AAC-LC audio to Paula | ✅ host-validated; hardware test pending for MP3/AAC |
 
 ## Building & testing the portable core (dev host)
@@ -73,6 +74,8 @@ redirects and byte-range seeking are supported:
 ```sh
 mrplay "http://example.net/video.avi"
 mrplay "https://example.net/video.mp4"
+mrplay --user-agent "Mozilla/5.0" --referer "https://example.net/" \
+  "https://example.net/live/master.m3u8"
 ```
 
 Plain HTTP is present in the normal Amiga build. HTTPS uses
@@ -112,6 +115,60 @@ fragmented MP4 are not supported yet.
 TS currently supports MPEG-1/2 or AVC/H.264 video with ADTS AAC audio; AC3 is
 not decoded. Raw MJPEG/M4V and MPEG-1 program streams still use the original
 whole-file input path and therefore do not accept URLs.
+
+### IPTV browser
+
+The ReAction controller includes an **IPTV...** launcher for the separate
+`iptvgui` directory window. Build it together with the controller using
+`make -f Makefile.amiga all SSL=1 SSLCERTS=1`; keep `mrgui`, `iptvgui`, and
+`mrplay` together. `SSL=1` enables AmiSSL for the HTTPS iptv-org directory
+download and `SSLCERTS=1` enables certificate verification. A browser built
+without HTTPS support remains usable for cached data and manual URLs, but a
+refresh explicitly reports that it must be rebuilt with `SSL=1`.
+The browser immediately reads valid cached `channels.json` and `streams.json`
+from `PROGDIR:Cache/IPTV/`. Its default public directory is iptv-org
+(`channels.json`, `streams.json`, `countries.json`, and `categories.json`).
+MintRIVA does not host or redistribute television channels: iptv-org is a
+collection of publicly available links, and individual links may be offline,
+geo-blocked, or require request headers.
+
+The directory reader is bounded and retains only the metadata used for local
+country/category/search filtering.  Cached JSON is used immediately, refreshed
+after 24 hours, and replaced only after a complete download parses successfully;
+a failed refresh leaves the prior cache intact.  Manual HTTP/HTTPS media URLs,
+M3U8 playlists, and simple `#EXTM3U` lists use the normal MintRIVA URL/player
+pipeline.  Playback still depends on the existing demuxers and codecs. HLS
+prefers supported low-resolution variants (maximum width 640 by default), and
+cannot make DRM, login-only, unsupported-codec, or dead streams playable.
+
+Cached JSON is processed incrementally with a 16 KiB buffer. Only the selected
+country is held in RAM; unrelated global streams are validated and discarded.
+Changing country rebuilds the compact directory from cache without downloading
+the API files again. Each channel retains at most four preferred stream URLs.
+Country filtering uses the directory's own codes (`UK` for United Kingdom and
+`US` for United States), rather than deriving ISO codes from display labels.
+
+Per-stream `Referer` and `User-Agent` values are retained by the IPTV model and
+passed as typed, bounded `mrplay` options. They follow redirects, HLS variant
+playlists, live-playlist refreshes, segments, and range reconnects. Values with
+CR/LF or values exceeding their fixed limits are rejected, and the options are
+owned by one playback source so they cannot leak into a later channel. The IPTV
+window's **Next Stream** button advances through the retained alternatives
+without silently looping.
+
+IPTV playback inherits a snapshot of the ReAction controller's display, C2P,
+lace, and 2x selections when **IPTV...** is pressed. The IPTV window shows that
+snapshot beside its status; close and reopen it after changing controller
+settings. A Shell-launched `iptvgui` uses safe AGA/Standard, lace-off, 2x-off,
+low-bandwidth HLS defaults. The shared bounded argument builder is also used by
+the main controller's ordinary **Play** action, so both paths map identical
+settings to identical `mrplay` display flags.
+
+For a real-hardware fragmentation check, record both `AvailMem(MEMF_FAST)` and
+`AvailMem(MEMF_FAST|MEMF_LARGEST)`, then open `iptvgui`, wait for the list, and
+close it ten times. The loader prints those values around each loading phase and
+after ListBrowser construction; neither total Fast RAM nor the largest block
+should show a meaningful downward trend across completed open/close cycles.
 
 ## Layout
 

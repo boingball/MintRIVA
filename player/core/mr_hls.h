@@ -11,11 +11,14 @@
 #define MR_HLS_H
 
 #include "mr_source.h"
+struct mr_http_options;
 
 /* True if the URL looks like an HLS playlist (…\.m3u8[?…]). */
 int        mr_source_is_hls(const char *url);
 
 /* Open an HLS playlist URL as a streaming MPEG-TS source. */
 mr_source *mr_hls_source_open(const char *url);
+mr_source *mr_hls_source_open_ex(const char *url,
+                                 const struct mr_http_options *options);
 
 #endif /* MR_HLS_H */

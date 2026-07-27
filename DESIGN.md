@@ -172,3 +172,78 @@ plugin and consequently discards the reference frame.
 Compatibility roadmap: H.263 baseline is supported; H.263+ annexes are partial
 and explicitly rejected as documented in README.md; H.261 is not yet supported;
 Indeo 3, Sorenson Video 1, WMV1/2, and VP3/Theora are planned.
+# IPTV directory
+
+`player/iptv/` is deliberately independent of ReAction and of the media
+pipeline.  Its bounded token reader extracts only channel and stream metadata,
+joins exact IDs before `@` feed variants, and keeps at most eight candidates.
+The lightweight filter excludes NSFW, closed, and streamless records.  The M3U
+fallback recognizes only `EXTM3U`/`EXTINF`, `tvg-id`, `tvg-name`, and
+`group-title`; it is not a vendor IPTV-client implementation.
+
+The ReAction browser is a separate process/window. Directory network work is
+therefore isolated from the main transport event loop, while selection is sent
+back through the same URL launch path used by command-line playback. Downloads
+use the existing HTTP/AmiSSL implementation and a temporary-parse-rename cache
+transaction, retaining a previously valid cache after any failure. Directory
+JSON never enters the preferences file.
+
+`iptvgui` reads `cache.meta` at startup and automatically refreshes channel and
+stream JSON after 24 hours. It downloads through the shared HTTP/AmiSSL source
+into bounded `.tmp` files, parses both files before installation, and keeps
+`.old` files until both renames succeed so an interrupted or malformed refresh
+cannot destroy the last usable directory.
+The complete-response helper in `mr_http.c` accepts both Content-Length and
+chunked/length-less responses, which avoids treating GitHub Pages' transfer
+framing as a cache failure.
+The browser opens before starting an expired-cache refresh and preserves the
+HTTP/AmiSSL diagnostic with its failing stage. Cache setup probes
+`PROGDIR:Cache/IPTV/` for writes and falls back to `T:MintRIVA-IPTV/` rather
+than silently attempting downloads into a read-only program directory.
+Optional iptv-org scalar metadata accepts JSON `null`; retained nullable strings
+become empty values. Parser failures include the file, one-based object number,
+field, byte offset, expected type, and leading token. The failed JSON file is
+kept as `channels.failed.json` or `streams.failed.json` for Amiga-side diagnosis.
+Candidate stream arrays are allocated only after a channel joins successfully;
+channel-directory parsing therefore no longer reserves eight 1 KiB URLs per
+channel. This avoids a large allocation jump at channel 1025 on classic systems.
+Alternate-name and category arrays are likewise allocated only when present,
+reducing the fixed channel record to roughly 432 bytes on the host build. The
+20,000-channel table therefore needs about 8.6 MiB plus only the metadata that
+actually exists, rather than a large contiguous maximum-field reservation.
+The parser validates up to 100,000 JSON channel objects but retains at most
+20,000 useful metadata records. NSFW, closed, replaced, unnamed, and ID-less
+records are discarded immediately; after stream joining the table is compacted
+again to channels with a valid URL. Crossing the retained limit is counted and
+reported as a warning while syntax validation continues to the end of the file.
+The runtime browser no longer uses that global-table validation path to load a
+country. `mr_iptv_streaming.c` scans cached arrays with a 16 KiB stdio buffer,
+retains only the selected country's compact metadata, builds an open-addressed
+ID hash, and validates streams one object at a time. Unrelated streams are never
+stored. Channels keep at most two alternate names/categories and four preferred
+streams, then streamless channels are removed in place. Changing country
+reprocesses the cache without another network request.
+The ReAction chooser owns a single label/code mapping table; iptv-org's `UK`
+code is authoritative for United Kingdom filtering (not ISO `GB`).
+The country loader parses each 64 KiB-bounded object directly into caller-owned
+records. It no longer constructs a temporary directory or pending stream table
+per object. Nonmatching countries complete the required-field pass without
+allocating alternate names or categories; retained channels grow geometrically,
+and the first matching stream allocates four final candidate slots once. A
+successful refresh transfers its already-validated directory into the GUI after
+the atomic cache rename instead of reparsing both downloaded files.
+Classic builds log total and largest Fast RAM before loading, after country
+selection, after stream joining, and after visible ListBrowser nodes are built.
+`mr_play_options` is the process-boundary contract shared by `mrgui` and
+`iptvgui`. The controller captures its gadgets when IPTV is opened and passes
+explicit display/C2P/lace/scale/HLS arguments to the child. The browser parses
+that immutable snapshot, displays a summary, and uses the same bounded player
+argument builder as ordinary controller playback when it adds a stream URL and
+typed HTTP metadata. Direct browser launches initialize the documented safe
+defaults rather than depending on cross-process globals.
+IPTV request metadata crosses the player boundary only as the typed
+`--user-agent` and `--referer` options. `mr_http_options` rejects CR/LF and
+overlong values, is copied into each HTTP/HLS source instance, and is reused by
+redirects, range reconnects, master/media playlist fetches, live refreshes, and
+segment requests. The default remains `MintRIVA/0.1 AmigaOS` with no Referer;
+there is deliberately no arbitrary-header command-line interface.

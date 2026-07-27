@@ -51,7 +51,8 @@
 #define HTTP_HOST_MAX       256
 #define HTTP_PATH_MAX       768
 #define HTTP_HEADER_MAX   16384
-#define HTTP_REQUEST_MAX   1536
+#define HTTP_REQUEST_MAX   3072
+#define HTTP_DEFAULT_USER_AGENT "MintRIVA/0.1 AmigaOS"
 #define HTTP_CHUNK_LINE_MAX 128
 /* Read-ahead / rewind window. Presentation-order delivery makes streaming
  * alternate reads between a file's video-chunk and audio-chunk regions, and the
@@ -100,6 +101,7 @@ typedef struct {
 
 typedef struct {
     char url[HTTP_URL_MAX];
+    mr_http_options options;
     int sock;
     int socket_ready;
     int using_tls;
@@ -127,6 +129,58 @@ typedef struct {
     size_t cache_len;
     size_t max_read;            /* highest byte the demuxer has asked for      */
 } http_source;
+
+static int copy_header_value(char *out, size_t cap, const char *value,
+                             const char *name)
+{
+    size_t n;
+    char error[96];
+    if (!value) value = "";
+    {
+        const char *end = (const char *)memchr(value, 0, cap);
+        if (!end) {
+            snprintf(error, sizeof error, "invalid or overlong HTTP %s", name);
+            mr_source_set_error(error);
+            return 0;
+        }
+        n = (size_t)(end - value);
+    }
+    if (memchr(value, '\r', n) || memchr(value, '\n', n)) {
+        snprintf(error, sizeof error, "invalid or overlong HTTP %s", name);
+        mr_source_set_error(error);
+        return 0;
+    }
+    memcpy(out, value, n + 1);
+    return 1;
+}
+
+int mr_http_options_init(mr_http_options *options, const char *user_agent,
+                         const char *referer)
+{
+    if (!options) {
+        mr_source_set_error("missing HTTP options storage");
+        return 0;
+    }
+    memset(options, 0, sizeof *options);
+    return copy_header_value(options->user_agent,
+                             sizeof options->user_agent, user_agent,
+                             "User-Agent") &&
+           copy_header_value(options->referer, sizeof options->referer,
+                             referer, "Referer");
+}
+
+static int format_option_headers(const http_source *h, char *out, size_t cap)
+{
+    const char *ua = h->options.user_agent[0]
+                   ? h->options.user_agent : HTTP_DEFAULT_USER_AGENT;
+    int n;
+    if (h->options.referer[0])
+        n = snprintf(out, cap, "User-Agent: %s\r\nReferer: %s\r\n",
+                     ua, h->options.referer);
+    else
+        n = snprintf(out, cap, "User-Agent: %s\r\n", ua);
+    return n > 0 && (size_t)n < cap;
+}
 
 static int ascii_tolower(int c)
 {
@@ -745,6 +799,7 @@ static int probe_request_length(http_source *h, const char *method,
     for (redirects = 0; redirects <= HTTP_REDIRECT_MAX; redirects++) {
         http_url url;
         char request[HTTP_REQUEST_MAX];
+        char option_headers[MR_HTTP_USER_AGENT_MAX + MR_HTTP_REFERER_MAX + 40];
         char host_header[HTTP_HOST_MAX + 16];
         char content_length[64], content_range[128];
         char location[HTTP_URL_MAX], next_url[HTTP_URL_MAX];
@@ -762,16 +817,21 @@ static int probe_request_length(http_source *h, const char *method,
         else
             snprintf(host_header, sizeof host_header, "%s:%u",
                      url.host, (unsigned)url.port);
+        if (!format_option_headers(h, option_headers, sizeof option_headers)) {
+            mr_source_set_error("HTTP option headers are too large");
+            close_connection(h, 1);
+            return 0;
+        }
         n = snprintf(request, sizeof request,
                      "%s %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
-                     "User-Agent: MintRIVA/0.1 AmigaOS\r\n"
+                     "%s"
                      "Accept: */*\r\n"
                      "Accept-Encoding: identity\r\n"
                      "%s"
                      "Connection: close\r\n"
                      "\r\n",
-                     method, url.path, host_header,
+                     method, url.path, host_header, option_headers,
                      one_byte_range ? "Range: bytes=0-0\r\n" : "");
         if (n <= 0 || (size_t)n >= sizeof request ||
             !net_write_all(h, request, (size_t)n) ||
@@ -841,6 +901,7 @@ static int begin_response(http_source *h, size_t offset)
     for (redirects = 0; redirects <= HTTP_REDIRECT_MAX; redirects++) {
         http_url url;
         char request[HTTP_REQUEST_MAX];
+        char option_headers[MR_HTTP_USER_AGENT_MAX + MR_HTTP_REFERER_MAX + 40];
         char host_header[HTTP_HOST_MAX + 16];
         char content_length[64], content_range[128], transfer[64];
         char location[HTTP_URL_MAX], next_url[HTTP_URL_MAX];
@@ -862,16 +923,22 @@ static int begin_response(http_source *h, size_t offset)
         else
             snprintf(host_header, sizeof host_header, "%s:%u",
                      url.host, (unsigned)url.port);
+        if (!format_option_headers(h, option_headers, sizeof option_headers)) {
+            mr_source_set_error("HTTP option headers are too large");
+            close_connection(h, 1);
+            return 0;
+        }
         n = snprintf(request, sizeof request,
                      "GET %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
-                     "User-Agent: MintRIVA/0.1 AmigaOS\r\n"
+                     "%s"
                      "Accept: */*\r\n"
                      "Accept-Encoding: identity\r\n"
                      "Range: bytes=%lu-\r\n"
                      "Connection: close\r\n"
                      "\r\n",
-                     url.path, host_header, (unsigned long)offset);
+                     url.path, host_header, option_headers,
+                     (unsigned long)offset);
         if (n <= 0 || (size_t)n >= sizeof request) {
             mr_source_set_error("HTTP request is too large");
             close_connection(h, 1);
@@ -1284,7 +1351,8 @@ static void http_close(void *opaque)
     free(h);
 }
 
-mr_source *mr_http_source_open(const char *url)
+mr_source *mr_http_source_open_ex(const char *url,
+                                  const mr_http_options *options)
 {
     http_source *h;
     mr_source *source;
@@ -1299,6 +1367,18 @@ mr_source *mr_http_source_open(const char *url)
         return NULL;
     }
     h->sock = -1;
+    if (options && !mr_http_options_init(&h->options,
+                                         options->user_agent,
+                                         options->referer)) {
+        free(h);
+        return NULL;
+    }
+    if (options) {
+        h->options.hls_low = options->hls_low;
+        h->options.hls_max_width = options->hls_max_width;
+        h->options.hls_max_height = options->hls_max_height;
+        h->options.hls_max_fps = options->hls_max_fps;
+    }
     h->cache = (unsigned char *)malloc(HTTP_CACHE_SIZE);
     if (!h->cache) {
         mr_source_set_error("not enough memory for HTTP rewind cache");
@@ -1315,4 +1395,71 @@ mr_source *mr_http_source_open(const char *url)
                               h->streaming ? MR_SOURCE_LEN_UNKNOWN : h->total_len,
                               http_read_at, http_close, h->url);
     return source;
+}
+
+mr_source *mr_http_source_open(const char *url)
+{
+    return mr_http_source_open_ex(url, NULL);
+}
+
+int mr_http_download_file(const char *url, const char *path, size_t max_size)
+{
+    http_source *h;
+    FILE *file = NULL;
+    unsigned char buffer[16384];
+    size_t total = 0;
+    int ok = 0;
+    if (!url || !*url || strlen(url) >= HTTP_URL_MAX || !path || !*path ||
+        !max_size) {
+        mr_source_set_error("invalid HTTP download arguments");
+        return 0;
+    }
+    h = (http_source *)calloc(1, sizeof *h);
+    if (!h) {
+        mr_source_set_error("not enough memory for HTTP download");
+        return 0;
+    }
+    h->sock = -1;
+    memcpy(h->url, url, strlen(url) + 1);
+    if (!platform_open(h) || !begin_response(h, 0)) goto done;
+    file = fopen(path, "wb");
+    if (!file) {
+        mr_source_set_error("cannot create HTTP download file");
+        goto done;
+    }
+    for (;;) {
+        size_t want = sizeof buffer;
+        int n;
+        if (total >= max_size) want = 1;
+        else if (want > max_size - total) want = max_size - total;
+        n = copy_response_bytes(h, buffer, want);
+        if (n <= 0) break;
+        if (total >= max_size || (size_t)n > max_size - total) {
+            mr_source_set_error("HTTP download exceeds size limit");
+            goto done;
+        }
+        if (fwrite(buffer, 1, (size_t)n, file) != (size_t)n) {
+            mr_source_set_error("cannot write HTTP download file");
+            goto done;
+        }
+        total += (size_t)n;
+    }
+    if (!total || (h->response_left_known && h->response_left) ||
+        (!h->response_left_known && h->chunked && !h->chunk_done)) {
+        mr_source_set_error("HTTP download ended before response completed");
+        goto done;
+    }
+    if (fclose(file) != 0) {
+        file = NULL;
+        mr_source_set_error("cannot finish HTTP download file");
+        goto done;
+    }
+    file = NULL;
+    ok = 1;
+done:
+    if (file) fclose(file);
+    platform_close(h);
+    free(h);
+    if (!ok) remove(path);
+    return ok;
 }

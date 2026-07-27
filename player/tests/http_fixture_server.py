@@ -17,6 +17,16 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         if self.server.verbose:
             super().log_message(fmt, *args)
 
+    def _record_headers(self):
+        if not self.server.header_log:
+            return
+        line = (f"{self.command} {self.path}|"
+                f"{self.headers.get('User-Agent', '')}|"
+                f"{self.headers.get('Referer', '')}\n")
+        with self.server.header_lock:
+            with self.server.header_log.open("a", encoding="utf-8") as log:
+                log.write(line)
+
     def _route(self):
         path = urllib.parse.urlsplit(self.path).path
         chunked = False
@@ -62,6 +72,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         return candidate
 
     def do_HEAD(self):
+        self._record_headers()
         path, _chunked, _head_length, streaming, _drop = self._route()
         if path.startswith("/redirect/"):
             self.send_response(302)
@@ -117,6 +128,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        self._record_headers()
         path, chunked, head_length, streaming, drop = self._route()
         if path == "/live/playlist.m3u8":
             self._serve_live_playlist()
@@ -221,6 +233,7 @@ def main():
     parser.add_argument("--cert")
     parser.add_argument("--key")
     parser.add_argument("--range-marker")
+    parser.add_argument("--header-log")
     parser.add_argument("--drop-cap", type=int, default=16384,
                         help="max body bytes a /drop/ response sends before "
                              "closing, forcing a byte-range resume")
@@ -233,6 +246,9 @@ def main():
     server.verbose = args.verbose
     server.range_marker = (pathlib.Path(args.range_marker)
                            if args.range_marker else None)
+    server.header_log = (pathlib.Path(args.header_log)
+                         if args.header_log else None)
+    server.header_lock = threading.Lock()
     server.drop_cap = args.drop_cap
     # Live HLS playlist state: total segments to publish, sliding-window size,
     # and the poll counter that advances the window on each GET.
