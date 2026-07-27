@@ -128,6 +128,7 @@ static void paced_sleep(uint64_t usec, mr_audio *audio, playback_stats *st)
     while ((end = monotonic_us()) - begin < usec) {
         uint64_t left = usec - (end - begin);
         if (audio) audio_service(audio);
+        if (audio && audio_active_requests(audio) < 2) continue;
         if (left > 22000) Delay((LONG)((left - 10000) / 20000));
         else Delay(1);
     }
@@ -200,9 +201,16 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
            la / 100, la % 100,
            (unsigned long)(st->refill_block_us / 1000),
            (unsigned long)(st->refill_delayed_ready_us / 1000));
-    printf("audio diagnostics: underruns=%lu minimum-buffered=%lu ms "
-           "longest-service-gap=%lu ms\n", audio_diag.underruns,
-           audio_diag.minimum_buffered_ms, audio_diag.longest_service_gap_ms);
+    printf("audio diagnostics: hw-starvations=%lu minimum-buffered=%lu ms "
+           "minimum-active=%lu ms "
+           "longest-service-gap=%lu ms longest-no-active=%lu ms "
+           "fifo=%lu req0=%u/%lu req1=%u/%lu active=%u\n",
+           audio_diag.hardware_starvations, audio_diag.minimum_buffered_ms,
+           audio_diag.minimum_active_ms,
+           audio_diag.longest_service_gap_ms, audio_diag.longest_no_active_ms,
+           audio_diag.fifo_samples, (unsigned)audio_diag.request_state[0],
+           audio_diag.request_samples[0], (unsigned)audio_diag.request_state[1],
+           audio_diag.request_samples[1], (unsigned)audio_diag.active_requests);
     if (st->last_rtg.src_w) {
         unsigned n = st->presented ? st->presented : 1;
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
@@ -733,7 +741,7 @@ int main(int argc, char **argv)
                     }
                 }
                 if (audio) audio_service(audio);
-                Delay(1);
+                if (!audio || audio_active_requests(audio) >= 2) Delay(1);
             }
             if (quit) break;
             now = monotonic_us();
@@ -763,6 +771,7 @@ int main(int argc, char **argv)
                 unsigned long audio_before = audio ? audio_buffered_ms(audio) : 0;
             display_show_rgb(disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
+                if (audio) audio_service(audio);
                 if (want_time) {
                     mr_display_timing rt;
                     if (display_rtg_frame_timing(disp, &rt)) {
@@ -798,6 +807,7 @@ int main(int argc, char **argv)
         }
 
         if (input_eof && !qcount && loop) {
+            if (audio) audio_set_running(audio, 0);
             mr_demux_rewind(dx);
             if (mr_decoder_reset(&dec) != MR_OK) break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
@@ -827,8 +837,11 @@ int main(int argc, char **argv)
                 int ready_before = qcount > 0;
                 int64_t due_before = late_us;
                 uint64_t refill_started = monotonic_us();
-                uint64_t a = refill_started;
+                uint64_t a;
+                if (audio) audio_service(audio);
+                a = monotonic_us();
                 mr_status next = mr_demux_next_packet(dx, &pkt);
+                if (audio) audio_service(audio);
                 uint64_t b = monotonic_us();
                 uint64_t blocked = b - a;
                 stats.demux_us += blocked; stats.refill_block_us += blocked;
@@ -840,12 +853,17 @@ int main(int argc, char **argv)
                         a = monotonic_us();
                         mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
                                               decoded_audio_sink, audio);
+                        audio_service(audio);
                         stats.audio_decode_us += monotonic_us() - a;
                         audio_feed_credit = 1;
                     }
                 } else if (pkt.len) {
+                    mr_status decode_status;
+                    if (audio) audio_service(audio);
                     a = monotonic_us();
-                    if (mr_decoder_decode(&dec, pkt.data, pkt.len) == MR_OK) {
+                    decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
+                    if (audio) audio_service(audio);
+                    if (decode_status == MR_OK) {
                         unsigned long decode_us =
                             (unsigned long)(monotonic_us() - a);
                         uint64_t synthetic_pts = vi->rate
@@ -875,8 +893,10 @@ int main(int argc, char **argv)
                             queued_video *tail =
                                 &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
                             a = monotonic_us();
+                            if (audio) audio_service(audio);
                             if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
                                             decode_us)) { quit = 1; break; }
+                            if (audio) audio_service(audio);
                             stats.rtg_prepare_us += monotonic_us() - a;
                             qcount++;
                         } else {
@@ -902,6 +922,10 @@ int main(int argc, char **argv)
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0;
+                        if (audio) {
+                            audio_service(audio);
+                            audio_set_running(audio, 1);
+                        }
                     }
                 }
                 continue;
@@ -921,10 +945,14 @@ int main(int argc, char **argv)
         } else {
             int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
-            Delay(1);
+            if (audio && audio_active_requests(audio) < 2)
+                audio_service(audio);
+            else Delay(1);
         }
     }
     }
+
+    if (audio) audio_set_running(audio, 0); /* following drain is intentional */
 
     /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.
      * Drain it through the same pacing and display path so the player does not

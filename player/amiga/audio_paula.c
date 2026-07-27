@@ -49,10 +49,27 @@ struct mr_audio {
     unsigned long   played;        /* sample-frames actually played         */
     clock_t         last_service;
     clock_t         longest_service_gap;
-    unsigned long   underruns;
+    unsigned long   hardware_starvations;
     unsigned long   minimum_buffered_ms;
+    unsigned long   minimum_active_ms;
     int             had_buffered_audio;
+    int             running;
+    int             hardware_starved;
+    clock_t         no_active_since;
+    clock_t         longest_no_active;
 };
+
+static int request_active(mr_audio *a, int i)
+{
+    return a->busy[i] && !CheckIO((struct IORequest *)a->io[i]);
+}
+
+static int active_request_count(mr_audio *a)
+{
+    int i, n = 0;
+    for (i = 0; i < NBUF; i++) if (request_active(a, i)) n++;
+    return n;
+}
 
 /* ---- ring FIFO ---------------------------------------------------------- */
 
@@ -93,6 +110,7 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->src_bits = bits;
     a->period = (unsigned)(PAL_CLOCK / rate);
     a->minimum_buffered_ms = ULONG_MAX;
+    a->minimum_active_ms = ULONG_MAX;
     if (a->period < MIN_PERIOD) a->period = MIN_PERIOD;
 
     a->port = CreateMsgPort();
@@ -220,11 +238,16 @@ void audio_service(mr_audio *a)
     int i;
     clock_t service_now;
     unsigned long buffered;
+    int active_at_entry;
     if (!a) return;
     service_now = clock();
     if (a->last_service && service_now - a->last_service > a->longest_service_gap)
         a->longest_service_gap = service_now - a->last_service;
     a->last_service = service_now;
+    active_at_entry = active_request_count(a);
+    if (a->running && active_at_entry == 0) {
+        if (!a->no_active_since) a->no_active_since = service_now;
+    } else a->no_active_since = 0;
 
     /* Reap finished writes. */
     for (i = 0; i < NBUF; i++) {
@@ -257,8 +280,31 @@ void audio_service(mr_audio *a)
         a->minimum_buffered_ms = buffered;
     if (buffered) a->had_buffered_audio = 1;
     else if (a->had_buffered_audio) {
-        a->underruns++;
         a->had_buffered_audio = 0;
+    }
+    {
+        int active = active_request_count(a);
+        unsigned long active_samples = 0;
+        for (i = 0; i < NBUF; i++)
+            if (request_active(a, i)) active_samples += (unsigned long)a->nsub[i];
+        if (a->running) {
+            unsigned long active_ms = active_samples * 1000UL / a->rate;
+            if (active_ms < a->minimum_active_ms)
+                a->minimum_active_ms = active_ms;
+        }
+        if (a->running && active == 0) {
+            clock_t gap;
+            if (!a->hardware_starved) {
+                a->hardware_starvations++;
+                a->hardware_starved = 1;
+            }
+            if (!a->no_active_since) a->no_active_since = service_now;
+            gap = service_now - a->no_active_since;
+            if (gap > a->longest_no_active) a->longest_no_active = gap;
+        } else {
+            a->hardware_starved = 0;
+            a->no_active_since = 0;
+        }
     }
 }
 
@@ -275,7 +321,7 @@ unsigned long audio_buffered_ms(mr_audio *a)
     if (!a || !a->rate) return 0;
     samples = a->count;
     for (i = 0; i < NBUF; i++)
-        if (a->busy[i]) samples += (unsigned long)a->nsub[i];
+        if (request_active(a, i)) samples += (unsigned long)a->nsub[i];
     return samples * 1000UL / a->rate;
 }
 
@@ -284,15 +330,42 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
     if (!diag) return;
     memset(diag, 0, sizeof *diag);
     if (!a) return;
-    diag->underruns = a->underruns;
+    diag->hardware_starvations = a->hardware_starvations;
     diag->minimum_buffered_ms = a->minimum_buffered_ms == ULONG_MAX
                               ? 0 : a->minimum_buffered_ms;
+    diag->minimum_active_ms = a->minimum_active_ms == ULONG_MAX
+                            ? 0 : a->minimum_active_ms;
     diag->longest_service_gap_ms =
         (unsigned long)(a->longest_service_gap * 1000 / CLOCKS_PER_SEC);
+    diag->longest_no_active_ms =
+        (unsigned long)(a->longest_no_active * 1000 / CLOCKS_PER_SEC);
+    diag->fifo_samples = a->count;
+    {
+        int i;
+        for (i = 0; i < NBUF; i++) {
+            diag->request_samples[i] = a->busy[i] ? (unsigned long)a->nsub[i] : 0;
+            diag->request_state[i] = !a->busy[i] ? 0 :
+                (CheckIO((struct IORequest *)a->io[i]) ? 2 : 1);
+            if (diag->request_state[i] == 1) diag->active_requests++;
+        }
+    }
+}
+
+int audio_active_requests(mr_audio *a)
+{
+    return a ? active_request_count(a) : 0;
+}
+
+void audio_set_running(mr_audio *a, int running)
+{
+    if (!a) return;
+    a->running = running != 0;
+    a->hardware_starved = 0;
+    a->no_active_since = 0;
 }
 
 int audio_starved(mr_audio *a)
 {
     if (!a) return 1;
-    return (!a->busy[0] && !a->busy[1] && a->count == 0);
+    return active_request_count(a) == 0 && a->count == 0;
 }
