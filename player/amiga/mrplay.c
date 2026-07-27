@@ -47,10 +47,10 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
-#define AUDIO_RESCUE_MIN_ENTRY_MS 200UL
-#define AUDIO_RESCUE_TARGET_MS 400UL
-#define AUDIO_RESCUE_SAFETY_MS 50UL
-#define AUDIO_RESCUE_MAX_ENTRY_MS 500UL
+#define AUDIO_RESCUE_ENTRY_MS 100UL
+#define AUDIO_RESCUE_TARGET_MS 200UL
+#define AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS 20UL
+#define AUDIO_RESCUE_ONE_REQUEST_MS 100UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
 #define AUDIO_RESCUE_MAX_PACKETS 16U
 #define AUDIO_RESCUE_MAX_US 100000ULL
@@ -106,6 +106,9 @@ typedef struct playback_stats {
     uint64_t rescue_us;
     unsigned rescue_entries, rescue_packets, rescue_audio_packets;
     unsigned rescue_video_decoded, rescue_video_queued, rescue_video_skipped;
+    unsigned rescue_critical, rescue_noncritical, rescue_video_replaced;
+    uint64_t rescue_newest_retained_pts_us;
+    int64_t rescue_post_lateness_us;
     unsigned long rescue_max_us;
     unsigned rescue_exit_target, rescue_exit_limit, rescue_exit_eof;
     long rescue_min_margin_ms;
@@ -323,13 +326,18 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
         if (audio) service_audio_for_display(trace);
     }
     if (st->rescue_entries) {
-        printf("audio rescue: entries=%u packets=%u audio=%u video=%u "
-               "queued=%u not-copied=%u duration-avg=%lu us max=%lu us "
+        printf("audio rescue: entries=%u critical=%u noncritical=%u packets=%u "
+               "audio=%u video=%u retained=%u replaced=%u not-copied=%u "
+               "newest-pts=%lu post-late=%ld us duration-avg=%lu us max=%lu us "
                "min-margin=%ld ms negative=%u rescue-starvations=%u "
                "exit(target/limit/eof)=%u/%u/%u\n",
-               st->rescue_entries, st->rescue_packets,
+               st->rescue_entries, st->rescue_critical,
+               st->rescue_noncritical, st->rescue_packets,
                st->rescue_audio_packets, st->rescue_video_decoded,
-               st->rescue_video_queued, st->rescue_video_skipped,
+               st->rescue_video_queued, st->rescue_video_replaced,
+               st->rescue_video_skipped,
+               (unsigned long)st->rescue_newest_retained_pts_us,
+               (long)st->rescue_post_lateness_us,
                (unsigned long)(st->rescue_us / st->rescue_entries),
                st->rescue_max_us, st->rescue_min_margin_ms,
                st->rescue_negative_margin, st->rescue_hw_starvations,
@@ -593,13 +601,14 @@ int main(int argc, char **argv)
     unsigned rescue_episode_packets = 0, rescue_episode_audio = 0;
     unsigned rescue_episode_video = 0, rescue_episode_queued = 0;
     unsigned rescue_episode_skipped = 0;
+    unsigned rescue_episode_replaced = 0;
+    int rescue_episode_critical = 0;
+    uint64_t rescue_newest_retained_pts_us = 0;
     unsigned long rescue_buffer_before = 0;
     unsigned long rescue_entry_threshold = 0;
     unsigned long rescue_min_buffer = 0;
     unsigned long rescue_hw_before = 0;
     uint64_t rescue_started_us = 0;
-    uint64_t recent_rescue_max_us = 0;
-    unsigned long recent_decode_max_us = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
     playback_stats stats;
     scheduler_trace trace;
@@ -866,38 +875,60 @@ int main(int argc, char **argv)
                          audio_ms < AUDIO_STARTUP_TARGET_MS;
         if (rescue_cooldown) rescue_cooldown--;
         {
-            unsigned long dynamic_entry = (unsigned long)(recent_rescue_max_us / 1000) +
-                                          recent_decode_max_us / 1000 +
-                                          AUDIO_RESCUE_SAFETY_MS;
-            if (dynamic_entry < AUDIO_RESCUE_MIN_ENTRY_MS)
-                dynamic_entry = AUDIO_RESCUE_MIN_ENTRY_MS;
-            if (dynamic_entry > AUDIO_RESCUE_MAX_ENTRY_MS)
-                dynamic_entry = AUDIO_RESCUE_MAX_ENTRY_MS;
-        if (audio && playback_started && !rescue_active && !input_eof &&
-            !rescue_cooldown && (rescue_priority || audio_ms < dynamic_entry)) {
             mr_audio_diagnostics rd;
+            int rescue_critical = 0;
+            int rescue_needed = 0;
+            memset(&rd, 0, sizeof rd);
+            if (audio) {
+                unsigned long hardware_ms;
+                audio_diagnostics(audio, &rd);
+                hardware_ms = rd.hardware_playing_remaining_ms +
+                              rd.hardware_queued_ms;
+                rescue_critical =
+                    rd.fifo_buffered_ms < AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS &&
+                    hardware_ms < AUDIO_RESCUE_ONE_REQUEST_MS;
+                /* With two live requests, a useful FIFO cushion is healthy;
+                 * the output task no longer needs scheduler intervention.
+                 * Rescue only a genuinely short PCM horizon or a request
+                 * queue which has already fallen below two active writes. */
+                rescue_needed = rescue_critical ||
+                    (audio_ms < AUDIO_RESCUE_ENTRY_MS &&
+                     (rd.active_requests < 2 ||
+                      rd.fifo_buffered_ms < AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS));
+            }
+        if (audio && playback_started && !rescue_active && !input_eof &&
+            !rescue_cooldown && (rescue_priority || rescue_needed)) {
             rescue_active = 1;
             rescue_priority = 1;
+            rescue_episode_critical = rescue_critical;
             rescue_started_us = now;
             rescue_buffer_before = audio_ms;
-            rescue_entry_threshold = dynamic_entry;
+            rescue_entry_threshold = AUDIO_RESCUE_ENTRY_MS;
             rescue_min_buffer = audio_ms;
-            audio_diagnostics(audio, &rd);
             rescue_hw_before = rd.hardware_starvations;
             rescue_episode_packets = rescue_episode_audio = 0;
             rescue_episode_video = rescue_episode_queued = 0;
-            rescue_episode_skipped = 0;
+            rescue_episode_skipped = rescue_episode_replaced = 0;
+            rescue_newest_retained_pts_us = 0;
             stats.rescue_entries++;
+            if (rescue_critical) stats.rescue_critical++;
+            else stats.rescue_noncritical++;
         }
         }
         if (rescue_active) {
             const char *reason = NULL;
             uint64_t rescue_elapsed = now - rescue_started_us;
+            mr_audio_diagnostics current_audio;
             int ev = player_event(disp);
+            memset(&current_audio, 0, sizeof current_audio);
+            audio_diagnostics(audio, &current_audio);
             if (audio_ms < rescue_min_buffer) rescue_min_buffer = audio_ms;
             if (ev == MR_EV_QUIT) { quit = 1; break; }
             if (ev == MR_EV_PAUSE) { paused = 1; reason = "limit"; }
-            if (audio_ms >= AUDIO_RESCUE_TARGET_MS) {
+            if (rescue_episode_audio && current_audio.active_requests == 2 &&
+                audio_ms >= AUDIO_RESCUE_ENTRY_MS) {
+                reason = "audio"; stats.rescue_exit_target++;
+            } else if (audio_ms >= AUDIO_RESCUE_TARGET_MS) {
                 reason = "target"; stats.rescue_exit_target++;
             } else if (rescue_episode_packets >= AUDIO_RESCUE_MAX_PACKETS ||
                        rescue_elapsed >= AUDIO_RESCUE_MAX_US || paused) {
@@ -911,11 +942,9 @@ int main(int argc, char **argv)
                 mr_audio_diagnostics rd;
                 audio_diagnostics(audio, &rd);
                 rescue_active = 0;
-                if (reason[0] == 't') rescue_priority = 0;
-                else rescue_cooldown = 2;
+                rescue_priority = 0;
+                if (reason[0] == 'l') rescue_cooldown = 2;
                 stats.rescue_us += rescue_elapsed;
-                if (rescue_elapsed > recent_rescue_max_us)
-                    recent_rescue_max_us = rescue_elapsed;
                 if (rescue_elapsed > stats.rescue_max_us)
                     stats.rescue_max_us = (unsigned long)rescue_elapsed;
                 if (stats.rescue_entries == 1 || margin_ms < stats.rescue_min_margin_ms)
@@ -923,15 +952,38 @@ int main(int argc, char **argv)
                 if (margin_ms < 0) stats.rescue_negative_margin++;
                 stats.rescue_hw_starvations +=
                     rd.hardware_starvations - rescue_hw_before;
+                stats.rescue_newest_retained_pts_us =
+                    rescue_newest_retained_pts_us;
+                if (qcount && playback_started) {
+                    uint64_t rescue_clock = audio_elapsed_us(audio) - clock_base_us;
+                    queued_video *new_front = &vq[qhead];
+                    int64_t post_late = (int64_t)rescue_clock -
+                                        (int64_t)new_front->pts_us;
+                    while (post_late > (int64_t)period_us && qcount > 1) {
+                        stats.dropped++;
+                        qhead = (qhead + 1) % VIDEO_QUEUE_CAP;
+                        qcount--;
+                        new_front = &vq[qhead];
+                        post_late = (int64_t)rescue_clock -
+                                    (int64_t)new_front->pts_us;
+                    }
+                    stats.rescue_post_lateness_us = post_late;
+                }
+                front = qcount ? &vq[qhead] : NULL;
                 if (want_time)
-                    printf("audio-rescue reason=%s packets=%u audio=%u "
-                           "video=%u queued=%u not-copied=%u duration=%lu us "
+                    printf("audio-rescue reason=%s urgency=%s packets=%u audio=%u "
+                           "video=%u retained=%u replaced=%u reference-only=%u "
+                           "newest-pts=%lu post-late=%ld us duration=%lu us "
                            "buffer=%lu->%lu ms min=%lu ms consumed=%lu ms "
                            "entry-threshold=%lu ms margin=%ld ms "
                            "hw-starvations=%lu\n", reason,
+                           rescue_episode_critical ? "critical" : "warning",
                            rescue_episode_packets, rescue_episode_audio,
                            rescue_episode_video, rescue_episode_queued,
-                           rescue_episode_skipped, (unsigned long)rescue_elapsed,
+                           rescue_episode_replaced, rescue_episode_skipped,
+                           (unsigned long)rescue_newest_retained_pts_us,
+                           (long)stats.rescue_post_lateness_us,
+                           (unsigned long)rescue_elapsed,
                            rescue_buffer_before, audio_ms, rescue_min_buffer,
                            (unsigned long)(rescue_elapsed / 1000),
                            rescue_entry_threshold, margin_ms,
@@ -1118,8 +1170,11 @@ int main(int argc, char **argv)
                     mr_status decode_status;
                     uint64_t decode_end;
                     trace_phase(&trace, "h264-decode");
-                    mr_h264_set_skip_output(&dec, rescue_active ||
-                        (startup_refill && qcount >= VIDEO_QUEUE_CAP));
+                    /* Rescue frames are candidates for replacing stale video,
+                     * so retain decoder RGB output.  Reference-only decoding
+                     * remains available for startup packets which cannot fit. */
+                    mr_h264_set_skip_output(&dec,
+                        startup_refill && qcount >= VIDEO_QUEUE_CAP);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
@@ -1164,11 +1219,10 @@ int main(int argc, char **argv)
                         stats.video_decode_us += decode_us; stats.decoded++;
                         if (decode_us > stats.video_decode_max_us)
                             stats.video_decode_max_us = decode_us;
-                        if (decode_us > recent_decode_max_us)
-                            recent_decode_max_us = decode_us;
                         {
-                            int retain = !rescue_active &&
-                                (!startup_refill || qcount < VIDEO_QUEUE_CAP);
+                            int retain = !startup_refill ||
+                                         qcount < VIDEO_QUEUE_CAP ||
+                                         rescue_active;
                             if (rescue_active) {
                                 rescue_episode_video++;
                                 stats.rescue_video_decoded++;
@@ -1181,6 +1235,17 @@ int main(int argc, char **argv)
                                 stats.dropped++;
                                 decoded_index++;
                                 continue;
+                            }
+                            if (rescue_active && qcount == VIDEO_QUEUE_CAP) {
+                                /* Discard the oldest presentation copy, never
+                                 * decoder-owned storage, then append the new
+                                 * frame at the logical tail.  Queue PTS order
+                                 * is preserved for normal deadline selection. */
+                                qhead = (qhead + 1) % VIDEO_QUEUE_CAP;
+                                qcount--;
+                                rescue_episode_replaced++;
+                                stats.rescue_video_replaced++;
+                                stats.dropped++;
                             }
                             queued_video *tail =
                                 &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
@@ -1196,6 +1261,7 @@ int main(int argc, char **argv)
                             if (rescue_active) {
                                 rescue_episode_queued++;
                                 stats.rescue_video_queued++;
+                                rescue_newest_retained_pts_us = pts;
                             }
                         }
                         decoded_index++;
