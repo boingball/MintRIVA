@@ -46,6 +46,9 @@ typedef struct {
 
     mr_video_info  video;
     mr_audio_info  audio;
+    mr_demux_service_fn service;
+    void          *service_opaque;
+    mr_demux_timing timing;
 } mr_ts;
 
 mr_status mr_ts_open(mr_ts *t, const uint8_t *buf, size_t len);

@@ -14,6 +14,7 @@
 #include "mr_raw_mpeg4.h"
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct mr_demux {
     mr_container kind;
@@ -195,18 +196,52 @@ const char *mr_demux_last_open_error(void)
 
 mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
 {
+    clock_t begin = clock();
+    mr_status status;
+    mr_demux_timing before;
+    if (d->kind == MR_CONTAINER_TS) before = d->u.ts.timing;
     if (pkt) { pkt->has_pts = 0; pkt->pts_us = 0; }
-    if (d->kind == MR_CONTAINER_AVI)
-        return mr_avi_next_packet(&d->u.avi, pkt);
-    if (d->kind == MR_CONTAINER_MOV)
-        return mr_mov_next_packet(&d->u.mov, pkt);
-    if (d->kind == MR_CONTAINER_TS)
-        return mr_ts_next_packet(&d->u.ts, pkt);
-    if (d->kind == MR_CONTAINER_PS)
-        return mr_ps_next_packet(&d->u.ps, pkt);
-    if (d->kind == MR_CONTAINER_RAW_MJPEG)
-        return mr_raw_mjpeg_next_packet(&d->u.raw_mjpeg, pkt);
-    return mr_raw_mpeg4_next_packet(&d->u.raw_mpeg4, pkt);
+    if (d->kind == MR_CONTAINER_AVI) status = mr_avi_next_packet(&d->u.avi, pkt);
+    else if (d->kind == MR_CONTAINER_MOV) status = mr_mov_next_packet(&d->u.mov, pkt);
+    else if (d->kind == MR_CONTAINER_TS) status = mr_ts_next_packet(&d->u.ts, pkt);
+    else if (d->kind == MR_CONTAINER_PS) status = mr_ps_next_packet(&d->u.ps, pkt);
+    else if (d->kind == MR_CONTAINER_RAW_MJPEG)
+        status = mr_raw_mjpeg_next_packet(&d->u.raw_mjpeg, pkt);
+    else status = mr_raw_mpeg4_next_packet(&d->u.raw_mpeg4, pkt);
+    if (d->kind == MR_CONTAINER_TS) {
+        mr_demux_timing *t = &d->u.ts.timing;
+        unsigned long us = (unsigned long)((clock() - begin) * 1000000UL /
+                                           CLOCKS_PER_SEC);
+        unsigned long delta;
+#define UPDATE_MAX(field) do { delta = t->field##_us - before.field##_us; \
+    if (delta > t->field##_max_us) t->field##_max_us = delta; } while (0)
+        t->calls++;
+        t->call_us += us;
+        if (us > t->call_max_us) t->call_max_us = us;
+        UPDATE_MAX(source); UPDATE_MAX(sync); UPDATE_MAX(assembly);
+        UPDATE_MAX(copy); UPDATE_MAX(audio); UPDATE_MAX(video);
+        delta = t->packets_scanned - before.packets_scanned;
+        if (delta > t->scanned_max) t->scanned_max = delta;
+#undef UPDATE_MAX
+    }
+    return status;
+}
+
+void mr_demux_set_service(mr_demux *d, mr_demux_service_fn fn, void *opaque)
+{
+    if (d && d->kind == MR_CONTAINER_TS) {
+        d->u.ts.service = fn; d->u.ts.service_opaque = opaque;
+    }
+}
+
+void mr_demux_timing_get(mr_demux *d, mr_demux_timing *timing, int reset)
+{
+    if (!timing) return;
+    memset(timing, 0, sizeof *timing);
+    if (d && d->kind == MR_CONTAINER_TS) {
+        *timing = d->u.ts.timing;
+        if (reset) memset(&d->u.ts.timing, 0, sizeof d->u.ts.timing);
+    }
 }
 
 void mr_demux_rewind(mr_demux *d)

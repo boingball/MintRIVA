@@ -165,8 +165,8 @@ static unsigned long rate_hundredths(unsigned count, uint64_t elapsed_us)
          ? (unsigned long)((uint64_t)count * 100000000ULL / elapsed_us) : 0;
 }
 
-static void report_stats(playback_stats *st, mr_audio *audio, int depth,
-                         uint64_t now)
+static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
+                         int depth, uint64_t now)
 {
     uint64_t elapsed_us = now - st->since_us;
     unsigned long vd = average_hundredths(st->video_decode_us, st->decoded);
@@ -180,8 +180,10 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
     unsigned long df = rate_hundredths(st->decoded, elapsed_us);
     mr_source_timing io;
     mr_audio_diagnostics audio_diag;
+    mr_demux_timing demux_timing;
     mr_source_timing_get(&io);
     audio_diagnostics(audio, &audio_diag);
+    mr_demux_timing_get(demux, &demux_timing, 1);
     printf("rtg timing: vdecode=%lu.%02lu/%lu ms network-blocked=%lu ms "
            "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
            "convert=%lu.%02lu ms scale=%lu.%02lu ms display=%lu.%02lu/%lu ms "
@@ -211,34 +213,20 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
            audio_diag.fifo_samples, (unsigned)audio_diag.request_state[0],
            audio_diag.request_samples[0], (unsigned)audio_diag.request_state[1],
            audio_diag.request_samples[1], (unsigned)audio_diag.active_requests);
-    printf("audio transitions: req0 check=%u complete=%lu reclaimed=%lu "
-           "submit=%lu submitted=%lu; req1 check=%u complete=%lu "
-           "reclaimed=%lu submit=%lu submitted=%lu; fifo=%lu active=%u\n",
-           (unsigned)audio_diag.request_last_checkio[0],
-           audio_diag.request_completions[0],
-           audio_diag.request_reclaimed_samples[0],
-           audio_diag.request_submissions[0],
-           audio_diag.request_submitted_samples[0],
-           (unsigned)audio_diag.request_last_checkio[1],
-           audio_diag.request_completions[1],
-           audio_diag.request_reclaimed_samples[1],
-           audio_diag.request_submissions[1],
-           audio_diag.request_submitted_samples[1], audio_diag.fifo_samples,
-           (unsigned)audio_diag.active_requests);
-    printf("audio last-service: req0 prev=%u check=%u reclaim=%lu submit=%lu; "
-           "req1 prev=%u check=%u reclaim=%lu submit=%lu; fifo=%lu "
-           "active=%u->%u\n",
-           (unsigned)audio_diag.request_previous_busy[0],
-           (unsigned)audio_diag.request_last_checkio[0],
-           audio_diag.request_last_reclaimed[0],
-           audio_diag.request_last_submitted[0],
-           (unsigned)audio_diag.request_previous_busy[1],
-           (unsigned)audio_diag.request_last_checkio[1],
-           audio_diag.request_last_reclaimed[1],
-           audio_diag.request_last_submitted[1],
-           audio_diag.transition_fifo_remaining,
-           (unsigned)audio_diag.transition_active_before,
-           (unsigned)audio_diag.transition_active_after);
+    printf("demux timing: calls=%lu total=%lu us max-call=%lu us "
+           "source=%lu us sync=%lu us assembly=%lu us copy=%lu us "
+           "audio=%lu us video=%lu us scanned=%lu service=%lu "
+           "max(source/sync/assembly/copy/audio/video)="
+           "%lu/%lu/%lu/%lu/%lu/%lu us max-scanned=%lu\n",
+           demux_timing.calls, demux_timing.call_us,
+           demux_timing.call_max_us, demux_timing.source_us,
+           demux_timing.sync_us, demux_timing.assembly_us,
+           demux_timing.copy_us, demux_timing.audio_us,
+           demux_timing.video_us, demux_timing.packets_scanned,
+           demux_timing.service_calls, demux_timing.source_max_us,
+           demux_timing.sync_max_us, demux_timing.assembly_max_us,
+           demux_timing.copy_max_us, demux_timing.audio_max_us,
+           demux_timing.video_max_us, demux_timing.scanned_max);
     if (st->last_rtg.src_w) {
         unsigned n = st->presented ? st->presented : 1;
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
@@ -694,6 +682,7 @@ int main(int argc, char **argv)
 
     ticks = frame_ticks(vi->rate, vi->scale);
     display_set_service(disp, audio ? service_audio_for_display : NULL, audio);
+    mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, audio);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -830,7 +819,7 @@ int main(int argc, char **argv)
             qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
             now = monotonic_us();
             if (want_time && now - stats.since_us >= STATS_INTERVAL_US)
-                report_stats(&stats, audio, qcount, now);
+                report_stats(&stats, audio, dx, qcount, now);
             continue;
         }
 
