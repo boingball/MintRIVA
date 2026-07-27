@@ -45,10 +45,6 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define VIDEO_QUEUE_CAP 4
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
-/* Paula has two approximately 50 ms device buffers. Below one buffer a video
- * operation is unsafe; below both, an already-late frame is expendable. */
-#define AUDIO_DISPLAY_CRITICAL_MS 50UL
-#define AUDIO_DISPLAY_WARNING_MS  100UL
 
 static struct MsgPort *timer_port;
 static struct timerequest *timer_request;
@@ -96,6 +92,9 @@ typedef struct playback_stats {
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
     unsigned dropped_after_scale;
     unsigned long audio_before, audio_after;
+    uint64_t frame_pts_us, audio_clock_us;
+    int64_t calculated_lateness_us;
+    unsigned queue_head, dropped_in_pass, timing_rebases;
     mr_display_timing last_rtg;
 } playback_stats;
 
@@ -204,7 +203,9 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
                "cgx-blit=%lu us clip=%lu us display-total=%lu us "
                "audio-before=%lu ms audio-after=%lu ms "
                "pixels=%lu bytes=%lu copies=%u displayed=%u "
-               "dropped-before-scale=%u dropped-after-scale=%u\n",
+               "dropped-before-scale=%u dropped-after-scale=%u "
+               "frame_pts=%lu audio_clock=%lu lateness=%ld us "
+               "queue-head=%u dropped-pass=%u timing-rebases=%u\n",
                st->last_rtg.src_w, st->last_rtg.src_h,
                st->last_rtg.dst_w, st->last_rtg.dst_h,
                st->last_rtg.src_format, st->last_rtg.dst_format,
@@ -218,7 +219,11 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
                st->audio_before, st->audio_after,
                st->last_rtg.pixels, st->last_rtg.bytes,
                st->last_rtg.copies, st->presented, st->dropped,
-               st->dropped_after_scale);
+               st->dropped_after_scale,
+               (unsigned long)st->frame_pts_us,
+               (unsigned long)st->audio_clock_us,
+               (long)st->calculated_lateness_us, st->queue_head,
+               st->dropped_in_pass, st->timing_rebases);
     }
     memset(st, 0, sizeof *st); st->since_us = now;
     mr_source_timing_reset();
@@ -431,6 +436,9 @@ int main(int argc, char **argv)
     mr_http_options http_options;
     int have_http_options = 0;
     unsigned long clock_base = 0;
+    int64_t container_pts_adjust_us = 0;
+    uint64_t last_container_pts_us = 0;
+    int have_container_pts = 0;
     clock_t t_dec = 0, t_show = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
     int qhead = 0, qcount = 0, input_eof = 0;
@@ -679,6 +687,7 @@ int main(int argc, char **argv)
             ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
             : 83333ULL;
         int64_t late_us = 0;
+        uint64_t master_clock_us = 0;
         int have_deadline = 0;
 
         /* Deadline first: service the master clock and inspect an already-ready
@@ -686,10 +695,10 @@ int main(int argc, char **argv)
         if (audio) audio_service(audio);
         if (playback_started && front) {
             if (audio && !audio_starved(audio))
-                late_us = (int64_t)audio_elapsed_ms(audio) * 1000 -
-                          (int64_t)(clock_base * 1000UL + front->pts_us);
-            else
-                late_us = (int64_t)(now - mono_base_us) - (int64_t)front->pts_us;
+                master_clock_us = (uint64_t)audio_elapsed_ms(audio) * 1000ULL -
+                                  (uint64_t)clock_base * 1000ULL;
+            else master_clock_us = now - mono_base_us;
+            late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             have_deadline = 1;
         }
 
@@ -703,6 +712,12 @@ int main(int argc, char **argv)
                 if (ev == MR_EV_QUIT) quit = 1;
                 else if (ev == MR_EV_PAUSE) {
                     paused = 0; mono_base_us = monotonic_us() - front->pts_us;
+                    if (audio) {
+                        unsigned long elapsed = audio_elapsed_ms(audio);
+                        unsigned long frame_ms = (unsigned long)(front->pts_us / 1000);
+                        clock_base = elapsed > frame_ms ? elapsed - frame_ms : 0;
+                        stats.timing_rebases++;
+                    }
                 }
                 if (audio) audio_service(audio);
                 Delay(1);
@@ -710,28 +725,26 @@ int main(int argc, char **argv)
             if (quit) break;
             now = monotonic_us();
             if (audio && !audio_starved(audio))
-                late_us = (int64_t)audio_elapsed_ms(audio) * 1000 -
-                          (int64_t)(clock_base * 1000UL + front->pts_us);
-            else
-                late_us = (int64_t)(now - mono_base_us) - (int64_t)front->pts_us;
+                master_clock_us = (uint64_t)audio_elapsed_ms(audio) * 1000ULL -
+                                  (uint64_t)clock_base * 1000ULL;
+            else master_clock_us = now - mono_base_us;
+            late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             if (late_us > 0) stats.late++;
-            if (!fast_forward && qcount > 1 &&
-                (late_us > (int64_t)period_us ||
-                 (audio && audio_buffered_ms(audio) < AUDIO_DISPLAY_WARNING_MS &&
-                  late_us > 0))) {
-                stats.dropped++; qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
-                if (late_us > (int64_t)(period_us * 4) && !audio)
-                    mono_base_us = now - vq[qhead].pts_us;
-                continue;
+            stats.dropped_in_pass = 0;
+            /* Select once per scheduler pass. Re-evaluate each newer queued
+             * PTS against the same audio-clock sample, stopping as soon as it
+             * is useful or only the newest decoded frame remains. */
+            while (!fast_forward && late_us > (int64_t)period_us && qcount > 1) {
+                stats.dropped++; stats.dropped_in_pass++;
+                qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
+                front = &vq[qhead];
+                late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             }
-            /* Audio remains master. A critical cushion means scaling this
-             * frame could consume the only in-flight Paula buffer. */
-            if (audio && audio_buffered_ms(audio) < AUDIO_DISPLAY_CRITICAL_MS &&
-                late_us > 0) {
-                stats.dropped++; qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
-                audio_service(audio);
-                continue;
-            }
+            stats.frame_pts_us = front->pts_us;
+            stats.audio_clock_us = master_clock_us;
+            stats.calculated_lateness_us = late_us;
+            stats.queue_head = (unsigned)qhead;
+            if (late_us < -(int64_t)PRESENTATION_GUARD_US) continue;
             now = monotonic_us();
             {
                 unsigned long audio_before = audio ? audio_buffered_ms(audio) : 0;
@@ -775,6 +788,8 @@ int main(int argc, char **argv)
             if (mr_decoder_reset(&dec) != MR_OK) break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
+            have_container_pts = 0; last_container_pts_us = 0;
+            container_pts_adjust_us = 0;
             playback_started = 0;
             clock_base = audio ? audio_elapsed_ms(audio) : 0;
             continue;
@@ -815,11 +830,26 @@ int main(int argc, char **argv)
                     if (mr_decoder_decode(&dec, pkt.data, pkt.len) == MR_OK) {
                         unsigned long decode_us =
                             (unsigned long)(monotonic_us() - a);
-                        uint64_t pts = vi->rate
+                        uint64_t synthetic_pts = vi->rate
                             ? decoded_index *
                               (uint64_t)(vi->scale ? vi->scale : 1) *
                               1000000ULL / vi->rate
                             : decoded_index * 83333ULL;
+                        uint64_t pts = synthetic_pts;
+                        if (pkt.has_pts) {
+                            int discontinuity = have_container_pts &&
+                                (pkt.pts_us + period_us * 10 < last_container_pts_us ||
+                                 pkt.pts_us > last_container_pts_us + period_us * 10);
+                            if (!have_container_pts || discontinuity) {
+                                container_pts_adjust_us =
+                                    (int64_t)synthetic_pts - (int64_t)pkt.pts_us;
+                                if (have_container_pts) stats.timing_rebases++;
+                            }
+                            pts = (uint64_t)((int64_t)pkt.pts_us +
+                                             container_pts_adjust_us);
+                            last_container_pts_us = pkt.pts_us;
+                            have_container_pts = 1;
+                        }
                         queued_video *tail =
                             &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
                         stats.video_decode_us += decode_us; stats.decoded++;

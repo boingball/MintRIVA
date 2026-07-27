@@ -50,6 +50,10 @@ typedef struct {
 
 typedef struct {
     int            is_video;
+    /* Presentation timestamp in the container timebase converted to usec.
+     * Demuxers which do not expose timestamps leave has_pts clear. */
+    int            has_pts;
+    uint64_t       pts_us;
     /* Borrowed until the next mr_demux_next_packet call.  Memory-backed
      * demuxers point into their input; file-backed demuxers reuse one buffer. */
     const uint8_t *data;

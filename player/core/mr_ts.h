@@ -16,6 +16,8 @@ typedef struct {
     size_t   len;
     size_t   cap;
     size_t   expected;            /* ES bytes from bounded PES, 0 = unknown */
+    uint64_t pts;                 /* 90 kHz, valid when has_pts is set       */
+    int      has_pts;
     int      active;
     int      drained;
 } mr_ts_pes;

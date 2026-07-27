@@ -195,6 +195,7 @@ const char *mr_demux_last_open_error(void)
 
 mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
 {
+    if (pkt) { pkt->has_pts = 0; pkt->pts_us = 0; }
     if (d->kind == MR_CONTAINER_AVI)
         return mr_avi_next_packet(&d->u.avi, pkt);
     if (d->kind == MR_CONTAINER_MOV)

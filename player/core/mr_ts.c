@@ -621,6 +621,8 @@ static mr_status annexb_to_avcc(mr_ts *t, const uint8_t *p, size_t len,
 static mr_status emit_pes(mr_ts *t, mr_ts_pes *p, int video, mr_packet *pkt)
 {
     mr_status st;
+    pkt->has_pts = p->has_pts;
+    pkt->pts_us = p->has_pts ? p->pts * 1000000ULL / 90000ULL : 0;
     if (video && t->video_type == 0x1b) {
         st = annexb_to_avcc(t, p->data, p->len, pkt);
     } else {
@@ -632,6 +634,7 @@ static mr_status emit_pes(mr_ts *t, mr_ts_pes *p, int video, mr_packet *pkt)
     p->len = 0;
     p->expected = 0;
     p->active = 0;
+    p->has_pts = 0;
     return st;
 }
 
@@ -679,6 +682,8 @@ mr_status mr_ts_next_packet(mr_ts *t, mr_packet *pkt)
             }
             a->active = 1;
             a->expected = expected;
+            a->has_pts = has_pts;
+            a->pts = pts;
         } else if (!a->active) {
             continue;
         }
@@ -708,6 +713,7 @@ void mr_ts_rewind(mr_ts *t)
     t->video_pes.len = t->audio_pes.len = 0;
     t->video_pes.expected = t->audio_pes.expected = 0;
     t->video_pes.active = t->audio_pes.active = 0;
+    t->video_pes.has_pts = t->audio_pes.has_pts = 0;
     t->video_pes.drained = t->audio_pes.drained = 0;
 }
 
