@@ -13,6 +13,8 @@
 #ifndef MR_AUDIO_H
 #define MR_AUDIO_H
 
+#include <stdint.h>
+
 typedef struct mr_audio mr_audio;
 enum mr_audio_request_state {
     AUDIO_REQ_IDLE = 0,
