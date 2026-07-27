@@ -21,6 +21,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <limits.h>
 
 #define PAL_CLOCK  3546895UL   /* Paula colour clock (PAL)                  */
 #define MIN_PERIOD 124         /* Paula hardware minimum period             */
@@ -45,6 +47,11 @@ struct mr_audio {
     unsigned        head, tail, count;
 
     unsigned long   played;        /* sample-frames actually played         */
+    clock_t         last_service;
+    clock_t         longest_service_gap;
+    unsigned long   underruns;
+    unsigned long   minimum_buffered_ms;
+    int             had_buffered_audio;
 };
 
 /* ---- ring FIFO ---------------------------------------------------------- */
@@ -85,6 +92,7 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->src_channels = channels;
     a->src_bits = bits;
     a->period = (unsigned)(PAL_CLOCK / rate);
+    a->minimum_buffered_ms = ULONG_MAX;
     if (a->period < MIN_PERIOD) a->period = MIN_PERIOD;
 
     a->port = CreateMsgPort();
@@ -210,7 +218,13 @@ void audio_write_s16(mr_audio *a, const short *pcm,
 void audio_service(mr_audio *a)
 {
     int i;
+    clock_t service_now;
+    unsigned long buffered;
     if (!a) return;
+    service_now = clock();
+    if (a->last_service && service_now - a->last_service > a->longest_service_gap)
+        a->longest_service_gap = service_now - a->last_service;
+    a->last_service = service_now;
 
     /* Reap finished writes. */
     for (i = 0; i < NBUF; i++) {
@@ -237,6 +251,15 @@ void audio_service(mr_audio *a)
             a->nsub[i] = n;
         }
     }
+    buffered = audio_buffered_ms(a);
+    if ((buffered || a->had_buffered_audio) &&
+        buffered < a->minimum_buffered_ms)
+        a->minimum_buffered_ms = buffered;
+    if (buffered) a->had_buffered_audio = 1;
+    else if (a->had_buffered_audio) {
+        a->underruns++;
+        a->had_buffered_audio = 0;
+    }
 }
 
 unsigned long audio_elapsed_ms(mr_audio *a)
@@ -254,6 +277,18 @@ unsigned long audio_buffered_ms(mr_audio *a)
     for (i = 0; i < NBUF; i++)
         if (a->busy[i]) samples += (unsigned long)a->nsub[i];
     return samples * 1000UL / a->rate;
+}
+
+void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
+{
+    if (!diag) return;
+    memset(diag, 0, sizeof *diag);
+    if (!a) return;
+    diag->underruns = a->underruns;
+    diag->minimum_buffered_ms = a->minimum_buffered_ms == ULONG_MAX
+                              ? 0 : a->minimum_buffered_ms;
+    diag->longest_service_gap_ms =
+        (unsigned long)(a->longest_service_gap * 1000 / CLOCKS_PER_SEC);
 }
 
 int audio_starved(mr_audio *a)

@@ -14,6 +14,11 @@
 #define MR_AUDIO_H
 
 typedef struct mr_audio mr_audio;
+typedef struct mr_audio_diagnostics {
+    unsigned long underruns;
+    unsigned long minimum_buffered_ms;
+    unsigned long longest_service_gap_ms;
+} mr_audio_diagnostics;
 
 /* RIFF/WAVE PCM with 8 bits per sample is unsigned, centred at 0x80. */
 static inline short audio_pcm_u8_to_s16(unsigned char sample)
@@ -45,6 +50,7 @@ int           audio_starved(mr_audio *a);
 
 /* PCM queued in the software FIFO plus audio.device writes in flight. */
 unsigned long audio_buffered_ms(mr_audio *a);
+void          audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag);
 
 void          audio_close(mr_audio *a);
 

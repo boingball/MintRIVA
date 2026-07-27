@@ -45,6 +45,8 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define VIDEO_QUEUE_CAP 4
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
+#define AUDIO_REFILL_WARNING_MS 120UL
+#define AUDIO_REFILL_CRITICAL_MS 60UL
 
 static struct MsgPort *timer_port;
 static struct timerequest *timer_request;
@@ -176,7 +178,9 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
     unsigned long pf = rate_hundredths(st->presented, elapsed_us);
     unsigned long df = rate_hundredths(st->decoded, elapsed_us);
     mr_source_timing io;
+    mr_audio_diagnostics audio_diag;
     mr_source_timing_get(&io);
+    audio_diagnostics(audio, &audio_diag);
     printf("rtg timing: vdecode=%lu.%02lu/%lu ms network-blocked=%lu ms "
            "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
            "convert=%lu.%02lu ms scale=%lu.%02lu ms display=%lu.%02lu/%lu ms "
@@ -196,6 +200,9 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
            la / 100, la % 100,
            (unsigned long)(st->refill_block_us / 1000),
            (unsigned long)(st->refill_delayed_ready_us / 1000));
+    printf("audio diagnostics: underruns=%lu minimum-buffered=%lu ms "
+           "longest-service-gap=%lu ms\n", audio_diag.underruns,
+           audio_diag.minimum_buffered_ms, audio_diag.longest_service_gap_ms);
     if (st->last_rtg.src_w) {
         unsigned n = st->presented ? st->presented : 1;
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
@@ -442,6 +449,7 @@ int main(int argc, char **argv)
     clock_t t_dec = 0, t_show = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
     int qhead = 0, qcount = 0, input_eof = 0;
+    int audio_feed_credit = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
     playback_stats stats;
 
@@ -688,11 +696,14 @@ int main(int argc, char **argv)
             : 83333ULL;
         int64_t late_us = 0;
         uint64_t master_clock_us = 0;
+        unsigned long audio_ms = 0;
         int have_deadline = 0;
 
-        /* Deadline first: service the master clock and inspect an already-ready
-         * frame before considering any call which might block in the demuxer. */
-        if (audio) audio_service(audio);
+        /* Build the startup cushion in the software FIFO before starting
+         * Paula; otherwise each small packet starts playing immediately and
+         * the prebuffer can never grow to the warning threshold. */
+        if (audio && playback_started) audio_service(audio);
+        if (audio) audio_ms = audio_buffered_ms(audio);
         if (playback_started && front) {
             if (audio && !audio_starved(audio))
                 master_clock_us = (uint64_t)audio_elapsed_ms(audio) * 1000ULL -
@@ -702,7 +713,9 @@ int main(int argc, char **argv)
             have_deadline = 1;
         }
 
-        if (have_deadline && late_us >= -(int64_t)PRESENTATION_GUARD_US) {
+        if (have_deadline && late_us >= -(int64_t)PRESENTATION_GUARD_US &&
+            (!audio || audio_ms >= AUDIO_REFILL_WARNING_MS ||
+             (audio_ms >= AUDIO_REFILL_CRITICAL_MS && audio_feed_credit))) {
             int ev = player_event(disp);
             if (ev == MR_EV_QUIT) { quit = 1; break; }
             if (ev == MR_EV_PAUSE) { paused = 1; }
@@ -776,6 +789,7 @@ int main(int argc, char **argv)
             }
             stats.latency_us += monotonic_us() - front->decoded_at_us;
             stats.presented++; frames++;
+            audio_feed_credit = 0;
             qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
             now = monotonic_us();
             if (want_time && now - stats.since_us >= STATS_INTERVAL_US)
@@ -799,11 +813,14 @@ int main(int argc, char **argv)
          * use depth one: without an asynchronous reader, a blocking HLS fetch
          * cannot be allowed to delay a frame already queued for presentation. */
         {
-            int can_decode = !input_eof && qcount < target_depth;
+            int refill_audio = audio && audio_ms < AUDIO_REFILL_WARNING_MS;
+            int can_decode = !input_eof &&
+                             (qcount < target_depth || refill_audio);
             if (can_decode && playback_started && qcount) {
                 uint64_t margin = stats.video_decode_max_us +
                                   PRESENTATION_GUARD_US + 2000ULL;
-                if (network_source || late_us > -(int64_t)margin)
+                if (!refill_audio &&
+                    (network_source || late_us > -(int64_t)margin))
                     can_decode = 0;
             }
             if (can_decode) {
@@ -824,6 +841,7 @@ int main(int argc, char **argv)
                         mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
                                               decoded_audio_sink, audio);
                         stats.audio_decode_us += monotonic_us() - a;
+                        audio_feed_credit = 1;
                     }
                 } else if (pkt.len) {
                     a = monotonic_us();
@@ -850,16 +868,23 @@ int main(int argc, char **argv)
                             last_container_pts_us = pkt.pts_us;
                             have_container_pts = 1;
                         }
-                        queued_video *tail =
-                            &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
                         stats.video_decode_us += decode_us; stats.decoded++;
                         if (decode_us > stats.video_decode_max_us)
                             stats.video_decode_max_us = decode_us;
-                        a = monotonic_us();
-                        if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
-                                        decode_us)) { quit = 1; break; }
-                        stats.rtg_prepare_us += monotonic_us() - a;
-                        qcount++; decoded_index++;
+                        if (qcount < VIDEO_QUEUE_CAP) {
+                            queued_video *tail =
+                                &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
+                            a = monotonic_us();
+                            if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
+                                            decode_us)) { quit = 1; break; }
+                            stats.rtg_prepare_us += monotonic_us() - a;
+                            qcount++;
+                        } else {
+                            /* Decode reference state to reach following audio,
+                             * but do not overwrite an already queued frame. */
+                            stats.dropped++;
+                        }
+                        decoded_index++;
                     }
                 }
                 if (ready_before && due_before < 0) {
@@ -869,7 +894,9 @@ int main(int argc, char **argv)
                             refill_elapsed - (uint64_t)(-due_before);
                 }
                 if (!playback_started &&
-                    (qcount >= startup_depth || input_eof)) {
+                    (qcount >= startup_depth || input_eof) &&
+                    (!audio || audio_buffered_ms(audio) >=
+                               AUDIO_REFILL_WARNING_MS || input_eof)) {
                     playback_started = qcount > 0;
                     if (playback_started) {
                         now = monotonic_us();
@@ -881,7 +908,12 @@ int main(int argc, char **argv)
             }
         }
 
-        if (qcount && playback_started) {
+        if (audio && audio_buffered_ms(audio) < AUDIO_REFILL_WARNING_MS &&
+            !input_eof) {
+            /* Do not burn a 20 ms DOS tick while audio is in refill mode. */
+            audio_service(audio);
+            continue;
+        } else if (qcount && playback_started) {
             uint64_t wait_us = late_us < -(int64_t)PRESENTATION_GUARD_US
                 ? (uint64_t)(-late_us) - PRESENTATION_GUARD_US : 0;
             if (wait_us > 20000) wait_us = 20000;
