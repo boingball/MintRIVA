@@ -47,6 +47,10 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
+#define AUDIO_RESCUE_WARNING_MS 100UL
+#define AUDIO_RESCUE_TARGET_MS 250UL
+#define AUDIO_RESCUE_MAX_PACKETS 16U
+#define AUDIO_RESCUE_MAX_US 100000ULL
 
 static struct MsgPort *timer_port;
 static struct timerequest *timer_request;
@@ -96,6 +100,11 @@ typedef struct playback_stats {
     unsigned long rtg_prepare_max_us, rtg_blit_max_us;
     uint64_t h264_input_us, h264_core_us, h264_output_us;
     unsigned long h264_input_max_us, h264_core_max_us, h264_output_max_us;
+    uint64_t rescue_us;
+    unsigned rescue_entries, rescue_packets, rescue_audio_packets;
+    unsigned rescue_video_decoded, rescue_video_queued, rescue_video_skipped;
+    unsigned long rescue_max_us;
+    unsigned rescue_exit_target, rescue_exit_limit, rescue_exit_eof;
     unsigned dropped_after_scale;
     unsigned long audio_before, audio_after;
     uint64_t frame_pts_us, audio_clock_us;
@@ -300,6 +309,18 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                st->h264_core_max_us,
                (unsigned long)(st->h264_output_us / st->decoded),
                st->h264_output_max_us);
+        if (audio) service_audio_for_display(trace);
+    }
+    if (st->rescue_entries) {
+        printf("audio rescue: entries=%u packets=%u audio=%u video=%u "
+               "queued=%u not-copied=%u duration-avg=%lu us max=%lu us "
+               "exit(target/limit/eof)=%u/%u/%u\n",
+               st->rescue_entries, st->rescue_packets,
+               st->rescue_audio_packets, st->rescue_video_decoded,
+               st->rescue_video_queued, st->rescue_video_skipped,
+               (unsigned long)(st->rescue_us / st->rescue_entries),
+               st->rescue_max_us, st->rescue_exit_target,
+               st->rescue_exit_limit, st->rescue_exit_eof);
         if (audio) service_audio_for_display(trace);
     }
     if (st->last_rtg.src_w) {
@@ -552,6 +573,13 @@ int main(int argc, char **argv)
     clock_t t_dec = 0, t_show = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
     int qhead = 0, qcount = 0, input_eof = 0;
+    int rescue_active = 0;
+    unsigned rescue_cooldown = 0;
+    unsigned rescue_episode_packets = 0, rescue_episode_audio = 0;
+    unsigned rescue_episode_video = 0, rescue_episode_queued = 0;
+    unsigned rescue_episode_skipped = 0;
+    unsigned long rescue_buffer_before = 0;
+    uint64_t rescue_started_us = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
     playback_stats stats;
     scheduler_trace trace;
@@ -813,6 +841,48 @@ int main(int argc, char **argv)
         trace_phase(&trace, "scheduler");
         if (audio && playback_started) service_audio_for_display(&trace);
         if (audio) audio_ms = audio_buffered_ms(audio);
+        if (rescue_cooldown) rescue_cooldown--;
+        if (audio && playback_started && !rescue_active && !input_eof &&
+            !rescue_cooldown && audio_ms < AUDIO_RESCUE_WARNING_MS) {
+            rescue_active = 1;
+            rescue_started_us = now;
+            rescue_buffer_before = audio_ms;
+            rescue_episode_packets = rescue_episode_audio = 0;
+            rescue_episode_video = rescue_episode_queued = 0;
+            rescue_episode_skipped = 0;
+            stats.rescue_entries++;
+        }
+        if (rescue_active) {
+            const char *reason = NULL;
+            uint64_t rescue_elapsed = now - rescue_started_us;
+            int ev = player_event(disp);
+            if (ev == MR_EV_QUIT) { quit = 1; break; }
+            if (ev == MR_EV_PAUSE) { paused = 1; reason = "limit"; }
+            if (audio_ms >= AUDIO_RESCUE_TARGET_MS) {
+                reason = "target"; stats.rescue_exit_target++;
+            } else if (rescue_episode_packets >= AUDIO_RESCUE_MAX_PACKETS ||
+                       rescue_elapsed >= AUDIO_RESCUE_MAX_US || paused) {
+                reason = "limit"; stats.rescue_exit_limit++;
+            } else if (input_eof) {
+                reason = "eof"; stats.rescue_exit_eof++;
+            }
+            if (reason) {
+                rescue_active = 0;
+                if (reason[0] != 't') rescue_cooldown = 2;
+                stats.rescue_us += rescue_elapsed;
+                if (rescue_elapsed > stats.rescue_max_us)
+                    stats.rescue_max_us = (unsigned long)rescue_elapsed;
+                if (want_time)
+                    printf("audio-rescue reason=%s packets=%u audio=%u "
+                           "video=%u queued=%u not-copied=%u duration=%lu us "
+                           "buffer=%lu->%lu ms\n", reason,
+                           rescue_episode_packets, rescue_episode_audio,
+                           rescue_episode_video, rescue_episode_queued,
+                           rescue_episode_skipped, (unsigned long)rescue_elapsed,
+                           rescue_buffer_before, audio_ms);
+                if (audio) service_audio_for_display(&trace);
+            }
+        }
         if (playback_started && front) {
             if (audio && !audio_starved(audio))
                 master_clock_us = audio_elapsed_us(audio) - clock_base_us;
@@ -821,7 +891,8 @@ int main(int argc, char **argv)
             have_deadline = 1;
         }
 
-        if (have_deadline && late_us >= -(int64_t)PRESENTATION_GUARD_US) {
+        if (!rescue_active && have_deadline &&
+            late_us >= -(int64_t)PRESENTATION_GUARD_US) {
             int ev;
             trace_phase(&trace, "event-processing");
             ev = player_event(disp);
@@ -943,7 +1014,8 @@ int main(int argc, char **argv)
          * cannot be allowed to delay a frame already queued for presentation. */
         {
             int refill_audio = audio && audio_ms < AUDIO_REFILL_WARNING_MS;
-            int can_decode = !input_eof && qcount < target_depth;
+            int can_decode = !input_eof &&
+                             (rescue_active || qcount < target_depth);
             if (can_decode && playback_started && qcount) {
                 uint64_t margin = stats.video_decode_max_us +
                                   PRESENTATION_GUARD_US + 2000ULL;
@@ -965,6 +1037,9 @@ int main(int argc, char **argv)
                 uint64_t blocked = b - a;
                 stats.demux_us += blocked; stats.refill_block_us += blocked;
                 stats.samples++;
+                if (rescue_active) {
+                    rescue_episode_packets++; stats.rescue_packets++;
+                }
                 if (network_source) stats.network_us += blocked;
                 if (next != MR_OK) input_eof = 1;
                 else if (!pkt.is_video) {
@@ -978,11 +1053,19 @@ int main(int argc, char **argv)
                         audio_end = monotonic_us();
                         service_audio_for_display(&trace);
                         stats.audio_decode_us += audio_end - a;
+                        if (rescue_active) {
+                            rescue_episode_audio++;
+                            stats.rescue_audio_packets++;
+                        }
                     }
                 } else if (pkt.len) {
                     mr_status decode_status;
                     uint64_t decode_end;
                     trace_phase(&trace, "h264-decode");
+                    if (rescue_active) {
+                        int skip_output = qcount >= VIDEO_QUEUE_CAP;
+                        mr_h264_set_skip_output(&dec, skip_output);
+                    } else mr_h264_set_skip_output(&dec, 0);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
@@ -1028,6 +1111,25 @@ int main(int argc, char **argv)
                         if (decode_us > stats.video_decode_max_us)
                             stats.video_decode_max_us = decode_us;
                         {
+                            uint64_t rescue_clock = audio
+                                ? audio_elapsed_us(audio) - clock_base_us
+                                : monotonic_us() - mono_base_us;
+                            int retain = !rescue_active ||
+                                (qcount < VIDEO_QUEUE_CAP &&
+                                 pts + period_us >= rescue_clock);
+                            if (rescue_active) {
+                                rescue_episode_video++;
+                                stats.rescue_video_decoded++;
+                            }
+                            if (!retain) {
+                                if (rescue_active) {
+                                    rescue_episode_skipped++;
+                                    stats.rescue_video_skipped++;
+                                }
+                                stats.dropped++;
+                                decoded_index++;
+                                continue;
+                            }
                             queued_video *tail =
                                 &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
                             trace_phase(&trace, "frame-copy");
@@ -1039,6 +1141,10 @@ int main(int argc, char **argv)
                             if (audio) service_audio_for_display(&trace);
                             stats.frame_copy_us += decode_end - a;
                             qcount++;
+                            if (rescue_active) {
+                                rescue_episode_queued++;
+                                stats.rescue_video_queued++;
+                            }
                         }
                         decoded_index++;
                     }

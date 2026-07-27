@@ -37,6 +37,7 @@ typedef struct {
     mr_h264_service_fn service;
     void     *service_opaque;
     mr_h264_timing timing;
+    int       skip_output;
 } h264_state;
 
 static unsigned long h264_elapsed_us(clock_t begin)
@@ -415,6 +416,10 @@ static mr_status h264_decode(mr_decoder *dec,
             (int)out.s_ivd_video_decode_op_t.e_pic_type);
 #endif
     if (out.s_ivd_video_decode_op_t.u4_output_present) {
+        if (s->skip_output) {
+            dec->frame.dirty_y0 = dec->frame.dirty_y1 = 0;
+            return MR_OK;
+        }
         mark = clock();
         st = emit_rgb(dec, &out.s_ivd_video_decode_op_t);
         s->timing.output_us = h264_elapsed_us(mark);
@@ -422,6 +427,14 @@ static mr_status h264_decode(mr_decoder *dec,
         return st;
     }
     return ret == IV_SUCCESS ? MR_EAGAIN : MR_EFORMAT;
+}
+
+void mr_h264_set_skip_output(mr_decoder *dec, int skip)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    s->skip_output = skip != 0;
 }
 
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque)
