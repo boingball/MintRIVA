@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef MR_H264_DEBUG
 #include <stdio.h>
 #endif
@@ -33,7 +34,15 @@ typedef struct {
     uint32_t  timestamp;
     int       flushing;
     int       flush_done;
+    mr_h264_service_fn service;
+    void     *service_opaque;
+    mr_h264_timing timing;
 } h264_state;
+
+static unsigned long h264_elapsed_us(clock_t begin)
+{
+    return (unsigned long)((clock() - begin) * 1000000UL / CLOCKS_PER_SEC);
+}
 
 static void *h264_aligned_alloc(void *context, WORD32 alignment, WORD32 size)
 {
@@ -251,6 +260,7 @@ static mr_status emit_rgb(mr_decoder *dec,
                                             208 * e + 128) >> 8);
             dst[x * 3 + 2] = (uint8_t)clip8((298 * c + 516 * d + 128) >> 8);
         }
+        if (s->service && (y & 15) == 15) s->service(s->service_opaque);
     }
     dec->frame.width = dec->width;
     dec->frame.height = dec->height;
@@ -377,12 +387,18 @@ static mr_status h264_decode(mr_decoder *dec,
     IV_API_CALL_STATUS_T ret;
     uint32_t annexb_len;
     mr_status st;
+    clock_t mark;
     if (!s || !data || !len) return MR_EFORMAT;
     s->flushing = 0;
     s->flush_done = 0;
+    memset(&s->timing, 0, sizeof s->timing);
+    mark = clock();
     st = avcc_sample_to_annexb(s, data, len, &annexb_len);
+    s->timing.input_us = h264_elapsed_us(mark);
     if (st != MR_OK) return st;
+    mark = clock();
     ret = decode_annexb(s, s->packet, annexb_len, &out);
+    s->timing.core_us = h264_elapsed_us(mark);
 #ifdef MR_H264_DEBUG
     fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu ret=%d consumed=%lu "
             "decoded=%lu output=%lu error=%08lx type=%d\n",
@@ -394,9 +410,31 @@ static mr_status h264_decode(mr_decoder *dec,
             (unsigned long)out.s_ivd_video_decode_op_t.u4_error_code,
             (int)out.s_ivd_video_decode_op_t.e_pic_type);
 #endif
-    if (out.s_ivd_video_decode_op_t.u4_output_present)
-        return emit_rgb(dec, &out.s_ivd_video_decode_op_t);
+    if (out.s_ivd_video_decode_op_t.u4_output_present) {
+        mark = clock();
+        st = emit_rgb(dec, &out.s_ivd_video_decode_op_t);
+        s->timing.output_us = h264_elapsed_us(mark);
+        return st;
+    }
     return ret == IV_SUCCESS ? MR_EAGAIN : MR_EFORMAT;
+}
+
+void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    s->service = fn; s->service_opaque = opaque;
+}
+
+void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing)
+{
+    h264_state *s;
+    if (!timing) return;
+    memset(timing, 0, sizeof *timing);
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    *timing = s->timing;
 }
 
 static mr_status h264_flush(mr_decoder *dec)

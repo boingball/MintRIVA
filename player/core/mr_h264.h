@@ -11,5 +11,11 @@
 #include "mr_codec.h"
 
 extern const mr_codec mr_codec_h264;
+typedef void (*mr_h264_service_fn)(void *opaque);
+typedef struct mr_h264_timing {
+    unsigned long input_us, core_us, output_us;
+} mr_h264_timing;
+void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
+void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing);
 
 #endif /* MR_H264_H */

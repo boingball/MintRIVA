@@ -138,7 +138,10 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
         a->io[1]->ioa_Request.io_Message.mn_ReplyPort = a->port;
     }
 
-    a->bufsz = (int)(rate / 20);               /* ~50 ms per buffer         */
+    /* libavc is a synchronous API and has no safe slice-yield hook. Keep two
+     * genuinely submitted requests, each long enough to span the observed
+     * 40-54 ms core decode calls plus scheduler overhead. */
+    a->bufsz = (int)(rate / 10);               /* ~100 ms per buffer        */
     if (a->bufsz < 256) a->bufsz = 256;
     for (i = 0; i < NBUF; i++) {
         a->chip[i] = (signed char *)AllocMem((ULONG)a->bufsz,

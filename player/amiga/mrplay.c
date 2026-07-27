@@ -18,6 +18,7 @@
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
+#include "../core/mr_h264.h"
 #include "../audio/mr_audio_decode.h"
 #include "amiga_display.h"
 #include "mr_audio.h"
@@ -94,6 +95,8 @@ typedef struct playback_stats {
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
     uint64_t frame_copy_us;
     unsigned long rtg_prepare_max_us, rtg_blit_max_us;
+    uint64_t h264_input_us, h264_core_us, h264_output_us;
+    unsigned long h264_input_max_us, h264_core_max_us, h264_output_max_us;
     unsigned dropped_after_scale;
     unsigned long audio_before, audio_after;
     uint64_t frame_pts_us, audio_clock_us;
@@ -277,6 +280,17 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
            demux_timing.scanned_max, demux_timing.service_calls);
     if (audio) service_audio_for_display(trace);
+    if (st->decoded) {
+        printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
+               "rgb-output=%lu/%lu us\n",
+               (unsigned long)(st->h264_input_us / st->decoded),
+               st->h264_input_max_us,
+               (unsigned long)(st->h264_core_us / st->decoded),
+               st->h264_core_max_us,
+               (unsigned long)(st->h264_output_us / st->decoded),
+               st->h264_output_max_us);
+        if (audio) service_audio_for_display(trace);
+    }
     if (st->last_rtg.src_w) {
         unsigned n = st->presented ? st->presented : 1;
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
@@ -741,6 +755,7 @@ int main(int argc, char **argv)
     trace.phase = "startup"; trace.phase_started_us = monotonic_us();
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
+    mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -966,6 +981,19 @@ int main(int argc, char **argv)
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
                     decode_end = monotonic_us();
                     if (audio) service_audio_for_display(&trace);
+                    {
+                        mr_h264_timing ht;
+                        mr_h264_frame_timing(&dec, &ht);
+                        stats.h264_input_us += ht.input_us;
+                        stats.h264_core_us += ht.core_us;
+                        stats.h264_output_us += ht.output_us;
+                        if (ht.input_us > stats.h264_input_max_us)
+                            stats.h264_input_max_us = ht.input_us;
+                        if (ht.core_us > stats.h264_core_max_us)
+                            stats.h264_core_max_us = ht.core_us;
+                        if (ht.output_us > stats.h264_output_max_us)
+                            stats.h264_output_max_us = ht.output_us;
+                    }
                     if (decode_status == MR_OK) {
                         unsigned long decode_us =
                             (unsigned long)(decode_end - a);
