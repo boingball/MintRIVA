@@ -163,14 +163,24 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
     unsigned long pf = rate_hundredths(st->presented, elapsed_us);
     unsigned long df = rate_hundredths(st->decoded, elapsed_us);
     mr_source_timing io;
+    unsigned long download_kbps, consume_kbps;
     mr_source_timing_get(&io);
+    download_kbps = elapsed_us
+        ? (unsigned long)((uint64_t)io.downloaded_bytes * 8000ULL / elapsed_us) : 0;
+    consume_kbps = elapsed_us
+        ? (unsigned long)((uint64_t)io.consumed_bytes * 8000ULL / elapsed_us) : 0;
     printf("rtg timing: vdecode=%lu.%02lu/%lu ms network-blocked=%lu ms "
            "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
            "convert=%lu.%02lu ms scale=%lu.%02lu ms display=%lu.%02lu/%lu ms "
            "audio-buffered=%lu ms vqueue=%d late=%u dropped=%u "
            "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
            "sleep-max-error=%lu us latency=%lu.%02lu ms "
-           "refill-blocked=%lu ms ready-delayed-by-refill=%lu ms\n",
+           "refill-blocked=%lu ms ready-delayed-by-refill=%lu ms "
+           "net-buffer=%lu/%lu KB high-water=%lu KB low-water=%lu KB "
+           "producer-wait=%lu ms "
+           "consumer-starved=%lu starved-total=%lu ms "
+           "download-rate=%lu kbit/s consume-rate=%lu kbit/s "
+           "hls-segments=%lu segment-fetch-avg=%lu ms\n",
            vd / 100, vd % 100, st->video_decode_max_us / 1000,
            (unsigned long)(st->network_us / 1000) + io.network_ms,
            io.hls_segment_ms, dm / 100, dm % 100, ad / 100, ad % 100,
@@ -182,7 +192,13 @@ static void report_stats(playback_stats *st, mr_audio *audio, int depth,
            (unsigned long)(st->sleep_actual_us / 1000), st->sleep_max_error_us,
            la / 100, la % 100,
            (unsigned long)(st->refill_block_us / 1000),
-           (unsigned long)(st->refill_delayed_ready_us / 1000));
+           (unsigned long)(st->refill_delayed_ready_us / 1000),
+           io.net_buffer_used / 1024, io.net_buffer_capacity / 1024,
+           io.net_buffer_high_water / 1024, io.net_buffer_low_water / 1024,
+           io.producer_wait_ms,
+           io.consumer_starved, io.starved_total_ms,
+           download_kbps, consume_kbps, io.hls_segments,
+           io.hls_segments ? io.hls_segment_ms / io.hls_segments : 0);
     memset(st, 0, sizeof *st); st->since_us = now;
     mr_source_timing_reset();
 }
@@ -677,7 +693,8 @@ int main(int argc, char **argv)
             else
                 late_us = (int64_t)(now - mono_base_us) - (int64_t)front->pts_us;
             if (late_us > 0) stats.late++;
-            if (!fast_forward && late_us > (int64_t)period_us && qcount > 1) {
+            if (!fast_forward && late_us > (int64_t)period_us &&
+                (qcount > 1 || network_source)) {
                 stats.dropped++; qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
                 if (late_us > (int64_t)(period_us * 4) && !audio)
                     mono_base_us = now - vq[qhead].pts_us;

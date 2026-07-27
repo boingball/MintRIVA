@@ -16,6 +16,16 @@ typedef struct mr_source_timing {
     unsigned long network_ms;       /* HTTP reads/open waits */
     unsigned long hls_segment_ms;   /* HLS segment open/read waits */
     unsigned long hls_playlist_ms;  /* HLS playlist fetch/refetch waits */
+    unsigned long hls_segments;
+    unsigned long net_buffer_used;
+    unsigned long net_buffer_capacity;
+    unsigned long net_buffer_high_water;
+    unsigned long net_buffer_low_water;
+    unsigned long producer_wait_ms;
+    unsigned long consumer_starved;
+    unsigned long starved_total_ms;
+    unsigned long downloaded_bytes;
+    unsigned long consumed_bytes;
 } mr_source_timing;
 struct mr_http_options;
 
@@ -33,6 +43,7 @@ size_t     mr_source_length(const mr_source *s);
 int        mr_source_is_streaming(const mr_source *s);
 const char *mr_source_final_name(const mr_source *s);
 void       mr_source_close(mr_source *s);
+void       mr_source_abort(mr_source *s);
 
 /* Process-local cumulative blocking-I/O counters.  They are intentionally
  * queried by the player only at rolling-report boundaries, never per frame. */
@@ -40,6 +51,9 @@ void       mr_source_timing_get(mr_source_timing *timing);
 void       mr_source_timing_reset(void);
 void       mr_source_timing_add_network(unsigned long ms);
 void       mr_source_mark_network(mr_source *s);
+/* Takes ownership of upstream. On Amiga this starts a bounded asynchronous
+ * producer task; host validation builds retain the direct source. */
+mr_source *mr_buffered_source_open(mr_source *upstream, size_t capacity);
 void       mr_source_timing_add_hls_segment(unsigned long ms);
 void       mr_source_timing_add_hls_playlist(unsigned long ms);
 
@@ -57,5 +71,6 @@ mr_source *mr_source_create(void *ctx, size_t len,
                             void (*close)(void *),
                             const char *final_name);
 void       mr_source_set_error(const char *message);
+void       mr_source_set_abort(mr_source *s, void (*abort_cb)(void *));
 
 #endif /* MR_SOURCE_H */

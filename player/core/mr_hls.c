@@ -333,6 +333,12 @@ static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
     return 1;
 }
 
+static void hls_abort(void *opaque)
+{
+    hls_source *h = (hls_source *)opaque;
+    if (h && h->cur) mr_source_abort(h->cur);
+}
+
 static void hls_close(void *opaque)
 {
     hls_source *h = (hls_source *)opaque;
@@ -419,7 +425,12 @@ mr_source *mr_hls_source_open_ex(const char *url,
     /* Streaming (unknown total length): the demuxer reads forward and treats a
      * short read as end of stream. mr_source_create already closes the context
      * (hls_close) if it fails, so we must not close it again here. */
-    return mr_source_create(h, MR_SOURCE_LEN_UNKNOWN, hls_read_at, hls_close, url);
+    {
+        mr_source *source = mr_source_create(h, MR_SOURCE_LEN_UNKNOWN,
+                                             hls_read_at, hls_close, url);
+        mr_source_set_abort(source, hls_abort);
+        return source;
+    }
 }
 
 mr_source *mr_hls_source_open(const char *url)

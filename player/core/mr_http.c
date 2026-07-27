@@ -1342,6 +1342,13 @@ static void platform_close(http_source *h)
     h->platform_ready = 0;
 }
 
+static void http_abort(void *opaque)
+{
+    http_source *h = (http_source *)opaque;
+    if (!h || h->sock < 0) return;
+    shutdown(h->sock, 2);
+}
+
 static void http_close(void *opaque)
 {
     http_source *h = (http_source *)opaque;
@@ -1395,6 +1402,7 @@ mr_source *mr_http_source_open_ex(const char *url,
                               h->streaming ? MR_SOURCE_LEN_UNKNOWN : h->total_len,
                               http_read_at, http_close, h->url);
     mr_source_mark_network(source);
+    mr_source_set_abort(source, http_abort);
     return source;
 }
 
