@@ -38,6 +38,8 @@ void display_set_akiko(int on) { g_aga_akiko = on ? 1 : 0; }
 struct amiga_display {
     const display_backend *be;
     void                  *h;
+    mr_display_service_fn service;
+    void                  *service_opaque;
 };
 
 static void close_libs(void)
@@ -71,6 +73,8 @@ amiga_display *display_open(int w, int h, const char *title)
             if (!d) { order[i]->close(hh); close_libs(); return NULL; }
             d->be = order[i];
             d->h  = hh;
+            d->service = NULL;
+            d->service_opaque = NULL;
             return d;
         }
     }
@@ -81,7 +85,19 @@ amiga_display *display_open(int w, int h, const char *title)
 void display_show_rgb(amiga_display *d, const unsigned char *rgb,
                       int w, int h, int stride, int dy0, int dy1)
 {
-    if (d) d->be->show(d->h, rgb, w, h, stride, dy0, dy1);
+    if (d) d->be->show(d->h, rgb, w, h, stride, dy0, dy1,
+                       d->service, d->service_opaque);
+}
+
+void display_set_service(amiga_display *d, mr_display_service_fn fn,
+                         void *opaque)
+{
+    if (d) { d->service = fn; d->service_opaque = opaque; }
+}
+
+int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing)
+{
+    return d && d->be->timing ? d->be->timing(d->h, timing) : 0;
 }
 
 int display_poll_event(amiga_display *d)

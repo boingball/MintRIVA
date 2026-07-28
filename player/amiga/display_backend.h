@@ -13,7 +13,9 @@ typedef struct {
     /* dy0..dy1 are the changed source rows to (re)draw; the rest of the display
      * is left untouched (it persists from the previous frame). */
     void  (*show)(void *handle, const unsigned char *rgb, int w, int h,
-                  int stride, int dy0, int dy1);
+                  int stride, int dy0, int dy1,
+                  mr_display_service_fn service, void *service_opaque);
+    int   (*timing)(void *handle, mr_display_timing *timing);
     int   (*poll)(void *handle);
     void  (*close)(void *handle);
 } display_backend;

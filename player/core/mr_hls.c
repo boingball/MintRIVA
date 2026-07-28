@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
 #define HLS_URL_MAX      1024
@@ -67,6 +68,7 @@ int mr_source_is_hls(const char *url)
 
 static char *fetch_text(const char *url, const mr_http_options *options)
 {
+    clock_t started = clock();
     mr_source *s = mr_http_source_open_ex(url, options);
     size_t len;
     char *buf;
@@ -86,6 +88,8 @@ static char *fetch_text(const char *url, const mr_http_options *options)
     }
     buf[len] = '\0';
     mr_source_close(s);
+    mr_source_timing_add_hls_playlist((unsigned long)
+        ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
     return buf;
 }
 
@@ -237,6 +241,7 @@ static mr_status merge_playlist(char *text, const char *base_url,
  * be opened in order for its start offset to be known. */
 static int open_seg(hls_source *h, size_t i)
 {
+    clock_t started = clock();
     mr_source *s;
     size_t len;
     if (i >= h->nsegs) return 0;
@@ -257,6 +262,8 @@ static int open_seg(hls_source *h, size_t i)
     h->cur_seg = i;
     h->seg_start[i + 1] = h->seg_start[i] + len;
     if (i + 1 > h->discovered) h->discovered = i + 1;
+    mr_source_timing_add_hls_segment((unsigned long)
+        ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
     return 1;
 }
 

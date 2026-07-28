@@ -121,6 +121,10 @@ LDFLAGS = -noixemul -lgcc
 
 all: mrplay mrgui iptvgui mr_decode
 
+audio_task_stress: check-cc tests/amiga_audio_task_stress.c amiga/audio_paula.c
+	$(CC) $(CFLAGS) -o $@ tests/amiga_audio_task_stress.c \
+	    amiga/audio_paula.c $(LDFLAGS)
+
 KALMS_CHECK = tests/mr_kalms_c2p_check.c core/mr_c2p.c
 
 check-cc:
@@ -186,6 +190,7 @@ endif
 
 clean:
 	rm -f mrplay mrgui iptvgui mr_decode kalms_c2p_check $(KALMS_OBJ)
+	rm -f audio_task_stress
 
 .PHONY: all clean check-cc check-mintamp check-libavc check-kalms \
 	kalms_c2p_check
