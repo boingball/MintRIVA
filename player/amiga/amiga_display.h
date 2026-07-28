@@ -54,6 +54,10 @@ void display_set_lace(int on);
  * CD32 only; no effect (and unsafe) elsewhere, so gate it on --cd32. */
 void display_set_akiko(int on);
 
+/* Enable timing/diagnostic output for the RTG backend (mirrors --time).
+ * Must be called before display_open() to capture init diagnostics. */
+void display_set_timing_mode(int on);
+
 /* Accumulated AGA encode / blit time in ms (0 if the AGA backend wasn't used). */
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms);
 
