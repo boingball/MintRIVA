@@ -68,6 +68,15 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
  * a state it can never climb back out of. Matches the buffer healthy playback
  * naturally reaches (~0.6-0.8 s in on-hardware logs). */
 #define AUDIO_CUSHION_TARGET_MS 800UL
+/* Live-resync (opt-in, --live-resync, network sources only). A multi-second
+ * network stall can leave a live stream many seconds behind the wall clock with
+ * the audio clock unable to climb back; these bound the catch-up-to-live burst.
+ * The trigger is far above any jitter normal playback produces. */
+#define LIVE_RESYNC_BEHIND_US 4000000ULL  /* >4 s behind wall clock: catch up  */
+#define LIVE_RESYNC_TARGET_US 1000000ULL  /* aim to land ~1 s behind the edge   */
+#define LIVE_RESYNC_MAX_US    3000000ULL  /* hard cap on one catch-up burst     */
+#define LIVE_RESYNC_EDGE_US   2000000ULL  /* a read slower than any normal fetch
+                                           * means we have caught the frontier   */
 #define AUDIO_RESCUE_MAX_PACKETS 16U
 #define AUDIO_RESCUE_MAX_US 100000ULL
 
@@ -815,6 +824,7 @@ int main(int argc, char **argv)
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
+    int live_resync = 0;  /* --live-resync: catch up to live after a big stall */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -859,7 +869,8 @@ int main(int argc, char **argv)
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
-               "[--cd32] [--hls-low] [--net-queue=N] [--time]\n");
+               "[--cd32] [--hls-low] [--net-queue=N] [--live-resync] "
+               "[--time]\n");
         return 5;
     }
     {   /* display options anywhere on the command line */
@@ -899,6 +910,7 @@ int main(int argc, char **argv)
                 hls_max_fps = (unsigned)strtoul(argv[i] + 14, NULL, 10);
             else if (!strncmp(argv[i], "--net-queue=", 12))
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
+            else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -1261,6 +1273,62 @@ int main(int argc, char **argv)
             }
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             have_deadline = 1;
+        }
+
+        /* Catastrophic fall-behind recovery. A multi-second network stall can
+         * leave a live stream many seconds behind the wall clock, the audio
+         * clock unable to climb back. Fast-consume the buffered backlog (decode
+         * video reference-only, discard audio) up to the download frontier, then
+         * flush audio and re-prime exactly like first start - landing near the
+         * live edge. Opt-in, network-only; the trigger sits far above the ~1 s
+         * lag ordinary boundary stalls produce, so it never fires in normal
+         * playback. have_deadline guarantees both clocks are valid here. */
+        if (live_resync && network_source && audio && have_deadline &&
+            mono_media_clock_us >
+                audio_media_clock_us + (uint64_t)LIVE_RESYNC_BEHIND_US) {
+            uint64_t behind = mono_media_clock_us - audio_media_clock_us;
+            uint64_t want = behind > LIVE_RESYNC_TARGET_US
+                          ? behind - LIVE_RESYNC_TARGET_US : behind;
+            uint64_t cu_start = monotonic_us();
+            uint64_t base_pts = 0;
+            int have_base = 0;
+            if (want_time)
+                printf("live-resync: %lu ms behind live, catching up\n",
+                       (unsigned long)(behind / 1000));
+            audio_set_running(audio, 0);
+            qcount = 0; qhead = 0;               /* stale pictures, far behind */
+            mr_h264_set_skip_output(&dec, 1);    /* reference-only: fast/no RGB */
+            for (;;) {
+                uint64_t r0, rdt;
+                mr_status ns;
+                if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
+                r0 = monotonic_us();
+                ns = mr_demux_next_packet(dx, &pkt);
+                rdt = monotonic_us() - r0;
+                if (ns != MR_OK) { input_eof = 1; break; }
+                if (rdt > LIVE_RESYNC_EDGE_US) break;   /* reached the frontier */
+                if (pkt.is_video && pkt.len)
+                    mr_decoder_decode(&dec, pkt.data, pkt.len);
+                /* audio packets are discarded: the FIFO is flushed below */
+                if (pkt.has_pts) {
+                    if (!have_base) { base_pts = pkt.pts_us; have_base = 1; }
+                    else if (pkt.pts_us > base_pts &&
+                             pkt.pts_us - base_pts >= want) break;
+                }
+                if (monotonic_us() - cu_start > LIVE_RESYNC_MAX_US) break;
+                service_audio_for_display(&trace);
+            }
+            mr_h264_set_skip_output(&dec, 0);
+            audio_flush(audio);
+            /* Re-prime from the new position; the startup path below refills the
+             * queue and audio cushion and restarts playback near the edge. */
+            playback_started = 0;
+            decoded_index = 0; mono_base_us = 0;
+            have_container_pts = 0; last_container_pts_us = 0;
+            container_pts_adjust_us = 0;
+            media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
+            stats.timing_rebases++;
+            continue;
         }
 
         if (!rescue_active && have_deadline &&
