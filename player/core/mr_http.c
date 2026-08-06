@@ -103,6 +103,13 @@ struct Library *AmiSSLExtBase = NULL;
 static SSL_CTX *g_ssl_ctx = NULL;
 static int      g_tls_inited = 0;
 static int      g_tls_poisoned = 0;
+/* Cached TLS session from the last successful handshake. Reusing it for the
+ * next connection to the same host lets the server grant an abbreviated
+ * handshake (no fresh key exchange), which is the bulk of the per-segment TLS
+ * cost on 68k. Reuse is best-effort: a server that declines simply does a full
+ * handshake, so this only ever speeds things up. */
+static SSL_SESSION *g_tls_session = NULL;
+static char         g_tls_session_host[HTTP_HOST_MAX];
 #endif
 
 typedef struct {
@@ -358,6 +365,7 @@ static void http_platform_shutdown(void)
 {
 #if MR_HTTP_HAVE_TLS
     if (g_tls_poisoned) return;
+    if (g_tls_session) { SSL_SESSION_free(g_tls_session); g_tls_session = NULL; }
     if (g_tls_inited) {
         if (g_ssl_ctx) { SSL_CTX_free(g_ssl_ctx); g_ssl_ctx = NULL; }
 #if MR_HTTP_AMIGA
@@ -468,6 +476,7 @@ static int tls_open(http_source *h)
 #ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
     SSL_CTX_set_options(g_ssl_ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
 #endif
+    SSL_CTX_set_session_cache_mode(g_ssl_ctx, SSL_SESS_CACHE_CLIENT);
     g_tls_inited = 1;
     h->ssl_ctx = g_ssl_ctx;
     h->tls_ready = 1;
@@ -604,6 +613,10 @@ static int connect_socket(http_source *h, const http_url *url)
             if (param) X509_VERIFY_PARAM_set1_host(param, url->host, 0);
         }
 #endif
+        /* Offer the previous session for this host so the server can resume it
+         * with an abbreviated handshake. */
+        if (g_tls_session && !strcmp(g_tls_session_host, url->host))
+            SSL_set_session(h->ssl, g_tls_session);
         if (SSL_set_fd(h->ssl, h->sock) != 1 ||
             SSL_connect(h->ssl) != 1) {
             mr_source_set_error("HTTPS TLS handshake failed");
@@ -611,6 +624,17 @@ static int connect_socket(http_source *h, const http_url *url)
             return 0;
         }
         h->using_tls = 1;
+        /* Remember this handshake's session for the next same-host connection. */
+        {
+            SSL_SESSION *sess = SSL_get1_session(h->ssl);
+            if (sess) {
+                if (g_tls_session) SSL_SESSION_free(g_tls_session);
+                g_tls_session = sess;
+                strncpy(g_tls_session_host, url->host,
+                        sizeof g_tls_session_host - 1);
+                g_tls_session_host[sizeof g_tls_session_host - 1] = 0;
+            }
+        }
 #else
         mr_source_set_error(
             "HTTPS support was not compiled in; rebuild with SSL=1");
