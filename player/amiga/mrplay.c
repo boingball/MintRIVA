@@ -63,6 +63,11 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS 20UL
 #define AUDIO_RESCUE_ONE_REQUEST_MS 100UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
+/* Sustained audio cushion the scheduler keeps topped up even when the video
+ * queue is full, so a long segment-boundary stall does not drain the FIFO into
+ * a state it can never climb back out of. Matches the buffer healthy playback
+ * naturally reaches (~0.6-0.8 s in on-hardware logs). */
+#define AUDIO_CUSHION_TARGET_MS 800UL
 #define AUDIO_RESCUE_MAX_PACKETS 16U
 #define AUDIO_RESCUE_MAX_US 100000ULL
 
@@ -1459,13 +1464,21 @@ int main(int argc, char **argv)
          * its deadline. */
         {
             int refill_audio = audio && audio_ms < AUDIO_REFILL_WARNING_MS;
+            /* With the video queue already full the loop would otherwise sleep,
+             * which stops the audio FIFO being refilled - after a long stall the
+             * cushion then never rebuilds and playback settles into a degraded
+             * state. Keep demuxing to top the cushion back up; the extra video
+             * decoded meanwhile fills toward the queue cap and is only dropped
+             * (reference-only) once the cap is hit. */
+            int feed_audio_full = audio && qcount >= target_depth &&
+                                  audio_ms < AUDIO_CUSHION_TARGET_MS;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
                              (rescue_active || startup_refill ||
-                              qcount < target_depth);
+                              qcount < target_depth || feed_audio_full);
             if (can_decode && playback_started && qcount) {
                 uint64_t margin = stats.video_decode_max_us +
                                   PRESENTATION_GUARD_US + 2000ULL;
-                if (!refill_audio &&
+                if (!refill_audio && !feed_audio_full &&
                     ((network_source && target_depth <= 1) ||
                      late_us > -(int64_t)margin))
                     can_decode = 0;
@@ -1509,11 +1522,11 @@ int main(int argc, char **argv)
                     mr_status decode_status;
                     uint64_t decode_end;
                     trace_phase(&trace, "h264-decode");
-                    /* Rescue frames are candidates for replacing stale video,
-                     * so retain decoder RGB output.  Reference-only decoding
-                     * remains available for startup packets which cannot fit. */
-                    mr_h264_set_skip_output(&dec,
-                        startup_refill && qcount >= VIDEO_QUEUE_CAP);
+                    /* A frame decoded into a full queue is dropped (newest-out),
+                     * so decode it reference-only: keep the reference chain
+                     * intact without spending time producing RGB we discard.
+                     * This is what makes the audio-cushion top-up above cheap. */
+                    mr_h264_set_skip_output(&dec, qcount >= VIDEO_QUEUE_CAP);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
