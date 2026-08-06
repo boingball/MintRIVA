@@ -802,6 +802,7 @@ int main(int argc, char **argv)
     int raw_diag_printed = 0;
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
+    int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -846,7 +847,7 @@ int main(int argc, char **argv)
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
-               "[--cd32] [--hls-low] [--time]\n");
+               "[--cd32] [--hls-low] [--net-queue=N] [--time]\n");
         return 5;
     }
     {   /* display options anywhere on the command line */
@@ -884,6 +885,8 @@ int main(int argc, char **argv)
                 hls_max_height = (unsigned)strtoul(argv[i] + 17, NULL, 10);
             else if (!strncmp(argv[i], "--hls-max-fps=", 14))
                 hls_max_fps = (unsigned)strtoul(argv[i] + 14, NULL, 10);
+            else if (!strncmp(argv[i], "--net-queue=", 12))
+                net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -1072,7 +1075,15 @@ int main(int argc, char **argv)
         int playback_started = 0;
         int network_source = mr_source_is_url(media_path);
         int startup_depth = network_source ? 1 : 2;
-        int target_depth = network_source ? 1 : 3;
+        /* Network sources default to a single decoded frame (see the comment on
+         * the decode gate below). --net-queue=N opts into a small read-ahead
+         * cushion that lets cheap frames be decoded ahead of an expensive one
+         * (e.g. a GOP-boundary I-frame), smoothing per-frame decode jitter.
+         * Clamped to the queue capacity; startup latency is unchanged because
+         * startup_depth still gates when playback begins. */
+        int net_target = net_queue > 0
+            ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
+        int target_depth = network_source ? net_target : 3;
         int prev_master_source = -1;
 
     while (!quit && (!input_eof || qcount || loop)) {
@@ -1429,9 +1440,13 @@ int main(int argc, char **argv)
             continue;
         }
 
-        /* At most one packet per scheduler iteration. URL sources deliberately
-         * use depth one: without an asynchronous reader, a blocking HLS fetch
-         * cannot be allowed to delay a frame already queued for presentation. */
+        /* At most one packet per scheduler iteration. URL sources default to
+         * depth one: without an asynchronous reader, a blocking HLS fetch
+         * cannot be allowed to delay a frame already queued for presentation.
+         * When --net-queue raises the network depth, read-ahead is instead
+         * governed by the same lateness margin the disk path uses, so a frame
+         * is only decoded ahead while the queue front is comfortably far from
+         * its deadline. */
         {
             int refill_audio = audio && audio_ms < AUDIO_REFILL_WARNING_MS;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
@@ -1441,7 +1456,8 @@ int main(int argc, char **argv)
                 uint64_t margin = stats.video_decode_max_us +
                                   PRESENTATION_GUARD_US + 2000ULL;
                 if (!refill_audio &&
-                    (network_source || late_us > -(int64_t)margin))
+                    ((network_source && target_depth <= 1) ||
+                     late_us > -(int64_t)margin))
                     can_decode = 0;
             }
             if (can_decode) {
