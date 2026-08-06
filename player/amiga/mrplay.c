@@ -20,6 +20,7 @@
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
 #include "../audio/mr_audio_decode.h"
+#include "../iptv/mr_iptv.h"
 #include "amiga_display.h"
 #include "mr_audio.h"
 
@@ -28,6 +29,9 @@
 #include <proto/timer.h>
 #include <clib/alib_protos.h>
 #include <devices/timer.h>
+#include <exec/memory.h>
+#include <exec/nodes.h>
+#include <exec/ports.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +62,41 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 static struct MsgPort *timer_port;
 static struct timerequest *timer_request;
 struct Device *TimerBase;
+
+/* Control port: published on exec's public port list so the IPTV controller can
+ * discover this player and signal it (Ctrl-F clean stop, Ctrl-C forced stop)
+ * before launching another stream. We never receive messages through it, only
+ * signals aimed at mp_SigTask, so it is created PA_IGNORE. */
+static struct MsgPort *control_port;
+
+static void control_port_close(void)
+{
+    if (control_port) {
+        RemPort(control_port);
+        FreeMem(control_port, sizeof *control_port);
+        control_port = NULL;
+    }
+}
+
+static void control_port_open(void)
+{
+    struct MsgPort *port;
+    /* Only one player should ever be live. If a port already exists another
+     * player is still shutting down; skip rather than publish a duplicate. */
+    Forbid();
+    if (FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT)) { Permit(); return; }
+    Permit();
+    port = (struct MsgPort *)AllocMem(sizeof *port, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!port) return;
+    port->mp_Node.ln_Type = NT_MSGPORT;
+    port->mp_Node.ln_Name = (char *)MR_IPTV_PLAYER_PORT;
+    port->mp_Flags = PA_IGNORE;
+    port->mp_SigTask = FindTask(NULL);
+    NewList(&port->mp_MsgList);
+    AddPort(port);
+    control_port = port;
+    atexit(control_port_close);
+}
 
 static int playback_timer_open(void)
 {
@@ -797,6 +836,7 @@ int main(int argc, char **argv)
     /* Unbuffered so every diagnostic reaches the shell immediately, even if a
      * later step hangs or crashes (libnix stdout can otherwise block-buffer). */
     setvbuf(stdout, NULL, _IONBF, 0);
+    control_port_open();
     if (!playback_timer_open())
         printf("warning: timer.device unavailable; pacing timer is coarse\n");
 
