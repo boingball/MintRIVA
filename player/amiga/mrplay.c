@@ -1575,16 +1575,24 @@ int main(int argc, char **argv)
                                 decoded_index++;
                                 continue;
                             }
-                            if (rescue_active && qcount == VIDEO_QUEUE_CAP) {
-                                /* Discard the oldest presentation copy, never
-                                 * decoder-owned storage, then append the new
-                                 * frame at the logical tail.  Queue PTS order
-                                 * is preserved for normal deadline selection. */
-                                qhead = (qhead + 1) % VIDEO_QUEUE_CAP;
-                                qcount--;
-                                rescue_episode_replaced++;
-                                stats.rescue_video_replaced++;
+                            if (qcount == VIDEO_QUEUE_CAP) {
+                                /* Queue full. Every queued frame is closer to
+                                 * its deadline than this freshly decoded one,
+                                 * which sits furthest in the future, so keep
+                                 * them and drop the newcomer. Evicting the
+                                 * oldest instead (the previous behaviour) left
+                                 * the queue front permanently ahead of the
+                                 * audio clock, so presentation stalled and
+                                 * never recovered after a long stall. The
+                                 * packet was still consumed, so audio rescue
+                                 * makes progress regardless. */
+                                if (rescue_active) {
+                                    rescue_episode_skipped++;
+                                    stats.rescue_video_skipped++;
+                                }
                                 stats.dropped++;
+                                decoded_index++;
+                                continue;
                             }
                             queued_video *tail =
                                 &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
