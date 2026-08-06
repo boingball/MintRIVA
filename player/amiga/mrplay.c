@@ -77,6 +77,7 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define LIVE_RESYNC_MAX_US    3000000ULL  /* hard cap on one catch-up burst     */
 #define LIVE_RESYNC_EDGE_US   2000000ULL  /* a read slower than any normal fetch
                                            * means we have caught the frontier   */
+#define LIVE_RECONNECT_TRIES  30          /* reopen attempts before giving up    */
 #define AUDIO_RESCUE_MAX_PACKETS 16U
 #define AUDIO_RESCUE_MAX_US 100000ULL
 
@@ -824,7 +825,8 @@ int main(int argc, char **argv)
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
-    int live_resync = 0;  /* --live-resync: catch up to live after a big stall */
+    int live_resync = 0;  /* --live-resync: catch up after a big stall, and
+                           * reconnect a live stream that drops out            */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -1520,6 +1522,53 @@ int main(int argc, char **argv)
                 media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
             else
                 memset(&mc, 0, sizeof mc);
+            continue;
+        }
+
+        /* A live network stream lost its source: a dropout exhausted the HLS
+         * retry budget or the connection dropped, and mr_demux_next_packet
+         * reported end of stream. Rather than ending playback, reopen the URL -
+         * which resolves to the current live edge - and resume. Bounded, and a
+         * mismatched restream stops cleanly. Gated with --live-resync; the
+         * default still ends on EOF. */
+        if (input_eof && !qcount && !loop && network_source && live_resync) {
+            int tries;
+            const mr_video_info *nvi;
+            if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
+            mr_demux_close(dx);
+            dx = NULL;
+            for (tries = 0; tries < LIVE_RECONNECT_TRIES && !quit; tries++) {
+                int d;
+                if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
+                if (want_time)
+                    printf("live-reconnect: attempt %d/%d\n",
+                           tries + 1, LIVE_RECONNECT_TRIES);
+                dx = mr_demux_open_file_ex(media_path,
+                        have_http_options ? &http_options : NULL);
+                if (dx) break;
+                for (d = 0; d < 25 && !quit; d++) {   /* ~0.5 s, stay responsive */
+                    if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
+                    if (audio) audio_service(audio);
+                    Delay(2);
+                }
+            }
+            if (quit) break;
+            if (!dx) break;                     /* gave up: end playback */
+            nvi = mr_demux_video(dx);
+            if (!nvi || !nvi->valid || nvi->width != vi->width ||
+                nvi->height != vi->height)
+                break;                          /* different shape: stop cleanly */
+            vi = nvi;
+            if (mr_decoder_reset(&dec) != MR_OK) break;
+            if (audio_dec) mr_audio_decoder_reset(audio_dec);
+            input_eof = 0; decoded_index = 0; mono_base_us = 0;
+            have_container_pts = 0; last_container_pts_us = 0;
+            container_pts_adjust_us = 0;
+            playback_started = 0;
+            qcount = 0; qhead = 0;
+            if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
+            else memset(&mc, 0, sizeof mc);
+            stats.timing_rebases++;
             continue;
         }
 
