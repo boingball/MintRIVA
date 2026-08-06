@@ -47,7 +47,14 @@
  */
 static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 
-#define VIDEO_QUEUE_CAP 4
+/* Queue-slot ceiling. Defaults keep only 1 (network) or 3 (disk) frames, so
+ * this costs nothing unless --net-queue requests a deeper buffer: RGB slots are
+ * allocated lazily per used entry. A deep network buffer lets decoded frames
+ * wait and present in PTS order as they fall due (rather than the shallow queue
+ * dropping the nearly-due frame when video runs ahead of the audio clock), and
+ * carries enough video to ride across a segment-boundary refetch. ~1.3 s at
+ * 25 fps. */
+#define VIDEO_QUEUE_CAP 32
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
@@ -1076,11 +1083,14 @@ int main(int argc, char **argv)
         int network_source = mr_source_is_url(media_path);
         int startup_depth = network_source ? 1 : 2;
         /* Network sources default to a single decoded frame (see the comment on
-         * the decode gate below). --net-queue=N opts into a small read-ahead
-         * cushion that lets cheap frames be decoded ahead of an expensive one
-         * (e.g. a GOP-boundary I-frame), smoothing per-frame decode jitter.
-         * Clamped to the queue capacity; startup latency is unchanged because
-         * startup_depth still gates when playback begins. */
+         * the decode gate below). --net-queue=N opts into a read-ahead cushion.
+         * A few frames smooth per-frame decode jitter (e.g. a GOP-boundary
+         * I-frame); a deep buffer (tens of frames) additionally lets video sit
+         * ahead of the audio clock and present in PTS order as frames fall due,
+         * keeps the loop demuxing so the audio FIFO stays fed, and carries the
+         * picture across a segment-boundary refetch. Clamped to VIDEO_QUEUE_CAP;
+         * startup latency is unchanged because startup_depth still gates when
+         * playback begins. */
         int net_target = net_queue > 0
             ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
         int target_depth = network_source ? net_target : 3;
