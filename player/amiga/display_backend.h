@@ -18,6 +18,9 @@ typedef struct {
     int   (*timing)(void *handle, mr_display_timing *timing);
     int   (*poll)(void *handle);
     void  (*close)(void *handle);
+    /* Optional: show a short status string (NULL/empty restores the normal
+     * title). Backends may leave this NULL. */
+    void  (*status)(void *handle, const char *text);
 } display_backend;
 
 extern const display_backend backend_cgx;

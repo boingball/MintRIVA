@@ -77,7 +77,9 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define LIVE_RESYNC_MAX_US    3000000ULL  /* hard cap on one catch-up burst     */
 #define LIVE_RESYNC_EDGE_US   2000000ULL  /* a read slower than any normal fetch
                                            * means we have caught the frontier   */
-#define LIVE_RECONNECT_TRIES  30          /* reopen attempts before giving up    */
+#define LIVE_RECONNECT_TRIES  200         /* reopen attempts before giving up;
+                                           * with backoff this is ~15 min, enough
+                                           * to ride out a flaky mobile link      */
 #define LIVE_RECONNECT_STALL_LIMIT 3      /* consecutive reopens with no playback
                                            * before giving up (avoids a spin)     */
 #define AUDIO_RESCUE_MAX_PACKETS 16U
@@ -1306,6 +1308,7 @@ int main(int argc, char **argv)
                 printf("live-resync: %lu ms behind live, catching up\n",
                        (unsigned long)(behind / 1000));
             audio_set_running(audio, 0);
+            display_set_status(disp, "Buffering...");
             qcount = 0; qhead = 0;               /* stale pictures, far behind */
             mr_h264_set_skip_output(&dec, 1);    /* reference-only: fast/no RGB */
             for (;;) {
@@ -1540,7 +1543,7 @@ int main(int argc, char **argv)
          * mismatched restream stops cleanly. Gated with --live-resync; the
          * default still ends on EOF. */
         if (input_eof && !qcount && !loop && network_source && live_resync) {
-            int tries;
+            int tries, backoff = 12;                 /* ~0.5 s, grows to ~4 s   */
             const mr_video_info *nvi;
             /* Give up if we keep reopening but never actually play: a stream that
              * reconnects and immediately ends again would otherwise spin on the
@@ -1553,6 +1556,7 @@ int main(int argc, char **argv)
                 break;
             }
             if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
+            display_set_status(disp, "Reconnecting...");
             mr_demux_close(dx);
             dx = NULL;
             for (tries = 0; tries < LIVE_RECONNECT_TRIES && !quit; tries++) {
@@ -1564,11 +1568,14 @@ int main(int argc, char **argv)
                 dx = mr_demux_open_file_ex(media_path,
                         have_http_options ? &http_options : NULL);
                 if (dx) break;
-                for (d = 0; d < 25 && !quit; d++) {   /* ~0.5 s, stay responsive */
+                /* Back off between attempts so a sustained outage is not hammered
+                 * every half second; stay responsive to ESC throughout. */
+                for (d = 0; d < backoff && !quit; d++) {
                     if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
                     if (audio) audio_service(audio);
                     Delay(2);
                 }
+                backoff = backoff < 100 ? backoff * 2 : 100;   /* cap ~4 s */
             }
             if (quit) break;
             if (!dx) break;                     /* gave up: end playback */
@@ -1782,6 +1789,7 @@ int main(int argc, char **argv)
                             service_audio_for_display(&trace);
                             audio_set_running(audio, 1);
                         }
+                        display_set_status(disp, NULL);  /* clear Buffering... */
                     }
                 }
                 continue;
