@@ -1062,7 +1062,7 @@ int main(int argc, char **argv)
      * before the demuxer opens so the very first playlist/segment go through it.
      * If it fails to come up we simply fall back to synchronous fetching. */
     if (hls_prefetch && mr_source_is_hls(media_path)) {
-        prefetch_on = hls_prefetch_start();
+        prefetch_on = hls_prefetch_start(want_time);
         printf("hls prefetch: %s\n", prefetch_on ? "on" : "unavailable");
     }
 

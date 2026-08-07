@@ -39,10 +39,13 @@
 #include <dos/dostags.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <stdio.h>
 #include <string.h>
 
 #define PF_URL_MAX 1300           /* >= the longest HLS URL we resolve        */
 #define PF_STACK   300000UL       /* HTTPS/AmiSSL needs a deep stack           */
+#define PF_SEGMENT_MAX (24UL * 1024 * 1024) /* refuse absurd segment lengths   */
+#define PF_MEM_FLOOR   (12UL * 1024 * 1024) /* keep this much fast RAM spare    */
 
 /* main <-> worker request (reused; one in flight at a time) */
 typedef struct {
@@ -70,6 +73,7 @@ static void           *pf_ready_buf;
 static size_t          pf_ready_len;
 static int             pf_ready_ok;
 static int             pf_active;
+static int             pf_verbose;      /* log segment sizes / free RAM         */
 
 /* ---- memory-backed source over a downloaded segment (main task) --------- */
 
@@ -123,6 +127,15 @@ static int pf_download(const char *url, const mr_http_options *opts,
     if (!s) return 0;
     len = mr_source_length(s);
     if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
+    /* Refuse a segment that is implausibly large (a mis-parsed length or a live
+     * endpoint that never ends), and never eat the last of fast RAM - either
+     * would lock the machine. A refused prefetch just means no lookahead; a
+     * refused priority open makes mr_hls treat the segment as unavailable. */
+    if (len > PF_SEGMENT_MAX ||
+        AvailMem(MEMF_ANY) < (ULONG)len + PF_MEM_FLOOR) {
+        mr_source_close(s);
+        return 0;
+    }
     buf = (unsigned char *)AllocVec(len, MEMF_ANY);
     if (!buf) { mr_source_close(s); return 0; }
     if (!mr_source_read_at(s, 0, buf, len)) {
@@ -186,6 +199,11 @@ static void pf_reclaim(void)
         pf_ready_buf = pf_req.buf;
         pf_ready_len = pf_req.len;
         pf_ready_ok  = pf_req.ok;
+        if (pf_verbose)
+            printf("prefetch: seg %s %lu KB, fast RAM %lu KB free\n",
+                   pf_ready_ok ? "ready" : "failed",
+                   (unsigned long)(pf_ready_len / 1024),
+                   (unsigned long)(AvailMem(MEMF_FAST) / 1024));
     }
 }
 
@@ -268,9 +286,10 @@ static void pf_backend_prefetch(const char *url, const mr_http_options *opts)
 
 /* ---- lifecycle (main task) ---------------------------------------------- */
 
-int hls_prefetch_start(void)
+int hls_prefetch_start(int verbose)
 {
     if (pf_active) return 1;
+    pf_verbose = verbose;
     pf_reply_port = CreateMsgPort();
     if (!pf_reply_port) return 0;
     pf_ready_msg.mn_Node.ln_Type = NT_MESSAGE;

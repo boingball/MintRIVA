@@ -15,7 +15,7 @@
 #ifndef HLS_PREFETCH_H
 #define HLS_PREFETCH_H
 
-int  hls_prefetch_start(void);
+int  hls_prefetch_start(int verbose);
 void hls_prefetch_stop(void);
 
 #endif /* HLS_PREFETCH_H */
