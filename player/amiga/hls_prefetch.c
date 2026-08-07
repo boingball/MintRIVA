@@ -219,6 +219,14 @@ static int pf_quit_requested(void)
     return pf_quit_probe ? pf_quit_probe(pf_quit_probe_opaque) : 1;
 }
 
+static void pf_clear_ready(void)
+{
+    if (!pf_ready) return;
+    if (pf_ready_buf) FreeVec(pf_ready_buf);
+    pf_ready_buf = NULL;
+    pf_ready = 0;
+}
+
 /* Wait for the in-flight reply; return 0 if interrupted by quit. */
 static int pf_wait_busy(int break_on_quit)
 {
@@ -228,7 +236,6 @@ static int pf_wait_busy(int break_on_quit)
     if (!pf_busy) return 1;
     reply_mask = 1UL << pf_reply_port->mp_SigBit;
     wait_mask = reply_mask | pf_interrupt_mask;
-    if (!wait_mask) wait_mask = reply_mask;
     for (;;) {
         sig = Wait(wait_mask);
         if (sig & reply_mask) pf_reclaim();
@@ -244,11 +251,7 @@ static int pf_discard_pending(void)
 {
     pf_reclaim();
     if (pf_busy && !pf_wait_busy(1)) return 0;
-    if (pf_ready) {
-        if (pf_ready_buf) FreeVec(pf_ready_buf);
-        pf_ready_buf = NULL;
-        pf_ready = 0;
-    }
+    pf_clear_ready();
     return 1;
 }
 
@@ -384,6 +387,7 @@ void hls_prefetch_stop(unsigned long interrupt_mask,
     mr_hls_set_backend(NULL, NULL);
     if (!pf_discard_pending()) pf_broken = 1;
     while (pf_busy) pf_wait_busy(0);           /* reclaim outstanding reply      */
+    pf_clear_ready();
     pf_req.quit = 1;
     pf_busy_url[0] = 0;
     pf_busy = 1;                                /* quit reply reclaimed below    */
@@ -394,11 +398,7 @@ void hls_prefetch_stop(unsigned long interrupt_mask,
     pf_busy = 0;
     pf_active = 0;
     pf_proc = NULL;                             /* worker tears itself down      */
-    if (pf_ready) {
-        if (pf_ready_buf) FreeVec(pf_ready_buf);
-        pf_ready_buf = NULL;
-        pf_ready = 0;
-    }
+    pf_clear_ready();
     DeleteMsgPort(pf_reply_port);
     pf_reply_port = NULL;
 }
