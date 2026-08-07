@@ -23,6 +23,7 @@
 #include "../iptv/mr_iptv.h"
 #include "amiga_display.h"
 #include "mr_audio.h"
+#include "mr_player_status.h"
 
 #include <proto/dos.h>
 #include <proto/exec.h>
@@ -92,36 +93,115 @@ struct Device *TimerBase;
 /* Control port: published on exec's public port list so the IPTV controller can
  * discover this player and signal it (Ctrl-F clean stop, Ctrl-C forced stop)
  * before launching another stream. We never receive messages through it, only
- * signals aimed at mp_SigTask, so it is created PA_IGNORE. */
-static struct MsgPort *control_port;
+ * signals aimed at mp_SigTask, so it is created PA_IGNORE. The port carries an
+ * embedded status block (see mr_player_status.h) so the controller can read
+ * back the codec that is playing, or why a stream refused to play. */
+static mr_player_control_port *control_block;
 
 static void control_port_close(void)
 {
-    if (control_port) {
-        RemPort(control_port);
-        FreeMem(control_port, sizeof *control_port);
-        control_port = NULL;
+    if (control_block) {
+        RemPort(&control_block->port);
+        FreeMem(control_block, sizeof *control_block);
+        control_block = NULL;
     }
 }
 
 static void control_port_open(void)
 {
-    struct MsgPort *port;
+    mr_player_control_port *block;
     /* Only one player should ever be live. If a port already exists another
      * player is still shutting down; skip rather than publish a duplicate. */
     Forbid();
     if (FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT)) { Permit(); return; }
     Permit();
-    port = (struct MsgPort *)AllocMem(sizeof *port, MEMF_PUBLIC | MEMF_CLEAR);
-    if (!port) return;
-    port->mp_Node.ln_Type = NT_MSGPORT;
-    port->mp_Node.ln_Name = (char *)MR_IPTV_PLAYER_PORT;
-    port->mp_Flags = PA_IGNORE;
-    port->mp_SigTask = FindTask(NULL);
-    NewList(&port->mp_MsgList);
-    AddPort(port);
-    control_port = port;
+    block = (mr_player_control_port *)AllocMem(sizeof *block,
+                                               MEMF_PUBLIC | MEMF_CLEAR);
+    if (!block) return;
+    block->port.mp_Node.ln_Type = NT_MSGPORT;
+    block->port.mp_Node.ln_Name = (char *)MR_IPTV_PLAYER_PORT;
+    block->port.mp_Flags = PA_IGNORE;
+    block->port.mp_SigTask = FindTask(NULL);
+    NewList(&block->port.mp_MsgList);
+    block->status.state = MR_PLAYER_STATE_STARTING;
+    block->status.magic = MR_PLAYER_STATUS_MAGIC;
+    AddPort(&block->port);
+    control_block = block;
     atexit(control_port_close);
+}
+
+/* Publish a status update for the IPTV controller (no-op if the port was not
+ * created). Thin wrapper so call sites read cleanly. */
+static void player_status(LONG state, const char *codec, const char *text)
+{
+    mr_player_status_set(control_block, state, codec, text);
+}
+
+/* Turn a video fourcc into its four printable characters (non-printables shown
+ * as '?'), for status messages about codecs we cannot decode. */
+static void fourcc_to_tag(uint32_t fourcc, char tag[5])
+{
+    int i;
+    tag[0] = (char)(fourcc & 255);
+    tag[1] = (char)((fourcc >> 8) & 255);
+    tag[2] = (char)((fourcc >> 16) & 255);
+    tag[3] = (char)((fourcc >> 24) & 255);
+    tag[4] = 0;
+    for (i = 0; i < 4; i++)
+        if (tag[i] < 32 || tag[i] > 126) tag[i] = '?';
+}
+
+/* Friendly name for a video codec we have no decoder for, so the IPTV status
+ * line names the missing codec (and we know what to port next). NULL when the
+ * fourcc is not one of the common streaming codecs. */
+static const char *unsupported_codec_name(uint32_t fourcc)
+{
+    char tag[5];
+    int i;
+    fourcc_to_tag(fourcc, tag);
+    for (i = 0; i < 4; i++)
+        if (tag[i] >= 'a' && tag[i] <= 'z') tag[i] = (char)(tag[i] - 32);
+    if (!strcmp(tag, "H264") || !strcmp(tag, "AVC1") || !strcmp(tag, "X264") ||
+        !strcmp(tag, "DAVC")) return "H.264/AVC";
+    if (!strcmp(tag, "HEVC") || !strcmp(tag, "HVC1") || !strcmp(tag, "HEV1") ||
+        !strcmp(tag, "H265") || !strcmp(tag, "DHEV")) return "H.265/HEVC";
+    if (!strcmp(tag, "AV01")) return "AV1";
+    if (!strcmp(tag, "VP80")) return "VP8";
+    if (!strcmp(tag, "VP90")) return "VP9";
+    if (!strcmp(tag, "VP60") || !strcmp(tag, "VP61") || !strcmp(tag, "VP62"))
+        return "VP6";
+    if (!strcmp(tag, "WMV1") || !strcmp(tag, "WMV2")) return "Windows Media Video";
+    if (!strcmp(tag, "WMV3")) return "Windows Media Video 9";
+    if (!strcmp(tag, "VC1") || !strcmp(tag, "WVC1")) return "VC-1";
+    if (!strcmp(tag, "THEO")) return "Theora";
+    if (!strcmp(tag, "FLV1")) return "Sorenson Spark";
+    if (!strcmp(tag, "SVQ1") || !strcmp(tag, "SVQ3")) return "Sorenson Video";
+    return NULL;
+}
+
+/* Build the "reason" line for a video codec we cannot decode. */
+static void describe_unsupported_video(uint32_t fourcc, char *buf, size_t n)
+{
+    const char *name = unsupported_codec_name(fourcc);
+    char tag[5];
+    fourcc_to_tag(fourcc, tag);
+    if (name)
+        snprintf(buf, n, "%s video (fourcc '%s') has no decoder", name, tag);
+    else
+        snprintf(buf, n, "video codec '%s' has no decoder", tag);
+}
+
+/* Keep a failure status readable by the IPTV controller for a moment before we
+ * exit, but bail out promptly if the controller asks us to stop. The controller
+ * polls a few times a second, so a short hold is enough to be seen. */
+static void status_hold(void)
+{
+    int i;
+    for (i = 0; i < 20; i++) { /* up to ~2 s at 1/10 s ticks */
+        if (SetSignal(0, 0) & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F))
+            break;
+        Delay(5);
+    }
 }
 
 static int playback_timer_open(void)
@@ -696,13 +776,24 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     unsigned       fps_millihz;
 
     mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len);
-    if (!mp) { printf("cannot open MPEG-1 stream\n"); return 10; }
+    if (!mp) { printf("cannot open MPEG-1 stream\n");
+               player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
+                             "cannot open MPEG-1 stream");
+               status_hold(); return 10; }
     abuf = (unsigned char *)malloc(1152 * 4);    /* max: 1152 frames stereo16 */
     if (!abuf) { mr_mpeg1_close(mp); return 10; }
     w = mr_mpeg1_width(mp); h = mr_mpeg1_height(mp);
     printf("mpeg1: %dx%d, opening display...\n", w, h);
+    {
+        char line[MR_PLAYER_STATUS_TEXT_MAX];
+        snprintf(line, sizeof line, "%dx%d, MPEG-1", w, h);
+        player_status(MR_PLAYER_STATE_PLAYING, "MPEG-1", line);
+    }
     disp = display_open(w, h, "MintRIVA");
-    if (!disp) { printf("cannot open a display\n"); mr_mpeg1_close(mp); return 10; }
+    if (!disp) { printf("cannot open a display\n");
+                 player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
+                               "cannot open a display");
+                 status_hold(); mr_mpeg1_close(mp); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
 
     sr = mr_mpeg1_samplerate(mp);
@@ -803,6 +894,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             Delay(2);
         }
     }
+    player_status(MR_PLAYER_STATE_ENDED, "MPEG-1", "stream ended");
     if (audio) audio_close(audio);
     display_close(disp);
     mr_mpeg1_close(mp);
@@ -943,6 +1035,7 @@ int main(int argc, char **argv)
                    hls_max_width, hls_max_height, hls_max_fps);
     }
     printf("mrplay: opening %s\n", media_path);
+    player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
 
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
@@ -952,13 +1045,22 @@ int main(int argc, char **argv)
                !strncmp(media_path, "https://", 8) ? "network" : "disk");
     } else {
         if (mr_demux_is_file_backed_container(media_path)) {
-            printf("cannot open stream: %s\n", mr_demux_last_open_error());
+            char reason[MR_PLAYER_STATUS_TEXT_MAX];
+            const char *why = mr_demux_last_open_error();
+            printf("cannot open stream: %s\n", why);
+            snprintf(reason, sizeof reason, "cannot open stream: %s",
+                     why ? why : "connection failed");
+            player_status(MR_PLAYER_STATE_ERROR, "", reason);
+            status_hold();
             return 10;
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input
          * buffer because their current decoders parse directly from it. */
         buf = slurp(media_path, &len);
-        if (!buf) { printf("cannot read %s\n", media_path); return 10; }
+        if (!buf) { printf("cannot read %s\n", media_path);
+                    player_status(MR_PLAYER_STATE_ERROR, "",
+                                  "cannot read stream data");
+                    status_hold(); return 10; }
         printf("loaded %ld bytes\n", len);
 
         if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
@@ -970,6 +1072,10 @@ int main(int argc, char **argv)
         if (!dx) {
             printf("unsupported container (need AVI, MOV/MP4, MPEG-TS/PS, "
                    "raw MJPEG/M4V or MPEG-1)\n");
+            player_status(MR_PLAYER_STATE_UNSUPPORTED, "",
+                          "unsupported container (not AVI/MOV/MP4/TS/PS/"
+                          "MJPEG/M4V/MPEG-1)");
+            status_hold();
             free(buf);
             return 10;
         }
@@ -977,7 +1083,11 @@ int main(int argc, char **argv)
 
     vi = mr_demux_video(dx);
     codec = mr_codec_find(vi->fourcc);
-    if (!codec) { printf("no decoder for this video codec\n");
+    if (!codec) { char reason[MR_PLAYER_STATUS_TEXT_MAX];
+                  printf("no decoder for this video codec\n");
+                  describe_unsupported_video(vi->fourcc, reason, sizeof reason);
+                  player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
+                  status_hold();
                   mr_demux_close(dx); free(buf); return 10; }
 
     if (want_time)
@@ -988,7 +1098,12 @@ int main(int argc, char **argv)
 
     if (mr_decoder_open_config(&dec, codec, vi->width, vi->height,
                                vi->config, vi->config_len) != MR_OK) {
+        char reason[MR_PLAYER_STATUS_TEXT_MAX];
         printf("decoder init failed\n");
+        snprintf(reason, sizeof reason, "%s decoder failed to initialise",
+                 codec->name);
+        player_status(MR_PLAYER_STATE_ERROR, codec->name, reason);
+        status_hold();
         mr_demux_close(dx); free(buf); return 10;
     }
 
@@ -1001,8 +1116,18 @@ int main(int argc, char **argv)
            (unsigned long)(((vi->rate % (vi->scale ? vi->scale : 1)) * 1000) /
                            (vi->scale ? vi->scale : 1)));
     printf("%dx%d, opening display...\n", vi->width, vi->height);
+    /* Tell the IPTV controller which codec is on screen. */
+    {
+        char line[MR_PLAYER_STATUS_TEXT_MAX];
+        snprintf(line, sizeof line, "%dx%d, %s", vi->width, vi->height,
+                 mr_demux_container_name(dx));
+        player_status(MR_PLAYER_STATE_PLAYING, codec->name, line);
+    }
     disp = display_open(vi->width, vi->height, "MintRIVA");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
+                 player_status(MR_PLAYER_STATE_ERROR, codec->name,
+                               "cannot open a display (RTG or AGA)");
+                 status_hold();
                  mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
 
@@ -1900,6 +2025,7 @@ int main(int argc, char **argv)
         }
     }
 
+    player_status(MR_PLAYER_STATE_ENDED, codec->name, "stream ended");
     { int qi; for (qi = 0; qi < VIDEO_QUEUE_CAP; qi++) free(vq[qi].rgb); }
     if (audio_dec) mr_audio_decoder_close(audio_dec);
     if (audio) audio_close(audio);
