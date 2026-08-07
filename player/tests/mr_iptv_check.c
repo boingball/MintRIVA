@@ -276,8 +276,7 @@ int main(void) {
     mr_play_options_default(&options);
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(strstr(args, "--aga --wpa --hls-max-width=1280 --hls-max-height=720"));
-    assert(!strstr(args, "--hls-low"));
+    assert(strstr(args, "--aga --wpa --hls-low --hls-max-width=640"));
     assert(strstr(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.c2p = MR_C2P_KALMS;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
@@ -329,7 +328,7 @@ int main(void) {
                                       launch.user_agent, NULL));
     assert(mr_build_iptv_arguments(args, sizeof(args), &options));
     assert(strstr(args, "--display aga --c2p standard --no-laced "
-                        "--no-scale-2x --hls-max-width=1280 --hls-max-height=720"));
+                        "--no-scale-2x --hls-low"));
     {
       char *inherited[] = {"iptvgui", "--display", "aga", "--c2p",
                            "kalms", "--laced", "--scale-2x", "--hls-low",

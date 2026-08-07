@@ -10,12 +10,14 @@ void mr_play_options_default(mr_play_options *o)
     memset(o, 0, sizeof(*o));
     o->display = MR_DISPLAY_AGA;
     o->c2p = MR_C2P_STANDARD;
-    /* Auto-pick the best HLS rendition up to 1280x720 by default: enough for a
-     * PiStorm-class machine to use its headroom, while still declining 1080p.
-     * --hls-low overrides this to force the smallest rendition on slow gear. */
-    o->hls_low = 0;
-    o->hls_max_width = 1280;
-    o->hls_max_height = 720;
+    /* Default to the smallest HLS rendition: it is the one most likely to play
+     * on any machine, and picking a bigger one automatically can break a channel
+     * that worked (a 720p variant may be a codec we can't decode, or just too
+     * heavy). Higher quality is opt-in via --hls-max-height / clearing --hls-low.
+     * The picker still selects the *best* variant within the ceiling once low is
+     * off, so a caller that raises the ceiling gets the best stream that fits. */
+    o->hls_low = 1;
+    o->hls_max_width = 640;
     /* On by default for GUI-launched playback (IPTV streams are always live);
      * a direct "mrplay <url>" invocation keeps its own conservative default of
      * off. Disable with --no-live-resync. */
