@@ -97,15 +97,9 @@ struct Library *AmiSSLExtBase = NULL;
  * every connection this process makes. AmiSSL in particular is costly to open,
  * initialise, clean up and close, and doing that per HLS segment was the bulk
  * of the stall at each segment boundary. They are released once by
- * http_platform_shutdown at process exit. g_tls_poisoned records that some
- * connection quarantined its SSL object after an unhealthy drop: the shared
- * AmiSSL state is then unsafe to reuse (opening a new connection on it can
- * hard-lock) or to tear down, so it blocks all further HTTPS this process and
- * makes the exit-time teardown leak rather than touch it. mr_http_tls_disabled
- * exposes it so the player stops retrying a reconnect that cannot succeed. */
+ * http_platform_shutdown at process exit. */
 static SSL_CTX *g_ssl_ctx = NULL;
 static int      g_tls_inited = 0;
-static int      g_tls_poisoned = 0;
 /* Cached TLS session from the last successful handshake. Reusing it for the
  * next connection to the same host lets the server grant an abbreviated
  * handshake (no fresh key exchange), which is the bulk of the per-segment TLS
@@ -130,7 +124,6 @@ typedef struct {
     int using_tls;
     int platform_ready;
     int tls_ready;
-    int tls_quarantined;
 #if MR_HTTP_HAVE_TLS
     SSL_CTX *ssl_ctx;
     SSL     *ssl;
@@ -362,12 +355,10 @@ int mr_http_resolve_url(const char *base_url, const char *rel,
 
 /* Release the process-wide platform/TLS state. Registered with atexit on the
  * first platform_open so the persistent library handles are closed exactly once
- * on a normal exit. A poisoned TLS stack is left for the OS to reclaim, matching
- * the quarantine philosophy in close_connection. */
+ * on a normal exit. */
 static void http_platform_shutdown(void)
 {
 #if MR_HTTP_HAVE_TLS
-    if (g_tls_poisoned) return;
     if (g_tls_session) { SSL_SESSION_free(g_tls_session); g_tls_session = NULL; }
     if (g_tls_inited) {
         if (g_ssl_ctx) { SSL_CTX_free(g_ssl_ctx); g_ssl_ctx = NULL; }
@@ -395,11 +386,7 @@ static void http_register_shutdown(void)
 
 int mr_http_tls_disabled(void)
 {
-#if MR_HTTP_HAVE_TLS
-    return g_tls_poisoned;
-#else
     return 0;
-#endif
 }
 
 static int platform_open(http_source *h)
@@ -424,17 +411,6 @@ static int tls_open(http_source *h)
 {
     const SSL_METHOD *method;
     if (h->tls_ready) return 1;
-    /* Once any connection has quarantined its SSL object after an unhealthy drop
-     * (see close_connection), the shared AmiSSL state is unsafe to touch again -
-     * reusing it to open a new connection can hard-lock inside amissl.library,
-     * and freeing it is unsafe too. So refuse further HTTPS for the life of the
-     * process; the player treats this as a clean end (and, for a live stream,
-     * declines to keep retrying a reconnect that can never succeed). */
-    if (g_tls_poisoned) {
-        mr_source_set_error(
-            "HTTPS disabled after a network error; relaunch to resume");
-        return 0;
-    }
     /* After the first HTTPS connection the library and context are already up:
      * adopt them and skip the whole AmiSSL open/init and context creation, which
      * is what removes the per-segment stall. */
@@ -451,6 +427,7 @@ static int tls_open(http_source *h)
         return 0;
     }
     if (OpenAmiSSLTags(AMISSL_CURRENT_VERSION,
+                       AmiSSL_InitAmiSSL, TRUE,
                        AmiSSL_UsesOpenSSLStructs, TRUE,
                        AmiSSL_GetAmiSSLBase, (ULONG)&AmiSSLBase,
                        AmiSSL_GetAmiSSLExtBase, (ULONG)&AmiSSLExtBase,
@@ -458,17 +435,6 @@ static int tls_open(http_source *h)
                        AmiSSL_ErrNoPtr, (ULONG)&errno,
                        TAG_DONE) != 0) {
         mr_source_set_error("cannot initialise AmiSSL");
-        CloseLibrary(AmiSSLMasterBase);
-        AmiSSLMasterBase = NULL;
-        return 0;
-    }
-    if (InitAmiSSL(AmiSSL_SocketBase, (ULONG)SocketBase,
-                   AmiSSL_ErrNoPtr, (ULONG)&errno,
-                   TAG_DONE) != 0) {
-        mr_source_set_error("cannot initialise AmiSSL");
-        CloseAmiSSL();
-        AmiSSLBase = NULL;
-        AmiSSLExtBase = NULL;
         CloseLibrary(AmiSSLMasterBase);
         AmiSSLMasterBase = NULL;
         return 0;
@@ -538,7 +504,6 @@ static void close_connection(http_source *h, int healthy)
              * some peer-drop/SYSCALL paths. Quarantine that one object and
              * let process exit reclaim it instead of risking a hard lock. */
             h->ssl = NULL;
-            h->tls_quarantined = 1;
         } else
 #endif
         {
@@ -604,14 +569,6 @@ static int connect_socket(http_source *h, const http_url *url)
     }
     if (url->tls) {
 #if MR_HTTP_HAVE_TLS
-#if MR_HTTP_AMIGA
-        if (h->tls_quarantined) {
-            mr_source_set_error(
-                "HTTPS connection failed; restart player before retrying");
-            close_socket_only(h);
-            return 0;
-        }
-#endif
         if (!tls_open(h)) {
             close_socket_only(h);
             return 0;
@@ -1433,12 +1390,8 @@ static void platform_close(http_source *h)
      * process (released once by http_platform_shutdown); this is what lets each
      * subsequent HLS segment reconnect without re-initialising AmiSSL and
      * rebuilding the TLS context, the dominant cost at every segment boundary. */
-    close_connection(h, !h->tls_quarantined);
+    close_connection(h, 1);
 #if MR_HTTP_HAVE_TLS
-    /* An unhealthy teardown quarantines the per-connection SSL object (see
-     * close_connection); after that the shared library state may be unsafe to
-     * touch, so stop reusing it and let process exit reclaim the leak. */
-    if (h->tls_quarantined) g_tls_poisoned = 1;
     h->ssl_ctx = NULL;          /* borrowed pointer to g_ssl_ctx; never freed here */
 #endif
     h->platform_ready = 0;
