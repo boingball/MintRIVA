@@ -24,6 +24,32 @@
 #include <string.h>
 #include <time.h>
 
+/* ---- pluggable network backend ----------------------------------------- *
+ * By default mr_hls opens every playlist and segment synchronously through
+ * mr_http_source_open_ex - the portable behaviour, unchanged. A platform may
+ * instead install a backend (mr_hls_set_backend) that routes all opens through
+ * a single background worker: the worker becomes the sole network user (so only
+ * one HTTP/S connection is ever live, as the socket/TLS layer requires) and can
+ * download segments into RAM ahead of playback, so the reader never blocks on
+ * the network. `prefetch` is an advisory hint to start fetching an upcoming
+ * segment; a NULL backend leaves both hooks unused. */
+static mr_hls_open_fn      g_backend_open;
+static mr_hls_prefetch_fn  g_backend_prefetch;
+
+void mr_hls_set_backend(mr_hls_open_fn open_fn, mr_hls_prefetch_fn prefetch_fn)
+{
+    g_backend_open = open_fn;
+    g_backend_prefetch = prefetch_fn;
+}
+
+/* Open a playlist (is_segment 0) or media segment (is_segment 1). */
+static mr_source *hls_open(const char *url, const mr_http_options *options,
+                           int is_segment)
+{
+    if (g_backend_open) return g_backend_open(url, options, is_segment);
+    return mr_http_source_open_ex(url, options);
+}
+
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
 #define HLS_URL_MAX      1024
 
@@ -69,7 +95,7 @@ int mr_source_is_hls(const char *url)
 static char *fetch_text(const char *url, const mr_http_options *options)
 {
     clock_t started = clock();
-    mr_source *s = mr_http_source_open_ex(url, options);
+    mr_source *s = hls_open(url, options, 0);
     size_t len;
     char *buf;
     if (!s) return NULL;
@@ -277,8 +303,7 @@ static int open_seg(hls_source *h, size_t i)
      * the second close tear the first's state down twice. Closing first also
      * keeps only one segment's read-ahead buffer resident at a time. */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
-    s = mr_http_source_open_ex(h->segs[i],
-                               h->have_options ? &h->options : NULL);
+    s = hls_open(h->segs[i], h->have_options ? &h->options : NULL, 1);
     if (!s) return 0;
     len = mr_source_length(s);
     if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
@@ -288,6 +313,11 @@ static int open_seg(hls_source *h, size_t i)
     if (i + 1 > h->discovered) h->discovered = i + 1;
     mr_source_timing_add_hls_segment((unsigned long)
         ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
+    /* Hint the backend to begin fetching the next segment while this one plays,
+     * so its download latency is hidden instead of stalling the reader. */
+    if (g_backend_prefetch && i + 1 < h->nsegs)
+        g_backend_prefetch(h->segs[i + 1],
+                           h->have_options ? &h->options : NULL);
     return 1;
 }
 
