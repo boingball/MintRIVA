@@ -20,6 +20,7 @@
 #include "mr_types.h"
 
 #include <stdlib.h>
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -41,6 +42,8 @@
  * bounds a genuinely stalled or dead stream. */
 #define HLS_LIVE_REFETCH_MAX 240
 #define HLS_ASYNC_SLOTS 2
+#define HLS_ASYNC_SLOT_MAX (4UL * 1024 * 1024)
+#define HLS_ASYNC_TOTAL_MAX (HLS_ASYNC_SLOTS * HLS_ASYNC_SLOT_MAX)
 
 typedef struct {
     size_t index;
@@ -69,7 +72,10 @@ typedef struct {
     struct Task *parent_task, *worker_task;
     BYTE ready_sig, stopped_sig, data_sig, wake_sig;
     volatile int worker_ready, stop_worker, worker_done, worker_failed;
+    volatile int worker_fallback;
     size_t worker_next;
+    size_t buffered_bytes;
+    unsigned payload_count;
     int async;
 #endif
 } hls_source;
@@ -368,6 +374,72 @@ static int hls_refetch_live(hls_source *h)
 }
 
 #ifdef AMIGA_M68K
+/* Async allocation audit:
+ *   shared hls_source: calloc(sizeof *h), opener owns it; mr_source owns it
+ *     after mr_source_create(); hls_close() frees it after worker termination.
+ *   process stack: NP_StackSize=32768, DOS owns it from CreateNewProcTags()
+ *     until the process exits (signalled by stopped_sig).
+ *   slot payload: malloc(exact HTTP Content-Length), worker owns it until
+ *     slot_publish(); consumer then owns it until slot_release(); teardown
+ *     releases either live slot only after the worker has stopped.
+ *   playlist text: fetch_text() allocates Content-Length + 1; the worker owns
+ *     refreshed text and hls_refetch_live() frees it after every merge.
+ *   segment URLs/offset arrays and playlist_url are common synchronous HLS
+ *     allocations and remain owned/freed by hls_source/hls_close(). */
+static void slots_assert(const hls_source *h)
+{
+#ifndef NDEBUG
+    size_t sum = 0;
+    unsigned count = 0, i;
+    for (i = 0; i < HLS_ASYNC_SLOTS; i++) {
+        if (h->slots[i].bytes) {
+            assert(h->slots[i].state);
+            sum += h->slots[i].length;
+            count++;
+        } else {
+            assert(!h->slots[i].state && h->slots[i].length == 0);
+        }
+    }
+    assert(sum == h->buffered_bytes);
+    assert(count == h->payload_count);
+    assert(count <= HLS_ASYNC_SLOTS);
+#else
+    (void)h;
+#endif
+}
+
+static void slot_release(hls_source *h, unsigned slot_no)
+{
+    hls_segment_buffer *slot = &h->slots[slot_no];
+    size_t freed = slot->length;
+    if (!slot->bytes) { slots_assert(h); return; }
+    free(slot->bytes);
+    slot->bytes = NULL;
+    slot->length = slot->read_pos = 0;
+    slot->state = 0;
+    h->buffered_bytes -= freed;
+    h->payload_count--;
+    slots_assert(h);
+    if (h->options.hls_timing)
+        printf("HLS memory: segment %lu free=%lu slot=%u buffered=%lu\n",
+               (unsigned long)slot->index, (unsigned long)freed, slot_no,
+               (unsigned long)h->buffered_bytes);
+}
+
+static void slot_publish(hls_source *h, unsigned slot_no, size_t index,
+                         unsigned char *bytes, size_t length)
+{
+    hls_segment_buffer *slot = &h->slots[slot_no];
+    /* Reuse is legal only after the previous consumer-owned payload left. */
+    assert(!slot->bytes && !slot->state && slot->length == 0);
+    assert(h->payload_count < HLS_ASYNC_SLOTS);
+    slot->index = index; slot->bytes = bytes; slot->length = length;
+    slot->read_pos = 0; slot->state = 1;
+    h->buffered_bytes += length;
+    h->payload_count++;
+    slots_assert(h);
+}
+
 /* The worker is the sole owner of every HTTP source after async is published.
  * A slot belongs to the worker while free and to the reader from publication
  * until the reader advances to the following segment.  State changes happen
@@ -388,9 +460,26 @@ static int fetch_segment_buffer(hls_source *h, size_t i,
                                    h->have_options ? &h->options : NULL);
         if (s) {
             len = mr_source_length(s);
+            if (len > HLS_ASYNC_SLOT_MAX ||
+                len > HLS_ASYNC_TOTAL_MAX - h->buffered_bytes) {
+                if (h->options.hls_timing)
+                    printf("HLS prefetch: segment %lu size=%lu exceeds "
+                           "4 MB slot / 8 MB total cap; using synchronous mode\n",
+                           (unsigned long)i, (unsigned long)len);
+                mr_source_close(s);
+                h->worker_fallback = 1;
+                return 0;
+            }
             if (len && len != MR_SOURCE_LEN_UNKNOWN &&
                 (p = (unsigned char *)malloc(len)) != NULL) {
-                if (mr_source_read_at(s, 0, p, len)) {
+                size_t off = 0;
+                while (off < len && !h->stop_worker) {
+                    size_t chunk = len - off;
+                    if (chunk > 64UL * 1024) chunk = 64UL * 1024;
+                    if (!mr_source_read_at(s, off, p + off, chunk)) break;
+                    off += chunk;
+                }
+                if (off == len && !h->stop_worker) {
                     unsigned long ms = (unsigned long)
                         ((clock() - started) * 1000UL / CLOCKS_PER_SEC);
                     mr_source_close(s);
@@ -441,12 +530,16 @@ static void hls_worker_entry(void)
             break;
         }
         Forbid();
-        slot->index = i; slot->bytes = bytes; slot->length = length;
-        slot->read_pos = 0; slot->state = 1;
+        slot_publish(h, (unsigned)(i % HLS_ASYNC_SLOTS), i, bytes, length);
         h->seg_start[i + 1] = h->seg_start[i] + length;
         if (i + 1 > h->discovered) h->discovered = i + 1;
         h->worker_next = i + 1;
         Permit();
+        if (h->options.hls_timing)
+            printf("HLS memory: segment %lu alloc=%lu slot=%lu buffered=%lu\n",
+                   (unsigned long)i, (unsigned long)length,
+                   (unsigned long)(i % HLS_ASYNC_SLOTS),
+                   (unsigned long)h->buffered_bytes);
         Signal(h->parent_task, 1UL << h->data_sig);
     }
 done:
@@ -492,7 +585,9 @@ static void hls_async_stop(hls_source *h)
                                SIGBREAKF_CTRL_C);
         Wait(1UL << h->stopped_sig);
     }
-    for (i = 0; i < HLS_ASYNC_SLOTS; i++) free(h->slots[i].bytes);
+    /* stopped_sig/worker_task proves the worker can no longer publish or use a
+     * payload.  Only now may teardown reclaim consumer-visible slots. */
+    for (i = 0; i < HLS_ASYNC_SLOTS; i++) slot_release(h, (unsigned)i);
     FreeSignal(h->ready_sig); FreeSignal(h->stopped_sig); FreeSignal(h->data_sig);
     h->async = 0;
 }
@@ -511,7 +606,13 @@ static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
             for (i = 0; i < h->discovered; i++)
                 if (off < h->seg_start[i + 1]) break;
             if (i >= h->discovered) {
-                if (h->worker_done) return 0;
+                if (h->worker_done) {
+                    if (h->worker_fallback) {
+                        hls_async_stop(h); /* HTTP ownership is released */
+                        goto synchronous;
+                    }
+                    return 0;
+                }
                 if (h->options.hls_timing)
                     printf("HLS prefetch: buffer underrun at %lu, waiting queue=0\n",
                            (unsigned long)off);
@@ -523,7 +624,7 @@ static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
             {
                 hls_segment_buffer *old = &h->slots[(i + 1) % HLS_ASYNC_SLOTS];
                 if (old->state && old->index < i) {
-                    free(old->bytes); old->bytes = NULL; old->state = 0;
+                    slot_release(h, (unsigned)((i + 1) % HLS_ASYNC_SLOTS));
                     if (h->worker_task) Signal(h->worker_task, 1UL << h->wake_sig);
                 }
             }
@@ -533,13 +634,14 @@ static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
             avail = slot->length - local; take = len < avail ? len : avail;
             memcpy(out, slot->bytes + local, take); slot->read_pos = local + take;
             out += take; off += take; len -= take;
-            if (slot->read_pos == slot->length && len) {
-                free(slot->bytes); slot->bytes = NULL; slot->state = 0;
+            if (slot->read_pos == slot->length) {
+                slot_release(h, (unsigned)(i % HLS_ASYNC_SLOTS));
                 if (h->worker_task) Signal(h->worker_task, 1UL << h->wake_sig);
             }
         }
         return 1;
     }
+synchronous:
 #endif
     while (len) {
         size_t i = locate(h, off);
