@@ -7,8 +7,10 @@
 #include "../core/mr_play_options.h"
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
+#include "mr_player_status.h"
 
 #include <classes/window.h>
+#include <devices/timer.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <exec/libraries.h>
@@ -486,6 +488,115 @@ static int start_url(const char *url, const mr_play_options *play_options) {
   return start_stream(&stream, play_options);
 }
 
+/* ---- Player-status polling --------------------------------------------- *
+ * A running mrplay publishes what it is doing (which codec is on screen, or
+ * why a stream refused to play) in the shared block on its control port. We
+ * cannot block waiting for it, so a small repeating timer.device request wakes
+ * the reactor a few times a second; on each wake we read the block and, when it
+ * changed, mirror it onto the status line. */
+#define STATUS_POLL_MICROS 200000UL /* ~5 Hz */
+
+static struct MsgPort *timer_port;
+static struct timerequest *timer_io;
+static int timer_device_open;
+static int timer_running;
+
+static int poll_timer_open(void) {
+  timer_port = CreateMsgPort();
+  if (!timer_port)
+    return 0;
+  timer_io =
+      (struct timerequest *)CreateIORequest(timer_port, sizeof(*timer_io));
+  if (!timer_io)
+    return 0;
+  if (OpenDevice((CONST_STRPTR) "timer.device", UNIT_VBLANK,
+                 (struct IORequest *)timer_io, 0) != 0)
+    return 0;
+  timer_device_open = 1;
+  return 1;
+}
+
+static void poll_timer_start(void) {
+  if (!timer_io)
+    return;
+  timer_io->tr_node.io_Command = TR_ADDREQUEST;
+  timer_io->tr_time.tv_secs = 0;
+  timer_io->tr_time.tv_micro = STATUS_POLL_MICROS;
+  SendIO((struct IORequest *)timer_io);
+  timer_running = 1;
+}
+
+static void poll_timer_close(void) {
+  if (timer_io) {
+    if (timer_running && !CheckIO((struct IORequest *)timer_io))
+      AbortIO((struct IORequest *)timer_io);
+    if (timer_running)
+      WaitIO((struct IORequest *)timer_io);
+    timer_running = 0;
+    if (timer_device_open) {
+      CloseDevice((struct IORequest *)timer_io);
+      timer_device_open = 0;
+    }
+    DeleteIORequest((struct IORequest *)timer_io);
+    timer_io = NULL;
+  }
+  if (timer_port) {
+    DeleteMsgPort(timer_port);
+    timer_port = NULL;
+  }
+}
+
+/* Poll the running player and reflect any change onto the status line. `*seq`
+ * remembers the last update we showed so we only touch the gadget when the
+ * player reports something new; it is reset to 0 whenever no player is running
+ * so the controller's own messages are never overwritten while idle. */
+static void poll_player_status(Object *status, struct Window *window,
+                               ULONG *seq, char *out, size_t out_size) {
+  mr_player_status ps;
+  if (!mr_player_status_read(&ps)) {
+    *seq = 0; /* no player: leave the controller's own text alone */
+    return;
+  }
+  if (ps.seq == *seq)
+    return; /* nothing new since we last refreshed */
+  *seq = ps.seq;
+  switch (ps.state) {
+  case MR_PLAYER_STATE_OPENING:
+    snprintf(out, out_size, "%s", ps.text[0] ? ps.text : "Connecting...");
+    break;
+  case MR_PLAYER_STATE_PLAYING:
+    if (ps.codec[0] && ps.text[0])
+      snprintf(out, out_size, "Playing (%s): %s", ps.codec, ps.text);
+    else if (ps.codec[0])
+      snprintf(out, out_size, "Playing: %s", ps.codec);
+    else
+      snprintf(out, out_size, "Playing");
+    break;
+  case MR_PLAYER_STATE_UNSUPPORTED:
+    snprintf(out, out_size, "Not supported: %s",
+             ps.text[0] ? ps.text : "codec not implemented");
+    break;
+  case MR_PLAYER_STATE_ERROR:
+    snprintf(out, out_size, "Stream error: %s",
+             ps.text[0] ? ps.text : "playback failed");
+    break;
+  case MR_PLAYER_STATE_ENDED:
+    snprintf(out, out_size, "Stream ended%s%s", ps.codec[0] ? " (" : "",
+             ps.codec[0] ? ps.codec : "");
+    if (ps.codec[0]) {
+      size_t n = strlen(out);
+      if (n + 1 < out_size) {
+        out[n] = ')';
+        out[n + 1] = 0;
+      }
+    }
+    break;
+  default:
+    return; /* STARTING or unknown: nothing worth showing yet */
+  }
+  set_status(status, window, out);
+}
+
 int main(int argc, char **argv) {
   Object *winobj = NULL, *layout = NULL, *search = NULL, *country = NULL;
   Object *category = NULL, *channels = NULL, *status = NULL, *url = NULL;
@@ -501,6 +612,7 @@ int main(int argc, char **argv) {
   struct List channel_nodes, countries, categories;
   mr_iptv_directory directory, refreshed_directory;
   ULONG sigmask, signals, result, selected, country_index, category_index;
+  ULONG player_status_seq = 0, timermask = 0;
   size_t country_choice_index;
   UWORD code;
   char status_text[256], refresh_error[256], cache_error[256];
@@ -648,6 +760,13 @@ int main(int argc, char **argv) {
   if (!window)
     goto cleanup;
   GetAttr(WINDOW_SigMask, winobj, &sigmask);
+  /* Repeating poll so mrplay's codec / "not supported" status reaches the
+   * status line. Purely advisory: if the timer.device is unavailable the GUI
+   * still works, it just stops mirroring the player's live status. */
+  if (poll_timer_open()) {
+    timermask = 1UL << timer_port->mp_SigBit;
+    poll_timer_start();
+  }
   /* The window is open and its loading status is visible before any network
    * operation begins. Delay one tick so Intuition can draw the new window. */
   if (refresh_attempted) {
@@ -685,9 +804,17 @@ int main(int argc, char **argv) {
     }
   }
   for (;;) {
-    signals = Wait(sigmask | SIGBREAKF_CTRL_C);
+    signals = Wait(sigmask | timermask | SIGBREAKF_CTRL_C);
     if (signals & SIGBREAKF_CTRL_C)
       break;
+    if (timermask && (signals & timermask)) {
+      while (GetMsg(timer_port)) /* remove the replied request */
+        ;
+      timer_running = 0;
+      poll_player_status(status, window, &player_status_seq, status_text,
+                         sizeof(status_text));
+      poll_timer_start();
+    }
     while ((result = RA_HandleInput(winobj, &code)) != WMHI_LASTMSG) {
       STRPTR text = NULL;
       struct Node *node = NULL;
@@ -825,6 +952,7 @@ int main(int argc, char **argv) {
 done:
   rc = RETURN_OK;
 cleanup:
+  poll_timer_close();
   if (winobj) {
     if (window)
       RA_CloseWindow(winobj);
