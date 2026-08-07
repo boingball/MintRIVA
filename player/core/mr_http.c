@@ -6,6 +6,7 @@
  * to a handful of connections while still allowing AVI/MOV metadata seeks.
  */
 #include "mr_http.h"
+#include "mr_alloc.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -382,6 +383,16 @@ static void http_register_shutdown(void)
 {
     static int registered = 0;
     if (!registered) { registered = 1; atexit(http_platform_shutdown); }
+}
+
+/* Release the socket/TLS state from the calling task. bsdsocket and AmiSSL must
+ * be closed by the task that opened them, so a helper task that did all the
+ * networking (the HLS prefetch worker) calls this before it exits. The shutdown
+ * is idempotent and fully guarded, so the atexit copy that runs later in the
+ * main task then finds everything already released and does nothing. */
+void mr_http_net_shutdown(void)
+{
+    http_platform_shutdown();
 }
 
 int mr_http_tls_disabled(void)
@@ -1402,8 +1413,8 @@ static void http_close(void *opaque)
     http_source *h = (http_source *)opaque;
     if (!h) return;
     platform_close(h);
-    free(h->cache);
-    free(h);
+    mr_free(h->cache);
+    mr_free(h);
 }
 
 mr_source *mr_http_source_open_ex(const char *url,
@@ -1416,7 +1427,7 @@ mr_source *mr_http_source_open_ex(const char *url,
         mr_source_set_error("HTTP URL is empty or too long");
         return NULL;
     }
-    h = (http_source *)calloc(1, sizeof *h);
+    h = (http_source *)mr_allocz(sizeof *h);
     if (!h) {
         mr_source_set_error("not enough memory for HTTP source");
         return NULL;
@@ -1425,7 +1436,7 @@ mr_source *mr_http_source_open_ex(const char *url,
     if (options && !mr_http_options_init(&h->options,
                                          options->user_agent,
                                          options->referer)) {
-        free(h);
+        mr_free(h);
         return NULL;
     }
     if (options) {
@@ -1434,10 +1445,10 @@ mr_source *mr_http_source_open_ex(const char *url,
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
     }
-    h->cache = (unsigned char *)malloc(HTTP_CACHE_SIZE);
+    h->cache = (unsigned char *)mr_alloc(HTTP_CACHE_SIZE);
     if (!h->cache) {
         mr_source_set_error("not enough memory for HTTP rewind cache");
-        free(h);
+        mr_free(h);
         return NULL;
     }
     n = strlen(url);
@@ -1470,7 +1481,7 @@ int mr_http_download_file(const char *url, const char *path, size_t max_size)
         mr_source_set_error("invalid HTTP download arguments");
         return 0;
     }
-    h = (http_source *)calloc(1, sizeof *h);
+    h = (http_source *)mr_allocz(sizeof *h);
     if (!h) {
         mr_source_set_error("not enough memory for HTTP download");
         return 0;
@@ -1515,7 +1526,7 @@ int mr_http_download_file(const char *url, const char *path, size_t max_size)
 done:
     if (file) fclose(file);
     platform_close(h);
-    free(h);
+    mr_free(h);
     if (!ok) remove(path);
     return ok;
 }

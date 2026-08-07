@@ -121,6 +121,7 @@ static int append_playback_flags(char *out, size_t cap,
         snprintf(number, sizeof(number), "--hls-max-fps=%u", o->hls_max_fps);
         if (!append_option(out, cap, number)) return 0;
     }
+    if (o->hls_prefetch && !append_option(out, cap, "--hls-prefetch")) return 0;
     if (o->live_resync && !append_option(out, cap, "--live-resync")) return 0;
     return 1;
 }
@@ -194,6 +195,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--scale-2x")) o->scale_2x = 1;
         else if (!strcmp(arg, "--no-scale-2x")) o->scale_2x = 0;
         else if (!strcmp(arg, "--hls-low")) o->hls_low = 1;
+        else if (!strcmp(arg, "--hls-prefetch")) o->hls_prefetch = 1;
         else if (!strcmp(arg, "--live-resync")) o->live_resync = 1;
         else if (!strcmp(arg, "--no-live-resync")) o->live_resync = 0;
         else if (!strncmp(arg, "--hls-max-width=", 16)) {

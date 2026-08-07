@@ -24,6 +24,7 @@
 #include "amiga_display.h"
 #include "mr_audio.h"
 #include "mr_player_status.h"
+#include "hls_prefetch.h"
 
 #include <proto/dos.h>
 #include <proto/exec.h>
@@ -936,6 +937,8 @@ int main(int argc, char **argv)
     int raw_diag_printed = 0;
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
+    int hls_prefetch = 0;  /* --hls-prefetch: background segment reader (opt-in) */
+    int prefetch_on = 0;   /* worker actually running                            */
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
     int live_resync = 0;  /* --live-resync: catch up after a big stall, and
                            * reconnect a live stream that drops out            */
@@ -1024,6 +1027,7 @@ int main(int argc, char **argv)
                 hls_max_fps = (unsigned)strtoul(argv[i] + 14, NULL, 10);
             else if (!strncmp(argv[i], "--net-queue=", 12))
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
+            else if (!strcmp(argv[i], "--hls-prefetch")) hls_prefetch = 1;
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
@@ -1053,6 +1057,15 @@ int main(int argc, char **argv)
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
 
+    /* Opt-in background segment reader (HLS only): downloads segments into RAM
+     * ahead of the reader so a fetch never freezes presentation. Installed
+     * before the demuxer opens so the very first playlist/segment go through it.
+     * If it fails to come up we simply fall back to synchronous fetching. */
+    if (hls_prefetch && mr_source_is_hls(media_path)) {
+        prefetch_on = hls_prefetch_start();
+        printf("hls prefetch: %s\n", prefetch_on ? "on" : "unavailable");
+    }
+
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
     if (dx) {
@@ -1080,6 +1093,7 @@ int main(int argc, char **argv)
                 player_status(MR_PLAYER_STATE_ERROR, "", reason);
             }
             status_hold();
+            if (prefetch_on) hls_prefetch_stop();
             return 10;
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input
@@ -1116,7 +1130,9 @@ int main(int argc, char **argv)
                   describe_unsupported_video(vi->fourcc, reason, sizeof reason);
                   player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
                   status_hold();
-                  mr_demux_close(dx); free(buf); return 10; }
+                  mr_demux_close(dx);
+                  if (prefetch_on) hls_prefetch_stop();
+                  free(buf); return 10; }
 
     if (want_time)
         printf("video fourcc='%c%c%c%c'\n", (int)(vi->fourcc & 255),
@@ -1132,7 +1148,9 @@ int main(int argc, char **argv)
                  codec->name);
         player_status(MR_PLAYER_STATE_ERROR, codec->name, reason);
         status_hold();
-        mr_demux_close(dx); free(buf); return 10;
+        mr_demux_close(dx);
+        if (prefetch_on) hls_prefetch_stop();
+        free(buf); return 10;
     }
 
     printf("media: file=%s, container=%s, video=%s (%c%c%c%c), "
@@ -1156,7 +1174,9 @@ int main(int argc, char **argv)
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
                                "cannot open a display (RTG or AGA)");
                  status_hold();
-                 mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 10; }
+                 mr_decoder_close(&dec); mr_demux_close(dx);
+                 if (prefetch_on) hls_prefetch_stop();
+                 free(buf); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
@@ -2060,6 +2080,9 @@ int main(int argc, char **argv)
     display_close(disp);
     mr_decoder_close(&dec);
     mr_demux_close(dx);
+    /* Stop the prefetch worker from the main task before we exit, so it releases
+     * its own socket/TLS state ahead of the atexit teardown. */
+    if (prefetch_on) hls_prefetch_stop();
     free(buf);
     playback_timer_close();
     return 0;

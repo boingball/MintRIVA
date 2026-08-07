@@ -4,6 +4,7 @@
 #include "mr_source.h"
 #include "mr_hls.h"
 #include "mr_http.h"
+#include "mr_alloc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,7 +92,9 @@ mr_source *mr_source_create(void *ctx, size_t len,
     /* len == MR_SOURCE_LEN_UNKNOWN marks a forward-only stream; only a truly
      * zero-length source is rejected. */
     if (!ctx || !read_at || !close || !len) return NULL;
-    s = (mr_source *)calloc(1, sizeof *s);
+    /* Task-safe: an mr_source may be created and closed on the HLS prefetch
+     * worker task as well as the main task (see mr_alloc.h). */
+    s = (mr_source *)mr_allocz(sizeof *s);
     if (!s) {
         close(ctx);
         mr_source_set_error("not enough memory for media source");
@@ -222,5 +225,5 @@ void mr_source_close(mr_source *s)
 {
     if (!s) return;
     s->close(s->ctx);
-    free(s);
+    mr_free(s);
 }
