@@ -21,4 +21,17 @@ mr_source *mr_hls_source_open(const char *url);
 mr_source *mr_hls_source_open_ex(const char *url,
                                  const struct mr_http_options *options);
 
+/* Optional pluggable network backend. When installed, mr_hls routes every
+ * playlist/segment open through `open_fn` (is_segment distinguishes them) and
+ * calls `prefetch_fn` to hint the next segment. A platform uses this to funnel
+ * all HTTP through one background worker (single live connection) and prefetch
+ * segments into RAM ahead of the reader. Pass NULLs to restore the default
+ * synchronous behaviour. Host builds never install one. */
+typedef mr_source *(*mr_hls_open_fn)(const char *url,
+                                     const struct mr_http_options *options,
+                                     int is_segment);
+typedef void (*mr_hls_prefetch_fn)(const char *url,
+                                   const struct mr_http_options *options);
+void mr_hls_set_backend(mr_hls_open_fn open_fn, mr_hls_prefetch_fn prefetch_fn);
+
 #endif /* MR_HLS_H */

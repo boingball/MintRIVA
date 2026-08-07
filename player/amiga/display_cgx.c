@@ -72,19 +72,62 @@ static int default_screen_is_rtg(void)
     return rtg;
 }
 
+/* Fit a w*h picture inside a bounding box, preserving aspect ratio. Only ever
+ * shrinks: content that already fits is left at native size. Used so a stream
+ * larger than the Workbench screen (e.g. a 1920x1080 broadcast on a 720p RTG
+ * desktop) opens a window that fits and is downscaled, instead of a window
+ * bigger than the display. */
+static void fit_within(int w, int h, int max_w, int max_h, int *out_w,
+                       int *out_h)
+{
+    *out_w = w;
+    *out_h = h;
+    if (w <= 0 || h <= 0 || max_w <= 0 || max_h <= 0)
+        return;
+    if (w <= max_w && h <= max_h)
+        return;
+    /* Compare w/h against max_w/max_h without floats: width-bound when
+     * w*max_h > h*max_w. Round to nearest to avoid a stray black edge. */
+    if ((long)w * max_h > (long)h * max_w) {
+        *out_w = max_w;
+        *out_h = (int)(((long)h * max_w + w / 2) / w);
+    } else {
+        *out_h = max_h;
+        *out_w = (int)(((long)w * max_h + h / 2) / h);
+    }
+    if (*out_w < 1) *out_w = 1;
+    if (*out_h < 1) *out_h = 1;
+}
+
 static void *cgx_open(int w, int h, const char *title)
 {
     cgx_state *s;
+    int win_w = w, win_h = h;
+    struct Screen *scr;
     if (!CyberGfxBase || !default_screen_is_rtg())
         return NULL;                              /* not RTG -> try AGA      */
 
     s = (cgx_state *)AllocVec(sizeof *s, MEMF_CLEAR);
     if (!s) return NULL;
 
+    /* Cap the initial window to what the public screen can actually show, so a
+     * picture larger than the desktop is downscaled into a visible window
+     * rather than opened past the screen edges. The user can still size up. */
+    scr = LockPubScreen(NULL);
+    if (scr) {
+        int avail_w = scr->Width - scr->WBorLeft - scr->WBorRight;
+        int avail_h = scr->Height - scr->BarHeight - 1 - scr->WBorTop -
+                      scr->WBorBottom;
+        UnlockPubScreen(NULL, scr);
+        if (avail_w < 160) avail_w = 160;
+        if (avail_h < 100) avail_h = 100;
+        fit_within(w, h, avail_w, avail_h, &win_w, &win_h);
+    }
+
     s->win = OpenWindowTags(NULL,
         WA_Title,       (ULONG)(title ? title : "MintRIVA"),
-        WA_InnerWidth,  (ULONG)w,
-        WA_InnerHeight, (ULONG)h,
+        WA_InnerWidth,  (ULONG)win_w,
+        WA_InnerHeight, (ULONG)win_h,
         WA_Flags,       WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                         WFLG_SIZEGADGET | WFLG_ACTIVATE | WFLG_NOCAREREFRESH,
         WA_MinWidth,    160,

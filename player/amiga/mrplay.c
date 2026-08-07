@@ -24,6 +24,7 @@
 #include "amiga_display.h"
 #include "mr_audio.h"
 #include "mr_player_status.h"
+#include "hls_prefetch.h"
 
 #include <proto/dos.h>
 #include <proto/exec.h>
@@ -48,14 +49,31 @@
  */
 static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 
+/*
+ * mrplay handles Ctrl-C / Ctrl-F itself: the IPTV controller signals them to
+ * ask the player to stop, and the main loop (control_signal_event) turns them
+ * into a clean quit that closes the display and Paula. Left to libnix, a
+ * pending Ctrl-C during any stdio call - frequent when --time logging is on -
+ * fires its "***Break" handler and exit()s the process mid-printf, skipping
+ * CloseWindow() and leaving an orphaned RTG window stuck on screen. An empty
+ * __chkabort() disables that automatic abort; the break signals still arrive as
+ * exec signals and are serviced by our own event loop.
+ */
+void __chkabort(void) { }
+
 /* Queue-slot ceiling. Defaults keep only 1 (network) or 3 (disk) frames, so
  * this costs nothing unless --net-queue requests a deeper buffer: RGB slots are
  * allocated lazily per used entry. A deep network buffer lets decoded frames
  * wait and present in PTS order as they fall due (rather than the shallow queue
  * dropping the nearly-due frame when video runs ahead of the audio clock), and
- * carries enough video to ride across a segment-boundary refetch. ~1.3 s at
- * 25 fps. */
-#define VIDEO_QUEUE_CAP 32
+ * carries enough video to ride across a segment-boundary refetch.
+ *
+ * Each occupied slot is a full decoded RGB frame (~0.7 MB at 640x360), so the
+ * cap dominates the player's Fast-RAM footprint: 16 slots is ~11 MB, ~0.6 s at
+ * 25 fps - enough to pace presentation and smooth per-frame decode jitter, and
+ * kind to Fast-RAM-tight machines. Riding a whole segment-fetch stall is the
+ * prefetch worker's job (at the far cheaper compressed level), not this queue's. */
+#define VIDEO_QUEUE_CAP 16
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
@@ -66,9 +84,13 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define AUDIO_STARTUP_TARGET_MS 400UL
 /* Sustained audio cushion the scheduler keeps topped up even when the video
  * queue is full, so a long segment-boundary stall does not drain the FIFO into
- * a state it can never climb back out of. Matches the buffer healthy playback
- * naturally reaches (~0.6-0.8 s in on-hardware logs). */
-#define AUDIO_CUSHION_TARGET_MS 800UL
+ * a state it can never climb back out of. Paula plays from its hardware DMA
+ * buffer under interrupt, independently of the main loop, so this cushion keeps
+ * audio smooth right through a blocking segment fetch even while the (single-
+ * threaded) loop cannot present video. On-hardware logs show HLS segment
+ * fetches stalling up to ~1.7 s, so the cushion must exceed that with margin;
+ * the FIFO holds ~4 s (rate*4), so 2.5 s fits comfortably. */
+#define AUDIO_CUSHION_TARGET_MS 2500UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
@@ -920,6 +942,8 @@ int main(int argc, char **argv)
     int raw_diag_printed = 0;
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
+    int hls_prefetch = 0;  /* --hls-prefetch: background segment reader (opt-in) */
+    int prefetch_on = 0;   /* worker actually running                            */
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
     int live_resync = 0;  /* --live-resync: catch up after a big stall, and
                            * reconnect a live stream that drops out            */
@@ -1008,6 +1032,7 @@ int main(int argc, char **argv)
                 hls_max_fps = (unsigned)strtoul(argv[i] + 14, NULL, 10);
             else if (!strncmp(argv[i], "--net-queue=", 12))
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
+            else if (!strcmp(argv[i], "--hls-prefetch")) hls_prefetch = 1;
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
@@ -1037,6 +1062,15 @@ int main(int argc, char **argv)
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
 
+    /* Opt-in background segment reader (HLS only): downloads segments into RAM
+     * ahead of the reader so a fetch never freezes presentation. Installed
+     * before the demuxer opens so the very first playlist/segment go through it.
+     * If it fails to come up we simply fall back to synchronous fetching. */
+    if (hls_prefetch && mr_source_is_hls(media_path)) {
+        prefetch_on = hls_prefetch_start(want_time);
+        printf("hls prefetch: %s\n", prefetch_on ? "on" : "unavailable");
+    }
+
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
     if (dx) {
@@ -1047,11 +1081,24 @@ int main(int argc, char **argv)
         if (mr_demux_is_file_backed_container(media_path)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];
             const char *why = mr_demux_last_open_error();
+            /* A "not supported"/"no decoder" reason is a codec/container we
+             * can't play (e.g. HEVC); anything else is a connection/read fault.
+             * Report them as different states so the browser can distinguish
+             * "wrong codec" from "bad link". */
+            int unsupported = why && (strstr(why, "not supported") ||
+                                      strstr(why, "unsupported") ||
+                                      strstr(why, "no decoder"));
             printf("cannot open stream: %s\n", why);
-            snprintf(reason, sizeof reason, "cannot open stream: %s",
-                     why ? why : "connection failed");
-            player_status(MR_PLAYER_STATE_ERROR, "", reason);
+            if (unsupported) {
+                snprintf(reason, sizeof reason, "%s", why);
+                player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
+            } else {
+                snprintf(reason, sizeof reason, "cannot open stream: %s",
+                         why ? why : "connection failed");
+                player_status(MR_PLAYER_STATE_ERROR, "", reason);
+            }
             status_hold();
+            if (prefetch_on) hls_prefetch_stop();
             return 10;
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input
@@ -1088,7 +1135,9 @@ int main(int argc, char **argv)
                   describe_unsupported_video(vi->fourcc, reason, sizeof reason);
                   player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
                   status_hold();
-                  mr_demux_close(dx); free(buf); return 10; }
+                  mr_demux_close(dx);
+                  if (prefetch_on) hls_prefetch_stop();
+                  free(buf); return 10; }
 
     if (want_time)
         printf("video fourcc='%c%c%c%c'\n", (int)(vi->fourcc & 255),
@@ -1104,7 +1153,9 @@ int main(int argc, char **argv)
                  codec->name);
         player_status(MR_PLAYER_STATE_ERROR, codec->name, reason);
         status_hold();
-        mr_demux_close(dx); free(buf); return 10;
+        mr_demux_close(dx);
+        if (prefetch_on) hls_prefetch_stop();
+        free(buf); return 10;
     }
 
     printf("media: file=%s, container=%s, video=%s (%c%c%c%c), "
@@ -1128,7 +1179,9 @@ int main(int argc, char **argv)
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
                                "cannot open a display (RTG or AGA)");
                  status_hold();
-                 mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 10; }
+                 mr_decoder_close(&dec); mr_demux_close(dx);
+                 if (prefetch_on) hls_prefetch_stop();
+                 free(buf); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
@@ -1243,6 +1296,14 @@ int main(int argc, char **argv)
         int net_target = net_queue > 0
             ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
         int target_depth = network_source ? net_target : 3;
+        /* Cap how many decoded RGB frames the queue may hold. Each is a full
+         * frame (e.g. ~0.7 MB at 640x360), so 32 is ~22 MB - too much on a
+         * Fast-RAM-tight machine. The deep queue only earns its keep riding
+         * segment stalls; the prefetch worker already does that at the (cheap)
+         * compressed level, so cap the decoded queue shallow when it is on. The
+         * ring buffer itself stays VIDEO_QUEUE_CAP-sized; this only limits how
+         * many slots are filled. */
+        int video_cap = prefetch_on && VIDEO_QUEUE_CAP > 12 ? 12 : VIDEO_QUEUE_CAP;
         int prev_master_source = -1;
 
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
@@ -1744,9 +1805,18 @@ int main(int argc, char **argv)
              * cushion then never rebuilds and playback settles into a degraded
              * state. Keep demuxing to top the cushion back up; the extra video
              * decoded meanwhile fills toward the queue cap and is only dropped
-             * (reference-only) once the cap is hit. */
+             * (reference-only) once the cap is hit.
+             *
+             * That deep cushion exists to ride segment-fetch stalls in the
+             * single-threaded model; it is also what drives the decoded-frame
+             * queue to its full (memory-heavy) depth. With the prefetch worker
+             * absorbing those stalls at the compressed level, a small cushion is
+             * enough - and it keeps the decoded queue (and RAM use) shallow,
+             * which matters on Fast-RAM-tight machines. */
+            unsigned long cushion_ms =
+                prefetch_on ? 600UL : AUDIO_CUSHION_TARGET_MS;
             int feed_audio_full = audio && qcount >= target_depth &&
-                                  audio_ms < AUDIO_CUSHION_TARGET_MS;
+                                  audio_ms < cushion_ms;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
                              (rescue_active || startup_refill ||
                               qcount < target_depth || feed_audio_full);
@@ -1801,7 +1871,7 @@ int main(int argc, char **argv)
                      * so decode it reference-only: keep the reference chain
                      * intact without spending time producing RGB we discard.
                      * This is what makes the audio-cushion top-up above cheap. */
-                    mr_h264_set_skip_output(&dec, qcount >= VIDEO_QUEUE_CAP);
+                    mr_h264_set_skip_output(&dec, qcount >= video_cap);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
@@ -1848,7 +1918,7 @@ int main(int argc, char **argv)
                             stats.video_decode_max_us = decode_us;
                         {
                             int retain = !startup_refill ||
-                                         qcount < VIDEO_QUEUE_CAP ||
+                                         qcount < video_cap ||
                                          rescue_active;
                             if (rescue_active) {
                                 rescue_episode_video++;
@@ -1863,7 +1933,7 @@ int main(int argc, char **argv)
                                 decoded_index++;
                                 continue;
                             }
-                            if (qcount == VIDEO_QUEUE_CAP) {
+                            if (qcount >= video_cap) {
                                 /* Queue full. Every queued frame is closer to
                                  * its deadline than this freshly decoded one,
                                  * which sits furthest in the future, so keep
@@ -2032,6 +2102,9 @@ int main(int argc, char **argv)
     display_close(disp);
     mr_decoder_close(&dec);
     mr_demux_close(dx);
+    /* Stop the prefetch worker from the main task before we exit, so it releases
+     * its own socket/TLS state ahead of the atexit teardown. */
+    if (prefetch_on) hls_prefetch_stop();
     free(buf);
     playback_timer_close();
     return 0;

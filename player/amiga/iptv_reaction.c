@@ -48,6 +48,9 @@
 #define IPTV_CACHE_SECONDS (24UL * 60UL * 60UL)
 #define IPTV_CHANNELS_URL "https://iptv-org.github.io/api/channels.json"
 #define IPTV_STREAMS_URL "https://iptv-org.github.io/api/streams.json"
+/* When the Debug toggle is on, the launched player's diagnostics (with --time)
+ * are captured here so a failing stream can be inspected without a Shell. */
+#define MRPLAY_LOG_FILE "RAM:MintRIVA.log"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
@@ -63,6 +66,8 @@ enum {
   G_NEXT_STREAM,
   G_STOP,
   G_OPEN_URL,
+  G_DEBUG,
+  G_PREFETCH,
   G_CLOSE
 };
 
@@ -447,11 +452,23 @@ static int stop_player(void) {
   return 1;
 }
 
+/* Splice "--time" into a built argument line so the player logs full
+ * diagnostics. mrplay accepts flags after the URL, so we insert it just before
+ * the trailing newline the argument string ends with. */
+static void args_add_time(char *args, size_t size) {
+  size_t len = strlen(args);
+  if (len && args[len - 1] == '\n')
+    len--;
+  if (len + 8 < size) /* " --time\n" + NUL */
+    memcpy(args + len, " --time\n", 9);
+}
+
 static int start_stream(const mr_iptv_stream *stream,
-                        const mr_play_options *play_options) {
+                        const mr_play_options *play_options, int debug_log) {
   char args[MR_IPTV_URL_MAX * 4 + MR_HTTP_USER_AGENT_MAX * 2 + 64];
   mr_http_options options;
-  BPTR seglist;
+  BPTR seglist, log = 0, nil = 0;
+  int started;
   if (!stream || !mr_iptv_valid_url(stream->url) ||
       !mr_http_options_init(&options, stream->user_agent,
                             stream->http_referrer))
@@ -460,6 +477,8 @@ static int start_stream(const mr_iptv_stream *stream,
                                  stream->user_agent,
                                  stream->http_referrer))
     return 0;
+  if (debug_log)
+    args_add_time(args, sizeof(args));
   /* Never let two players run at once: pressing Play/Next while a stream is up
    * would otherwise double CPU load. Stop the current player and wait for it to
    * release the display and Paula before we spawn the replacement. */
@@ -469,23 +488,49 @@ static int start_stream(const mr_iptv_stream *stream,
     seglist = LoadSeg((CONST_STRPTR) "mrplay");
   if (!seglist)
     return 0;
-  if (!CreateNewProcTags(
-          NP_Seglist, seglist, NP_FreeSeglist, TRUE, NP_Arguments, (ULONG)args,
-          NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE, NP_CommandName,
-          (ULONG) "mrplay", NP_Name, (ULONG) "MintRIVA player", TAG_END)) {
+  /* Capture the player's stdout to a log file. Needs a real input stream too
+   * (a CLI expects one), so pair the log with NIL:. If either file won't open,
+   * fall back to an unlogged launch rather than refusing to play. */
+  if (debug_log) {
+    log = Open((CONST_STRPTR)MRPLAY_LOG_FILE, MODE_NEWFILE);
+    nil = Open((CONST_STRPTR) "NIL:", MODE_NEWFILE);
+    if (!log || !nil) {
+      if (log) Close(log);
+      if (nil) Close(nil);
+      log = nil = 0;
+    }
+  }
+  if (log && nil)
+    started = CreateNewProcTags(
+                  NP_Seglist, seglist, NP_FreeSeglist, TRUE, NP_Arguments,
+                  (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE,
+                  NP_CommandName, (ULONG) "mrplay", NP_Name,
+                  (ULONG) "MintRIVA player", NP_Input, (ULONG)nil, NP_CloseInput,
+                  TRUE, NP_Output, (ULONG)log, NP_CloseOutput, TRUE,
+                  TAG_END) != NULL;
+  else
+    started = CreateNewProcTags(
+                  NP_Seglist, seglist, NP_FreeSeglist, TRUE, NP_Arguments,
+                  (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE,
+                  NP_CommandName, (ULONG) "mrplay", NP_Name,
+                  (ULONG) "MintRIVA player", TAG_END) != NULL;
+  if (!started) {
+    if (log) Close(log);   /* not consumed by a failed CreateNewProc */
+    if (nil) Close(nil);
     UnLoadSeg(seglist);
     return 0;
   }
   return 1;
 }
 
-static int start_url(const char *url, const mr_play_options *play_options) {
+static int start_url(const char *url, const mr_play_options *play_options,
+                     int debug_log) {
   mr_iptv_stream stream;
   memset(&stream, 0, sizeof(stream));
   if (!url || strlen(url) >= sizeof(stream.url))
     return 0;
   strcpy(stream.url, url);
-  return start_stream(&stream, play_options);
+  return start_stream(&stream, play_options, debug_log);
 }
 
 /* ---- Player-status polling --------------------------------------------- *
@@ -605,6 +650,8 @@ int main(int argc, char **argv) {
   Object *refresh_button = NULL, *play_button = NULL, *next_button = NULL;
   Object *stop_button = NULL;
   Object *open_button = NULL;
+  Object *debug_button = NULL;
+  Object *prefetch_button = NULL;
   Object *close_button = NULL;
   Object *search_label = NULL, *country_label = NULL, *category_label = NULL;
   Object *url_label = NULL;
@@ -618,6 +665,7 @@ int main(int argc, char **argv) {
   char status_text[256], refresh_error[256], cache_error[256];
   char playback_text[160], option_error[160];
   int rc = RETURN_FAIL, loaded, refresh_attempted, cache_ready;
+  int debug_log = 0;
   mr_play_options play_options;
   mr_iptv_channel *active_channel = NULL;
   unsigned active_stream = 0;
@@ -712,6 +760,14 @@ int main(int argc, char **argv) {
   open_button =
       (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_OPEN_URL, GA_Text,
                           (ULONG) "Open URL...", GA_RelVerify, TRUE, TAG_DONE);
+  debug_button =
+      (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_DEBUG, GA_Text,
+                          (ULONG) "Log: Off", GA_RelVerify, TRUE, TAG_DONE);
+  prefetch_button =
+      (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_PREFETCH, GA_Text,
+                          (ULONG)(play_options.hls_prefetch ? "Prefetch: On"
+                                                            : "Prefetch: Off"),
+                          GA_RelVerify, TRUE, TAG_DONE);
   close_button =
       (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_CLOSE, GA_Text,
                           (ULONG) "Close", GA_RelVerify, TRUE, TAG_DONE);
@@ -724,7 +780,7 @@ int main(int argc, char **argv) {
   url_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
                                   (ULONG) "Manual URL", TAG_DONE);
   if (!refresh_button || !play_button || !next_button || !stop_button ||
-      !open_button || !close_button ||
+      !open_button || !debug_button || !prefetch_button || !close_button ||
       !search_label || !country_label || !category_label || !url_label)
     goto cleanup;
 
@@ -733,6 +789,7 @@ int main(int argc, char **argv) {
       LAYOUT_EvenSize, TRUE, LAYOUT_AddChild, (ULONG)refresh_button,
       LAYOUT_AddChild, (ULONG)play_button, LAYOUT_AddChild, (ULONG)next_button,
       LAYOUT_AddChild, (ULONG)stop_button, LAYOUT_AddChild, (ULONG)open_button,
+      LAYOUT_AddChild, (ULONG)debug_button, LAYOUT_AddChild, (ULONG)prefetch_button,
       LAYOUT_AddChild, (ULONG)close_button, TAG_DONE);
   if (!buttons)
     goto cleanup;
@@ -914,9 +971,26 @@ int main(int argc, char **argv) {
           set_status(status, window, "Playback stopped.");
         else
           set_status(status, window, "No stream is playing.");
+      } else if ((result & WMHI_GADGETMASK) == G_DEBUG) {
+        debug_log = !debug_log;
+        SetGadgetAttrs((struct Gadget *)debug_button, window, NULL, GA_Text,
+                       (ULONG)(debug_log ? "Log: On" : "Log: Off"), TAG_DONE);
+        set_status(status, window,
+                   debug_log ? "Debug log ON: next Play writes " MRPLAY_LOG_FILE
+                             : "Debug log off");
+      } else if ((result & WMHI_GADGETMASK) == G_PREFETCH) {
+        play_options.hls_prefetch = !play_options.hls_prefetch;
+        SetGadgetAttrs((struct Gadget *)prefetch_button, window, NULL, GA_Text,
+                       (ULONG)(play_options.hls_prefetch ? "Prefetch: On"
+                                                         : "Prefetch: Off"),
+                       TAG_DONE);
+        set_status(status, window,
+                   play_options.hls_prefetch
+                       ? "HLS prefetch ON (applies to the next Play)"
+                       : "HLS prefetch off");
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
-        if (!start_url(text ? (char *)text : "", &play_options))
+        if (!start_url(text ? (char *)text : "", &play_options, debug_log))
           set_status(status, window, "Invalid URL or mrplay could not start.");
       } else if ((result & WMHI_GADGETMASK) == G_PLAY ||
                  (result & WMHI_GADGETMASK) == G_NEXT_STREAM) {
@@ -942,7 +1016,8 @@ int main(int argc, char **argv) {
                    (unsigned long)active_stream + 1,
                    (unsigned long)channel->stream_count);
           set_status(status, window, status_text);
-          if (!start_stream(&channel->streams[active_stream], &play_options))
+          if (!start_stream(&channel->streams[active_stream], &play_options,
+                            debug_log))
             set_status(status, window,
                        "Invalid stream metadata or mrplay could not start.");
         }
@@ -973,6 +1048,10 @@ cleanup:
         DisposeObject(stop_button);
       if (open_button)
         DisposeObject(open_button);
+      if (debug_button)
+        DisposeObject(debug_button);
+      if (prefetch_button)
+        DisposeObject(prefetch_button);
       if (close_button)
         DisposeObject(close_button);
     }

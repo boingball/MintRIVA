@@ -24,6 +24,32 @@
 #include <string.h>
 #include <time.h>
 
+/* ---- pluggable network backend ----------------------------------------- *
+ * By default mr_hls opens every playlist and segment synchronously through
+ * mr_http_source_open_ex - the portable behaviour, unchanged. A platform may
+ * instead install a backend (mr_hls_set_backend) that routes all opens through
+ * a single background worker: the worker becomes the sole network user (so only
+ * one HTTP/S connection is ever live, as the socket/TLS layer requires) and can
+ * download segments into RAM ahead of playback, so the reader never blocks on
+ * the network. `prefetch` is an advisory hint to start fetching an upcoming
+ * segment; a NULL backend leaves both hooks unused. */
+static mr_hls_open_fn      g_backend_open;
+static mr_hls_prefetch_fn  g_backend_prefetch;
+
+void mr_hls_set_backend(mr_hls_open_fn open_fn, mr_hls_prefetch_fn prefetch_fn)
+{
+    g_backend_open = open_fn;
+    g_backend_prefetch = prefetch_fn;
+}
+
+/* Open a playlist (is_segment 0) or media segment (is_segment 1). */
+static mr_source *hls_open(const char *url, const mr_http_options *options,
+                           int is_segment)
+{
+    if (g_backend_open) return g_backend_open(url, options, is_segment);
+    return mr_http_source_open_ex(url, options);
+}
+
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
 #define HLS_URL_MAX      1024
 
@@ -69,7 +95,7 @@ int mr_source_is_hls(const char *url)
 static char *fetch_text(const char *url, const mr_http_options *options)
 {
     clock_t started = clock();
-    mr_source *s = mr_http_source_open_ex(url, options);
+    mr_source *s = hls_open(url, options, 0);
     size_t len;
     char *buf;
     if (!s) return NULL;
@@ -150,18 +176,28 @@ static int append_seg(hls_source *h, const char *url)
 
 /* ---- playlist parsing -------------------------------------------------- */
 
-/* Pick the lowest-bandwidth variant from a master playlist; resolve it against
- * base_url into `out`. Returns 1 if a variant was found. */
+/* Choose a variant from a master playlist and resolve it against base_url into
+ * `out`. Returns 1 if a variant was found.
+ *
+ * Selection: among the variants that fit the quality ceiling (hls_max_width/
+ * height/fps, each 0 = don't care) pick the *highest* bandwidth, so a capable
+ * machine (e.g. a PiStorm) uses its headroom instead of always the smallest
+ * rendition. hls_low forces the lowest-bandwidth variant instead - the safe
+ * choice for slower gear. A lowest-bandwidth fallback is always kept so a
+ * master whose every rendition exceeds the ceiling still plays something. */
 static int pick_variant(char *text, const char *base_url,
                         char *out, size_t out_size,
                         const mr_http_options *options)
 {
     char line[HLS_URL_MAX];
+    char chosen[HLS_URL_MAX];   /* best variant within the ceiling            */
+    char fallback[HLS_URL_MAX]; /* lowest-bandwidth variant, ceiling ignored  */
     char *p = text;
-    unsigned long best_bw = 0;
-    int have = 0, pending = 0;
+    unsigned long chosen_bw = 0, fallback_bw = 0;
+    int have_chosen = 0, have_fallback = 0, want_low, pending = 0;
     unsigned long pending_bw = 0;
     unsigned pending_width = 0, pending_height = 0, pending_fps = 0;
+    want_low = options && options->hls_low;
     while ((p = next_line(p, line, sizeof line)) != NULL) {
         if (starts(line, "#EXT-X-STREAM-INF")) {
             const char *bw = strstr(line, "BANDWIDTH=");
@@ -176,21 +212,35 @@ static int pick_variant(char *text, const char *base_url,
             if (fps)
                 pending_fps = (unsigned)strtoul(fps + 11, NULL, 10);
         } else if (line[0] && line[0] != '#' && pending) {
+            int fits;
             pending = 0;
-            if (options &&
-                ((options->hls_max_width && pending_width > options->hls_max_width) ||
-                 (options->hls_max_height && pending_height > options->hls_max_height) ||
-                 (options->hls_max_fps && pending_fps > options->hls_max_fps)))
-                continue;
-            if (!have || pending_bw < best_bw || best_bw == 0) {
-                if (mr_http_resolve_url(base_url, line, out, out_size)) {
-                    best_bw = pending_bw;
-                    have = 1;
-                }
+            /* Always track the lowest-bandwidth variant as a safety net. */
+            if (!have_fallback || pending_bw < fallback_bw) {
+                memcpy(fallback, line, sizeof fallback);
+                fallback_bw = pending_bw;
+                have_fallback = 1;
+            }
+            fits = !options ||
+                   ((!options->hls_max_width ||
+                     pending_width <= options->hls_max_width) &&
+                    (!options->hls_max_height ||
+                     pending_height <= options->hls_max_height) &&
+                    (!options->hls_max_fps ||
+                     pending_fps <= options->hls_max_fps));
+            if (fits &&
+                (!have_chosen ||
+                 (want_low ? pending_bw < chosen_bw : pending_bw > chosen_bw))) {
+                memcpy(chosen, line, sizeof chosen);
+                chosen_bw = pending_bw;
+                have_chosen = 1;
             }
         }
     }
-    return have;
+    if (have_chosen && mr_http_resolve_url(base_url, chosen, out, out_size))
+        return 1;
+    if (have_fallback && mr_http_resolve_url(base_url, fallback, out, out_size))
+        return 1;
+    return 0;
 }
 
 /* Merge a (possibly refreshed) media playlist into the segment list. Segments
@@ -253,8 +303,7 @@ static int open_seg(hls_source *h, size_t i)
      * the second close tear the first's state down twice. Closing first also
      * keeps only one segment's read-ahead buffer resident at a time. */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
-    s = mr_http_source_open_ex(h->segs[i],
-                               h->have_options ? &h->options : NULL);
+    s = hls_open(h->segs[i], h->have_options ? &h->options : NULL, 1);
     if (!s) return 0;
     len = mr_source_length(s);
     if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
@@ -264,6 +313,11 @@ static int open_seg(hls_source *h, size_t i)
     if (i + 1 > h->discovered) h->discovered = i + 1;
     mr_source_timing_add_hls_segment((unsigned long)
         ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
+    /* Hint the backend to begin fetching the next segment while this one plays,
+     * so its download latency is hidden instead of stalling the reader. */
+    if (g_backend_prefetch && i + 1 < h->nsegs)
+        g_backend_prefetch(h->segs[i + 1],
+                           h->have_options ? &h->options : NULL);
     return 1;
 }
 

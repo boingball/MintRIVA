@@ -10,6 +10,12 @@ void mr_play_options_default(mr_play_options *o)
     memset(o, 0, sizeof(*o));
     o->display = MR_DISPLAY_AGA;
     o->c2p = MR_C2P_STANDARD;
+    /* Default to the smallest HLS rendition: it is the one most likely to play
+     * on any machine, and picking a bigger one automatically can break a channel
+     * that worked (a 720p variant may be a codec we can't decode, or just too
+     * heavy). Higher quality is opt-in via --hls-max-height / clearing --hls-low.
+     * The picker still selects the *best* variant within the ceiling once low is
+     * off, so a caller that raises the ceiling gets the best stream that fits. */
     o->hls_low = 1;
     o->hls_max_width = 640;
     /* On by default for GUI-launched playback (IPTV streams are always live);
@@ -115,6 +121,7 @@ static int append_playback_flags(char *out, size_t cap,
         snprintf(number, sizeof(number), "--hls-max-fps=%u", o->hls_max_fps);
         if (!append_option(out, cap, number)) return 0;
     }
+    if (o->hls_prefetch && !append_option(out, cap, "--hls-prefetch")) return 0;
     if (o->live_resync && !append_option(out, cap, "--live-resync")) return 0;
     return 1;
 }
@@ -188,6 +195,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--scale-2x")) o->scale_2x = 1;
         else if (!strcmp(arg, "--no-scale-2x")) o->scale_2x = 0;
         else if (!strcmp(arg, "--hls-low")) o->hls_low = 1;
+        else if (!strcmp(arg, "--hls-prefetch")) o->hls_prefetch = 1;
         else if (!strcmp(arg, "--live-resync")) o->live_resync = 1;
         else if (!strcmp(arg, "--no-live-resync")) o->live_resync = 0;
         else if (!strncmp(arg, "--hls-max-width=", 16)) {
@@ -204,17 +212,30 @@ bad:
     return 0;
 }
 
+/* Short description of the current HLS rendition policy for the status line. */
+static void hls_policy_text(const mr_play_options *o, char *out, size_t cap)
+{
+    if (o->hls_low)
+        snprintf(out, cap, "HLS low");
+    else if (o->hls_max_height)
+        snprintf(out, cap, "HLS <=%up", o->hls_max_height);
+    else
+        snprintf(out, cap, "HLS best");
+}
+
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
+    char hls[24];
     if (!out || !cap || !o) return;
+    hls_policy_text(o, hls, sizeof hls);
     if (o->display == MR_DISPLAY_CGX)
-        snprintf(out, cap, "Playback: RTG / HLS low%s",
+        snprintf(out, cap, "Playback: RTG / %s%s", hls,
                  o->live_resync ? " / Live-resync" : "");
     else
-        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / HLS low%s",
+        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / %s%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" : "AGA",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
-                 o->scale_2x ? "on" : "off",
+                 o->scale_2x ? "on" : "off", hls,
                  o->live_resync ? " / Live-resync" : "");
 }

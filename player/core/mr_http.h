@@ -50,6 +50,12 @@ int mr_http_download_file(const char *url, const char *path, size_t max_size);
 int mr_http_resolve_url(const char *base_url, const char *rel,
                         char *out, size_t out_size);
 
+/* Release the process-wide socket/TLS state from the CURRENT task. bsdsocket
+ * must be closed by the task that opened it, so a background task that performed
+ * all the networking calls this before exiting; the atexit shutdown then no-ops.
+ * Idempotent. */
+void mr_http_net_shutdown(void);
+
 /* Non-zero once an unhealthy TLS drop has disabled HTTPS for the rest of this
  * process (see mr_http.c). A live player uses this to stop retrying a reconnect
  * that can never succeed and end cleanly instead. Always zero on non-TLS

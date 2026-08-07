@@ -301,6 +301,8 @@ int main(void) {
     assert(!strstr(args, "--aga") && !strstr(args, "--kalms-c2p"));
     options.hls_low = 0;
     options.hls_max_width = 0;
+    options.hls_max_height = 0;
+    options.live_resync = 0; /* off by default only for a bare "mrplay <url>" */
     assert(!strcmp(args + strlen(args) - strlen(launch.url) - 3,
                    "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,

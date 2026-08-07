@@ -12,9 +12,29 @@
 #include "mr_source.h"
 #include "mr_raw_mjpeg.h"
 #include "mr_raw_mpeg4.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* Record why a transport-stream open failed. When the PMT carried a video codec
+ * we recognise but cannot decode (e.g. HEVC), name it so the player can tell the
+ * user *what* it couldn't play rather than a generic container error. */
+static void set_ts_open_error(const mr_ts *ts)
+{
+    const char *name = ts->unsupported_video_type
+                           ? mr_ts_video_type_name(ts->unsupported_video_type)
+                           : NULL;
+    if (name) {
+        char msg[96];
+        snprintf(msg, sizeof msg,
+                 "%s video is not supported (MPEG-TS stream type 0x%02x)", name,
+                 (unsigned)ts->unsupported_video_type);
+        mr_source_set_error(msg);
+    } else {
+        mr_source_set_error("unsupported or malformed MPEG-TS stream");
+    }
+}
 
 struct mr_demux {
     mr_container kind;
@@ -90,6 +110,7 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
     else
         st = mr_raw_mpeg4_open(&d->u.raw_mpeg4, buf, len);
     if (st != MR_OK) {
+        if (kind == MR_CONTAINER_TS) set_ts_open_error(&d->u.ts);
         if (kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
         else if (kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
         else if (kind == MR_CONTAINER_TS) mr_ts_close(&d->u.ts);
@@ -154,10 +175,13 @@ mr_demux *mr_demux_open_file_ex(const char *path,
     else
         st = mr_ts_open_source(&d->u.ts, source, end);
     if (st != MR_OK) {
+        if (kind == MR_CONTAINER_TS)
+            set_ts_open_error(&d->u.ts);
+        else
+            mr_source_set_error("unsupported or malformed streamed container");
         if (kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
         else if (kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
         else mr_ts_close(&d->u.ts);
-        mr_source_set_error("unsupported or malformed streamed container");
         mr_source_close(source);
         free(d);
         return NULL;
