@@ -66,9 +66,14 @@ void __chkabort(void) { }
  * allocated lazily per used entry. A deep network buffer lets decoded frames
  * wait and present in PTS order as they fall due (rather than the shallow queue
  * dropping the nearly-due frame when video runs ahead of the audio clock), and
- * carries enough video to ride across a segment-boundary refetch. ~1.3 s at
- * 25 fps. */
-#define VIDEO_QUEUE_CAP 32
+ * carries enough video to ride across a segment-boundary refetch.
+ *
+ * Each occupied slot is a full decoded RGB frame (~0.7 MB at 640x360), so the
+ * cap dominates the player's Fast-RAM footprint: 16 slots is ~11 MB, ~0.6 s at
+ * 25 fps - enough to pace presentation and smooth per-frame decode jitter, and
+ * kind to Fast-RAM-tight machines. Riding a whole segment-fetch stall is the
+ * prefetch worker's job (at the far cheaper compressed level), not this queue's. */
+#define VIDEO_QUEUE_CAP 16
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
@@ -1291,6 +1296,14 @@ int main(int argc, char **argv)
         int net_target = net_queue > 0
             ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
         int target_depth = network_source ? net_target : 3;
+        /* Cap how many decoded RGB frames the queue may hold. Each is a full
+         * frame (e.g. ~0.7 MB at 640x360), so 32 is ~22 MB - too much on a
+         * Fast-RAM-tight machine. The deep queue only earns its keep riding
+         * segment stalls; the prefetch worker already does that at the (cheap)
+         * compressed level, so cap the decoded queue shallow when it is on. The
+         * ring buffer itself stays VIDEO_QUEUE_CAP-sized; this only limits how
+         * many slots are filled. */
+        int video_cap = prefetch_on && VIDEO_QUEUE_CAP > 12 ? 12 : VIDEO_QUEUE_CAP;
         int prev_master_source = -1;
 
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
@@ -1792,9 +1805,18 @@ int main(int argc, char **argv)
              * cushion then never rebuilds and playback settles into a degraded
              * state. Keep demuxing to top the cushion back up; the extra video
              * decoded meanwhile fills toward the queue cap and is only dropped
-             * (reference-only) once the cap is hit. */
+             * (reference-only) once the cap is hit.
+             *
+             * That deep cushion exists to ride segment-fetch stalls in the
+             * single-threaded model; it is also what drives the decoded-frame
+             * queue to its full (memory-heavy) depth. With the prefetch worker
+             * absorbing those stalls at the compressed level, a small cushion is
+             * enough - and it keeps the decoded queue (and RAM use) shallow,
+             * which matters on Fast-RAM-tight machines. */
+            unsigned long cushion_ms =
+                prefetch_on ? 600UL : AUDIO_CUSHION_TARGET_MS;
             int feed_audio_full = audio && qcount >= target_depth &&
-                                  audio_ms < AUDIO_CUSHION_TARGET_MS;
+                                  audio_ms < cushion_ms;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
                              (rescue_active || startup_refill ||
                               qcount < target_depth || feed_audio_full);
@@ -1849,7 +1871,7 @@ int main(int argc, char **argv)
                      * so decode it reference-only: keep the reference chain
                      * intact without spending time producing RGB we discard.
                      * This is what makes the audio-cushion top-up above cheap. */
-                    mr_h264_set_skip_output(&dec, qcount >= VIDEO_QUEUE_CAP);
+                    mr_h264_set_skip_output(&dec, qcount >= video_cap);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
@@ -1896,7 +1918,7 @@ int main(int argc, char **argv)
                             stats.video_decode_max_us = decode_us;
                         {
                             int retain = !startup_refill ||
-                                         qcount < VIDEO_QUEUE_CAP ||
+                                         qcount < video_cap ||
                                          rescue_active;
                             if (rescue_active) {
                                 rescue_episode_video++;
@@ -1911,7 +1933,7 @@ int main(int argc, char **argv)
                                 decoded_index++;
                                 continue;
                             }
-                            if (qcount == VIDEO_QUEUE_CAP) {
+                            if (qcount >= video_cap) {
                                 /* Queue full. Every queued frame is closer to
                                  * its deadline than this freshly decoded one,
                                  * which sits furthest in the future, so keep

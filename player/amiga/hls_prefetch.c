@@ -45,7 +45,9 @@
 #define PF_URL_MAX 1300           /* >= the longest HLS URL we resolve        */
 #define PF_STACK   300000UL       /* HTTPS/AmiSSL needs a deep stack           */
 #define PF_SEGMENT_MAX (24UL * 1024 * 1024) /* refuse absurd segment lengths   */
-#define PF_MEM_FLOOR   (12UL * 1024 * 1024) /* keep this much fast RAM spare    */
+#define PF_MEM_FLOOR   (4UL * 1024 * 1024)  /* keep this much fast RAM spare -
+                                             * only a true-exhaustion backstop,
+                                             * not a working-set limit          */
 
 /* main <-> worker request (reused; one in flight at a time) */
 typedef struct {
