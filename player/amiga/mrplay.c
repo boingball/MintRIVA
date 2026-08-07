@@ -951,6 +951,7 @@ int main(int argc, char **argv)
     mr_packet pkt;
     long ticks;
     int frames = 0;
+    int announced_playing = 0;  /* PLAYING is published once a frame is on screen */
     int want_time = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
     int raw_diag_printed = 0;
     int hls_low = 0;
@@ -1181,12 +1182,16 @@ int main(int argc, char **argv)
            (unsigned long)(((vi->rate % (vi->scale ? vi->scale : 1)) * 1000) /
                            (vi->scale ? vi->scale : 1)));
     printf("%dx%d, opening display...\n", vi->width, vi->height);
-    /* Tell the IPTV controller which codec is on screen. */
+    /* We have a decodable stream, but nothing is on screen yet: the display
+     * still has to open and the first frame has to buffer and decode, either of
+     * which can stall on a slow/dead link. Report OPENING (not PLAYING) here so
+     * the controller does not show "streaming" for a stream that never renders;
+     * PLAYING is published from the presentation path once a frame is shown. */
     {
         char line[MR_PLAYER_STATUS_TEXT_MAX];
-        snprintf(line, sizeof line, "%dx%d, %s", vi->width, vi->height,
-                 mr_demux_container_name(dx));
-        player_status(MR_PLAYER_STATE_PLAYING, codec->name, line);
+        snprintf(line, sizeof line, "Buffering %s (%dx%d, %s)...", codec->name,
+                 vi->width, vi->height, mr_demux_container_name(dx));
+        player_status(MR_PLAYER_STATE_OPENING, codec->name, line);
     }
     disp = display_open(vi->width, vi->height, "MintRIVA");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
@@ -1680,6 +1685,15 @@ int main(int argc, char **argv)
             }
             stats.latency_us += monotonic_us() - front->decoded_at_us;
             stats.presented++; frames++;
+            /* First frame actually on screen: now the stream is genuinely
+             * playing, so tell the controller (it has shown OPENING until now). */
+            if (!announced_playing) {
+                char line[MR_PLAYER_STATUS_TEXT_MAX];
+                announced_playing = 1;
+                snprintf(line, sizeof line, "%dx%d, %s", vi->width, vi->height,
+                         mr_demux_container_name(dx));
+                player_status(MR_PLAYER_STATE_PLAYING, codec->name, line);
+            }
             qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
             now = monotonic_us();
             if (want_time && now - stats.since_us >= STATS_INTERVAL_US) {
@@ -2103,7 +2117,20 @@ int main(int argc, char **argv)
         }
     }
 
-    if (!quit) {
+    /* Publish ENDED *before* any idle wait so the controller sees the true state
+     * even while a local-file window lingers. */
+    player_status(MR_PLAYER_STATE_ENDED, codec->name, "stream ended");
+
+    /* A network stream that has ended (dropped out, or a live source that
+     * refused to keep playing) must let this process exit so its working set -
+     * the HTTP rewind cache, decoder, decoded-frame queue, audio buffers and the
+     * prefetch worker's socket/TLS - is freed and the captured log file is
+     * released. Idling here "until ESC" would strand all of that in RAM and hold
+     * the log open (MODE_NEWFILE is exclusive), which is exactly how repeated
+     * failed streams leak memory and pile up. Keep the "press ESC" hold only for
+     * a local file played from a Shell, where lingering on the last frame is the
+     * intended behaviour. */
+    if (!quit && !mr_source_is_url(media_path)) {
         printf("played %d frames - press ESC or close the window to exit\n",
                frames);
         while (player_event(disp) != MR_EV_QUIT) {
@@ -2112,7 +2139,6 @@ int main(int argc, char **argv)
         }
     }
 
-    player_status(MR_PLAYER_STATE_ENDED, codec->name, "stream ended");
     { int qi; for (qi = 0; qi < VIDEO_QUEUE_CAP; qi++) free(vq[qi].rgb); }
     if (audio_dec) mr_audio_decoder_close(audio_dec);
     if (audio) audio_close(audio);
