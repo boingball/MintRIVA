@@ -37,6 +37,9 @@ typedef struct {
     uint16_t       audio_pid;
     uint8_t        video_type;
     uint8_t        audio_type;
+    uint8_t        unsupported_video_type; /* first video codec in the PMT we
+                                            * cannot decode, 0 if none: lets the
+                                            * caller name what it can't play  */
 
     mr_ts_pes      video_pes;
     mr_ts_pes      audio_pes;
@@ -53,6 +56,9 @@ typedef struct {
 
 mr_status mr_ts_open(mr_ts *t, const uint8_t *buf, size_t len);
 mr_status mr_ts_open_source(mr_ts *t, mr_source *source, size_t len);
+/* Human-readable name for a PMT video stream_type we don't decode (e.g. HEVC),
+ * or NULL if the type is not a recognised video codec. */
+const char *mr_ts_video_type_name(unsigned stream_type);
 mr_status mr_ts_next_packet(mr_ts *t, mr_packet *pkt);
 void      mr_ts_rewind(mr_ts *t);
 void      mr_ts_close(mr_ts *t);

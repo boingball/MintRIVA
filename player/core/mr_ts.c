@@ -113,6 +113,24 @@ static void parse_pat(mr_ts *t, const uint8_t *p, size_t len, int pusi)
     }
 }
 
+/* Names for the common PMT video stream_types we can identify but do not have a
+ * decoder for. Returns NULL for audio/data/private types and for the video
+ * types we *do* decode (MPEG-1/2, H.264) - callers only use this to explain a
+ * failure. Values per ITU-T H.222.0 stream_type assignments and de-facto
+ * registrations. */
+const char *mr_ts_video_type_name(unsigned stream_type)
+{
+    switch (stream_type) {
+    case 0x10: return "MPEG-4 Part 2";
+    case 0x24:
+    case 0x25: return "H.265/HEVC";
+    case 0x42: return "AVS";
+    case 0xd1: return "Dirac";
+    case 0xea: return "VC-1";
+    default:   return NULL;
+    }
+}
+
 static void parse_pmt(mr_ts *t, const uint8_t *p, size_t len, int pusi)
 {
     size_t section_len, end, pos, program_info_len, skip;
@@ -142,6 +160,13 @@ static void parse_pmt(mr_ts *t, const uint8_t *p, size_t len, int pusi)
                    t->audio_pid == TS_PID_NONE) {
             t->audio_pid = pid;                  /* AAC with ADTS            */
             t->audio_type = type;
+        } else if (t->video_pid == TS_PID_NONE &&
+                   !t->unsupported_video_type &&
+                   mr_ts_video_type_name(type)) {
+            /* A video track we have no decoder for (HEVC, MPEG-4, VC-1...).
+             * Remember it so a failed open can name what it couldn't play
+             * instead of a generic "unsupported container". */
+            t->unsupported_video_type = type;
         }
         pos += 5 + es_info_len;
     }

@@ -1047,10 +1047,22 @@ int main(int argc, char **argv)
         if (mr_demux_is_file_backed_container(media_path)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];
             const char *why = mr_demux_last_open_error();
+            /* A "not supported"/"no decoder" reason is a codec/container we
+             * can't play (e.g. HEVC); anything else is a connection/read fault.
+             * Report them as different states so the browser can distinguish
+             * "wrong codec" from "bad link". */
+            int unsupported = why && (strstr(why, "not supported") ||
+                                      strstr(why, "unsupported") ||
+                                      strstr(why, "no decoder"));
             printf("cannot open stream: %s\n", why);
-            snprintf(reason, sizeof reason, "cannot open stream: %s",
-                     why ? why : "connection failed");
-            player_status(MR_PLAYER_STATE_ERROR, "", reason);
+            if (unsupported) {
+                snprintf(reason, sizeof reason, "%s", why);
+                player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
+            } else {
+                snprintf(reason, sizeof reason, "cannot open stream: %s",
+                         why ? why : "connection failed");
+                player_status(MR_PLAYER_STATE_ERROR, "", reason);
+            }
             status_hold();
             return 10;
         }
