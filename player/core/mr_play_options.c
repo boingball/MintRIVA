@@ -10,8 +10,12 @@ void mr_play_options_default(mr_play_options *o)
     memset(o, 0, sizeof(*o));
     o->display = MR_DISPLAY_AGA;
     o->c2p = MR_C2P_STANDARD;
-    o->hls_low = 1;
-    o->hls_max_width = 640;
+    /* Auto-pick the best HLS rendition up to 1280x720 by default: enough for a
+     * PiStorm-class machine to use its headroom, while still declining 1080p.
+     * --hls-low overrides this to force the smallest rendition on slow gear. */
+    o->hls_low = 0;
+    o->hls_max_width = 1280;
+    o->hls_max_height = 720;
     /* On by default for GUI-launched playback (IPTV streams are always live);
      * a direct "mrplay <url>" invocation keeps its own conservative default of
      * off. Disable with --no-live-resync. */
@@ -204,17 +208,30 @@ bad:
     return 0;
 }
 
+/* Short description of the current HLS rendition policy for the status line. */
+static void hls_policy_text(const mr_play_options *o, char *out, size_t cap)
+{
+    if (o->hls_low)
+        snprintf(out, cap, "HLS low");
+    else if (o->hls_max_height)
+        snprintf(out, cap, "HLS <=%up", o->hls_max_height);
+    else
+        snprintf(out, cap, "HLS best");
+}
+
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
+    char hls[24];
     if (!out || !cap || !o) return;
+    hls_policy_text(o, hls, sizeof hls);
     if (o->display == MR_DISPLAY_CGX)
-        snprintf(out, cap, "Playback: RTG / HLS low%s",
+        snprintf(out, cap, "Playback: RTG / %s%s", hls,
                  o->live_resync ? " / Live-resync" : "");
     else
-        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / HLS low%s",
+        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / %s%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" : "AGA",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
-                 o->scale_2x ? "on" : "off",
+                 o->scale_2x ? "on" : "off", hls,
                  o->live_resync ? " / Live-resync" : "");
 }
