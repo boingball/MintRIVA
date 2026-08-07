@@ -1545,6 +1545,14 @@ int main(int argc, char **argv)
         if (input_eof && !qcount && !loop && network_source && live_resync) {
             int tries, backoff = 12;                 /* ~0.5 s, grows to ~4 s   */
             const mr_video_info *nvi;
+            /* If an unhealthy TLS drop has disabled HTTPS for this process, no
+             * reopen can ever succeed - end cleanly instead of spinning through
+             * every retry. (This is the AmiSSL "relaunch to resume" limitation.) */
+            if (mr_http_tls_disabled()) {
+                display_set_status(disp, "Connection lost - relaunch");
+                if (want_time) printf("live-reconnect: HTTPS disabled, ending\n");
+                break;
+            }
             /* Give up if we keep reopening but never actually play: a stream that
              * reconnects and immediately ends again would otherwise spin on the
              * network. Any presented frame since the last reopen counts as
