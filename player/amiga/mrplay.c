@@ -906,7 +906,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
-            else if (!strcmp(argv[i], "--time")) want_time = 1;
+            else if (!strcmp(argv[i], "--time")) { want_time = 1; display_set_timing_mode(1); }
             else if (!strcmp(argv[i], "--hls-low")) hls_low = 1;
             else if (!strncmp(argv[i], "--hls-max-width=", 16))
                 hls_max_width = (unsigned)strtoul(argv[i] + 16, NULL, 10);

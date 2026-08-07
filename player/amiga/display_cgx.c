@@ -34,12 +34,26 @@ typedef struct {
     unsigned char *scaled;   /* persistent RGB24 destination                */
     size_t         scaled_size;
     int            scaled_w, scaled_h, scaled_stride;
+    /* geometry cache --------------------------------------------------------
+     * These are initialised to impossible sentinels so that the first call to
+     * cgx_show() always enters cgx_rebuild_geometry(), fully priming the RTG
+     * state before the first frame is blitted (not lazily mid-presentation).
+     * geometry_valid is cleared whenever the cached values need recomputation.
+     */
+    int            cached_dst_w;    /* -1 sentinel  = rebuild required       */
+    int            cached_dst_h;    /* -1 sentinel  = rebuild required       */
+    struct BitMap *cached_bitmap;   /* NULL sentinel = rebuild required      */
+    int            geometry_valid;  /* 0 = rebuild required                  */
     mr_display_timing timing;
     int            quit;
     const char    *title;    /* last status shown, for idempotent updates      */
 } cgx_state;
 
 #define ESC_RAWKEY 0x45
+
+/* Forward declarations (implementations follow cgx_open in source order). */
+static void cgx_rebuild_geometry(cgx_state *s, const char *reason);
+static int  ensure_scaled(cgx_state *s, int w, int h);
 
 /* Having cybergraphics.library is not enough - the actual public screen we'd
  * render into must be an RTG/truecolour mode. On an AGA (planar) Workbench,
@@ -86,12 +100,79 @@ static void *cgx_open(int w, int h, const char *title)
     s->iw = s->win->Width - s->win->BorderLeft - s->win->BorderRight;
     s->ih = s->win->Height - s->win->BorderTop - s->win->BorderBottom;
     s->pending_w = s->iw; s->pending_h = s->ih;
+
+    /* Initialise geometry cache with impossible sentinels so that the first
+     * cgx_show() call always triggers cgx_rebuild_geometry(), matching the
+     * RTG state that a resize round-trip would produce.                     */
+    s->cached_dst_w  = -1;
+    s->cached_dst_h  = -1;
+    s->cached_bitmap = NULL;
+    s->geometry_valid = 0;
+
+    /* Prime the cache before the first frame is presented. */
+    cgx_rebuild_geometry(s, "init");
+
     return s;
 }
 
 static unsigned long elapsed_us(clock_t begin)
 {
     return (unsigned long)((clock() - begin) * 1000000UL / CLOCKS_PER_SEC);
+}
+
+/*
+ * Rebuild all RTG geometry and cache state atomically.
+ *
+ * This is the single shared path for initial window creation, resize events
+ * and screen/bitmap changes.  Callers set geometry_valid = 0 (or the sentinel
+ * values) to force a rebuild; the result is stored back into the cache so
+ * subsequent frames skip the work entirely.
+ */
+static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
+{
+    struct BitMap *bm;
+    int buf_reallocd, bm_changed, scale_map_changed;
+    ULONG bm_depth = 0;
+
+    /* Re-read inner dimensions from the live window struct; these reflect the
+     * post-open, post-resize values as reported by Intuition.               */
+    s->bl = s->win->BorderLeft;
+    s->bt = s->win->BorderTop;
+    s->iw = s->win->Width  - s->win->BorderLeft - s->win->BorderRight;
+    s->ih = s->win->Height - s->win->BorderTop  - s->win->BorderBottom;
+    if (s->iw < 1) s->iw = 1;
+    if (s->ih < 1) s->ih = 1;
+
+    /* Detect whether the output dimensions (and thus the scale factors) have
+     * changed from the previously cached values.                             */
+    scale_map_changed = (s->iw != s->cached_dst_w || s->ih != s->cached_dst_h);
+
+    /* Query destination bitmap for depth / pitch.  Available only on real RTG
+     * hardware where CyberGfxBase is present; safe to skip if not.          */
+    bm = s->win->RPort->BitMap;
+    bm_changed = (bm != s->cached_bitmap);
+    if (bm && CyberGfxBase)
+        bm_depth = GetCyberMapAttr(bm, CYBRMATTR_DEPTH);
+
+    /* Allocate or reallocate the persistent scale buffer now, before the
+     * first frame, so there is no heap allocation during presentation.      */
+    buf_reallocd = !(s->scaled && s->scaled_w == s->iw && s->scaled_h == s->ih);
+    ensure_scaled(s, s->iw, s->ih);   /* failure handled in cgx_show        */
+
+    /* Cache the new geometry. */
+    s->cached_dst_w  = s->iw;
+    s->cached_dst_h  = s->ih;
+    s->cached_bitmap = bm;
+    s->geometry_valid = 1;
+
+    if (g_display_want_time)
+        printf("rtg-geometry reason=%s iw=%d ih=%d "
+               "bm-changed=%d buf-realloc=%d scale-map-rebuild=%d "
+               "depth=%lu\n",
+               reason ? reason : "?",
+               s->iw, s->ih,
+               bm_changed, buf_reallocd, scale_map_changed,
+               (unsigned long)bm_depth);
 }
 
 static void report_slow(const char *operation, unsigned long usec,
@@ -154,11 +235,21 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     if (!s || !s->win) return;
     memset(&s->timing, 0, sizeof s->timing);
     total = mark = clock();
-    /* Coalesce the storm of NEWSIZE messages: keep drawing the last stable
-     * geometry until Intuition has been quiet for 100 ms. */
-    if ((s->pending_w != s->iw || s->pending_h != s->ih) &&
-        clock() - s->resize_at >= CLOCKS_PER_SEC / 10) {
-        s->iw = s->pending_w; s->ih = s->pending_h;
+    /* Rebuild RTG geometry when:
+     *   - geometry has never been built (geometry_valid == 0, handles first frame)
+     *   - the window's bitmap changed (screen mode flip)
+     *   - a resize has been pending long enough (Intuition quiet for 100 ms)   */
+    {
+        struct BitMap *cur_bm = s->win->RPort->BitMap;
+        int need_rebuild = !s->geometry_valid || cur_bm != s->cached_bitmap;
+        if (!need_rebuild &&
+            (s->pending_w != s->iw || s->pending_h != s->ih) &&
+            clock() - s->resize_at >= CLOCKS_PER_SEC / 10)
+            need_rebuild = 1;
+        if (need_rebuild)
+            cgx_rebuild_geometry(s, !s->geometry_valid ? "invalid" :
+                                  cur_bm != s->cached_bitmap ? "bitmap-change"
+                                                              : "resize");
     }
     s->timing.resize_us = elapsed_us(mark);
     report_slow("resize-handling", s->timing.resize_us, service, service_opaque);

@@ -25,6 +25,7 @@ int g_aga_c2p   = 0;   /* WritePixelArray8 by default (measured faster);
                         * --c2p opts into the built-in transpose C2P */
 int g_aga_lace  = 0;
 int g_aga_akiko = 0;
+int g_display_want_time = 0;  /* enable RTG geometry diagnostics (--time)   */
 
 void display_set_force_aga(int on) { g_force_aga = on; }
 void display_set_ham(int bits) { g_aga_ham = bits; if (bits) g_force_aga = 1; }
@@ -34,6 +35,7 @@ void display_set_riva_c2p(int on) { g_aga_c2p = on ? 2 : 0; }
 void display_set_kalms_c2p(int on) { g_aga_c2p = on ? 3 : 0; }
 void display_set_lace(int on)  { g_aga_lace = on ? 1 : 0; }
 void display_set_akiko(int on) { g_aga_akiko = on ? 1 : 0; }
+void display_set_timing_mode(int on) { g_display_want_time = on ? 1 : 0; }
 
 struct amiga_display {
     const display_backend *be;

@@ -42,4 +42,7 @@ extern struct IntuitionBase *IntuitionBase;
 extern struct GfxBase       *GfxBase;
 extern struct Library       *CyberGfxBase;
 
+/* Set non-zero to enable timing/diagnostic printf output.  Wired to --time. */
+extern int g_display_want_time;
+
 #endif /* DISPLAY_BACKEND_H */
