@@ -31,6 +31,7 @@ typedef struct mr_http_options {
     unsigned hls_max_width;
     unsigned hls_max_height;
     unsigned hls_max_fps;
+    int hls_timing;
 } mr_http_options;
 
 int mr_http_options_init(mr_http_options *options, const char *user_agent,

@@ -24,6 +24,14 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef AMIGA_M68K
+#include <exec/types.h>
+#include <exec/tasks.h>
+#include <dos/dostags.h>
+#include <proto/exec.h>
+#include <proto/dos.h>
+#endif
+
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
 #define HLS_URL_MAX      1024
 
@@ -32,6 +40,15 @@
  * full HTTP round-trip, which on real hardware paces the polling; this only
  * bounds a genuinely stalled or dead stream. */
 #define HLS_LIVE_REFETCH_MAX 240
+#define HLS_ASYNC_SLOTS 2
+
+typedef struct {
+    size_t index;
+    unsigned char *bytes;
+    size_t length;
+    size_t read_pos;
+    volatile int state;             /* 0 free, 1 complete/published */
+} hls_segment_buffer;
 
 typedef struct {
     char   **segs;        /* resolved segment URLs                            */
@@ -47,6 +64,14 @@ typedef struct {
     unsigned long next_seq; /* media-sequence of the next not-yet-queued seg  */
     mr_http_options options; /* inherited by playlists and segments            */
     int      have_options;
+#ifdef AMIGA_M68K
+    hls_segment_buffer slots[HLS_ASYNC_SLOTS];
+    struct Task *parent_task, *worker_task;
+    BYTE ready_sig, stopped_sig, data_sig, wake_sig;
+    volatile int worker_ready, stop_worker, worker_done, worker_failed;
+    size_t worker_next;
+    int async;
+#endif
 } hls_source;
 
 /* ---- URL detection ----------------------------------------------------- */
@@ -323,7 +348,16 @@ static int hls_refetch_live(hls_source *h)
         int added;
         mr_status st;
         if (!text) return 0;                       /* playlist gone / error    */
+#ifdef AMIGA_M68K
+        /* merge_playlist may grow/reallocate the arrays observed by the
+         * consumer.  Amiga tasks share one address space, so prevent a task
+         * switch only for this short publication transaction. */
+        if (h->async) Forbid();
+#endif
         st = merge_playlist(text, h->playlist_url, h, &added);
+#ifdef AMIGA_M68K
+        if (h->async) Permit();
+#endif
         free(text);
         if (st != MR_OK) return 0;
         if (added > 0) return 1;                    /* fresh segments to play   */
@@ -333,11 +367,180 @@ static int hls_refetch_live(hls_source *h)
     return 0;
 }
 
+#ifdef AMIGA_M68K
+/* The worker is the sole owner of every HTTP source after async is published.
+ * A slot belongs to the worker while free and to the reader from publication
+ * until the reader advances to the following segment.  State changes happen
+ * under Forbid(), then a signal wakes the other side. */
+static int fetch_segment_buffer(hls_source *h, size_t i,
+                                unsigned char **bytes, size_t *length)
+{
+    mr_source *s;
+    size_t len;
+    unsigned char *p;
+    int attempt;
+    for (attempt = 0; attempt < 3 && !h->stop_worker; attempt++) {
+        clock_t started = clock();
+        if (h->options.hls_timing)
+            printf("HLS prefetch: start segment %lu queue=%u\n",
+                   (unsigned long)i, (unsigned)(h->slots[0].state + h->slots[1].state));
+        s = mr_http_source_open_ex(h->segs[i],
+                                   h->have_options ? &h->options : NULL);
+        if (s) {
+            len = mr_source_length(s);
+            if (len && len != MR_SOURCE_LEN_UNKNOWN &&
+                (p = (unsigned char *)malloc(len)) != NULL) {
+                if (mr_source_read_at(s, 0, p, len)) {
+                    unsigned long ms = (unsigned long)
+                        ((clock() - started) * 1000UL / CLOCKS_PER_SEC);
+                    mr_source_close(s);
+                    mr_source_timing_add_hls_segment(ms);
+                    if (h->options.hls_timing)
+                        printf("HLS prefetch: end segment %lu %lu bytes %lu ms\n",
+                               (unsigned long)i, (unsigned long)len, ms);
+                    *bytes = p; *length = len;
+                    return 1;
+                }
+                free(p);
+            }
+            mr_source_close(s);
+        }
+        if (!h->stop_worker) Delay(10); /* bounded reconnect, no spin */
+    }
+    return 0;
+}
+
+static void hls_worker_entry(void)
+{
+    struct Task *self = FindTask(NULL);
+    hls_source *h;
+    Wait(SIGBREAKF_CTRL_F); /* parent publishes tc_UserData after creation */
+    h = (hls_source *)self->tc_UserData;
+    if (!h) return;
+    h->worker_task = self;
+    h->wake_sig = AllocSignal(-1);
+    h->worker_ready = h->wake_sig >= 0;
+    Signal(h->parent_task, 1UL << h->ready_sig);
+    if (!h->worker_ready) goto done;
+    while (!h->stop_worker) {
+        size_t i = h->worker_next;
+        hls_segment_buffer *slot;
+        unsigned char *bytes;
+        size_t length;
+        if (i >= h->nsegs) {
+            if (!h->live || !hls_refetch_live(h)) break;
+            continue;
+        }
+        slot = &h->slots[i % HLS_ASYNC_SLOTS];
+        if (slot->state) {
+            Wait((1UL << h->wake_sig) | SIGBREAKF_CTRL_C);
+            continue;
+        }
+        if (!fetch_segment_buffer(h, i, &bytes, &length)) {
+            if (!h->stop_worker) h->worker_failed = 1;
+            break;
+        }
+        Forbid();
+        slot->index = i; slot->bytes = bytes; slot->length = length;
+        slot->read_pos = 0; slot->state = 1;
+        h->seg_start[i + 1] = h->seg_start[i] + length;
+        if (i + 1 > h->discovered) h->discovered = i + 1;
+        h->worker_next = i + 1;
+        Permit();
+        Signal(h->parent_task, 1UL << h->data_sig);
+    }
+done:
+    if (h->wake_sig >= 0) { FreeSignal(h->wake_sig); h->wake_sig = -1; }
+    h->worker_done = 1;
+    h->worker_task = NULL;
+    Signal(h->parent_task, 1UL << h->stopped_sig);
+    Signal(h->parent_task, 1UL << h->data_sig);
+}
+
+static int hls_async_start(hls_source *h)
+{
+    struct Process *p;
+    h->ready_sig = AllocSignal(-1); h->stopped_sig = AllocSignal(-1);
+    h->data_sig = AllocSignal(-1); h->wake_sig = -1;
+    if (h->ready_sig < 0 || h->stopped_sig < 0 || h->data_sig < 0) goto fail;
+    h->parent_task = FindTask(NULL);
+    p = CreateNewProcTags(NP_Entry, (ULONG)hls_worker_entry,
+                          NP_Name, (ULONG)"MintRIVA HLS prefetch",
+                          NP_StackSize, 32768, TAG_DONE);
+    if (!p) goto fail;
+    p->pr_Task.tc_UserData = h;
+    Signal(&p->pr_Task, SIGBREAKF_CTRL_F);
+    Wait(1UL << h->ready_sig);
+    if (!h->worker_ready) { Wait(1UL << h->stopped_sig); goto fail; }
+    h->async = 1;
+    return 1;
+fail:
+    if (h->ready_sig >= 0) FreeSignal(h->ready_sig);
+    if (h->stopped_sig >= 0) FreeSignal(h->stopped_sig);
+    if (h->data_sig >= 0) FreeSignal(h->data_sig);
+    h->ready_sig = h->stopped_sig = h->data_sig = -1;
+    return 0;
+}
+
+static void hls_async_stop(hls_source *h)
+{
+    size_t i;
+    if (!h->async) return;
+    h->stop_worker = 1;
+    if (h->worker_task) {
+        Signal(h->worker_task, (h->wake_sig >= 0 ? 1UL << h->wake_sig : 0) |
+                               SIGBREAKF_CTRL_C);
+        Wait(1UL << h->stopped_sig);
+    }
+    for (i = 0; i < HLS_ASYNC_SLOTS; i++) free(h->slots[i].bytes);
+    FreeSignal(h->ready_sig); FreeSignal(h->stopped_sig); FreeSignal(h->data_sig);
+    h->async = 0;
+}
+#endif
+
 static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
 {
     hls_source *h = (hls_source *)opaque;
     unsigned char *out = (unsigned char *)dst;
     if (!len) return 1;
+#ifdef AMIGA_M68K
+    if (h->async) {
+        while (len) {
+            size_t i, local, avail, take;
+            hls_segment_buffer *slot;
+            for (i = 0; i < h->discovered; i++)
+                if (off < h->seg_start[i + 1]) break;
+            if (i >= h->discovered) {
+                if (h->worker_done) return 0;
+                if (h->options.hls_timing)
+                    printf("HLS prefetch: buffer underrun at %lu, waiting queue=0\n",
+                           (unsigned long)off);
+                Wait((1UL << h->data_sig) | SIGBREAKF_CTRL_C);
+                continue;
+            }
+            /* Crossing the boundary is the ownership hand-off: the consumer
+             * can no longer reference the preceding complete buffer. */
+            {
+                hls_segment_buffer *old = &h->slots[(i + 1) % HLS_ASYNC_SLOTS];
+                if (old->state && old->index < i) {
+                    free(old->bytes); old->bytes = NULL; old->state = 0;
+                    if (h->worker_task) Signal(h->worker_task, 1UL << h->wake_sig);
+                }
+            }
+            slot = &h->slots[i % HLS_ASYNC_SLOTS];
+            if (!slot->state || slot->index != i) return 0;
+            local = off - h->seg_start[i];
+            avail = slot->length - local; take = len < avail ? len : avail;
+            memcpy(out, slot->bytes + local, take); slot->read_pos = local + take;
+            out += take; off += take; len -= take;
+            if (slot->read_pos == slot->length && len) {
+                free(slot->bytes); slot->bytes = NULL; slot->state = 0;
+                if (h->worker_task) Signal(h->worker_task, 1UL << h->wake_sig);
+            }
+        }
+        return 1;
+    }
+#endif
     while (len) {
         size_t i = locate(h, off);
         size_t local, avail, take;
@@ -362,6 +565,9 @@ static void hls_close(void *opaque)
     hls_source *h = (hls_source *)opaque;
     size_t i;
     if (!h) return;
+#ifdef AMIGA_M68K
+    hls_async_stop(h);
+#endif
     if (h->cur) mr_source_close(h->cur);
     for (i = 0; i < h->nsegs; i++) free(h->segs[i]);
     free(h->segs);
@@ -418,6 +624,7 @@ mr_source *mr_hls_source_open_ex(const char *url,
         h->options.hls_max_width = options->hls_max_width;
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
+        h->options.hls_timing = options->hls_timing;
     }
     st = merge_playlist(text, base, h, &added);
     free(text);
@@ -439,6 +646,12 @@ mr_source *mr_hls_source_open_ex(const char *url,
         }
         strcpy(h->playlist_url, base);
     }
+
+#ifdef AMIGA_M68K
+    /* Failure before worker_ready leaves HTTP ownership in this task and the
+     * original synchronous source remains a safe, allocation-bounded fallback. */
+    hls_async_start(h);
+#endif
 
     /* Streaming (unknown total length): the demuxer reads forward and treats a
      * short read as end of stream. mr_source_create already closes the context

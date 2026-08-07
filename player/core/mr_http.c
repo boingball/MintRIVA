@@ -1433,6 +1433,7 @@ mr_source *mr_http_source_open_ex(const char *url,
         h->options.hls_max_width = options->hls_max_width;
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
+        h->options.hls_timing = options->hls_timing;
     }
     h->cache = (unsigned char *)malloc(HTTP_CACHE_SIZE);
     if (!h->cache) {

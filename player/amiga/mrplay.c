@@ -1040,8 +1040,9 @@ int main(int argc, char **argv)
     http_options.hls_max_width = hls_max_width;
     http_options.hls_max_height = hls_max_height;
     http_options.hls_max_fps = hls_max_fps;
+    http_options.hls_timing = want_time;
     have_http_options = user_agent || referer || hls_low || hls_max_width ||
-                        hls_max_height || hls_max_fps;
+                        hls_max_height || hls_max_fps || want_time;
     if (want_time) {
         printf("HTTP User-Agent: %s\n",
                user_agent ? user_agent : "MintRIVA/0.1 AmigaOS");
