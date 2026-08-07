@@ -13,6 +13,7 @@
 #include <dos/dostags.h>
 #include <exec/libraries.h>
 #include <exec/memory.h>
+#include <exec/ports.h>
 #include <exec/types.h>
 #include <gadgets/button.h>
 #include <gadgets/chooser.h>
@@ -58,6 +59,7 @@ enum {
   G_REFRESH,
   G_PLAY,
   G_NEXT_STREAM,
+  G_STOP,
   G_OPEN_URL,
   G_CLOSE
 };
@@ -401,6 +403,48 @@ static void report_list_fast_ram(void) {
          (unsigned long)(AvailMem(MEMF_FAST | MEMF_LARGEST) / 1024));
 }
 
+/* The player publishes MR_IPTV_PLAYER_PORT while it runs. Its presence is the
+ * canonical "a stream is playing" indicator. */
+static int player_is_running(void) {
+  int running;
+  Forbid();
+  running = FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT) != NULL;
+  Permit();
+  return running;
+}
+
+/* Stop the running player, if any, and wait for it to release its control port
+ * so its CGX window and Paula audio are gone before we launch the next stream.
+ * Ctrl-F is the player's clean-stop signal; an overloaded player that has not
+ * responded within the grace period is forced down with Ctrl-C. Finding the
+ * port and signalling under Forbid() keeps the task pointer valid across the
+ * call. Returns 1 if a player was asked to stop, 0 if none was running. */
+static int stop_player(void) {
+  struct MsgPort *port;
+  int had_player, waited;
+  Forbid();
+  port = FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT);
+  if (port)
+    Signal(port->mp_SigTask, SIGBREAKF_CTRL_F);
+  had_player = port != NULL;
+  Permit();
+  if (!had_player)
+    return 0;
+  for (waited = 0; waited < 250; waited++) { /* up to ~5 s at 1/50 s ticks */
+    Delay(1);
+    if (!player_is_running())
+      break;
+    if (waited == 100) { /* ~2 s with no clean exit: force it down */
+      Forbid();
+      port = FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT);
+      if (port)
+        Signal(port->mp_SigTask, SIGBREAKF_CTRL_C);
+      Permit();
+    }
+  }
+  return 1;
+}
+
 static int start_stream(const mr_iptv_stream *stream,
                         const mr_play_options *play_options) {
   char args[MR_IPTV_URL_MAX * 4 + MR_HTTP_USER_AGENT_MAX * 2 + 64];
@@ -414,6 +458,10 @@ static int start_stream(const mr_iptv_stream *stream,
                                  stream->user_agent,
                                  stream->http_referrer))
     return 0;
+  /* Never let two players run at once: pressing Play/Next while a stream is up
+   * would otherwise double CPU load. Stop the current player and wait for it to
+   * release the display and Paula before we spawn the replacement. */
+  stop_player();
   seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
   if (!seglist)
     seglist = LoadSeg((CONST_STRPTR) "mrplay");
@@ -444,6 +492,7 @@ int main(int argc, char **argv) {
   Object *playback_summary = NULL;
   Object *buttons = NULL;
   Object *refresh_button = NULL, *play_button = NULL, *next_button = NULL;
+  Object *stop_button = NULL;
   Object *open_button = NULL;
   Object *close_button = NULL;
   Object *search_label = NULL, *country_label = NULL, *category_label = NULL;
@@ -545,6 +594,9 @@ int main(int argc, char **argv) {
       BUTTON_GetClass(), NULL, GA_ID, G_NEXT_STREAM, GA_Text,
       (ULONG) "Next Stream", GA_RelVerify, TRUE,
       GA_Disabled, loaded ? FALSE : TRUE, TAG_DONE);
+  stop_button =
+      (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_STOP, GA_Text,
+                          (ULONG) "Stop", GA_RelVerify, TRUE, TAG_DONE);
   open_button =
       (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_OPEN_URL, GA_Text,
                           (ULONG) "Open URL...", GA_RelVerify, TRUE, TAG_DONE);
@@ -559,8 +611,8 @@ int main(int argc, char **argv) {
                                        (ULONG) "Category", TAG_DONE);
   url_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
                                   (ULONG) "Manual URL", TAG_DONE);
-  if (!refresh_button || !play_button || !next_button || !open_button ||
-      !close_button ||
+  if (!refresh_button || !play_button || !next_button || !stop_button ||
+      !open_button || !close_button ||
       !search_label || !country_label || !category_label || !url_label)
     goto cleanup;
 
@@ -568,7 +620,7 @@ int main(int argc, char **argv) {
       LAYOUT_GetClass(), NULL, LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
       LAYOUT_EvenSize, TRUE, LAYOUT_AddChild, (ULONG)refresh_button,
       LAYOUT_AddChild, (ULONG)play_button, LAYOUT_AddChild, (ULONG)next_button,
-      LAYOUT_AddChild, (ULONG)open_button,
+      LAYOUT_AddChild, (ULONG)stop_button, LAYOUT_AddChild, (ULONG)open_button,
       LAYOUT_AddChild, (ULONG)close_button, TAG_DONE);
   if (!buttons)
     goto cleanup;
@@ -730,6 +782,11 @@ int main(int argc, char **argv) {
                    (unsigned long)directory.matched_stream_count);
           set_status(status, window, status_text);
         }
+      } else if ((result & WMHI_GADGETMASK) == G_STOP) {
+        if (stop_player())
+          set_status(status, window, "Playback stopped.");
+        else
+          set_status(status, window, "No stream is playing.");
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
         if (!start_url(text ? (char *)text : "", &play_options))
@@ -784,6 +841,8 @@ cleanup:
         DisposeObject(play_button);
       if (next_button)
         DisposeObject(next_button);
+      if (stop_button)
+        DisposeObject(stop_button);
       if (open_button)
         DisposeObject(open_button);
       if (close_button)

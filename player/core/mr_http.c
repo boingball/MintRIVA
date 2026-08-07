@@ -92,6 +92,23 @@ struct Library *AmiSSLExtBase = NULL;
 #endif
 #endif
 
+#if MR_HTTP_HAVE_TLS
+/* The TLS library and client context are initialised once and then reused for
+ * every connection this process makes. AmiSSL in particular is costly to open,
+ * initialise, clean up and close, and doing that per HLS segment was the bulk
+ * of the stall at each segment boundary. They are released once by
+ * http_platform_shutdown at process exit. */
+static SSL_CTX *g_ssl_ctx = NULL;
+static int      g_tls_inited = 0;
+/* Cached TLS session from the last successful handshake. Reusing it for the
+ * next connection to the same host lets the server grant an abbreviated
+ * handshake (no fresh key exchange), which is the bulk of the per-segment TLS
+ * cost on 68k. Reuse is best-effort: a server that declines simply does a full
+ * handshake, so this only ever speeds things up. */
+static SSL_SESSION *g_tls_session = NULL;
+static char         g_tls_session_host[HTTP_HOST_MAX];
+#endif
+
 typedef struct {
     char host[HTTP_HOST_MAX];
     char path[HTTP_PATH_MAX];
@@ -107,7 +124,6 @@ typedef struct {
     int using_tls;
     int platform_ready;
     int tls_ready;
-    int tls_quarantined;
 #if MR_HTTP_HAVE_TLS
     SSL_CTX *ssl_ctx;
     SSL     *ssl;
@@ -337,8 +353,45 @@ int mr_http_resolve_url(const char *base_url, const char *rel,
     return resolve_redirect(base_url, rel, out, out_size);
 }
 
+/* Release the process-wide platform/TLS state. Registered with atexit on the
+ * first platform_open so the persistent library handles are closed exactly once
+ * on a normal exit. */
+static void http_platform_shutdown(void)
+{
+#if MR_HTTP_HAVE_TLS
+    if (g_tls_session) { SSL_SESSION_free(g_tls_session); g_tls_session = NULL; }
+    if (g_tls_inited) {
+        if (g_ssl_ctx) { SSL_CTX_free(g_ssl_ctx); g_ssl_ctx = NULL; }
+#if MR_HTTP_AMIGA
+        CleanupAmiSSL(TAG_DONE);
+        if (AmiSSLBase) { CloseAmiSSL(); AmiSSLBase = NULL; AmiSSLExtBase = NULL; }
+        if (AmiSSLMasterBase) {
+            CloseLibrary(AmiSSLMasterBase);
+            AmiSSLMasterBase = NULL;
+        }
+#endif
+        g_tls_inited = 0;
+    }
+#endif
+#if MR_HTTP_AMIGA
+    if (SocketBase) { CloseLibrary(SocketBase); SocketBase = NULL; }
+#endif
+}
+
+static void http_register_shutdown(void)
+{
+    static int registered = 0;
+    if (!registered) { registered = 1; atexit(http_platform_shutdown); }
+}
+
+int mr_http_tls_disabled(void)
+{
+    return 0;
+}
+
 static int platform_open(http_source *h)
 {
+    http_register_shutdown();
 #if MR_HTTP_AMIGA
     if (!SocketBase)
         SocketBase = OpenLibrary("bsdsocket.library", 4);
@@ -358,6 +411,14 @@ static int tls_open(http_source *h)
 {
     const SSL_METHOD *method;
     if (h->tls_ready) return 1;
+    /* After the first HTTPS connection the library and context are already up:
+     * adopt them and skip the whole AmiSSL open/init and context creation, which
+     * is what removes the per-segment stall. */
+    if (g_tls_inited && g_ssl_ctx) {
+        h->ssl_ctx = g_ssl_ctx;
+        h->tls_ready = 1;
+        return 1;
+    }
 #if MR_HTTP_AMIGA
     AmiSSLMasterBase =
         OpenLibrary("amisslmaster.library", AMISSLMASTER_MIN_VERSION);
@@ -366,6 +427,7 @@ static int tls_open(http_source *h)
         return 0;
     }
     if (OpenAmiSSLTags(AMISSL_CURRENT_VERSION,
+                       AmiSSL_InitAmiSSL, TRUE,
                        AmiSSL_UsesOpenSSLStructs, TRUE,
                        AmiSSL_GetAmiSSLBase, (ULONG)&AmiSSLBase,
                        AmiSSL_GetAmiSSLExtBase, (ULONG)&AmiSSLExtBase,
@@ -377,40 +439,46 @@ static int tls_open(http_source *h)
         AmiSSLMasterBase = NULL;
         return 0;
     }
-    if (InitAmiSSL(AmiSSL_SocketBase, (ULONG)SocketBase,
-                   AmiSSL_ErrNoPtr, (ULONG)&errno,
-                   TAG_DONE) != 0) {
-        mr_source_set_error("cannot initialise AmiSSL");
-        CloseAmiSSL();
-        AmiSSLBase = NULL;
-        AmiSSLExtBase = NULL;
-        CloseLibrary(AmiSSLMasterBase);
-        AmiSSLMasterBase = NULL;
-        return 0;
-    }
 #else
     SSL_library_init();
     SSL_load_error_strings();
 #endif
-    h->tls_ready = 1;
     method = SSLv23_client_method();
-    if (!method || !(h->ssl_ctx = SSL_CTX_new(method))) {
+    if (!method || !(g_ssl_ctx = SSL_CTX_new(method))) {
         mr_source_set_error("cannot create TLS context");
-        return 0;
+        goto fail;
     }
 #ifdef MR_HTTP_SSL_VERIFY_PEER
-    SSL_CTX_set_verify(h->ssl_ctx, SSL_VERIFY_PEER, NULL);
-    if (SSL_CTX_set_default_verify_paths(h->ssl_ctx) != 1) {
+    SSL_CTX_set_verify(g_ssl_ctx, SSL_VERIFY_PEER, NULL);
+    if (SSL_CTX_set_default_verify_paths(g_ssl_ctx) != 1) {
         mr_source_set_error("cannot load TLS root certificates");
-        return 0;
+        goto fail;
     }
 #else
-    SSL_CTX_set_verify(h->ssl_ctx, SSL_VERIFY_NONE, NULL);
+    SSL_CTX_set_verify(g_ssl_ctx, SSL_VERIFY_NONE, NULL);
 #endif
 #ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
-    SSL_CTX_set_options(h->ssl_ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
+    SSL_CTX_set_options(g_ssl_ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
 #endif
+    SSL_CTX_set_session_cache_mode(g_ssl_ctx, SSL_SESS_CACHE_CLIENT);
+    g_tls_inited = 1;
+    h->ssl_ctx = g_ssl_ctx;
+    h->tls_ready = 1;
     return 1;
+
+fail:
+    /* One-time init failed after (some of) the library came up: unwind so a
+     * later attempt starts clean rather than reusing a half-built context. */
+    if (g_ssl_ctx) { SSL_CTX_free(g_ssl_ctx); g_ssl_ctx = NULL; }
+#if MR_HTTP_AMIGA
+    CleanupAmiSSL(TAG_DONE);
+    if (AmiSSLBase) { CloseAmiSSL(); AmiSSLBase = NULL; AmiSSLExtBase = NULL; }
+    if (AmiSSLMasterBase) {
+        CloseLibrary(AmiSSLMasterBase);
+        AmiSSLMasterBase = NULL;
+    }
+#endif
+    return 0;
 }
 #endif
 
@@ -436,7 +504,6 @@ static void close_connection(http_source *h, int healthy)
              * some peer-drop/SYSCALL paths. Quarantine that one object and
              * let process exit reclaim it instead of risking a hard lock. */
             h->ssl = NULL;
-            h->tls_quarantined = 1;
         } else
 #endif
         {
@@ -502,14 +569,6 @@ static int connect_socket(http_source *h, const http_url *url)
     }
     if (url->tls) {
 #if MR_HTTP_HAVE_TLS
-#if MR_HTTP_AMIGA
-        if (h->tls_quarantined) {
-            mr_source_set_error(
-                "HTTPS connection failed; restart player before retrying");
-            close_socket_only(h);
-            return 0;
-        }
-#endif
         if (!tls_open(h)) {
             close_socket_only(h);
             return 0;
@@ -529,6 +588,10 @@ static int connect_socket(http_source *h, const http_url *url)
             if (param) X509_VERIFY_PARAM_set1_host(param, url->host, 0);
         }
 #endif
+        /* Offer the previous session for this host so the server can resume it
+         * with an abbreviated handshake. */
+        if (g_tls_session && !strcmp(g_tls_session_host, url->host))
+            SSL_set_session(h->ssl, g_tls_session);
         if (SSL_set_fd(h->ssl, h->sock) != 1 ||
             SSL_connect(h->ssl) != 1) {
             mr_source_set_error("HTTPS TLS handshake failed");
@@ -536,6 +599,17 @@ static int connect_socket(http_source *h, const http_url *url)
             return 0;
         }
         h->using_tls = 1;
+        /* Remember this handshake's session for the next same-host connection. */
+        {
+            SSL_SESSION *sess = SSL_get1_session(h->ssl);
+            if (sess) {
+                if (g_tls_session) SSL_SESSION_free(g_tls_session);
+                g_tls_session = sess;
+                strncpy(g_tls_session_host, url->host,
+                        sizeof g_tls_session_host - 1);
+                g_tls_session_host[sizeof g_tls_session_host - 1] = 0;
+            }
+        }
 #else
         mr_source_set_error(
             "HTTPS support was not compiled in; rebuild with SSL=1");
@@ -1311,33 +1385,14 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
 
 static void platform_close(http_source *h)
 {
-    close_connection(h, !h->tls_quarantined);
+    /* Tear down only this connection's socket and SSL object. The bsdsocket and
+     * AmiSSL libraries and the SSL_CTX deliberately persist for the life of the
+     * process (released once by http_platform_shutdown); this is what lets each
+     * subsequent HLS segment reconnect without re-initialising AmiSSL and
+     * rebuilding the TLS context, the dominant cost at every segment boundary. */
+    close_connection(h, 1);
 #if MR_HTTP_HAVE_TLS
-    if (!h->tls_quarantined && h->ssl_ctx) {
-        SSL_CTX_free(h->ssl_ctx);
-        h->ssl_ctx = NULL;
-    }
-#if MR_HTTP_AMIGA
-    if (!h->tls_quarantined && h->tls_ready) {
-        CleanupAmiSSL(TAG_DONE);
-        h->tls_ready = 0;
-    }
-    if (!h->tls_quarantined && AmiSSLBase) {
-        CloseAmiSSL();
-        AmiSSLBase = NULL;
-        AmiSSLExtBase = NULL;
-    }
-    if (!h->tls_quarantined && AmiSSLMasterBase) {
-        CloseLibrary(AmiSSLMasterBase);
-        AmiSSLMasterBase = NULL;
-    }
-#endif
-#endif
-#if MR_HTTP_AMIGA
-    if (!h->tls_quarantined && SocketBase) {
-        CloseLibrary(SocketBase);
-        SocketBase = NULL;
-    }
+    h->ssl_ctx = NULL;          /* borrowed pointer to g_ssl_ctx; never freed here */
 #endif
     h->platform_ready = 0;
 }

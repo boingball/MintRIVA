@@ -27,6 +27,7 @@ typedef struct mr_play_options {
     unsigned hls_max_width;
     unsigned hls_max_height;
     unsigned hls_max_fps;
+    int live_resync;   /* pass --live-resync: catch up / reconnect live streams */
 } mr_play_options;
 
 void mr_play_options_default(mr_play_options *options);

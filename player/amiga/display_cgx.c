@@ -36,6 +36,7 @@ typedef struct {
     int            scaled_w, scaled_h, scaled_stride;
     mr_display_timing timing;
     int            quit;
+    const char    *title;    /* last status shown, for idempotent updates      */
 } cgx_state;
 
 #define ESC_RAWKEY 0x45
@@ -257,6 +258,19 @@ static int cgx_poll(void *h)
     return s->quit ? MR_EV_QUIT : ev;
 }
 
+static void cgx_status(void *h, const char *text)
+{
+    cgx_state *s = (cgx_state *)h;
+    const char *title = (text && *text) ? text : "MintRIVA";
+    if (!s || !s->win) return;
+    /* Callers pass string literals, so a pointer compare cheaply skips the
+     * common case of the same status being set repeatedly (e.g. every
+     * reconnect attempt). The second arg leaves the screen title unchanged. */
+    if (s->title == title) return;
+    s->title = title;
+    SetWindowTitles(s->win, (CONST_STRPTR)title, (CONST_STRPTR)~0UL);
+}
+
 static void cgx_close(void *h)
 {
     cgx_state *s = (cgx_state *)h;
@@ -267,5 +281,5 @@ static void cgx_close(void *h)
 }
 
 const display_backend backend_cgx = {
-    "RTG (CGX)", cgx_open, cgx_show, cgx_timing, cgx_poll, cgx_close
+    "RTG (CGX)", cgx_open, cgx_show, cgx_timing, cgx_poll, cgx_close, cgx_status
 };

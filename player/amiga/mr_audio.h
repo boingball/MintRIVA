@@ -80,6 +80,12 @@ void          audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag);
 int           audio_active_requests(mr_audio *a);
 void          audio_set_running(mr_audio *a, int running);
 
+/* Drop everything queued in the software FIFO. Used by the live-resync path to
+ * throw away stale buffered audio after skipping the backlog; already-submitted
+ * hardware buffers still play out (a few ms). The elapsed clock is untouched, so
+ * the caller rebases the media clock afterwards. */
+void          audio_flush(mr_audio *a);
+
 void          audio_close(mr_audio *a);
 
 #endif /* MR_AUDIO_H */

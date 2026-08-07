@@ -50,4 +50,10 @@ int mr_http_download_file(const char *url, const char *path, size_t max_size);
 int mr_http_resolve_url(const char *base_url, const char *rel,
                         char *out, size_t out_size);
 
+/* Non-zero once an unhealthy TLS drop has disabled HTTPS for the rest of this
+ * process (see mr_http.c). A live player uses this to stop retrying a reconnect
+ * that can never succeed and end cleanly instead. Always zero on non-TLS
+ * builds. */
+int mr_http_tls_disabled(void);
+
 #endif /* MR_HTTP_H */

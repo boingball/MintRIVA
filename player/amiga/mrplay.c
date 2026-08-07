@@ -20,6 +20,7 @@
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
 #include "../audio/mr_audio_decode.h"
+#include "../iptv/mr_iptv.h"
 #include "amiga_display.h"
 #include "mr_audio.h"
 
@@ -28,6 +29,9 @@
 #include <proto/timer.h>
 #include <clib/alib_protos.h>
 #include <devices/timer.h>
+#include <exec/memory.h>
+#include <exec/nodes.h>
+#include <exec/ports.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,7 +47,14 @@
  */
 static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 
-#define VIDEO_QUEUE_CAP 4
+/* Queue-slot ceiling. Defaults keep only 1 (network) or 3 (disk) frames, so
+ * this costs nothing unless --net-queue requests a deeper buffer: RGB slots are
+ * allocated lazily per used entry. A deep network buffer lets decoded frames
+ * wait and present in PTS order as they fall due (rather than the shallow queue
+ * dropping the nearly-due frame when video runs ahead of the audio clock), and
+ * carries enough video to ride across a segment-boundary refetch. ~1.3 s at
+ * 25 fps. */
+#define VIDEO_QUEUE_CAP 32
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
@@ -52,12 +63,66 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS 20UL
 #define AUDIO_RESCUE_ONE_REQUEST_MS 100UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
+/* Sustained audio cushion the scheduler keeps topped up even when the video
+ * queue is full, so a long segment-boundary stall does not drain the FIFO into
+ * a state it can never climb back out of. Matches the buffer healthy playback
+ * naturally reaches (~0.6-0.8 s in on-hardware logs). */
+#define AUDIO_CUSHION_TARGET_MS 800UL
+/* Live-resync (opt-in, --live-resync, network sources only). A multi-second
+ * network stall can leave a live stream many seconds behind the wall clock with
+ * the audio clock unable to climb back; these bound the catch-up-to-live burst.
+ * The trigger is far above any jitter normal playback produces. */
+#define LIVE_RESYNC_BEHIND_US 4000000ULL  /* >4 s behind wall clock: catch up  */
+#define LIVE_RESYNC_TARGET_US 1000000ULL  /* aim to land ~1 s behind the edge   */
+#define LIVE_RESYNC_MAX_US    3000000ULL  /* hard cap on one catch-up burst     */
+#define LIVE_RESYNC_EDGE_US   2000000ULL  /* a read slower than any normal fetch
+                                           * means we have caught the frontier   */
+#define LIVE_RECONNECT_TRIES  200         /* reopen attempts before giving up;
+                                           * with backoff this is ~15 min, enough
+                                           * to ride out a flaky mobile link      */
+#define LIVE_RECONNECT_STALL_LIMIT 3      /* consecutive reopens with no playback
+                                           * before giving up (avoids a spin)     */
 #define AUDIO_RESCUE_MAX_PACKETS 16U
 #define AUDIO_RESCUE_MAX_US 100000ULL
 
 static struct MsgPort *timer_port;
 static struct timerequest *timer_request;
 struct Device *TimerBase;
+
+/* Control port: published on exec's public port list so the IPTV controller can
+ * discover this player and signal it (Ctrl-F clean stop, Ctrl-C forced stop)
+ * before launching another stream. We never receive messages through it, only
+ * signals aimed at mp_SigTask, so it is created PA_IGNORE. */
+static struct MsgPort *control_port;
+
+static void control_port_close(void)
+{
+    if (control_port) {
+        RemPort(control_port);
+        FreeMem(control_port, sizeof *control_port);
+        control_port = NULL;
+    }
+}
+
+static void control_port_open(void)
+{
+    struct MsgPort *port;
+    /* Only one player should ever be live. If a port already exists another
+     * player is still shutting down; skip rather than publish a duplicate. */
+    Forbid();
+    if (FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT)) { Permit(); return; }
+    Permit();
+    port = (struct MsgPort *)AllocMem(sizeof *port, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!port) return;
+    port->mp_Node.ln_Type = NT_MSGPORT;
+    port->mp_Node.ln_Name = (char *)MR_IPTV_PLAYER_PORT;
+    port->mp_Flags = PA_IGNORE;
+    port->mp_SigTask = FindTask(NULL);
+    NewList(&port->mp_MsgList);
+    AddPort(port);
+    control_port = port;
+    atexit(control_port_close);
+}
 
 static int playback_timer_open(void)
 {
@@ -763,6 +828,9 @@ int main(int argc, char **argv)
     int raw_diag_printed = 0;
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
+    int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
+    int live_resync = 0;  /* --live-resync: catch up after a big stall, and
+                           * reconnect a live stream that drops out            */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -797,6 +865,7 @@ int main(int argc, char **argv)
     /* Unbuffered so every diagnostic reaches the shell immediately, even if a
      * later step hangs or crashes (libnix stdout can otherwise block-buffer). */
     setvbuf(stdout, NULL, _IONBF, 0);
+    control_port_open();
     if (!playback_timer_open())
         printf("warning: timer.device unavailable; pacing timer is coarse\n");
 
@@ -806,7 +875,8 @@ int main(int argc, char **argv)
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
-               "[--cd32] [--hls-low] [--time]\n");
+               "[--cd32] [--hls-low] [--net-queue=N] [--live-resync] "
+               "[--time]\n");
         return 5;
     }
     {   /* display options anywhere on the command line */
@@ -844,6 +914,9 @@ int main(int argc, char **argv)
                 hls_max_height = (unsigned)strtoul(argv[i] + 17, NULL, 10);
             else if (!strncmp(argv[i], "--hls-max-fps=", 14))
                 hls_max_fps = (unsigned)strtoul(argv[i] + 14, NULL, 10);
+            else if (!strncmp(argv[i], "--net-queue=", 12))
+                net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
+            else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -1031,11 +1104,28 @@ int main(int argc, char **argv)
     {
         int playback_started = 0;
         int network_source = mr_source_is_url(media_path);
+        int frames_at_last_reconnect = 0, reconnects_without_progress = 0;
         int startup_depth = network_source ? 1 : 2;
-        int target_depth = network_source ? 1 : 3;
+        /* Network sources default to a single decoded frame (see the comment on
+         * the decode gate below). --net-queue=N opts into a read-ahead cushion.
+         * A few frames smooth per-frame decode jitter (e.g. a GOP-boundary
+         * I-frame); a deep buffer (tens of frames) additionally lets video sit
+         * ahead of the audio clock and present in PTS order as frames fall due,
+         * keeps the loop demuxing so the audio FIFO stays fed, and carries the
+         * picture across a segment-boundary refetch. Clamped to VIDEO_QUEUE_CAP;
+         * startup latency is unchanged because startup_depth still gates when
+         * playback begins. */
+        int net_target = net_queue > 0
+            ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
+        int target_depth = network_source ? net_target : 3;
         int prev_master_source = -1;
 
-    while (!quit && (!input_eof || qcount || loop)) {
+    /* The live-resync term keeps the loop alive on EOF so the reconnect block in
+     * the body can run; without it the loop would exit here (empty queue, no
+     * --loop) before reconnect ever gets a chance. That block owns its own exits
+     * (give-up, mismatch, no-progress backstop). */
+    while (!quit && (!input_eof || qcount || loop ||
+                     (network_source && live_resync))) {
         queued_video *front = qcount ? &vq[qhead] : NULL;
         uint64_t now = monotonic_us();
         uint64_t period_us = vi->rate
@@ -1195,6 +1285,63 @@ int main(int argc, char **argv)
             }
             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             have_deadline = 1;
+        }
+
+        /* Catastrophic fall-behind recovery. A multi-second network stall can
+         * leave a live stream many seconds behind the wall clock, the audio
+         * clock unable to climb back. Fast-consume the buffered backlog (decode
+         * video reference-only, discard audio) up to the download frontier, then
+         * flush audio and re-prime exactly like first start - landing near the
+         * live edge. Opt-in, network-only; the trigger sits far above the ~1 s
+         * lag ordinary boundary stalls produce, so it never fires in normal
+         * playback. have_deadline guarantees both clocks are valid here. */
+        if (live_resync && network_source && audio && have_deadline &&
+            mono_media_clock_us >
+                audio_media_clock_us + (uint64_t)LIVE_RESYNC_BEHIND_US) {
+            uint64_t behind = mono_media_clock_us - audio_media_clock_us;
+            uint64_t want = behind > LIVE_RESYNC_TARGET_US
+                          ? behind - LIVE_RESYNC_TARGET_US : behind;
+            uint64_t cu_start = monotonic_us();
+            uint64_t base_pts = 0;
+            int have_base = 0;
+            if (want_time)
+                printf("live-resync: %lu ms behind live, catching up\n",
+                       (unsigned long)(behind / 1000));
+            audio_set_running(audio, 0);
+            display_set_status(disp, "Buffering...");
+            qcount = 0; qhead = 0;               /* stale pictures, far behind */
+            mr_h264_set_skip_output(&dec, 1);    /* reference-only: fast/no RGB */
+            for (;;) {
+                uint64_t r0, rdt;
+                mr_status ns;
+                if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
+                r0 = monotonic_us();
+                ns = mr_demux_next_packet(dx, &pkt);
+                rdt = monotonic_us() - r0;
+                if (ns != MR_OK) { input_eof = 1; break; }
+                if (rdt > LIVE_RESYNC_EDGE_US) break;   /* reached the frontier */
+                if (pkt.is_video && pkt.len)
+                    mr_decoder_decode(&dec, pkt.data, pkt.len);
+                /* audio packets are discarded: the FIFO is flushed below */
+                if (pkt.has_pts) {
+                    if (!have_base) { base_pts = pkt.pts_us; have_base = 1; }
+                    else if (pkt.pts_us > base_pts &&
+                             pkt.pts_us - base_pts >= want) break;
+                }
+                if (monotonic_us() - cu_start > LIVE_RESYNC_MAX_US) break;
+                service_audio_for_display(&trace);
+            }
+            mr_h264_set_skip_output(&dec, 0);
+            audio_flush(audio);
+            /* Re-prime from the new position; the startup path below refills the
+             * queue and audio cushion and restarts playback near the edge. */
+            playback_started = 0;
+            decoded_index = 0; mono_base_us = 0;
+            have_container_pts = 0; last_container_pts_us = 0;
+            container_pts_adjust_us = 0;
+            media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
+            stats.timing_rebases++;
+            continue;
         }
 
         if (!rescue_active && have_deadline &&
@@ -1389,19 +1536,101 @@ int main(int argc, char **argv)
             continue;
         }
 
-        /* At most one packet per scheduler iteration. URL sources deliberately
-         * use depth one: without an asynchronous reader, a blocking HLS fetch
-         * cannot be allowed to delay a frame already queued for presentation. */
+        /* A live network stream lost its source: a dropout exhausted the HLS
+         * retry budget or the connection dropped, and mr_demux_next_packet
+         * reported end of stream. Rather than ending playback, reopen the URL -
+         * which resolves to the current live edge - and resume. Bounded, and a
+         * mismatched restream stops cleanly. Gated with --live-resync; the
+         * default still ends on EOF. */
+        if (input_eof && !qcount && !loop && network_source && live_resync) {
+            int tries, backoff = 12;                 /* ~0.5 s, grows to ~4 s   */
+            const mr_video_info *nvi;
+            /* If an unhealthy TLS drop has disabled HTTPS for this process, no
+             * reopen can ever succeed - end cleanly instead of spinning through
+             * every retry. (This is the AmiSSL "relaunch to resume" limitation.) */
+            if (mr_http_tls_disabled()) {
+                display_set_status(disp, "Connection lost - relaunch");
+                if (want_time) printf("live-reconnect: HTTPS disabled, ending\n");
+                break;
+            }
+            /* Give up if we keep reopening but never actually play: a stream that
+             * reconnects and immediately ends again would otherwise spin on the
+             * network. Any presented frame since the last reopen counts as
+             * progress and resets the tally. */
+            if (frames != frames_at_last_reconnect) {
+                reconnects_without_progress = 0;
+                frames_at_last_reconnect = frames;
+            } else if (++reconnects_without_progress > LIVE_RECONNECT_STALL_LIMIT) {
+                break;
+            }
+            if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
+            display_set_status(disp, "Reconnecting...");
+            mr_demux_close(dx);
+            dx = NULL;
+            for (tries = 0; tries < LIVE_RECONNECT_TRIES && !quit; tries++) {
+                int d;
+                if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
+                if (want_time)
+                    printf("live-reconnect: attempt %d/%d\n",
+                           tries + 1, LIVE_RECONNECT_TRIES);
+                dx = mr_demux_open_file_ex(media_path,
+                        have_http_options ? &http_options : NULL);
+                if (dx) break;
+                /* Back off between attempts so a sustained outage is not hammered
+                 * every half second; stay responsive to ESC throughout. */
+                for (d = 0; d < backoff && !quit; d++) {
+                    if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
+                    if (audio) audio_service(audio);
+                    Delay(2);
+                }
+                backoff = backoff < 100 ? backoff * 2 : 100;   /* cap ~4 s */
+            }
+            if (quit) break;
+            if (!dx) break;                     /* gave up: end playback */
+            nvi = mr_demux_video(dx);
+            if (!nvi || !nvi->valid || nvi->width != vi->width ||
+                nvi->height != vi->height)
+                break;                          /* different shape: stop cleanly */
+            vi = nvi;
+            if (mr_decoder_reset(&dec) != MR_OK) break;
+            if (audio_dec) mr_audio_decoder_reset(audio_dec);
+            input_eof = 0; decoded_index = 0; mono_base_us = 0;
+            have_container_pts = 0; last_container_pts_us = 0;
+            container_pts_adjust_us = 0;
+            playback_started = 0;
+            qcount = 0; qhead = 0;
+            if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
+            else memset(&mc, 0, sizeof mc);
+            stats.timing_rebases++;
+            continue;
+        }
+
+        /* At most one packet per scheduler iteration. URL sources default to
+         * depth one: without an asynchronous reader, a blocking HLS fetch
+         * cannot be allowed to delay a frame already queued for presentation.
+         * When --net-queue raises the network depth, read-ahead is instead
+         * governed by the same lateness margin the disk path uses, so a frame
+         * is only decoded ahead while the queue front is comfortably far from
+         * its deadline. */
         {
             int refill_audio = audio && audio_ms < AUDIO_REFILL_WARNING_MS;
+            /* With the video queue already full the loop would otherwise sleep,
+             * which stops the audio FIFO being refilled - after a long stall the
+             * cushion then never rebuilds and playback settles into a degraded
+             * state. Keep demuxing to top the cushion back up; the extra video
+             * decoded meanwhile fills toward the queue cap and is only dropped
+             * (reference-only) once the cap is hit. */
+            int feed_audio_full = audio && qcount >= target_depth &&
+                                  audio_ms < AUDIO_CUSHION_TARGET_MS;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
                              (rescue_active || startup_refill ||
-                              qcount < target_depth);
+                              qcount < target_depth || feed_audio_full);
             if (can_decode && playback_started && qcount) {
                 uint64_t margin = stats.video_decode_max_us +
                                   PRESENTATION_GUARD_US + 2000ULL;
-                if (!refill_audio &&
-                    (network_source || late_us > -(int64_t)margin))
+                if (!refill_audio && !feed_audio_full &&
+                    ((network_source && target_depth <= 1) ||
+                     late_us > -(int64_t)margin))
                     can_decode = 0;
             }
             if (can_decode) {
@@ -1443,11 +1672,11 @@ int main(int argc, char **argv)
                     mr_status decode_status;
                     uint64_t decode_end;
                     trace_phase(&trace, "h264-decode");
-                    /* Rescue frames are candidates for replacing stale video,
-                     * so retain decoder RGB output.  Reference-only decoding
-                     * remains available for startup packets which cannot fit. */
-                    mr_h264_set_skip_output(&dec,
-                        startup_refill && qcount >= VIDEO_QUEUE_CAP);
+                    /* A frame decoded into a full queue is dropped (newest-out),
+                     * so decode it reference-only: keep the reference chain
+                     * intact without spending time producing RGB we discard.
+                     * This is what makes the audio-cushion top-up above cheap. */
+                    mr_h264_set_skip_output(&dec, qcount >= VIDEO_QUEUE_CAP);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
@@ -1509,16 +1738,24 @@ int main(int argc, char **argv)
                                 decoded_index++;
                                 continue;
                             }
-                            if (rescue_active && qcount == VIDEO_QUEUE_CAP) {
-                                /* Discard the oldest presentation copy, never
-                                 * decoder-owned storage, then append the new
-                                 * frame at the logical tail.  Queue PTS order
-                                 * is preserved for normal deadline selection. */
-                                qhead = (qhead + 1) % VIDEO_QUEUE_CAP;
-                                qcount--;
-                                rescue_episode_replaced++;
-                                stats.rescue_video_replaced++;
+                            if (qcount == VIDEO_QUEUE_CAP) {
+                                /* Queue full. Every queued frame is closer to
+                                 * its deadline than this freshly decoded one,
+                                 * which sits furthest in the future, so keep
+                                 * them and drop the newcomer. Evicting the
+                                 * oldest instead (the previous behaviour) left
+                                 * the queue front permanently ahead of the
+                                 * audio clock, so presentation stalled and
+                                 * never recovered after a long stall. The
+                                 * packet was still consumed, so audio rescue
+                                 * makes progress regardless. */
+                                if (rescue_active) {
+                                    rescue_episode_skipped++;
+                                    stats.rescue_video_skipped++;
+                                }
                                 stats.dropped++;
+                                decoded_index++;
+                                continue;
                             }
                             queued_video *tail =
                                 &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
@@ -1560,6 +1797,7 @@ int main(int argc, char **argv)
                             service_audio_for_display(&trace);
                             audio_set_running(audio, 1);
                         }
+                        display_set_status(disp, NULL);  /* clear Buffering... */
                     }
                 }
                 continue;

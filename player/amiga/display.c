@@ -105,6 +105,11 @@ int display_poll_event(amiga_display *d)
     return d ? d->be->poll(d->h) : MR_EV_QUIT;
 }
 
+void display_set_status(amiga_display *d, const char *text)
+{
+    if (d && d->be->status) d->be->status(d->h, text);
+}
+
 void display_close(amiga_display *d)
 {
     if (!d) return;

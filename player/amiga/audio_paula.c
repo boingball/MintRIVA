@@ -163,6 +163,17 @@ static int fifo_pop_into(mr_audio *a, signed char *dst, int n)
     return i;
 }
 
+void audio_flush(mr_audio *a)
+{
+    if (!a) return;
+    /* Same Forbid() guard the push/pop paths use, so the worker task cannot be
+     * mid-pop when the ring is reset. */
+    Forbid();
+    a->head = a->tail = 0;
+    a->count = 0;
+    Permit();
+}
+
 /* ---- lifecycle ---------------------------------------------------------- */
 
 mr_audio *audio_open(unsigned rate, int channels, int bits)
