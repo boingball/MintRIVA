@@ -48,6 +48,18 @@
  */
 static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 
+/*
+ * mrplay handles Ctrl-C / Ctrl-F itself: the IPTV controller signals them to
+ * ask the player to stop, and the main loop (control_signal_event) turns them
+ * into a clean quit that closes the display and Paula. Left to libnix, a
+ * pending Ctrl-C during any stdio call - frequent when --time logging is on -
+ * fires its "***Break" handler and exit()s the process mid-printf, skipping
+ * CloseWindow() and leaving an orphaned RTG window stuck on screen. An empty
+ * __chkabort() disables that automatic abort; the break signals still arrive as
+ * exec signals and are serviced by our own event loop.
+ */
+void __chkabort(void) { }
+
 /* Queue-slot ceiling. Defaults keep only 1 (network) or 3 (disk) frames, so
  * this costs nothing unless --net-queue requests a deeper buffer: RGB slots are
  * allocated lazily per used entry. A deep network buffer lets decoded frames
