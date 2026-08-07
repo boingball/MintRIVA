@@ -12,6 +12,10 @@ void mr_play_options_default(mr_play_options *o)
     o->c2p = MR_C2P_STANDARD;
     o->hls_low = 1;
     o->hls_max_width = 640;
+    /* On by default for GUI-launched playback (IPTV streams are always live);
+     * a direct "mrplay <url>" invocation keeps its own conservative default of
+     * off. Disable with --no-live-resync. */
+    o->live_resync = 1;
 }
 
 static int append_text(char *out, size_t cap, const char *text)
@@ -111,6 +115,7 @@ static int append_playback_flags(char *out, size_t cap,
         snprintf(number, sizeof(number), "--hls-max-fps=%u", o->hls_max_fps);
         if (!append_option(out, cap, number)) return 0;
     }
+    if (o->live_resync && !append_option(out, cap, "--live-resync")) return 0;
     return 1;
 }
 
@@ -183,6 +188,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--scale-2x")) o->scale_2x = 1;
         else if (!strcmp(arg, "--no-scale-2x")) o->scale_2x = 0;
         else if (!strcmp(arg, "--hls-low")) o->hls_low = 1;
+        else if (!strcmp(arg, "--live-resync")) o->live_resync = 1;
+        else if (!strcmp(arg, "--no-live-resync")) o->live_resync = 0;
         else if (!strncmp(arg, "--hls-max-width=", 16)) {
             if (!parse_uint(arg + 16, &o->hls_max_width)) goto bad;
         } else if (!strncmp(arg, "--hls-max-height=", 17)) {
@@ -201,11 +208,13 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
     if (!out || !cap || !o) return;
     if (o->display == MR_DISPLAY_CGX)
-        snprintf(out, cap, "Playback: RTG / HLS low");
+        snprintf(out, cap, "Playback: RTG / HLS low%s",
+                 o->live_resync ? " / Live-resync" : "");
     else
-        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / HLS low",
+        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / HLS low%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" : "AGA",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
-                 o->scale_2x ? "on" : "off");
+                 o->scale_2x ? "on" : "off",
+                 o->live_resync ? " / Live-resync" : "");
 }

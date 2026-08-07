@@ -78,6 +78,8 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
 #define LIVE_RESYNC_EDGE_US   2000000ULL  /* a read slower than any normal fetch
                                            * means we have caught the frontier   */
 #define LIVE_RECONNECT_TRIES  30          /* reopen attempts before giving up    */
+#define LIVE_RECONNECT_STALL_LIMIT 3      /* consecutive reopens with no playback
+                                           * before giving up (avoids a spin)     */
 #define AUDIO_RESCUE_MAX_PACKETS 16U
 #define AUDIO_RESCUE_MAX_US 100000ULL
 
@@ -1100,6 +1102,7 @@ int main(int argc, char **argv)
     {
         int playback_started = 0;
         int network_source = mr_source_is_url(media_path);
+        int frames_at_last_reconnect = 0, reconnects_without_progress = 0;
         int startup_depth = network_source ? 1 : 2;
         /* Network sources default to a single decoded frame (see the comment on
          * the decode gate below). --net-queue=N opts into a read-ahead cushion.
@@ -1534,6 +1537,16 @@ int main(int argc, char **argv)
         if (input_eof && !qcount && !loop && network_source && live_resync) {
             int tries;
             const mr_video_info *nvi;
+            /* Give up if we keep reopening but never actually play: a stream that
+             * reconnects and immediately ends again would otherwise spin on the
+             * network. Any presented frame since the last reopen counts as
+             * progress and resets the tally. */
+            if (frames != frames_at_last_reconnect) {
+                reconnects_without_progress = 0;
+                frames_at_last_reconnect = frames;
+            } else if (++reconnects_without_progress > LIVE_RECONNECT_STALL_LIMIT) {
+                break;
+            }
             if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
             mr_demux_close(dx);
             dx = NULL;
