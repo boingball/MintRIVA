@@ -90,6 +90,30 @@ uses TLS and SNI but does not verify the server certificate by default. Build
 with `SSL=1 SSLCERTS=1` to enable the default CA roots and hostname
 verification.
 
+### Live streaming resilience
+
+Live HLS (`.m3u8`) playback on constrained hardware has a few extra controls.
+The AmiSSL library, TLS context, and TLS session are initialised once and reused
+across segments, so each segment boundary reconnects with an abbreviated
+handshake instead of the full per-segment bring-up.
+
+- `--net-queue=N` — hold up to `N` decoded frames ahead (default 1 for network,
+  clamped to 32). A few frames absorb per-frame decode jitter; a deep buffer
+  (e.g. `--net-queue=24`) lets video sit ahead of the audio clock and present in
+  order, keeps the loop demuxing so the audio FIFO stays fed, and rides across a
+  segment-boundary refetch. Costs one RGB frame of RAM per used slot.
+- `--live-resync` — recover from big disruptions. If a stall leaves playback
+  more than ~4 s behind the wall clock, it fast-consumes the buffered backlog
+  (decode reference-only, discard audio) and re-primes near the live edge; and
+  if the stream drops out entirely it reopens the URL and resumes rather than
+  ending. It never fires in normal playback. GUI-launched playback (`mrgui`, the
+  IPTV browser) enables this by default since IPTV streams are always live; a
+  direct `mrplay <url>` leaves it off. Use `--no-live-resync` to opt out.
+
+```sh
+mrplay --net-queue=24 --live-resync "https://example.net/live/master.m3u8"
+```
+
 ## ReAction controller
 
 The Amiga build also creates `mrgui`, a separate Workbench-friendly controller
