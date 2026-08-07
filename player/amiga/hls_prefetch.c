@@ -76,6 +76,10 @@ static size_t          pf_ready_len;
 static int             pf_ready_ok;
 static int             pf_active;
 static int             pf_verbose;      /* log segment sizes / free RAM         */
+static int             pf_broken;       /* interrupted while a reply in flight  */
+static ULONG           pf_interrupt_mask;
+static hls_prefetch_quit_probe_fn pf_quit_probe;
+static void           *pf_quit_probe_opaque;
 
 /* ---- memory-backed source over a downloaded segment (main task) --------- */
 
@@ -195,6 +199,7 @@ static void pf_reclaim(void)
     while ((m = GetMsg(pf_reply_port)) != NULL) {
         if (m != &pf_req.msg) continue;                /* not a download reply */
         pf_busy = 0;
+        if (pf_req.quit) continue;                     /* quit ack, no payload */
         if (pf_ready && pf_ready_buf) FreeVec(pf_ready_buf);
         pf_ready = 1;
         strcpy(pf_ready_url, pf_busy_url);
@@ -209,16 +214,45 @@ static void pf_reclaim(void)
     }
 }
 
+static int pf_quit_requested(void)
+{
+    return pf_quit_probe ? pf_quit_probe(pf_quit_probe_opaque) : 1;
+}
+
+static void pf_clear_ready(void)
+{
+    if (!pf_ready) return;
+    if (pf_ready_buf) FreeVec(pf_ready_buf);
+    pf_ready_buf = NULL;
+    pf_ready = 0;
+}
+
+/* Wait for the in-flight reply; return 0 if interrupted by quit. */
+static int pf_wait_busy(int break_on_quit)
+{
+    ULONG reply_mask, wait_mask, sig;
+    if (!pf_reply_port) return 0;
+    pf_reclaim();
+    if (!pf_busy) return 1;
+    reply_mask = 1UL << pf_reply_port->mp_SigBit;
+    wait_mask = reply_mask | pf_interrupt_mask;
+    for (;;) {
+        sig = Wait(wait_mask);
+        if (sig & reply_mask) pf_reclaim();
+        if (!pf_busy) return 1;
+        if ((sig & pf_interrupt_mask) && pf_quit_requested()) {
+            if (break_on_quit) return 0;
+        }
+    }
+}
+
 /* Wait for and reclaim the in-flight request, then drop any cached buffer. */
-static void pf_discard_pending(void)
+static int pf_discard_pending(void)
 {
     pf_reclaim();
-    if (pf_busy) { WaitPort(pf_reply_port); pf_reclaim(); }
-    if (pf_ready) {
-        if (pf_ready_buf) FreeVec(pf_ready_buf);
-        pf_ready_buf = NULL;
-        pf_ready = 0;
-    }
+    if (pf_busy && !pf_wait_busy(1)) return 0;
+    pf_clear_ready();
+    return 1;
 }
 
 /* Send `url` to the worker (non-blocking); one request in flight at a time. */
@@ -253,21 +287,20 @@ static mr_source *pf_backend_open(const char *url, const mr_http_options *opts,
                                   int is_segment)
 {
     mr_source *s;
+    if (pf_broken) return NULL;
     pf_reclaim();
     /* 1. Already prefetched? */
     if (is_segment) { s = pf_take_ready(url); if (s) return s; }
     /* 2. In flight for exactly this URL: wait for it. */
     if (pf_busy && !strcmp(pf_busy_url, url)) {
-        WaitPort(pf_reply_port);
-        pf_reclaim();
+        if (!pf_wait_busy(1)) { pf_broken = 1; return NULL; }
         s = pf_take_ready(url);
         if (s) return s;                       /* else it failed: retry below   */
     }
     /* 3. Nothing usable pending: blocking priority download. */
-    pf_discard_pending();
+    if (!pf_discard_pending()) { pf_broken = 1; return NULL; }
     pf_send(url, opts);
-    WaitPort(pf_reply_port);
-    pf_reclaim();
+    if (!pf_wait_busy(1)) { pf_broken = 1; return NULL; }
     s = pf_take_ready(url);
     if (s) return s;
     if (pf_ready) {                            /* failed reply left cached      */
@@ -280,6 +313,7 @@ static mr_source *pf_backend_open(const char *url, const mr_http_options *opts,
 
 static void pf_backend_prefetch(const char *url, const mr_http_options *opts)
 {
+    if (pf_broken) return;
     pf_reclaim();
     if (pf_busy || pf_ready) return;           /* one segment of lookahead      */
     if (strlen(url) >= sizeof pf_req.url) return;
@@ -288,9 +322,20 @@ static void pf_backend_prefetch(const char *url, const mr_http_options *opts)
 
 /* ---- lifecycle (main task) ---------------------------------------------- */
 
-int hls_prefetch_start(int verbose)
+void hls_prefetch_set_interrupt(unsigned long interrupt_mask,
+                                hls_prefetch_quit_probe_fn quit_probe,
+                                void *opaque)
+{
+    pf_interrupt_mask = (ULONG)interrupt_mask;
+    pf_quit_probe = quit_probe;
+    pf_quit_probe_opaque = opaque;
+}
+
+int hls_prefetch_start(int verbose, unsigned long interrupt_mask,
+                       hls_prefetch_quit_probe_fn quit_probe, void *opaque)
 {
     if (pf_active) return 1;
+    hls_prefetch_set_interrupt(interrupt_mask, quit_probe, opaque);
     pf_verbose = verbose;
     pf_reply_port = CreateMsgPort();
     if (!pf_reply_port) return 0;
@@ -301,6 +346,7 @@ int hls_prefetch_start(int verbose)
     pf_req.msg.mn_ReplyPort = pf_reply_port;
     pf_req.msg.mn_Length = sizeof pf_req;
     pf_busy = pf_ready = 0;
+    pf_broken = 0;
     pf_ready_buf = NULL;
     pf_worker_port = NULL;
     pf_proc = CreateNewProcTags(
@@ -328,8 +374,10 @@ int hls_prefetch_start(int verbose)
     return 1;
 }
 
-void hls_prefetch_stop(void)
+void hls_prefetch_stop(unsigned long interrupt_mask,
+                       hls_prefetch_quit_probe_fn quit_probe, void *opaque)
 {
+    hls_prefetch_set_interrupt(interrupt_mask, quit_probe, opaque);
     if (!pf_active) {
         if (pf_reply_port) { DeleteMsgPort(pf_reply_port); pf_reply_port = NULL; }
         return;
@@ -337,22 +385,20 @@ void hls_prefetch_stop(void)
     /* Stop new requests reaching us, drain what is pending, then quit the
      * worker and wait for its acknowledgement. */
     mr_hls_set_backend(NULL, NULL);
-    pf_discard_pending();
+    if (!pf_discard_pending()) pf_broken = 1;
+    while (pf_busy) pf_wait_busy(0);           /* reclaim outstanding reply      */
+    pf_clear_ready();
     pf_req.quit = 1;
     pf_busy_url[0] = 0;
     pf_busy = 1;                                /* quit reply reclaimed below    */
     PutMsg(pf_worker_port, &pf_req.msg);
-    WaitPort(pf_reply_port);
-    GetMsg(pf_reply_port);                      /* quit reply                    */
+    if (!pf_wait_busy(1)) pf_broken = 1;
+    while (pf_busy) pf_wait_busy(0);           /* never tear down early         */
     pf_req.quit = 0;
     pf_busy = 0;
     pf_active = 0;
     pf_proc = NULL;                             /* worker tears itself down      */
-    if (pf_ready) {
-        if (pf_ready_buf) FreeVec(pf_ready_buf);
-        pf_ready_buf = NULL;
-        pf_ready = 0;
-    }
+    pf_clear_ready();
     DeleteMsgPort(pf_reply_port);
     pf_reply_port = NULL;
 }

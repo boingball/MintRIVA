@@ -399,6 +399,13 @@ static void aga_close(void *handle)
     free(s);
 }
 
+static ULONG aga_wait_mask(void *handle)
+{
+    aga_state *s = (aga_state *)handle;
+    if (!s || !s->win || !s->win->UserPort) return 0;
+    return 1UL << s->win->UserPort->mp_SigBit;
+}
+
 const display_backend backend_aga = {
-    "AGA", aga_open, aga_show, NULL, aga_poll, aga_close
+    "AGA", aga_open, aga_show, NULL, aga_poll, aga_close, NULL, aga_wait_mask
 };

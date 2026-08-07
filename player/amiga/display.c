@@ -107,6 +107,11 @@ int display_poll_event(amiga_display *d)
     return d ? d->be->poll(d->h) : MR_EV_QUIT;
 }
 
+unsigned long display_wait_mask(amiga_display *d)
+{
+    return (d && d->be->wait_mask) ? d->be->wait_mask(d->h) : 0;
+}
+
 void display_set_status(amiga_display *d, const char *text)
 {
     if (d && d->be->status) d->be->status(d->h, text);

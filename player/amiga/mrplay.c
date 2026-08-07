@@ -773,6 +773,19 @@ static int control_signal_event(void)
     return MR_EV_NONE;
 }
 
+#define PREFETCH_INTERRUPT_MASK (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)
+#define PREFETCH_WAIT_MASK(disp_) \
+    (PREFETCH_INTERRUPT_MASK | display_wait_mask((disp_)))
+#define STOP_PREFETCH(disp_) \
+    hls_prefetch_stop(PREFETCH_WAIT_MASK((disp_)), prefetch_quit_probe, (disp_))
+
+static int prefetch_quit_probe(void *opaque)
+{
+    amiga_display *disp = (amiga_display *)opaque;
+    if (control_signal_event() == MR_EV_QUIT) return 1;
+    return disp && display_poll_event(disp) == MR_EV_QUIT;
+}
+
 static int player_event(amiga_display *disp)
 {
     int ev = control_signal_event();
@@ -1067,7 +1080,8 @@ int main(int argc, char **argv)
      * before the demuxer opens so the very first playlist/segment go through it.
      * If it fails to come up we simply fall back to synchronous fetching. */
     if (hls_prefetch && mr_source_is_hls(media_path)) {
-        prefetch_on = hls_prefetch_start(want_time);
+        prefetch_on = hls_prefetch_start(want_time, PREFETCH_INTERRUPT_MASK,
+                                         prefetch_quit_probe, NULL);
         printf("hls prefetch: %s\n", prefetch_on ? "on" : "unavailable");
     }
 
@@ -1098,7 +1112,7 @@ int main(int argc, char **argv)
                 player_status(MR_PLAYER_STATE_ERROR, "", reason);
             }
             status_hold();
-            if (prefetch_on) hls_prefetch_stop();
+            if (prefetch_on) STOP_PREFETCH(NULL);
             return 10;
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input
@@ -1136,7 +1150,7 @@ int main(int argc, char **argv)
                   player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
                   status_hold();
                   mr_demux_close(dx);
-                  if (prefetch_on) hls_prefetch_stop();
+                  if (prefetch_on) STOP_PREFETCH(NULL);
                   free(buf); return 10; }
 
     if (want_time)
@@ -1154,7 +1168,7 @@ int main(int argc, char **argv)
         player_status(MR_PLAYER_STATE_ERROR, codec->name, reason);
         status_hold();
         mr_demux_close(dx);
-        if (prefetch_on) hls_prefetch_stop();
+        if (prefetch_on) STOP_PREFETCH(NULL);
         free(buf); return 10;
     }
 
@@ -1180,9 +1194,12 @@ int main(int argc, char **argv)
                                "cannot open a display (RTG or AGA)");
                  status_hold();
                  mr_decoder_close(&dec); mr_demux_close(dx);
-                 if (prefetch_on) hls_prefetch_stop();
+                 if (prefetch_on) STOP_PREFETCH(NULL);
                  free(buf); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
+    if (prefetch_on)
+        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
+                                   prefetch_quit_probe, disp);
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
      * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
@@ -2104,7 +2121,7 @@ int main(int argc, char **argv)
     mr_demux_close(dx);
     /* Stop the prefetch worker from the main task before we exit, so it releases
      * its own socket/TLS state ahead of the atexit teardown. */
-    if (prefetch_on) hls_prefetch_stop();
+    if (prefetch_on) STOP_PREFETCH(NULL);
     free(buf);
     playback_timer_close();
     return 0;

@@ -94,6 +94,7 @@ enum {
 
 /* Non-blocking: returns the most significant queued input event (QUIT wins). */
 int  display_poll_event(amiga_display *d);
+unsigned long display_wait_mask(amiga_display *d);
 
 /* Show a short status string (e.g. "Buffering...", "Reconnecting..."); NULL or
  * "" restores the normal title. On the CGX backend this updates the window
