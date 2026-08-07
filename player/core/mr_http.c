@@ -97,9 +97,11 @@ struct Library *AmiSSLExtBase = NULL;
  * every connection this process makes. AmiSSL in particular is costly to open,
  * initialise, clean up and close, and doing that per HLS segment was the bulk
  * of the stall at each segment boundary. They are released once by
- * http_platform_shutdown at process exit; a hard/unsafe teardown (see
- * close_connection) poisons reuse so the leaked state is reclaimed by exit
- * rather than touched again. */
+ * http_platform_shutdown at process exit. g_tls_poisoned records that some
+ * connection quarantined its SSL object after an unhealthy drop; it only makes
+ * the exit-time teardown skip the AmiSSL cleanup (which can hard-lock on those
+ * paths) and leak instead. It deliberately does NOT block new connections - a
+ * fresh SSL from the same context is fine and is what live reconnect needs. */
 static SSL_CTX *g_ssl_ctx = NULL;
 static int      g_tls_inited = 0;
 static int      g_tls_poisoned = 0;
@@ -412,12 +414,14 @@ static int tls_open(http_source *h)
 {
     const SSL_METHOD *method;
     if (h->tls_ready) return 1;
-    if (g_tls_poisoned) {
-        mr_source_set_error(
-            "HTTPS disabled after a TLS error; restart player before retrying");
-        return 0;
-    }
-    /* After the first HTTPS connection the library and context are already up:
+    /* A prior connection may have quarantined its own SSL object (see
+     * close_connection) after an unhealthy drop, but the shared library and
+     * context are untouched, so a fresh connection - e.g. a live reconnect after
+     * a dropout - must still be allowed: create a new SSL from the same context
+     * below. g_tls_poisoned only gates the teardown at process exit, never new
+     * connections.
+     *
+     * After the first HTTPS connection the library and context are already up:
      * adopt them and skip the whole AmiSSL open/init and context creation, which
      * is what removes the per-segment stall. */
     if (g_tls_inited && g_ssl_ctx) {
