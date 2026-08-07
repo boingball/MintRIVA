@@ -159,20 +159,6 @@ static void player_status(LONG state, const char *codec, const char *text)
     mr_player_status_set(control_block, state, codec, text);
 }
 
-/* Force all pending output to disk so diagnostics are not lost on a crash.
- * fflush() keeps libc's internal state consistent; Flush(Output()) commits
- * the AmigaDOS-level file-handle buffer to the underlying filesystem/handler.
- * This matters when stdout is redirected to a log file via NP_Output: the DOS
- * handle can hold buffered data that would be lost if the process dies without
- * Close()ing the handle. */
-static void flush_log(void)
-{
-    BPTR out;
-    fflush(stdout);
-    out = Output();
-    if (out) Flush(out);
-}
-
 /* Turn a video fourcc into its four printable characters (non-printables shown
  * as '?'), for status messages about codecs we cannot decode. */
 static void fourcc_to_tag(uint32_t fourcc, char tag[5])
@@ -828,7 +814,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     if (!mp) { printf("cannot open MPEG-1 stream\n");
                player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
                              "cannot open MPEG-1 stream");
-               flush_log(); status_hold(); return 10; }
+               status_hold(); return 10; }
     abuf = (unsigned char *)malloc(1152 * 4);    /* max: 1152 frames stereo16 */
     if (!abuf) { mr_mpeg1_close(mp); return 10; }
     w = mr_mpeg1_width(mp); h = mr_mpeg1_height(mp);
@@ -838,14 +824,12 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         snprintf(line, sizeof line, "%dx%d, MPEG-1", w, h);
         player_status(MR_PLAYER_STATE_PLAYING, "MPEG-1", line);
     }
-    flush_log();
     disp = display_open(w, h, "MintRIVA");
     if (!disp) { printf("cannot open a display\n");
                  player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
                                "cannot open a display");
-                 flush_log(); status_hold(); mr_mpeg1_close(mp); return 10; }
+                 status_hold(); mr_mpeg1_close(mp); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
-    flush_log();
 
     sr = mr_mpeg1_samplerate(mp);
     if (sr) {
@@ -860,7 +844,6 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     if (ntick < 1) ntick = 1;
 
     printf("playing: space=pause, ESC=quit%s...\n", loop ? ", loop on" : "");
-    flush_log();
 
     while (!quit) {
         int got;
@@ -941,14 +924,12 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     if (!quit) {
         printf("played %d frames - press ESC or close the window to exit\n",
                frames);
-        flush_log();
         while (player_event(disp) != MR_EV_QUIT) {
             if (audio) audio_service(audio);
             Delay(2);
         }
     }
     player_status(MR_PLAYER_STATE_ENDED, "MPEG-1", "stream ended");
-    flush_log();
     if (audio) audio_close(audio);
     display_close(disp);
     mr_mpeg1_close(mp);
@@ -1093,7 +1074,6 @@ int main(int argc, char **argv)
     }
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
-    flush_log();
 
     /* Opt-in background segment reader (HLS only): downloads segments into RAM
      * ahead of the reader so a fetch never freezes presentation. Installed
@@ -1131,7 +1111,6 @@ int main(int argc, char **argv)
                          why ? why : "connection failed");
                 player_status(MR_PLAYER_STATE_ERROR, "", reason);
             }
-            flush_log();
             status_hold();
             if (prefetch_on) STOP_PREFETCH(NULL);
             return 10;
@@ -1142,7 +1121,7 @@ int main(int argc, char **argv)
         if (!buf) { printf("cannot read %s\n", media_path);
                     player_status(MR_PLAYER_STATE_ERROR, "",
                                   "cannot read stream data");
-                    flush_log(); status_hold(); return 10; }
+                    status_hold(); return 10; }
         printf("loaded %ld bytes\n", len);
 
         if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
@@ -1157,7 +1136,6 @@ int main(int argc, char **argv)
             player_status(MR_PLAYER_STATE_UNSUPPORTED, "",
                           "unsupported container (not AVI/MOV/MP4/TS/PS/"
                           "MJPEG/M4V/MPEG-1)");
-            flush_log();
             status_hold();
             free(buf);
             return 10;
@@ -1170,7 +1148,6 @@ int main(int argc, char **argv)
                   printf("no decoder for this video codec\n");
                   describe_unsupported_video(vi->fourcc, reason, sizeof reason);
                   player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
-                  flush_log();
                   status_hold();
                   mr_demux_close(dx);
                   if (prefetch_on) STOP_PREFETCH(NULL);
@@ -1189,7 +1166,6 @@ int main(int argc, char **argv)
         snprintf(reason, sizeof reason, "%s decoder failed to initialise",
                  codec->name);
         player_status(MR_PLAYER_STATE_ERROR, codec->name, reason);
-        flush_log();
         status_hold();
         mr_demux_close(dx);
         if (prefetch_on) STOP_PREFETCH(NULL);
@@ -1212,18 +1188,15 @@ int main(int argc, char **argv)
                  mr_demux_container_name(dx));
         player_status(MR_PLAYER_STATE_PLAYING, codec->name, line);
     }
-    flush_log();
     disp = display_open(vi->width, vi->height, "MintRIVA");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
                                "cannot open a display (RTG or AGA)");
-                 flush_log();
                  status_hold();
                  mr_decoder_close(&dec); mr_demux_close(dx);
                  if (prefetch_on) STOP_PREFETCH(NULL);
                  free(buf); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
-    flush_log();
     if (prefetch_on)
         hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
                                    prefetch_quit_probe, disp);
@@ -1306,7 +1279,6 @@ int main(int argc, char **argv)
 
     printf("playing: space=pause, </>=seek, ESC=quit%s...\n",
            loop ? ", loop on" : "");
-    flush_log();
 
     memset(vq, 0, sizeof vq);
     memset(&stats, 0, sizeof stats);
@@ -1715,7 +1687,6 @@ int main(int argc, char **argv)
                 if (audio) service_audio_for_display(&trace);
                 report_stats(&stats, audio, dx, &trace, qcount, now);
                 if (audio) service_audio_for_display(&trace);
-                flush_log();
             }
             continue;
         }
@@ -2135,7 +2106,6 @@ int main(int argc, char **argv)
     if (!quit) {
         printf("played %d frames - press ESC or close the window to exit\n",
                frames);
-        flush_log();
         while (player_event(disp) != MR_EV_QUIT) {
             if (audio) audio_service(audio);
             Delay(2);
@@ -2143,7 +2113,6 @@ int main(int argc, char **argv)
     }
 
     player_status(MR_PLAYER_STATE_ENDED, codec->name, "stream ended");
-    flush_log();
     { int qi; for (qi = 0; qi < VIDEO_QUEUE_CAP; qi++) free(vq[qi].rgb); }
     if (audio_dec) mr_audio_decoder_close(audio_dec);
     if (audio) audio_close(audio);
