@@ -1118,7 +1118,12 @@ int main(int argc, char **argv)
         int target_depth = network_source ? net_target : 3;
         int prev_master_source = -1;
 
-    while (!quit && (!input_eof || qcount || loop)) {
+    /* The live-resync term keeps the loop alive on EOF so the reconnect block in
+     * the body can run; without it the loop would exit here (empty queue, no
+     * --loop) before reconnect ever gets a chance. That block owns its own exits
+     * (give-up, mismatch, no-progress backstop). */
+    while (!quit && (!input_eof || qcount || loop ||
+                     (network_source && live_resync))) {
         queued_video *front = qcount ? &vq[qhead] : NULL;
         uint64_t now = monotonic_us();
         uint64_t period_us = vi->rate
