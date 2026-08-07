@@ -78,9 +78,13 @@ void __chkabort(void) { }
 #define AUDIO_STARTUP_TARGET_MS 400UL
 /* Sustained audio cushion the scheduler keeps topped up even when the video
  * queue is full, so a long segment-boundary stall does not drain the FIFO into
- * a state it can never climb back out of. Matches the buffer healthy playback
- * naturally reaches (~0.6-0.8 s in on-hardware logs). */
-#define AUDIO_CUSHION_TARGET_MS 800UL
+ * a state it can never climb back out of. Paula plays from its hardware DMA
+ * buffer under interrupt, independently of the main loop, so this cushion keeps
+ * audio smooth right through a blocking segment fetch even while the (single-
+ * threaded) loop cannot present video. On-hardware logs show HLS segment
+ * fetches stalling up to ~1.7 s, so the cushion must exceed that with margin;
+ * the FIFO holds ~4 s (rate*4), so 2.5 s fits comfortably. */
+#define AUDIO_CUSHION_TARGET_MS 2500UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
