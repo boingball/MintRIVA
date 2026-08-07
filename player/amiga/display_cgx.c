@@ -414,6 +414,14 @@ static void cgx_close(void *h)
     FreeVec(s);
 }
 
+static ULONG cgx_wait_mask(void *h)
+{
+    cgx_state *s = (cgx_state *)h;
+    if (!s || !s->win || !s->win->UserPort) return 0;
+    return 1UL << s->win->UserPort->mp_SigBit;
+}
+
 const display_backend backend_cgx = {
-    "RTG (CGX)", cgx_open, cgx_show, cgx_timing, cgx_poll, cgx_close, cgx_status
+    "RTG (CGX)", cgx_open, cgx_show, cgx_timing, cgx_poll, cgx_close,
+    cgx_status, cgx_wait_mask
 };

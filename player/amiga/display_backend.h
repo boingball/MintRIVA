@@ -7,6 +7,8 @@
 #ifndef DISPLAY_BACKEND_H
 #define DISPLAY_BACKEND_H
 
+#include <exec/types.h>
+
 typedef struct {
     const char *name;
     void *(*open)(int w, int h, const char *title);
@@ -21,6 +23,8 @@ typedef struct {
     /* Optional: show a short status string (NULL/empty restores the normal
      * title). Backends may leave this NULL. */
     void  (*status)(void *handle, const char *text);
+    /* Optional: signal bits a caller may Wait() on to wake for backend events. */
+    ULONG (*wait_mask)(void *handle);
 } display_backend;
 
 extern const display_backend backend_cgx;
@@ -34,7 +38,6 @@ extern int g_aga_lace;   /* 1 = allow interlaced screens (taller fit)       */
 extern int g_aga_akiko;  /* 1 = use CD32 Akiko hardware C2P                  */
 
 /* Library bases opened once by display.c and shared by the backends. */
-#include <exec/types.h>
 struct IntuitionBase;
 struct GfxBase;
 struct Library;
