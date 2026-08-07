@@ -50,7 +50,7 @@
 #define IPTV_STREAMS_URL "https://iptv-org.github.io/api/streams.json"
 /* When the Debug toggle is on, the launched player's diagnostics (with --time)
  * are captured here so a failing stream can be inspected without a Shell. */
-#define MRPLAY_LOG_FILE "RAM:MintRIVA.log"
+#define MRPLAY_LOG_FILE "PROGDIR:MintRIVA.log"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
