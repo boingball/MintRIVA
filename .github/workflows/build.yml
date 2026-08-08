@@ -3,6 +3,7 @@ name: Build
 # Compile MintRIVA for AmigaOS (m68k) on every push and pull request.
 # MintRIVA uses submodules for MintAMP and libavc, so checkout must recurse.
 # The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
+# CI debug trigger.
 
 on:
   push:
