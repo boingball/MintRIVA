@@ -1,8 +1,7 @@
 name: Build
 
 # Compile MintRIVA for AmigaOS (m68k) on every push and pull request.
-# MintRIVA uses submodules for MintAMP and libavc, so checkout must recurse.
-# The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
+# Keep CI deliberately simple: this is a compile sanity check, not a release build.
 
 on:
   push:
@@ -24,17 +23,8 @@ jobs:
       - name: Compile with the Amiga cross-compiler
         run: |
           docker run --rm -v "$PWD":/src -w /src/player \
-            sacredbanana/amiga-compiler:m68k-amigaos \
-            bash -c '
-              set -e
-              AMIGA_GCC="$(command -v m68k-amigaos-gcc)"
-              AMIGA_ROOT="$(dirname "$(dirname "$AMIGA_GCC")")"
-              echo "Compiler: $AMIGA_GCC"
-              "$AMIGA_GCC" --version | head -1
-              make -f Makefile.amiga all \
-                AMIGA_ROOT="$AMIGA_ROOT" \
-                SSL=1 SSLCERTS=1
-            '
+            amigadev/crosstools:m68k-amigaos \
+            make -f Makefile.amiga all
 
       - name: Confirm the programs were produced
         run: |
