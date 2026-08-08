@@ -52,6 +52,10 @@
  * are captured here so a failing stream can be inspected without a Shell. */
 #define MRPLAY_LOG_FILE "RAM:MintRIVA.log"
 
+/* Cleared at GUI launch: the first logged stream truncates the file, later ones
+ * append, so a whole session's streams accumulate in one log (see start_stream). */
+static int mrplay_log_session_open;
+
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
 struct Library *ChooserBase, *ListBrowserBase, *StringBase, *LabelBase;
@@ -490,9 +494,24 @@ static int start_stream(const mr_iptv_stream *stream,
     return 0;
   /* Capture the player's stdout to a log file. Needs a real input stream too
    * (a CLI expects one), so pair the log with NIL:. If either file won't open,
-   * fall back to an unlogged launch rather than refusing to play. */
+   * fall back to an unlogged launch rather than refusing to play.
+   *
+   * Session-based, appending: truncate once (the first logged stream of this
+   * GUI run) so a session starts clean, then append every subsequent stream so
+   * the whole session's diagnostics accumulate in one file instead of each
+   * stream wiping the last. A divider marks where each new stream begins. */
   if (debug_log) {
-    log = Open((CONST_STRPTR)MRPLAY_LOG_FILE, MODE_NEWFILE);
+    if (!mrplay_log_session_open) {
+      log = Open((CONST_STRPTR)MRPLAY_LOG_FILE, MODE_NEWFILE);
+      if (log) mrplay_log_session_open = 1;
+    } else {
+      log = Open((CONST_STRPTR)MRPLAY_LOG_FILE, MODE_READWRITE);
+      if (log) {
+        static const char sep[] = "\n\n===== new stream =====\n";
+        Seek(log, 0, OFFSET_END);
+        Write(log, (APTR)sep, (LONG)(sizeof sep - 1));
+      }
+    }
     nil = Open((CONST_STRPTR) "NIL:", MODE_NEWFILE);
     if (!log || !nil) {
       if (log) Close(log);

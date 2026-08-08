@@ -71,11 +71,12 @@ void __chkabort(void) { }
  * ceiling * frame_bytes regardless of video_cap, which once ate all of Fast RAM.)
  * The array structs are tiny; only the lazily-allocated RGB buffers cost. */
 #define VIDEO_QUEUE_CAP 48
-/* Default decoded-frame depths. Network stays shallow so it settles into
- * present-as-decoded (smooth on a real-time decoder; see the sizing in main);
- * disk can buffer deeper to pace presentation. Both are clamped to free RAM and
- * may be raised by --net-queue. */
-#define VIDEO_QUEUE_NET_DEPTH  4
+/* Default decoded-frame depths, clamped to free RAM and raisable by --net-queue.
+ * In the video-ahead regime the presented rate is about depth / cushion_seconds
+ * (topping up the audio cushion discards frames decoded past the cap), so a
+ * deeper queue presents more before each gap: measured ~5 fps at depth 14 vs
+ * ~2 fps at depth 4 against the 2.5 s cushion. Keep it as deep as RAM allows. */
+#define VIDEO_QUEUE_NET_DEPTH  16
 #define VIDEO_QUEUE_DISK_DEPTH 16
 /* Never let the decoded queue eat RAM below this: it must leave room for the
  * segment fetch, decoder and TLS. An over-deep queue once filled Fast RAM to
@@ -1461,21 +1462,18 @@ int main(int argc, char **argv)
         int net_target = net_queue > 0
             ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
         int target_depth = network_source ? net_target : 3;
-        /* A SHALLOW decoded-video queue is what keeps network playback smooth
-         * on a machine that decodes in real time. Presenting each frame as it is
-         * decoded (video tracking - or briefly trailing - the audio clock) is
-         * fluid. A DEEP queue instead holds video ahead of the clock; topping up
-         * the audio cushion then decodes past the queue cap and discards those
-         * frames reference-only, punching PTS gaps - a freeze-then-jump judder
-         * that persists until a stall longer than the queue finally drains it.
-         * On-hardware a deep queue juddered for ~25 s until a big stall flushed
-         * it, then ran smoothly at 25 fps for the rest of the clip. A shallow
-         * queue drains on the first small stall and settles straight into that
-         * present-as-decoded regime - and costs almost no RAM, so it is safe on
-         * tight machines too. Audio robustness comes from the cushion, which
-         * lives cheaply in the PCM FIFO, not from buffering expensive RGB.
-         * Disk playback (no fetch stalls, may out-run the decoder) keeps a
-         * deeper queue to pace presentation; --net-queue still forces one. */
+        /* Decoded-frame queue depth. As deep as RAM allows: while video runs
+         * ahead of the audio clock, topping up the audio cushion decodes past
+         * the queue cap and discards those frames, so the presented rate is
+         * roughly depth / cushion_seconds - a deeper queue shows more frames
+         * before each gap. A stall longer than the queue drains it and flips
+         * playback into the smooth present-as-decoded regime (video trailing the
+         * clock, no discards); a deeper queue also rides short stalls outright.
+         * The clamps below keep the footprint within a safe slice of free RAM,
+         * and video_cap is the ring modulus so the footprint is exactly
+         * video_cap * frame_bytes. (Fully gap-free video would need the queue to
+         * span the whole cushion - ~63 frames / ~42 MB here - which no RAM-safe
+         * queue can hold; that is the compressed-prefetch worker's job.) */
         unsigned long cushion_ms = prefetch_on ? AUDIO_CUSHION_PREFETCH_MS
                                                : AUDIO_CUSHION_TARGET_MS;
         size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
