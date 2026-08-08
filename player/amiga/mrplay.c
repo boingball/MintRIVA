@@ -62,11 +62,14 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
  */
 void __chkabort(void) { }
 
-/* Ring-buffer slot count - the ceiling on how many decoded frames can be held.
- * RGB slots are allocated lazily per used entry, so a large ring is cheap until
- * actually filled; how many slots are filled is chosen at runtime (video_cap,
- * see main) from the audio cushion and free RAM. The ring must be at least as
- * deep as the deepest cushion the runtime sizing may want to cover. */
+/* Upper ceiling on the decoded-frame ring - the size of the vq[] array only.
+ * The ACTIVE ring is video_cap (chosen at runtime from the audio cushion and
+ * free RAM, see main), and video_cap is the modulus for all qhead arithmetic,
+ * so only video_cap slots are ever touched and the RGB footprint is exactly
+ * video_cap * frame_bytes. (Modulo the whole array instead and qhead would cycle
+ * every slot, allocating an RGB buffer in each - the footprint would be this
+ * ceiling * frame_bytes regardless of video_cap, which once ate all of Fast RAM.)
+ * The array structs are tiny; only the lazily-allocated RGB buffers cost. */
 #define VIDEO_QUEUE_CAP 48
 /* Extra decoded frames held beyond the audio-cushion span, to absorb per-frame
  * decode jitter without the reach-ahead punching a gap into the queue. */
@@ -500,6 +503,7 @@ typedef struct video_presenter {
     media_clock         *mc;
     const mr_video_info *vi;
     queued_video        *vq;
+    int                  video_cap;        /* ring modulus - see main()'s sizing     */
     int                 *qhead, *qcount;
     int                 *playback_started;
     uint64_t            *mono_base_us;
@@ -583,7 +587,7 @@ static void present_service_frame(video_presenter *vp)
      * drop frames a whole period or more overdue, keeping the newest. */
     while (late_us > (int64_t)period_us && *vp->qcount > 1) {
         vp->stats->dropped++;
-        *vp->qhead = (*vp->qhead + 1) % VIDEO_QUEUE_CAP;
+        *vp->qhead = (*vp->qhead + 1) % vp->video_cap;
         (*vp->qcount)--;
         front = &vp->vq[*vp->qhead];
         late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
@@ -595,7 +599,7 @@ static void present_service_frame(video_presenter *vp)
     vp->stats->latency_us += monotonic_us() - front->decoded_at_us;
     vp->stats->presented++;
     if (vp->frames) (*vp->frames)++;
-    *vp->qhead = (*vp->qhead + 1) % VIDEO_QUEUE_CAP;
+    *vp->qhead = (*vp->qhead + 1) % vp->video_cap;
     (*vp->qcount)--;
     vp->presenting = 0;
 }
@@ -1464,12 +1468,13 @@ int main(int argc, char **argv)
          * judder. Size the queue to span the cushion plus a jitter margin.
          *
          * But an over-deep queue is the footprint that once filled Fast RAM to
-         * the floor and starved playback into an endless reconnect, so clamp to
-         * a safe slice of free RAM (leave VIDEO_QUEUE_MEM_FLOOR, and use at most
-         * half of the rest - the queue fills lazily, so this bounds the eventual
-         * footprint) and to the ring size. On a tight machine this yields a
-         * shallow queue (some judder, but safe); on a roomy one it covers the
-         * whole cushion and the gaps disappear. --net-queue still raises it. */
+         * the floor and stalled playback, so clamp to a safe slice of free RAM.
+         * video_cap becomes the ring modulus below, so the RGB footprint is
+         * exactly video_cap * frame_bytes - which is what this budget bounds.
+         * On a tight machine this yields a shallow queue (some judder, but safe);
+         * on a roomy one it covers more of the cushion. --net-queue still
+         * raises it, and prefetch-off's 2.5 s cushion is larger than any
+         * RAM-safe queue, so that path still judders (prefetch is its fix). */
         unsigned long cushion_ms = prefetch_on ? AUDIO_CUSHION_PREFETCH_MS
                                                : AUDIO_CUSHION_TARGET_MS;
         int cushion_frames = (int)(cushion_ms / period) + 1;
@@ -1511,6 +1516,7 @@ int main(int argc, char **argv)
         presenter.mc = &mc;
         presenter.vi = vi;
         presenter.vq = vq;
+        presenter.video_cap = video_cap;   /* same ring modulus the loop uses  */
         presenter.qhead = &qhead;
         presenter.qcount = &qcount;
         presenter.playback_started = &playback_started;
@@ -1640,7 +1646,7 @@ int main(int argc, char **argv)
                                         (int64_t)new_front->pts_us;
                     while (post_late > (int64_t)period_us && qcount > 1) {
                         stats.dropped++;
-                        qhead = (qhead + 1) % VIDEO_QUEUE_CAP;
+                        qhead = (qhead + 1) % video_cap;
                         qcount--;
                         new_front = &vq[qhead];
                         post_late = (int64_t)rescue_clock -
@@ -1798,7 +1804,7 @@ int main(int argc, char **argv)
              * is useful or only the newest decoded frame remains. */
             while (!fast_forward && late_us > (int64_t)period_us && qcount > 1) {
                 stats.dropped++; stats.dropped_in_pass++;
-                qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
+                qhead = (qhead + 1) % video_cap; qcount--;
                 front = &vq[qhead];
                 late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             }
@@ -1877,7 +1883,7 @@ int main(int argc, char **argv)
             }
             stats.latency_us += monotonic_us() - front->decoded_at_us;
             stats.presented++; frames++;
-            qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
+            qhead = (qhead + 1) % video_cap; qcount--;
             now = monotonic_us();
             if (want_time && now - stats.since_us >= STATS_INTERVAL_US) {
                 trace_phase(&trace, "scheduler-diagnostics");
@@ -2177,21 +2183,18 @@ int main(int argc, char **argv)
                                 continue;
                             }
                             queued_video *tail =
-                                &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
+                                &vq[(qhead + qcount) % video_cap];
                             trace_phase(&trace, "frame-copy");
                             if (audio) service_audio_for_display(&trace);
                             a = monotonic_us();
                             if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
                                             decode_us)) {
-                                /* Out of RAM for another RGB slot. This is the
-                                 * true memory ceiling - below whatever the cap
-                                 * was sized to - so do NOT quit: pin the cap at
-                                 * the depth we actually reached and drop this
-                                 * frame exactly as a full queue would, then keep
-                                 * recycling the slots we already own. A transient
-                                 * allocation failure must never end playback. */
-                                if (qcount > 0 && video_cap > qcount)
-                                    video_cap = qcount;
+                                /* Out of RAM for another RGB slot (a backstop -
+                                 * the queue is sized to fit; see main). Never
+                                 * quit: drop this frame exactly as a full queue
+                                 * would and keep recycling the slots we own. The
+                                 * cap is the ring modulus so it must not change;
+                                 * the slot simply stays empty and is retried. */
                                 stats.dropped++;
                                 decoded_index++;
                                 continue;
