@@ -36,6 +36,15 @@
 static mr_hls_open_fn      g_backend_open;
 static mr_hls_prefetch_fn  g_backend_prefetch;
 
+static mr_hls_wait_fn      g_wait_fn;
+static void               *g_wait_opaque;
+
+void mr_hls_set_wait(mr_hls_wait_fn fn, void *opaque)
+{
+    g_wait_fn = fn;
+    g_wait_opaque = opaque;
+}
+
 void mr_hls_set_backend(mr_hls_open_fn open_fn, mr_hls_prefetch_fn prefetch_fn)
 {
     g_backend_open = open_fn;
@@ -54,10 +63,15 @@ static mr_source *hls_open(const char *url, const mr_http_options *options,
 #define HLS_URL_MAX      1024
 
 /* How many times playback may re-fetch a live playlist that reports no new
- * segment before giving up and reporting end of stream. Each re-fetch is a
- * full HTTP round-trip, which on real hardware paces the polling; this only
- * bounds a genuinely stalled or dead stream. */
-#define HLS_LIVE_REFETCH_MAX 240
+ * segment before giving up and reporting end of stream (the player then hands
+ * off to its reconnect-at-the-edge path). A serviceable wait now paces each
+ * attempt to about half the target duration, so a modest count already covers
+ * tens of seconds of edge stall while staying responsive throughout - unlike
+ * the old uninterruptible 240-deep spin, which hammered the server and froze
+ * the single task for the whole poll. */
+#define HLS_LIVE_REFETCH_MAX 40
+/* Fallback poll interval when the playlist declares no EXT-X-TARGETDURATION. */
+#define HLS_LIVE_REFETCH_WAIT_MS 1000
 
 typedef struct {
     char   **segs;        /* resolved segment URLs                            */
@@ -69,6 +83,7 @@ typedef struct {
     size_t   cur_seg;
     /* Live streaming state (unused for VOD). */
     int      live;        /* playlist has no ENDLIST: keep re-fetching        */
+    unsigned target_ms;   /* EXT-X-TARGETDURATION: paces live re-fetch polls  */
     char    *playlist_url;/* media playlist URL to re-fetch for new segments  */
     unsigned long next_seq; /* media-sequence of the next not-yet-queued seg  */
     mr_http_options options; /* inherited by playlists and segments            */
@@ -267,6 +282,12 @@ static mr_status merge_playlist(char *text, const char *base_url,
                                 NULL, 10);
             continue;
         }
+        if (starts(line, "#EXT-X-TARGETDURATION:")) {
+            unsigned long secs = strtoul(
+                line + strlen("#EXT-X-TARGETDURATION:"), NULL, 10);
+            if (secs) h->target_ms = (unsigned)(secs * 1000UL);
+            continue;
+        }
         if (starts(line, "#EXT-X-PLAYLIST-TYPE:") && strstr(line, "VOD"))
             vod = 1;
         if (starts(line, "#EXT-X-ENDLIST")) { endlist = 1; continue; }
@@ -343,15 +364,28 @@ static size_t locate(hls_source *h, size_t off)
 static int hls_refetch_live(hls_source *h)
 {
     int tries;
+    unsigned wait_ms;
     /* Playback has consumed the last known segment, so its source is done with:
      * close it before fetching the playlist so only one HTTP/S connection is
      * ever open at once (see open_seg). */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
+    /* Poll no faster than about half the target duration: fresh segments appear
+     * on that cadence, so a tighter poll only hammers the server (and, single-
+     * threaded, freezes the caller for each round-trip). */
+    wait_ms = h->target_ms ? h->target_ms / 2 : HLS_LIVE_REFETCH_WAIT_MS;
+    if (wait_ms < 500) wait_ms = 500;
+    if (wait_ms > 2000) wait_ms = 2000;
     for (tries = 0; tries < HLS_LIVE_REFETCH_MAX; tries++) {
-        char *text = fetch_text(h->playlist_url,
-                                h->have_options ? &h->options : NULL);
+        char *text;
         int added;
         mr_status st;
+        /* Wait between attempts (not before the first, which may already find a
+         * new segment). The hook keeps audio/video/UI alive during the pause and
+         * returns nonzero if the user asked to quit. */
+        if (tries && g_wait_fn && g_wait_fn(g_wait_opaque, wait_ms))
+            return 0;
+        text = fetch_text(h->playlist_url,
+                          h->have_options ? &h->options : NULL);
         if (!text) return 0;                       /* playlist gone / error    */
         st = merge_playlist(text, h->playlist_url, h, &added);
         free(text);

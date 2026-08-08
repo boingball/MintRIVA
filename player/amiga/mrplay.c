@@ -14,6 +14,7 @@
  *   mrplay <file.avi|file.mov>
  */
 #include "../core/mr_demux.h"
+#include "../core/mr_hls.h"
 #include "../core/mr_http.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
@@ -897,6 +898,34 @@ static int player_event(amiga_display *disp)
     return ev != MR_EV_NONE ? ev : display_poll_event(disp);
 }
 
+/*
+ * Wait hook for the HLS live-playlist re-fetch loop (mr_hls_set_wait).
+ *
+ * When playback reaches the live edge the reader must poll the playlist for new
+ * segments. That poll used to spin without pause and without servicing anything,
+ * so a stalled edge froze the single task for tens of seconds - audio and video
+ * stopped and even ESC/Close could not be seen until the spin ended. This paces
+ * each poll and, throughout the wait, pumps the same service hook the scheduler
+ * uses: audio keeps playing, already-decoded video keeps presenting (the queue
+ * is released for the blocking fetch), and a quit request is honoured promptly.
+ * opaque is the scheduler_trace, which carries the audio handle and presenter.
+ */
+static int hls_wait_service(void *opaque, unsigned wait_ms)
+{
+    scheduler_trace *trace = (scheduler_trace *)opaque;
+    amiga_display *disp = trace && trace->presenter ? trace->presenter->disp
+                                                    : NULL;
+    uint64_t begin = monotonic_us();
+    uint64_t target = (uint64_t)wait_ms * 1000ULL;
+    for (;;) {
+        if (disp && player_event(disp) == MR_EV_QUIT) return 1;
+        if (trace->audio) service_audio_for_display(trace);
+        else if (trace->presenter) present_service_frame(trace->presenter);
+        if (monotonic_us() - begin >= target) return 0;
+        Delay(1);                            /* 20 ms; stay responsive to ESC  */
+    }
+}
+
 /* MPEG-1 program streams (.mpg/.mpeg) play through pl_mpeg (video + MP2 audio),
  * reusing the display and Paula audio backends. Separate from the AVI/MOV +
  * codec path because .mpg is a self-contained stream. */
@@ -1377,6 +1406,9 @@ int main(int argc, char **argv)
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
     mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
+    /* Keep audio/video/UI alive (and quit responsive) while the HLS live path
+     * polls for new segments at the edge; see hls_wait_service. */
+    mr_hls_set_wait(hls_wait_service, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -2180,6 +2212,9 @@ int main(int argc, char **argv)
      * hook is still installed and fires during the teardown flush's blits, so
      * drop the now-dangling pointer before any of that can dereference it. */
     trace.presenter = NULL;
+    /* The HLS wait hook holds &trace too; the teardown flush no longer reads the
+     * demux, so retire it here for symmetry before the scheduler locals die. */
+    mr_hls_set_wait(NULL, NULL);
 
     if (audio) audio_set_running(audio, 0); /* following drain is intentional */
 

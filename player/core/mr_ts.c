@@ -11,6 +11,12 @@
 #define TS_PID_NONE         0x1fff
 #define TS_PROBE_LIMIT      (8UL * 1024 * 1024)
 #define TS_PROBE_VIDEO_MAX  (1024UL * 1024)
+/* How many PTS to sample before deriving the frame period, and the sample
+ * ceiling. One delta is not enough: with B-frames the decode-order timestamps
+ * are reordered, so the period only emerges from the minimum gap across a run
+ * of frames long enough to include display-adjacent ones (see probe_stream). */
+#define TS_PTS_STEP_SAMPLES 16
+#define TS_PTS_SAMPLE_MAX   32
 #define TS_PES_MAX          (16UL * 1024 * 1024)
 #define TS_SERVICE_PACKETS  16
 
@@ -457,25 +463,15 @@ static void parse_adts_info(mr_ts *t, const uint8_t *p, size_t len)
     }
 }
 
-static uint32_t gcd32(uint32_t a, uint32_t b)
-{
-    while (b) {
-        uint32_t r = a % b;
-        a = b;
-        b = r;
-    }
-    return a;
-}
-
 static mr_status probe_stream(mr_ts *t)
 {
     uint8_t packet[192];
     uint8_t *video_probe = NULL;
     size_t video_len = 0, video_cap = 0;
     size_t pos, limit = t->len < TS_PROBE_LIMIT ? t->len : TS_PROBE_LIMIT;
-    uint64_t last_pts = 0;
-    int have_last_pts = 0;
     uint32_t pts_step = 0;
+    uint64_t pts_samples[TS_PTS_SAMPLE_MAX];
+    int nsamp = 0, i, j;
 
     for (pos = 0; pos + (size_t)t->packet_size <= limit;
          pos += (size_t)t->packet_size) {
@@ -495,16 +491,15 @@ static mr_status probe_stream(mr_ts *t)
             if (pusi) {
                 es = pes_payload(p, &es_len, &pts, &has_pts, &expected);
                 if (!es) continue;
-                if (has_pts) {
-                    if (have_last_pts) {
-                        uint32_t d = pts > last_pts
-                                   ? (uint32_t)(pts - last_pts)
-                                   : (uint32_t)(last_pts - pts);
-                        if (d) pts_step = pts_step ? gcd32(pts_step, d) : d;
-                    }
-                    last_pts = pts;
-                    have_last_pts = 1;
-                }
+                /* Collect PTS samples; the frame period is derived from them
+                 * below. Sampling here (not a running delta) is deliberate: PES
+                 * arrive in decode order, so with B-frames the timestamps are
+                 * reordered - and hierarchical (pyramid) B-frames mean no two
+                 * decode-order-consecutive frames are one period apart either.
+                 * The single delta this once used caught an I->P gap and reported
+                 * fps/(1+Bframes), e.g. 6.25 for a 25 fps, 3-B stream. */
+                if (has_pts && nsamp < TS_PTS_SAMPLE_MAX)
+                    pts_samples[nsamp++] = pts;
             }
             if (video_len < TS_PROBE_VIDEO_MAX) {
                 size_t add = es_len;
@@ -534,7 +529,7 @@ static mr_status probe_stream(mr_ts *t)
                     : parse_mpeg_video_sequence(t, video_probe, video_len);
             int audio_ready =
                 t->audio_pid == TS_PID_NONE || t->audio.valid;
-            if (video_ready && audio_ready && have_last_pts && pts_step)
+            if (video_ready && audio_ready && nsamp >= TS_PTS_STEP_SAMPLES)
                 break;
         }
     }
@@ -543,6 +538,19 @@ static mr_status probe_stream(mr_ts *t)
     else if ((t->video_type == 0x01 || t->video_type == 0x02) && video_len)
         parse_mpeg_video_sequence(t, video_probe, video_len);
     free(video_probe);
+
+    /* Frame period = the smallest gap between any two sampled PTS. Presentation
+     * timestamps are spaced one period apart in display order; decode-order
+     * reordering (incl. pyramid B-frames) only permutes them, so the minimum
+     * pairwise distance across a contiguous run of frames is exactly one period.
+     * O(n^2) over a tiny bounded sample, once, at open. */
+    for (i = 0; i < nsamp; i++)
+        for (j = i + 1; j < nsamp; j++) {
+            uint64_t a = pts_samples[i], b = pts_samples[j];
+            uint64_t d = a > b ? a - b : b - a;
+            if (d && d <= 0xffffffffUL && (!pts_step || (uint32_t)d < pts_step))
+                pts_step = (uint32_t)d;
+        }
 
     if (t->video_pid == TS_PID_NONE ||
         (t->video_type != 0x01 && t->video_type != 0x02 &&

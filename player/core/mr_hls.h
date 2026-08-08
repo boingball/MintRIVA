@@ -34,4 +34,14 @@ typedef void (*mr_hls_prefetch_fn)(const char *url,
                                    const struct mr_http_options *options);
 void mr_hls_set_backend(mr_hls_open_fn open_fn, mr_hls_prefetch_fn prefetch_fn);
 
+/* Optional wait hook, called between live-playlist re-fetches. When playback
+ * reaches the live edge the reader must poll the playlist for new segments;
+ * without a wait it hammers the server and (single-threaded) freezes the caller
+ * for the whole poll. The hook should pause about `wait_ms` while keeping the
+ * caller responsive - servicing audio/video/UI - and return nonzero to abort
+ * (the user asked to quit). Pass NULL to restore the plain uninterruptible
+ * behaviour. Host builds install none. */
+typedef int (*mr_hls_wait_fn)(void *opaque, unsigned wait_ms);
+void mr_hls_set_wait(mr_hls_wait_fn fn, void *opaque);
+
 #endif /* MR_HLS_H */
