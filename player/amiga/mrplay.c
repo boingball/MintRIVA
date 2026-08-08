@@ -71,15 +71,17 @@ void __chkabort(void) { }
  * ceiling * frame_bytes regardless of video_cap, which once ate all of Fast RAM.)
  * The array structs are tiny; only the lazily-allocated RGB buffers cost. */
 #define VIDEO_QUEUE_CAP 48
-/* Extra decoded frames held beyond the audio-cushion span, to absorb per-frame
- * decode jitter without the reach-ahead punching a gap into the queue. */
-#define VIDEO_QUEUE_MARGIN 4
+/* Default decoded-frame depths. Network stays shallow so it settles into
+ * present-as-decoded (smooth on a real-time decoder; see the sizing in main);
+ * disk can buffer deeper to pace presentation. Both are clamped to free RAM and
+ * may be raised by --net-queue. */
+#define VIDEO_QUEUE_NET_DEPTH  4
+#define VIDEO_QUEUE_DISK_DEPTH 16
 /* Never let the decoded queue eat RAM below this: it must leave room for the
  * segment fetch, decoder and TLS. An over-deep queue once filled Fast RAM to
  * the safety floor and starved playback into an endless reconnect (see the
  * runtime sizing in main). */
 #define VIDEO_QUEUE_MEM_FLOOR (8UL * 1024 * 1024)
-#define STATS_INTERVAL_US 3000000ULL
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
@@ -1459,47 +1461,45 @@ int main(int argc, char **argv)
         int net_target = net_queue > 0
             ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
         int target_depth = network_source ? net_target : 3;
-        /* How many decoded RGB frames the queue may hold. This must cover the
-         * audio cushion the decode gate reaches ahead to keep fed: the demux is
-         * one interleaved TS, so topping up audio necessarily decodes the video
-         * in between - and if the queue is shallower than that lookahead, those
-         * video frames land in a full queue and are discarded (decoded
-         * reference-only), punching PTS gaps that show up as a freeze-then-jump
-         * judder. Size the queue to span the cushion plus a jitter margin.
-         *
-         * But an over-deep queue is the footprint that once filled Fast RAM to
-         * the floor and stalled playback, so clamp to a safe slice of free RAM.
-         * video_cap becomes the ring modulus below, so the RGB footprint is
-         * exactly video_cap * frame_bytes - which is what this budget bounds.
-         * On a tight machine this yields a shallow queue (some judder, but safe);
-         * on a roomy one it covers more of the cushion. --net-queue still
-         * raises it, and prefetch-off's 2.5 s cushion is larger than any
-         * RAM-safe queue, so that path still judders (prefetch is its fix). */
+        /* A SHALLOW decoded-video queue is what keeps network playback smooth
+         * on a machine that decodes in real time. Presenting each frame as it is
+         * decoded (video tracking - or briefly trailing - the audio clock) is
+         * fluid. A DEEP queue instead holds video ahead of the clock; topping up
+         * the audio cushion then decodes past the queue cap and discards those
+         * frames reference-only, punching PTS gaps - a freeze-then-jump judder
+         * that persists until a stall longer than the queue finally drains it.
+         * On-hardware a deep queue juddered for ~25 s until a big stall flushed
+         * it, then ran smoothly at 25 fps for the rest of the clip. A shallow
+         * queue drains on the first small stall and settles straight into that
+         * present-as-decoded regime - and costs almost no RAM, so it is safe on
+         * tight machines too. Audio robustness comes from the cushion, which
+         * lives cheaply in the PCM FIFO, not from buffering expensive RGB.
+         * Disk playback (no fetch stalls, may out-run the decoder) keeps a
+         * deeper queue to pace presentation; --net-queue still forces one. */
         unsigned long cushion_ms = prefetch_on ? AUDIO_CUSHION_PREFETCH_MS
                                                : AUDIO_CUSHION_TARGET_MS;
-        int cushion_frames = (int)(cushion_ms / period) + 1;
-        int want_cap = cushion_frames + VIDEO_QUEUE_MARGIN;
         size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
         ULONG free_any = AvailMem(MEMF_ANY);
-        /* Only a third of the (post-floor) free pool: AvailMem is the total
-         * free, but each slot needs a contiguous RGB block, and fragmentation
-         * makes the largest usable run smaller than the total - aim well clear
-         * so the queue rarely reaches the true ceiling (queue_copy caps it
-         * safely if it ever does). */
+        /* Only a third of the (post-floor) free pool is a safety ceiling; the
+         * shallow default is far below it, but it protects a tight machine and
+         * an explicit --net-queue. video_cap is the ring modulus below, so the
+         * RGB footprint is exactly video_cap * frame_bytes. */
         size_t budget = free_any > VIDEO_QUEUE_MEM_FLOOR
                       ? (size_t)(free_any - VIDEO_QUEUE_MEM_FLOOR) / 3 : 0;
         int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
-        int video_cap = want_cap;
-        if (video_cap > budget_frames) video_cap = budget_frames;
+        int video_cap = network_source ? VIDEO_QUEUE_NET_DEPTH
+                                        : VIDEO_QUEUE_DISK_DEPTH;
         if (net_queue > 0 && video_cap < net_target) video_cap = net_target;
         if (video_cap < target_depth) video_cap = target_depth;
-        if (video_cap < 4) video_cap = 4;          /* a floor for playback     */
+        if (budget_frames > 0 && video_cap > budget_frames)
+            video_cap = budget_frames;
+        if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
         if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
         int prev_master_source = -1;
         if (want_time)
-            printf("video-queue: cap=%d frames (cushion=%lu ms=%d frames, "
+            printf("video-queue: cap=%d frames (%s, cushion=%lu ms, "
                    "frame=%lu KB, free=%lu KB)\n",
-                   video_cap, cushion_ms, cushion_frames,
+                   video_cap, network_source ? "network" : "disk", cushion_ms,
                    (unsigned long)(frame_bytes / 1024),
                    (unsigned long)(free_any / 1024));
 
@@ -2023,18 +2023,15 @@ int main(int argc, char **argv)
             /* With the video queue already full the loop would otherwise sleep,
              * which stops the audio FIFO being refilled - after a long stall the
              * cushion then never rebuilds and playback settles into a degraded
-             * state. Keep demuxing to top the cushion back up; the extra video
-             * decoded meanwhile fills toward the queue cap and is only dropped
-             * (reference-only) once the cap is hit.
+             * state. Keep demuxing to top the cushion back up; the audio lands
+             * in the cheap PCM FIFO, and with the video queue shallow the video
+             * decoded alongside it is presented as it comes (present-as-decoded)
+             * rather than piling into a deep buffer.
              *
-             * That deep cushion exists to ride segment-fetch stalls in the
-             * single-threaded model; it is also what drives the decoded-frame
-             * queue to its full (memory-heavy) depth. With the prefetch worker
-             * absorbing those stalls at the compressed level, a small cushion is
-             * enough - and it keeps the decoded queue (and RAM use) shallow,
-             * which matters on Fast-RAM-tight machines. cushion_ms is the same
-             * value the queue was sized against above, so the reach-ahead fills
-             * the queue instead of overrunning it. */
+             * The cushion rides segment-fetch stalls for audio; it is deliberate
+             * that it does NOT drive the decoded-video queue deep (that was the
+             * judder). A smaller cushion is used when the prefetch worker is on,
+             * since it absorbs stalls at the compressed level. */
             int feed_audio_full = audio && qcount >= target_depth &&
                                   audio_ms < cushion_ms;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
