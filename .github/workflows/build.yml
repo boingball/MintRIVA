@@ -1,0 +1,50 @@
+name: Build
+
+# Compile MintRIVA for AmigaOS (m68k) on every push and pull request.
+# MintRIVA uses submodules for MintAMP and libavc, so checkout must recurse.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the code and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Compile with the Amiga cross-compiler
+        run: |
+          docker run --rm -v "$PWD":/src -w /src/player \
+            amigadev/crosstools:m68k-amigaos \
+            bash -lc '
+              set -e
+              AMIGA_GCC="$(command -v m68k-amigaos-gcc)"
+              AMIGA_ROOT="$(dirname "$(dirname "$AMIGA_GCC")")"
+              echo "Compiler: $AMIGA_GCC"
+              "$AMIGA_GCC" --version | head -1
+              make -f Makefile.amiga all AMIGA_ROOT="$AMIGA_ROOT"
+            '
+
+      - name: Confirm the programs were produced
+        run: |
+          ls -la player/mrplay player/mrgui player/iptvgui player/mr_decode
+          file player/mrplay player/mrgui player/iptvgui player/mr_decode || true
+
+      - name: Upload compiled programs
+        uses: actions/upload-artifact@v4
+        with:
+          name: MintRIVA-AmigaOS
+          path: |
+            player/mrplay
+            player/mrgui
+            player/iptvgui
+            player/mr_decode
+          if-no-files-found: error
