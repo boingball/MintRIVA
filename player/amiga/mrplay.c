@@ -468,6 +468,40 @@ typedef struct playback_stats {
     mr_display_timing last_rtg;
 } playback_stats;
 
+/*
+ * Present-during-fetch context.
+ *
+ * The player is single-threaded: while it is parked in a blocking segment fetch
+ * (mr_demux_next_packet -> HLS segment open/read) the main loop cannot reach its
+ * own presentation path, so without help the picture freezes for the whole
+ * fetch. The demux/decoder/display service hooks already pump
+ * service_audio_for_display() throughout that stall to keep Paula fed; this
+ * struct lets that same callback also advance video, presenting frames from the
+ * already-decoded queue as they fall due against the audio clock.
+ *
+ * This is NOT a second presenter racing the loop. The main loop hands the queue
+ * to the callback only for the duration of the blocking read (vp->released) and
+ * re-reads qhead/qcount afterwards, so exactly one side ever touches the queue
+ * at a time - single task, no lock, nothing to kill on teardown. `presenting`
+ * guards the reentrancy a blit's own service pump would otherwise cause. All
+ * fields point at the scheduler's live locals so the two paths share one queue.
+ */
+typedef struct video_presenter {
+    int                  released;      /* main loop blocked: callback may present */
+    int                  presenting;    /* reentrancy guard (a blit re-enters us)  */
+    amiga_display       *disp;
+    mr_audio            *audio;
+    media_clock         *mc;
+    const mr_video_info *vi;
+    queued_video        *vq;
+    int                 *qhead, *qcount;
+    int                 *playback_started;
+    uint64_t            *mono_base_us;
+    int                 *frames;
+    playback_stats      *stats;
+    int                  want_time;
+} video_presenter;
+
 typedef struct scheduler_trace {
     mr_audio *audio;
     const char *phase, *previous_phase;
@@ -475,6 +509,7 @@ typedef struct scheduler_trace {
     uint64_t sleep_requested_us, sleep_actual_us;
     unsigned long delay_ticks;
     int enabled;
+    video_presenter *presenter;        /* NULL until the scheduler wires it up   */
 } scheduler_trace;
 
 static uint64_t monotonic_us(void);
@@ -490,6 +525,73 @@ static void trace_phase(scheduler_trace *trace, const char *phase)
     }
     trace->phase = phase;
     trace->phase_started_us = now;
+}
+
+/*
+ * Present the queue's front frame if it is due, from inside a service pump.
+ *
+ * Runs only while the main loop has released the queue (vp->released) for a
+ * blocking fetch, so it never contends with the loop's own presentation path.
+ * It mirrors the scheduler's media-clock derivation and its "drop frames more
+ * than a period overdue, keep the newest" policy, so presenting here looks
+ * identical to presenting from the loop - it just happens while the one task is
+ * otherwise stuck in recv(). At most one frame is blitted per call; the loop
+ * re-reads qhead/qcount when the fetch returns. `presenting` swallows the nested
+ * service call display_show_rgb's own pump triggers.
+ */
+static void present_service_frame(video_presenter *vp)
+{
+    media_clock *mc;
+    uint64_t period_us, master_clock_us, now;
+    int64_t late_us;
+    queued_video *front;
+
+    if (!vp || !vp->released || vp->presenting) return;
+    if (!*vp->playback_started || *vp->qcount <= 0) return;
+    vp->presenting = 1;
+
+    mc = vp->mc;
+    now = monotonic_us();
+    period_us = vp->vi->rate
+        ? (uint64_t)(vp->vi->scale ? vp->vi->scale : 1) * 1000000ULL / vp->vi->rate
+        : 83333ULL;
+
+    /* Same master clock the scheduler uses: the audio clock when present (with
+     * its starvation holdover), the monotonic fallback otherwise. */
+    if (vp->audio)
+        master_clock_us = current_media_clock_us(mc, 1, audio_starved(vp->audio),
+                                                 audio_elapsed_us(vp->audio),
+                                                 now, vp->want_time);
+    else {
+        mc->source = MCLOCK_MONO;
+        master_clock_us = now - *vp->mono_base_us;
+    }
+
+    front = &vp->vq[*vp->qhead];
+    late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
+
+    /* Front not due yet: leave it for a later service tick or the loop. */
+    if (late_us < -(int64_t)PRESENTATION_GUARD_US) { vp->presenting = 0; return; }
+
+    /* Resync to the clock rather than replay a backlog when the stall clears:
+     * drop frames a whole period or more overdue, keeping the newest. */
+    while (late_us > (int64_t)period_us && *vp->qcount > 1) {
+        vp->stats->dropped++;
+        *vp->qhead = (*vp->qhead + 1) % VIDEO_QUEUE_CAP;
+        (*vp->qcount)--;
+        front = &vp->vq[*vp->qhead];
+        late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
+    }
+    if (late_us > 0) vp->stats->late++;
+
+    display_show_rgb(vp->disp, front->rgb, front->width, front->height,
+                     front->stride, front->dirty_y0, front->dirty_y1);
+    vp->stats->latency_us += monotonic_us() - front->decoded_at_us;
+    vp->stats->presented++;
+    if (vp->frames) (*vp->frames)++;
+    *vp->qhead = (*vp->qhead + 1) % VIDEO_QUEUE_CAP;
+    (*vp->qcount)--;
+    vp->presenting = 0;
 }
 
 static void service_audio_for_display(void *opaque)
@@ -512,6 +614,9 @@ static void service_audio_for_display(void *opaque)
     }
     audio_service(trace->audio);
     trace->last_service_us = monotonic_us();
+    /* Audio first (it is the master clock), then advance video against it if the
+     * scheduler has released the queue for a blocking fetch. */
+    if (trace->presenter) present_service_frame(trace->presenter);
 }
 
 /* EClock is per-machine monotonic and normally much finer than the 20 ms DOS
@@ -1323,6 +1428,28 @@ int main(int argc, char **argv)
         int video_cap = prefetch_on && VIDEO_QUEUE_CAP > 12 ? 12 : VIDEO_QUEUE_CAP;
         int prev_master_source = -1;
 
+        /* Wire the present-during-fetch context onto the shared service callback.
+         * It touches the queue only while `released` is set around the blocking
+         * demux read below, so it can advance video through a segment stall the
+         * single loop is stuck in - the smooth-playback goal the prefetch worker
+         * chased, without a second task, its socket lifecycle, or its teardown. */
+        video_presenter presenter;
+        presenter.released = 0;
+        presenter.presenting = 0;
+        presenter.disp = disp;
+        presenter.audio = audio;
+        presenter.mc = &mc;
+        presenter.vi = vi;
+        presenter.vq = vq;
+        presenter.qhead = &qhead;
+        presenter.qcount = &qcount;
+        presenter.playback_started = &playback_started;
+        presenter.mono_base_us = &mono_base_us;
+        presenter.frames = &frames;
+        presenter.stats = &stats;
+        presenter.want_time = want_time;
+        trace.presenter = &presenter;
+
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
      * the body can run; without it the loop would exit here (empty queue, no
      * --loop) before reconnect ever gets a chance. That block owns its own exits
@@ -1853,7 +1980,17 @@ int main(int argc, char **argv)
                 trace_phase(&trace, "demux-read");
                 if (audio) service_audio_for_display(&trace);
                 a = monotonic_us();
+                /* Hand the queue to the service callback for the duration of the
+                 * fetch: this is the one place the single loop blocks long enough
+                 * (a segment boundary can stall ~1.7 s) to freeze video. While
+                 * released, the demux service hook presents due frames from the
+                 * decode queue; we reclaim it the instant the read returns and
+                 * read qhead/qcount fresh below. Network sources only - a local
+                 * read never stalls, so nothing is released and behaviour there
+                 * is unchanged. */
+                if (network_source) presenter.released = 1;
                 mr_status next = mr_demux_next_packet(dx, &pkt);
+                presenter.released = 0;
                 if (audio) service_audio_for_display(&trace);
                 uint64_t b = monotonic_us();
                 uint64_t blocked = b - a;
@@ -2039,6 +2176,10 @@ int main(int argc, char **argv)
         }
     }
     }
+    /* `presenter` lived in the scheduler block just closed; the display service
+     * hook is still installed and fires during the teardown flush's blits, so
+     * drop the now-dangling pointer before any of that can dereference it. */
+    trace.presenter = NULL;
 
     if (audio) audio_set_running(audio, 0); /* following drain is intentional */
 
