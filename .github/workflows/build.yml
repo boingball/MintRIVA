@@ -1,17 +1,14 @@
 name: Build
 
 # Compile MintRIVA for AmigaOS (m68k) on every push and pull request.
-# Temporary PR-branch helper: a child PR into the Claude branch applies the
-# queue-matched cushion experiment, builds it, then commits it only if green.
+# MintRIVA uses submodules for MintAMP and libavc, so checkout must recurse.
+# The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
 
 on:
   push:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -23,84 +20,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          ref: ${{ github.event_name == 'pull_request' && github.base_ref == 'claude/mintriva-performance-fix-0craxb' && 'claude/mintriva-performance-fix-0craxb' || github.sha }}
-
-      - name: Apply adaptive cushion experiment on the Claude branch
-        if: github.event_name == 'pull_request' && github.base_ref == 'claude/mintriva-performance-fix-0craxb'
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("player/amiga/mrplay.c")
-          text = path.read_text()
-
-          old = '''#define AUDIO_STARTUP_TARGET_MS 400UL
-/* Sustained audio cushion the scheduler keeps topped up even when the video
- * queue is full, so a long segment-boundary stall does not drain the FIFO into
- * a state it can never climb back out of. Paula plays from its hardware DMA
- * buffer under interrupt, independently of the main loop, so this cushion keeps
- * audio smooth right through a blocking segment fetch even while the (single-
- * threaded) loop cannot present video. On-hardware logs show HLS segment
- * fetches stalling up to ~1.7 s, so the cushion must exceed that with margin;
- * the FIFO holds ~4 s (rate*4), so 2.5 s fits comfortably. */
-#define AUDIO_CUSHION_TARGET_MS 2500UL
-'''
-          new = '''#define AUDIO_STARTUP_TARGET_MS 400UL
-#define AUDIO_CUSHION_MIN_MS 400UL
-/* 2.5 s is the legacy/direct-path ceiling: enough to ride the ~1.7 s stalls
- * seen in hardware logs, but a decoded video ring shallower than the
- * corresponding number of frames cannot stay smooth while filling that much
- * audio. For synchronous network playback the active cushion is therefore
- * reduced after video_cap is known to roughly (video_cap - 2) frame periods,
- * clamped between AUDIO_CUSHION_MIN_MS and this ceiling. Local files keep the
- * ceiling, and the prefetch worker has its own smaller target below. */
-#define AUDIO_CUSHION_TARGET_MS 2500UL
-'''
-          if text.count(old) != 1:
-              raise SystemExit("constant/comment block did not match exactly once")
-          text = text.replace(old, new, 1)
-
-          old = '''        unsigned long cushion_ms = prefetch_on ? AUDIO_CUSHION_PREFETCH_MS
-                                               : AUDIO_CUSHION_TARGET_MS;
-'''
-          new = '''        unsigned long cushion_ms;
-'''
-          if text.count(old) != 1:
-              raise SystemExit("cushion declaration did not match exactly once")
-          text = text.replace(old, new, 1)
-
-          old = '''        if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
-        if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
-        int prev_master_source = -1;
-'''
-          new = '''        if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
-        if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
-        if (prefetch_on) {
-            cushion_ms = AUDIO_CUSHION_PREFETCH_MS;
-        } else if (network_source) {
-            uint64_t frame_period_us = vi->rate
-                ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
-                : 83333ULL;
-            uint64_t queue_cushion_us =
-                (uint64_t)(video_cap - 2) * frame_period_us;
-            cushion_ms = (unsigned long)(queue_cushion_us / 1000ULL);
-            if (cushion_ms < AUDIO_CUSHION_MIN_MS)
-                cushion_ms = AUDIO_CUSHION_MIN_MS;
-            if (cushion_ms > AUDIO_CUSHION_TARGET_MS)
-                cushion_ms = AUDIO_CUSHION_TARGET_MS;
-        } else {
-            cushion_ms = AUDIO_CUSHION_TARGET_MS;
-        }
-        int prev_master_source = -1;
-'''
-          if text.count(old) != 1:
-              raise SystemExit("video-cap insertion point did not match exactly once")
-          text = text.replace(old, new, 1)
-
-          path.write_text(text)
-          PY
-          git diff --check
-          git diff -- player/amiga/mrplay.c
 
       - name: Compile with the Amiga cross-compiler
         run: |
@@ -121,16 +40,6 @@ jobs:
         run: |
           ls -la player/mrplay player/mrgui player/iptvgui player/mr_decode
           file player/mrplay player/mrgui player/iptvgui player/mr_decode || true
-
-      - name: Commit tested cushion experiment to the Claude branch
-        if: github.event_name == 'pull_request' && github.base_ref == 'claude/mintriva-performance-fix-0craxb'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add player/amiga/mrplay.c
-          git diff --cached --quiet && exit 0
-          git commit -m "Match direct audio cushion to video queue depth"
-          git push origin HEAD:claude/mintriva-performance-fix-0craxb
 
       - name: Upload compiled programs
         uses: actions/upload-artifact@v4
