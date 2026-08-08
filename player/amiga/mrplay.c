@@ -91,14 +91,14 @@ void __chkabort(void) { }
 #define AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS 20UL
 #define AUDIO_RESCUE_ONE_REQUEST_MS 100UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
-/* Sustained audio cushion the scheduler keeps topped up even when the video
- * queue is full, so a long segment-boundary stall does not drain the FIFO into
- * a state it can never climb back out of. Paula plays from its hardware DMA
- * buffer under interrupt, independently of the main loop, so this cushion keeps
- * audio smooth right through a blocking segment fetch even while the (single-
- * threaded) loop cannot present video. On-hardware logs show HLS segment
- * fetches stalling up to ~1.7 s, so the cushion must exceed that with margin;
- * the FIFO holds ~4 s (rate*4), so 2.5 s fits comfortably. */
+#define AUDIO_CUSHION_MIN_MS 400UL
+/* 2.5 s is the legacy/direct-path ceiling: enough to ride the ~1.7 s stalls
+ * seen in hardware logs, but a decoded video ring shallower than the
+ * corresponding number of frames cannot stay smooth while filling that much
+ * audio. For synchronous network playback the active cushion is therefore
+ * reduced after video_cap is known to roughly (video_cap - 2) frame periods,
+ * clamped between AUDIO_CUSHION_MIN_MS and this ceiling. Local files keep the
+ * ceiling, and the prefetch worker has its own smaller target below. */
 #define AUDIO_CUSHION_TARGET_MS 2500UL
 /* Cushion when the prefetch worker is on: it absorbs segment stalls at the
  * (cheap) compressed level, so the decoder need only reach a little ahead. */
@@ -806,8 +806,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                (unsigned long)(st->rescue_us / st->rescue_entries),
                st->rescue_max_us, st->rescue_min_margin_ms,
                st->rescue_negative_margin, st->rescue_hw_starvations,
-               st->rescue_exit_target,
-               st->rescue_exit_limit, st->rescue_exit_eof);
+               st->rescue_exit_target, st->rescue_exit_limit, st->rescue_exit_eof);
         if (audio) service_audio_for_display(trace);
     }
     if (st->last_rtg.src_w) {
@@ -1474,8 +1473,7 @@ int main(int argc, char **argv)
          * video_cap * frame_bytes. (Fully gap-free video would need the queue to
          * span the whole cushion - ~63 frames / ~42 MB here - which no RAM-safe
          * queue can hold; that is the compressed-prefetch worker's job.) */
-        unsigned long cushion_ms = prefetch_on ? AUDIO_CUSHION_PREFETCH_MS
-                                               : AUDIO_CUSHION_TARGET_MS;
+        unsigned long cushion_ms;
         size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
         ULONG free_any = AvailMem(MEMF_ANY);
         /* Only a third of the (post-floor) free pool is a safety ceiling; the
@@ -1493,6 +1491,22 @@ int main(int argc, char **argv)
             video_cap = budget_frames;
         if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
         if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
+        if (prefetch_on) {
+            cushion_ms = AUDIO_CUSHION_PREFETCH_MS;
+        } else if (network_source) {
+            uint64_t frame_period_us = vi->rate
+                ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
+                : 83333ULL;
+            uint64_t queue_cushion_us =
+                (uint64_t)(video_cap - 2) * frame_period_us;
+            cushion_ms = (unsigned long)(queue_cushion_us / 1000ULL);
+            if (cushion_ms < AUDIO_CUSHION_MIN_MS)
+                cushion_ms = AUDIO_CUSHION_MIN_MS;
+            if (cushion_ms > AUDIO_CUSHION_TARGET_MS)
+                cushion_ms = AUDIO_CUSHION_TARGET_MS;
+        } else {
+            cushion_ms = AUDIO_CUSHION_TARGET_MS;
+        }
         int prev_master_source = -1;
         if (want_time)
             printf("video-queue: cap=%d frames (%s, cushion=%lu ms, "
