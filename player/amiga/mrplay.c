@@ -62,19 +62,21 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
  */
 void __chkabort(void) { }
 
-/* Queue-slot ceiling. Defaults keep only 1 (network) or 3 (disk) frames, so
- * this costs nothing unless --net-queue requests a deeper buffer: RGB slots are
- * allocated lazily per used entry. A deep network buffer lets decoded frames
- * wait and present in PTS order as they fall due (rather than the shallow queue
- * dropping the nearly-due frame when video runs ahead of the audio clock), and
- * carries enough video to ride across a segment-boundary refetch.
- *
- * Each occupied slot is a full decoded RGB frame (~0.7 MB at 640x360), so the
- * cap dominates the player's Fast-RAM footprint: 16 slots is ~11 MB, ~0.6 s at
- * 25 fps - enough to pace presentation and smooth per-frame decode jitter, and
- * kind to Fast-RAM-tight machines. Riding a whole segment-fetch stall is the
- * prefetch worker's job (at the far cheaper compressed level), not this queue's. */
-#define VIDEO_QUEUE_CAP 16
+/* Ring-buffer slot count - the ceiling on how many decoded frames can be held.
+ * RGB slots are allocated lazily per used entry, so a large ring is cheap until
+ * actually filled; how many slots are filled is chosen at runtime (video_cap,
+ * see main) from the audio cushion and free RAM. The ring must be at least as
+ * deep as the deepest cushion the runtime sizing may want to cover. */
+#define VIDEO_QUEUE_CAP 48
+/* Extra decoded frames held beyond the audio-cushion span, to absorb per-frame
+ * decode jitter without the reach-ahead punching a gap into the queue. */
+#define VIDEO_QUEUE_MARGIN 4
+/* Never let the decoded queue eat RAM below this: it must leave room for the
+ * segment fetch, decoder and TLS. An over-deep queue once filled Fast RAM to
+ * the safety floor and starved playback into an endless reconnect (see the
+ * runtime sizing in main). */
+#define VIDEO_QUEUE_MEM_FLOOR (8UL * 1024 * 1024)
+#define STATS_INTERVAL_US 3000000ULL
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
@@ -92,6 +94,9 @@ void __chkabort(void) { }
  * fetches stalling up to ~1.7 s, so the cushion must exceed that with margin;
  * the FIFO holds ~4 s (rate*4), so 2.5 s fits comfortably. */
 #define AUDIO_CUSHION_TARGET_MS 2500UL
+/* Cushion when the prefetch worker is on: it absorbs segment stalls at the
+ * (cheap) compressed level, so the decoder need only reach a little ahead. */
+#define AUDIO_CUSHION_PREFETCH_MS 600UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
@@ -1450,15 +1455,43 @@ int main(int argc, char **argv)
         int net_target = net_queue > 0
             ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
         int target_depth = network_source ? net_target : 3;
-        /* Cap how many decoded RGB frames the queue may hold. Each is a full
-         * frame (e.g. ~0.7 MB at 640x360), so 32 is ~22 MB - too much on a
-         * Fast-RAM-tight machine. The deep queue only earns its keep riding
-         * segment stalls; the prefetch worker already does that at the (cheap)
-         * compressed level, so cap the decoded queue shallow when it is on. The
-         * ring buffer itself stays VIDEO_QUEUE_CAP-sized; this only limits how
-         * many slots are filled. */
-        int video_cap = prefetch_on && VIDEO_QUEUE_CAP > 12 ? 12 : VIDEO_QUEUE_CAP;
+        /* How many decoded RGB frames the queue may hold. This must cover the
+         * audio cushion the decode gate reaches ahead to keep fed: the demux is
+         * one interleaved TS, so topping up audio necessarily decodes the video
+         * in between - and if the queue is shallower than that lookahead, those
+         * video frames land in a full queue and are discarded (decoded
+         * reference-only), punching PTS gaps that show up as a freeze-then-jump
+         * judder. Size the queue to span the cushion plus a jitter margin.
+         *
+         * But an over-deep queue is the footprint that once filled Fast RAM to
+         * the floor and starved playback into an endless reconnect, so clamp to
+         * a safe slice of free RAM (leave VIDEO_QUEUE_MEM_FLOOR, and use at most
+         * half of the rest - the queue fills lazily, so this bounds the eventual
+         * footprint) and to the ring size. On a tight machine this yields a
+         * shallow queue (some judder, but safe); on a roomy one it covers the
+         * whole cushion and the gaps disappear. --net-queue still raises it. */
+        unsigned long cushion_ms = prefetch_on ? AUDIO_CUSHION_PREFETCH_MS
+                                               : AUDIO_CUSHION_TARGET_MS;
+        int cushion_frames = (int)(cushion_ms / period) + 1;
+        int want_cap = cushion_frames + VIDEO_QUEUE_MARGIN;
+        size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
+        ULONG free_any = AvailMem(MEMF_ANY);
+        size_t budget = free_any > VIDEO_QUEUE_MEM_FLOOR
+                      ? (size_t)(free_any - VIDEO_QUEUE_MEM_FLOOR) / 2 : 0;
+        int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
+        int video_cap = want_cap;
+        if (video_cap > budget_frames) video_cap = budget_frames;
+        if (net_queue > 0 && video_cap < net_target) video_cap = net_target;
+        if (video_cap < target_depth) video_cap = target_depth;
+        if (video_cap < 4) video_cap = 4;          /* a floor for playback     */
+        if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
         int prev_master_source = -1;
+        if (want_time)
+            printf("video-queue: cap=%d frames (cushion=%lu ms=%d frames, "
+                   "frame=%lu KB, free=%lu KB)\n",
+                   video_cap, cushion_ms, cushion_frames,
+                   (unsigned long)(frame_bytes / 1024),
+                   (unsigned long)(free_any / 1024));
 
         /* Wire the present-during-fetch context onto the shared service callback.
          * It touches the queue only while `released` is set around the blocking
@@ -1988,9 +2021,9 @@ int main(int argc, char **argv)
              * queue to its full (memory-heavy) depth. With the prefetch worker
              * absorbing those stalls at the compressed level, a small cushion is
              * enough - and it keeps the decoded queue (and RAM use) shallow,
-             * which matters on Fast-RAM-tight machines. */
-            unsigned long cushion_ms =
-                prefetch_on ? 600UL : AUDIO_CUSHION_TARGET_MS;
+             * which matters on Fast-RAM-tight machines. cushion_ms is the same
+             * value the queue was sized against above, so the reach-ahead fills
+             * the queue instead of overrunning it. */
             int feed_audio_full = audio && qcount >= target_depth &&
                                   audio_ms < cushion_ms;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
