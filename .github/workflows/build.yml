@@ -1,8 +1,8 @@
 name: Build
 
 # Compile MintRIVA for AmigaOS (m68k) on every push and pull request.
-# MintRIVA uses submodules for MintAMP and libavc, so checkout must recurse.
-# The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
+# Temporary PR-branch helper: a child PR into the Claude branch applies the
+# queue-matched cushion experiment, builds it, then commits it only if green.
 
 on:
   push:
@@ -23,10 +23,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          ref: ${{ github.event_name == 'push' && github.ref_name || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.base_ref == 'claude/mintriva-performance-fix-0craxb' && 'claude/mintriva-performance-fix-0craxb' || github.sha }}
 
-      - name: Apply adaptive cushion experiment on the PR branch
-        if: github.event_name == 'push' && github.ref_name == 'claude/mintriva-performance-fix-0craxb'
+      - name: Apply adaptive cushion experiment on the Claude branch
+        if: github.event_name == 'pull_request' && github.base_ref == 'claude/mintriva-performance-fix-0craxb'
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -122,8 +122,8 @@ jobs:
           ls -la player/mrplay player/mrgui player/iptvgui player/mr_decode
           file player/mrplay player/mrgui player/iptvgui player/mr_decode || true
 
-      - name: Commit tested cushion experiment to the PR branch
-        if: github.event_name == 'push' && github.ref_name == 'claude/mintriva-performance-fix-0craxb'
+      - name: Commit tested cushion experiment to the Claude branch
+        if: github.event_name == 'pull_request' && github.base_ref == 'claude/mintriva-performance-fix-0craxb'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
