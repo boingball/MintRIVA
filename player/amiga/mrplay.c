@@ -1476,8 +1476,13 @@ int main(int argc, char **argv)
         int want_cap = cushion_frames + VIDEO_QUEUE_MARGIN;
         size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
         ULONG free_any = AvailMem(MEMF_ANY);
+        /* Only a third of the (post-floor) free pool: AvailMem is the total
+         * free, but each slot needs a contiguous RGB block, and fragmentation
+         * makes the largest usable run smaller than the total - aim well clear
+         * so the queue rarely reaches the true ceiling (queue_copy caps it
+         * safely if it ever does). */
         size_t budget = free_any > VIDEO_QUEUE_MEM_FLOOR
-                      ? (size_t)(free_any - VIDEO_QUEUE_MEM_FLOOR) / 2 : 0;
+                      ? (size_t)(free_any - VIDEO_QUEUE_MEM_FLOOR) / 3 : 0;
         int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
         int video_cap = want_cap;
         if (video_cap > budget_frames) video_cap = budget_frames;
@@ -2177,7 +2182,20 @@ int main(int argc, char **argv)
                             if (audio) service_audio_for_display(&trace);
                             a = monotonic_us();
                             if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
-                                            decode_us)) { quit = 1; break; }
+                                            decode_us)) {
+                                /* Out of RAM for another RGB slot. This is the
+                                 * true memory ceiling - below whatever the cap
+                                 * was sized to - so do NOT quit: pin the cap at
+                                 * the depth we actually reached and drop this
+                                 * frame exactly as a full queue would, then keep
+                                 * recycling the slots we already own. A transient
+                                 * allocation failure must never end playback. */
+                                if (qcount > 0 && video_cap > qcount)
+                                    video_cap = qcount;
+                                stats.dropped++;
+                                decoded_index++;
+                                continue;
+                            }
                             decode_end = monotonic_us();
                             if (audio) service_audio_for_display(&trace);
                             stats.frame_copy_us += decode_end - a;
