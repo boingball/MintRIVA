@@ -62,4 +62,12 @@ void mr_http_net_shutdown(void);
  * builds. */
 int mr_http_tls_disabled(void);
 
+/* Cooperative service hook, called between the individual socket reads that make
+ * up a body fetch. A single-threaded player installs its audio/video service
+ * pump here so it keeps presenting already-decoded frames and feeding audio
+ * while an HLS segment downloads, instead of freezing for the whole (blocking)
+ * read. Pass NULL to disable (the default; host builds install none). */
+typedef void (*mr_http_service_fn)(void *opaque);
+void mr_http_set_service(mr_http_service_fn fn, void *opaque);
+
 #endif /* MR_HTTP_H */

@@ -14,6 +14,7 @@
  *   mrplay <file.avi|file.mov>
  */
 #include "../core/mr_demux.h"
+#include "../core/mr_hls.h"
 #include "../core/mr_http.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
@@ -61,19 +62,27 @@ static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
  */
 void __chkabort(void) { }
 
-/* Queue-slot ceiling. Defaults keep only 1 (network) or 3 (disk) frames, so
- * this costs nothing unless --net-queue requests a deeper buffer: RGB slots are
- * allocated lazily per used entry. A deep network buffer lets decoded frames
- * wait and present in PTS order as they fall due (rather than the shallow queue
- * dropping the nearly-due frame when video runs ahead of the audio clock), and
- * carries enough video to ride across a segment-boundary refetch.
- *
- * Each occupied slot is a full decoded RGB frame (~0.7 MB at 640x360), so the
- * cap dominates the player's Fast-RAM footprint: 16 slots is ~11 MB, ~0.6 s at
- * 25 fps - enough to pace presentation and smooth per-frame decode jitter, and
- * kind to Fast-RAM-tight machines. Riding a whole segment-fetch stall is the
- * prefetch worker's job (at the far cheaper compressed level), not this queue's. */
-#define VIDEO_QUEUE_CAP 16
+/* Upper ceiling on the decoded-frame ring - the size of the vq[] array only.
+ * The ACTIVE ring is video_cap (chosen at runtime from the audio cushion and
+ * free RAM, see main), and video_cap is the modulus for all qhead arithmetic,
+ * so only video_cap slots are ever touched and the RGB footprint is exactly
+ * video_cap * frame_bytes. (Modulo the whole array instead and qhead would cycle
+ * every slot, allocating an RGB buffer in each - the footprint would be this
+ * ceiling * frame_bytes regardless of video_cap, which once ate all of Fast RAM.)
+ * The array structs are tiny; only the lazily-allocated RGB buffers cost. */
+#define VIDEO_QUEUE_CAP 48
+/* Default decoded-frame depths, clamped to free RAM and raisable by --net-queue.
+ * In the video-ahead regime the presented rate is about depth / cushion_seconds
+ * (topping up the audio cushion discards frames decoded past the cap), so a
+ * deeper queue presents more before each gap: measured ~5 fps at depth 14 vs
+ * ~2 fps at depth 4 against the 2.5 s cushion. Keep it as deep as RAM allows. */
+#define VIDEO_QUEUE_NET_DEPTH  16
+#define VIDEO_QUEUE_DISK_DEPTH 16
+/* Never let the decoded queue eat RAM below this: it must leave room for the
+ * segment fetch, decoder and TLS. An over-deep queue once filled Fast RAM to
+ * the safety floor and starved playback into an endless reconnect (see the
+ * runtime sizing in main). */
+#define VIDEO_QUEUE_MEM_FLOOR (8UL * 1024 * 1024)
 #define STATS_INTERVAL_US 3000000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
@@ -82,15 +91,18 @@ void __chkabort(void) { }
 #define AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS 20UL
 #define AUDIO_RESCUE_ONE_REQUEST_MS 100UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
-/* Sustained audio cushion the scheduler keeps topped up even when the video
- * queue is full, so a long segment-boundary stall does not drain the FIFO into
- * a state it can never climb back out of. Paula plays from its hardware DMA
- * buffer under interrupt, independently of the main loop, so this cushion keeps
- * audio smooth right through a blocking segment fetch even while the (single-
- * threaded) loop cannot present video. On-hardware logs show HLS segment
- * fetches stalling up to ~1.7 s, so the cushion must exceed that with margin;
- * the FIFO holds ~4 s (rate*4), so 2.5 s fits comfortably. */
+#define AUDIO_CUSHION_MIN_MS 400UL
+/* 2.5 s is the legacy/direct-path ceiling: enough to ride the ~1.7 s stalls
+ * seen in hardware logs, but a decoded video ring shallower than the
+ * corresponding number of frames cannot stay smooth while filling that much
+ * audio. For synchronous network playback the active cushion is therefore
+ * reduced after video_cap is known to roughly (video_cap - 2) frame periods,
+ * clamped between AUDIO_CUSHION_MIN_MS and this ceiling. Local files keep the
+ * ceiling, and the prefetch worker has its own smaller target below. */
 #define AUDIO_CUSHION_TARGET_MS 2500UL
+/* Cushion when the prefetch worker is on: it absorbs segment stalls at the
+ * (cheap) compressed level, so the decoder need only reach a little ahead. */
+#define AUDIO_CUSHION_PREFETCH_MS 600UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
@@ -494,6 +506,7 @@ typedef struct video_presenter {
     media_clock         *mc;
     const mr_video_info *vi;
     queued_video        *vq;
+    int                  video_cap;        /* ring modulus - see main()'s sizing     */
     int                 *qhead, *qcount;
     int                 *playback_started;
     uint64_t            *mono_base_us;
@@ -577,7 +590,7 @@ static void present_service_frame(video_presenter *vp)
      * drop frames a whole period or more overdue, keeping the newest. */
     while (late_us > (int64_t)period_us && *vp->qcount > 1) {
         vp->stats->dropped++;
-        *vp->qhead = (*vp->qhead + 1) % VIDEO_QUEUE_CAP;
+        *vp->qhead = (*vp->qhead + 1) % vp->video_cap;
         (*vp->qcount)--;
         front = &vp->vq[*vp->qhead];
         late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
@@ -589,7 +602,7 @@ static void present_service_frame(video_presenter *vp)
     vp->stats->latency_us += monotonic_us() - front->decoded_at_us;
     vp->stats->presented++;
     if (vp->frames) (*vp->frames)++;
-    *vp->qhead = (*vp->qhead + 1) % VIDEO_QUEUE_CAP;
+    *vp->qhead = (*vp->qhead + 1) % vp->video_cap;
     (*vp->qcount)--;
     vp->presenting = 0;
 }
@@ -793,8 +806,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                (unsigned long)(st->rescue_us / st->rescue_entries),
                st->rescue_max_us, st->rescue_min_margin_ms,
                st->rescue_negative_margin, st->rescue_hw_starvations,
-               st->rescue_exit_target,
-               st->rescue_exit_limit, st->rescue_exit_eof);
+               st->rescue_exit_target, st->rescue_exit_limit, st->rescue_exit_eof);
         if (audio) service_audio_for_display(trace);
     }
     if (st->last_rtg.src_w) {
@@ -895,6 +907,34 @@ static int player_event(amiga_display *disp)
 {
     int ev = control_signal_event();
     return ev != MR_EV_NONE ? ev : display_poll_event(disp);
+}
+
+/*
+ * Wait hook for the HLS live-playlist re-fetch loop (mr_hls_set_wait).
+ *
+ * When playback reaches the live edge the reader must poll the playlist for new
+ * segments. That poll used to spin without pause and without servicing anything,
+ * so a stalled edge froze the single task for tens of seconds - audio and video
+ * stopped and even ESC/Close could not be seen until the spin ended. This paces
+ * each poll and, throughout the wait, pumps the same service hook the scheduler
+ * uses: audio keeps playing, already-decoded video keeps presenting (the queue
+ * is released for the blocking fetch), and a quit request is honoured promptly.
+ * opaque is the scheduler_trace, which carries the audio handle and presenter.
+ */
+static int hls_wait_service(void *opaque, unsigned wait_ms)
+{
+    scheduler_trace *trace = (scheduler_trace *)opaque;
+    amiga_display *disp = trace && trace->presenter ? trace->presenter->disp
+                                                    : NULL;
+    uint64_t begin = monotonic_us();
+    uint64_t target = (uint64_t)wait_ms * 1000ULL;
+    for (;;) {
+        if (disp && player_event(disp) == MR_EV_QUIT) return 1;
+        if (trace->audio) service_audio_for_display(trace);
+        else if (trace->presenter) present_service_frame(trace->presenter);
+        if (monotonic_us() - begin >= target) return 0;
+        Delay(1);                            /* 20 ms; stay responsive to ESC  */
+    }
 }
 
 /* MPEG-1 program streams (.mpg/.mpeg) play through pl_mpeg (video + MP2 audio),
@@ -1377,6 +1417,13 @@ int main(int argc, char **argv)
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
     mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
+    /* Keep audio/video/UI alive (and quit responsive) while the HLS live path
+     * polls for new segments at the edge; see hls_wait_service. */
+    mr_hls_set_wait(hls_wait_service, &trace);
+    /* Present queued video / feed audio between the socket reads of a blocking
+     * segment fetch, so an ordinary ~350 ms download no longer freezes video for
+     * its whole duration. Fires while released is set around the demux read. */
+    mr_http_set_service(audio ? service_audio_for_display : NULL, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -1418,15 +1465,59 @@ int main(int argc, char **argv)
         int net_target = net_queue > 0
             ? (net_queue > VIDEO_QUEUE_CAP ? VIDEO_QUEUE_CAP : net_queue) : 1;
         int target_depth = network_source ? net_target : 3;
-        /* Cap how many decoded RGB frames the queue may hold. Each is a full
-         * frame (e.g. ~0.7 MB at 640x360), so 32 is ~22 MB - too much on a
-         * Fast-RAM-tight machine. The deep queue only earns its keep riding
-         * segment stalls; the prefetch worker already does that at the (cheap)
-         * compressed level, so cap the decoded queue shallow when it is on. The
-         * ring buffer itself stays VIDEO_QUEUE_CAP-sized; this only limits how
-         * many slots are filled. */
-        int video_cap = prefetch_on && VIDEO_QUEUE_CAP > 12 ? 12 : VIDEO_QUEUE_CAP;
+        /* Decoded-frame queue depth. As deep as RAM allows: while video runs
+         * ahead of the audio clock, topping up the audio cushion decodes past
+         * the queue cap and discards those frames, so the presented rate is
+         * roughly depth / cushion_seconds - a deeper queue shows more frames
+         * before each gap. A stall longer than the queue drains it and flips
+         * playback into the smooth present-as-decoded regime (video trailing the
+         * clock, no discards); a deeper queue also rides short stalls outright.
+         * The clamps below keep the footprint within a safe slice of free RAM,
+         * and video_cap is the ring modulus so the footprint is exactly
+         * video_cap * frame_bytes. (Fully gap-free video would need the queue to
+         * span the whole cushion - ~63 frames / ~42 MB here - which no RAM-safe
+         * queue can hold; that is the compressed-prefetch worker's job.) */
+        unsigned long cushion_ms;
+        size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
+        ULONG free_any = AvailMem(MEMF_ANY);
+        /* Only a third of the (post-floor) free pool is a safety ceiling; the
+         * shallow default is far below it, but it protects a tight machine and
+         * an explicit --net-queue. video_cap is the ring modulus below, so the
+         * RGB footprint is exactly video_cap * frame_bytes. */
+        size_t budget = free_any > VIDEO_QUEUE_MEM_FLOOR
+                      ? (size_t)(free_any - VIDEO_QUEUE_MEM_FLOOR) / 3 : 0;
+        int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
+        int video_cap = network_source ? VIDEO_QUEUE_NET_DEPTH
+                                        : VIDEO_QUEUE_DISK_DEPTH;
+        if (net_queue > 0 && video_cap < net_target) video_cap = net_target;
+        if (video_cap < target_depth) video_cap = target_depth;
+        if (budget_frames > 0 && video_cap > budget_frames)
+            video_cap = budget_frames;
+        if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
+        if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
+        if (prefetch_on) {
+            cushion_ms = AUDIO_CUSHION_PREFETCH_MS;
+        } else if (network_source) {
+            uint64_t frame_period_us = vi->rate
+                ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
+                : 83333ULL;
+            uint64_t queue_cushion_us =
+                (uint64_t)(video_cap - 2) * frame_period_us;
+            cushion_ms = (unsigned long)(queue_cushion_us / 1000ULL);
+            if (cushion_ms < AUDIO_CUSHION_MIN_MS)
+                cushion_ms = AUDIO_CUSHION_MIN_MS;
+            if (cushion_ms > AUDIO_CUSHION_TARGET_MS)
+                cushion_ms = AUDIO_CUSHION_TARGET_MS;
+        } else {
+            cushion_ms = AUDIO_CUSHION_TARGET_MS;
+        }
         int prev_master_source = -1;
+        if (want_time)
+            printf("video-queue: cap=%d frames (%s, cushion=%lu ms, "
+                   "frame=%lu KB, free=%lu KB)\n",
+                   video_cap, network_source ? "network" : "disk", cushion_ms,
+                   (unsigned long)(frame_bytes / 1024),
+                   (unsigned long)(free_any / 1024));
 
         /* Wire the present-during-fetch context onto the shared service callback.
          * It touches the queue only while `released` is set around the blocking
@@ -1441,6 +1532,7 @@ int main(int argc, char **argv)
         presenter.mc = &mc;
         presenter.vi = vi;
         presenter.vq = vq;
+        presenter.video_cap = video_cap;   /* same ring modulus the loop uses  */
         presenter.qhead = &qhead;
         presenter.qcount = &qcount;
         presenter.playback_started = &playback_started;
@@ -1570,7 +1662,7 @@ int main(int argc, char **argv)
                                         (int64_t)new_front->pts_us;
                     while (post_late > (int64_t)period_us && qcount > 1) {
                         stats.dropped++;
-                        qhead = (qhead + 1) % VIDEO_QUEUE_CAP;
+                        qhead = (qhead + 1) % video_cap;
                         qcount--;
                         new_front = &vq[qhead];
                         post_late = (int64_t)rescue_clock -
@@ -1728,7 +1820,7 @@ int main(int argc, char **argv)
              * is useful or only the newest decoded frame remains. */
             while (!fast_forward && late_us > (int64_t)period_us && qcount > 1) {
                 stats.dropped++; stats.dropped_in_pass++;
-                qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
+                qhead = (qhead + 1) % video_cap; qcount--;
                 front = &vq[qhead];
                 late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
             }
@@ -1807,7 +1899,7 @@ int main(int argc, char **argv)
             }
             stats.latency_us += monotonic_us() - front->decoded_at_us;
             stats.presented++; frames++;
-            qhead = (qhead + 1) % VIDEO_QUEUE_CAP; qcount--;
+            qhead = (qhead + 1) % video_cap; qcount--;
             now = monotonic_us();
             if (want_time && now - stats.since_us >= STATS_INTERVAL_US) {
                 trace_phase(&trace, "scheduler-diagnostics");
@@ -1947,18 +2039,15 @@ int main(int argc, char **argv)
             /* With the video queue already full the loop would otherwise sleep,
              * which stops the audio FIFO being refilled - after a long stall the
              * cushion then never rebuilds and playback settles into a degraded
-             * state. Keep demuxing to top the cushion back up; the extra video
-             * decoded meanwhile fills toward the queue cap and is only dropped
-             * (reference-only) once the cap is hit.
+             * state. Keep demuxing to top the cushion back up; the audio lands
+             * in the cheap PCM FIFO, and with the video queue shallow the video
+             * decoded alongside it is presented as it comes (present-as-decoded)
+             * rather than piling into a deep buffer.
              *
-             * That deep cushion exists to ride segment-fetch stalls in the
-             * single-threaded model; it is also what drives the decoded-frame
-             * queue to its full (memory-heavy) depth. With the prefetch worker
-             * absorbing those stalls at the compressed level, a small cushion is
-             * enough - and it keeps the decoded queue (and RAM use) shallow,
-             * which matters on Fast-RAM-tight machines. */
-            unsigned long cushion_ms =
-                prefetch_on ? 600UL : AUDIO_CUSHION_TARGET_MS;
+             * The cushion rides segment-fetch stalls for audio; it is deliberate
+             * that it does NOT drive the decoded-video queue deep (that was the
+             * judder). A smaller cushion is used when the prefetch worker is on,
+             * since it absorbs stalls at the compressed level. */
             int feed_audio_full = audio && qcount >= target_depth &&
                                   audio_ms < cushion_ms;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
@@ -2107,12 +2196,22 @@ int main(int argc, char **argv)
                                 continue;
                             }
                             queued_video *tail =
-                                &vq[(qhead + qcount) % VIDEO_QUEUE_CAP];
+                                &vq[(qhead + qcount) % video_cap];
                             trace_phase(&trace, "frame-copy");
                             if (audio) service_audio_for_display(&trace);
                             a = monotonic_us();
                             if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
-                                            decode_us)) { quit = 1; break; }
+                                            decode_us)) {
+                                /* Out of RAM for another RGB slot (a backstop -
+                                 * the queue is sized to fit; see main). Never
+                                 * quit: drop this frame exactly as a full queue
+                                 * would and keep recycling the slots we own. The
+                                 * cap is the ring modulus so it must not change;
+                                 * the slot simply stays empty and is retried. */
+                                stats.dropped++;
+                                decoded_index++;
+                                continue;
+                            }
                             decode_end = monotonic_us();
                             if (audio) service_audio_for_display(&trace);
                             stats.frame_copy_us += decode_end - a;
@@ -2180,6 +2279,11 @@ int main(int argc, char **argv)
      * hook is still installed and fires during the teardown flush's blits, so
      * drop the now-dangling pointer before any of that can dereference it. */
     trace.presenter = NULL;
+    /* The HLS wait and HTTP service hooks hold &trace too; the teardown flush no
+     * longer reads the demux, so retire them here before the scheduler locals
+     * die. */
+    mr_hls_set_wait(NULL, NULL);
+    mr_http_set_service(NULL, NULL);
 
     if (audio) audio_set_running(audio, 0); /* following drain is intentional */
 
