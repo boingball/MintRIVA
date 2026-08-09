@@ -2134,6 +2134,19 @@ int main(int argc, char **argv)
                         if (ht.output_us > stats.h264_output_max_us)
                             stats.h264_output_max_us = ht.output_us;
                     }
+                    if (decode_status == MR_ENOMEM) {
+                        printf("h264-decode-oom: packet %lu len=%lu - "
+                               "stopping playback\n",
+                               (unsigned long)decoded_index,
+                               (unsigned long)pkt.len);
+                        display_set_status(disp, "H.264 decoder out of memory");
+                        /* libavc marks IVD_MEM_ALLOC_FAILED fatal. Do not keep
+                         * demuxing into a dead decoder: take mrplay's existing
+                         * quit/cleanup path so RTG, Paula and decoder buffers are
+                         * released immediately. */
+                        quit = 1;
+                        continue;
+                    }
                     if (decode_status == MR_EFORMAT) {
                         printf("h264-decode-error: packet %lu len=%lu\n",
                                (unsigned long)decoded_index,
