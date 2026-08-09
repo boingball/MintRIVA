@@ -1304,6 +1304,11 @@ int main(int argc, char **argv)
                (int)((vi->fourcc >> 16) & 255),
                (int)((vi->fourcc >> 24) & 255));
 
+    if (want_time) {
+        ULONG ram_before = AvailMem(MEMF_ANY);
+        printf("h264-ram: before-decoder-open=%lu KB\n",
+               (unsigned long)(ram_before / 1024));
+    }
     if (mr_decoder_open_config(&dec, codec, vi->width, vi->height,
                                vi->config, vi->config_len) != MR_OK) {
         char reason[MR_PLAYER_STATUS_TEXT_MAX];
@@ -1450,6 +1455,7 @@ int main(int argc, char **argv)
 
     {
         int playback_started = 0;
+        int first_queue_alloc_logged = 0;    /* one-shot RAM log after first queue_copy */
         int network_source = mr_source_is_url(media_path);
         int frames_at_last_reconnect = 0, reconnects_without_progress = 0;
         int startup_depth = network_source ? 1 : 2;
@@ -1491,7 +1497,15 @@ int main(int argc, char **argv)
                                         : VIDEO_QUEUE_DISK_DEPTH;
         if (net_queue > 0 && video_cap < net_target) video_cap = net_target;
         if (video_cap < target_depth) video_cap = target_depth;
-        if (budget_frames > 0 && video_cap > budget_frames)
+        /* Apply the RAM budget cap unconditionally: when budget_frames==0 the
+         * budget is below one full frame, and leaving video_cap at the 16-slot
+         * default means queue_copy needs 16x frame_bytes it can never get.
+         * Capping to budget_frames (possibly 0) and then to the minimum-2 clamp
+         * below keeps the footprint to just 2 slots so queue_copy has a chance.
+         * The old guard `budget_frames > 0` silently skipped this for the tight
+         * RAM case (720p/1080p on Amiga), causing all queue_copy calls to fail,
+         * qcount to stay at 0, and video to never start - the grey-screen bug. */
+        if (video_cap > budget_frames)
             video_cap = budget_frames;
         if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
         if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
@@ -1514,10 +1528,12 @@ int main(int argc, char **argv)
         int prev_master_source = -1;
         if (want_time)
             printf("video-queue: cap=%d frames (%s, cushion=%lu ms, "
-                   "frame=%lu KB, free=%lu KB)\n",
+                   "frame=%lu KB, free-after-decoder=%lu KB, "
+                   "budget=%lu KB budget_frames=%d)\n",
                    video_cap, network_source ? "network" : "disk", cushion_ms,
                    (unsigned long)(frame_bytes / 1024),
-                   (unsigned long)(free_any / 1024));
+                   (unsigned long)(free_any / 1024),
+                   (unsigned long)(budget / 1024), budget_frames);
 
         /* Wire the present-during-fetch context onto the shared service callback.
          * It touches the queue only while `released` is set around the blocking
@@ -2109,12 +2125,14 @@ int main(int argc, char **argv)
                 } else if (pkt.len) {
                     mr_status decode_status;
                     uint64_t decode_end;
+                    int skip_out_set;
                     trace_phase(&trace, "h264-decode");
                     /* A frame decoded into a full queue is dropped (newest-out),
                      * so decode it reference-only: keep the reference chain
                      * intact without spending time producing RGB we discard.
                      * This is what makes the audio-cushion top-up above cheap. */
-                    mr_h264_set_skip_output(&dec, qcount >= video_cap);
+                    skip_out_set = (qcount >= video_cap);
+                    mr_h264_set_skip_output(&dec, skip_out_set);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
@@ -2132,6 +2150,32 @@ int main(int argc, char **argv)
                             stats.h264_core_max_us = ht.core_us;
                         if (ht.output_us > stats.h264_output_max_us)
                             stats.h264_output_max_us = ht.output_us;
+                        /* Per-frame H.264 decode diagnostic: printed every 30
+                         * decoded frames to keep output manageable, plus always
+                         * for the very first frame (decoded_index==0). */
+                        if (want_time && (decoded_index == 0 ||
+                                stats.decoded % 30 == 0)) {
+                            mr_h264_diag hdiag;
+                            mr_h264_get_diag(&dec, &hdiag);
+                            printf("h264-diag: frame=%lu qcount=%d "
+                                   "video_cap=%d skip_out=%d "
+                                   "in_us=%lu core_us=%lu rgb_us=%lu "
+                                   "status=%s "
+                                   "tot: output=%lu skipped=%lu eagain=%lu "
+                                   "sched: decoded=%lu queued=%lu "
+                                   "presented=%lu dropped=%lu\n",
+                                   (unsigned long)decoded_index,
+                                   qcount, video_cap, skip_out_set,
+                                   ht.input_us, ht.core_us, ht.output_us,
+                                   decode_status == MR_OK ? "ok" :
+                                   decode_status == MR_EAGAIN ? "eagain" :
+                                   "err",
+                                   hdiag.decoded, hdiag.skipped, hdiag.eagain,
+                                   (unsigned long)stats.decoded,
+                                   (unsigned long)(qcount),
+                                   (unsigned long)stats.presented,
+                                   (unsigned long)stats.dropped);
+                        }
                     }
                     if (decode_status == MR_OK) {
                         unsigned long decode_us =
@@ -2202,15 +2246,36 @@ int main(int argc, char **argv)
                             a = monotonic_us();
                             if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
                                             decode_us)) {
-                                /* Out of RAM for another RGB slot (a backstop -
-                                 * the queue is sized to fit; see main). Never
-                                 * quit: drop this frame exactly as a full queue
-                                 * would and keep recycling the slots we own. The
-                                 * cap is the ring modulus so it must not change;
-                                 * the slot simply stays empty and is retried. */
+                                /* Out of RAM for another RGB slot. This is a
+                                 * backstop; with the budget_frames cap above it
+                                 * should only happen if the decoder consumed
+                                 * more RAM than AvailMem predicted.  Log the
+                                 * failure so it shows up in diagnostics, then
+                                 * drop this frame exactly as a full queue would
+                                 * and keep recycling the slots we own. */
+                                if (want_time)
+                                    printf("h264-diag: queue_copy FAILED "
+                                           "frame=%lu slot=%d "
+                                           "qcount=%d video_cap=%d "
+                                           "need=%lu KB free=%lu KB\n",
+                                           (unsigned long)decoded_index,
+                                           (int)((qhead + qcount) % video_cap),
+                                           qcount, video_cap,
+                                           (unsigned long)
+                                               (dec.frame.stride *
+                                                dec.frame.height / 1024),
+                                           (unsigned long)(AvailMem(MEMF_ANY)
+                                                           / 1024));
                                 stats.dropped++;
                                 decoded_index++;
                                 continue;
+                            }
+                            if (want_time && !first_queue_alloc_logged) {
+                                /* First successful queue_copy: one-shot RAM report */
+                                first_queue_alloc_logged = 1;
+                                printf("h264-ram: after-first-queue-alloc=%lu KB\n",
+                                       (unsigned long)(AvailMem(MEMF_ANY)
+                                                       / 1024));
                             }
                             decode_end = monotonic_us();
                             if (audio) service_audio_for_display(&trace);
