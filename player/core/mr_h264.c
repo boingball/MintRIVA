@@ -38,12 +38,6 @@ typedef struct {
     void     *service_opaque;
     mr_h264_timing timing;
     int       skip_output;
-    /* running counters for diagnostics */
-    unsigned long diag_decoded;   /* libavc u4_output_present frames       */
-    unsigned long diag_emitted;   /* frames that completed RGB conversion   */
-    unsigned long diag_skipped;   /* frames skipped due to skip_output      */
-    unsigned long diag_eagain;    /* frames consumed with no output yet     */
-    unsigned long diag_log_every; /* log-rate: print once every N frames    */
 } h264_state;
 
 static unsigned long h264_elapsed_us(clock_t begin)
@@ -411,46 +405,27 @@ static mr_status h264_decode(mr_decoder *dec,
      * decoder state has returned to the adapter and RGB output has not begun. */
     if (s->service) s->service(s->service_opaque);
 #ifdef MR_H264_DEBUG
-    /* Rate-limited: log every diag_log_every frames (default every frame
-     * until the counter is set from outside; a value of 0 means always). */
-    {
-        int do_log = !s->diag_log_every ||
-                     (s->diag_decoded + s->diag_skipped + s->diag_eagain)
-                         % s->diag_log_every == 0;
-        if (do_log)
-            fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu "
-                    "in_us=%lu core_us=%lu "
-                    "ret=%d consumed=%lu decoded_flag=%lu output_present=%lu "
-                    "error=%08lx pictype=%d skip=%d "
-                    "totals: output=%lu skipped=%lu eagain=%lu\n",
-                    (unsigned long)(s->timestamp - 1),
-                    (unsigned long)len, (unsigned long)annexb_len,
-                    s->timing.input_us, s->timing.core_us,
-                    (int)ret,
-                    (unsigned long)out.s_ivd_video_decode_op_t.u4_num_bytes_consumed,
-                    (unsigned long)out.s_ivd_video_decode_op_t.u4_frame_decoded_flag,
-                    (unsigned long)out.s_ivd_video_decode_op_t.u4_output_present,
-                    (unsigned long)out.s_ivd_video_decode_op_t.u4_error_code,
-                    (int)out.s_ivd_video_decode_op_t.e_pic_type,
-                    s->skip_output,
-                    s->diag_emitted, s->diag_skipped, s->diag_eagain);
-    }
+    fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu ret=%d consumed=%lu "
+            "decoded=%lu output=%lu error=%08lx type=%d\n",
+            (unsigned long)(s->timestamp - 1), (unsigned long)len,
+            (unsigned long)annexb_len, (int)ret,
+            (unsigned long)out.s_ivd_video_decode_op_t.u4_num_bytes_consumed,
+            (unsigned long)out.s_ivd_video_decode_op_t.u4_frame_decoded_flag,
+            (unsigned long)out.s_ivd_video_decode_op_t.u4_output_present,
+            (unsigned long)out.s_ivd_video_decode_op_t.u4_error_code,
+            (int)out.s_ivd_video_decode_op_t.e_pic_type);
 #endif
     if (out.s_ivd_video_decode_op_t.u4_output_present) {
-        s->diag_decoded++;
         if (s->skip_output) {
-            s->diag_skipped++;
             dec->frame.dirty_y0 = dec->frame.dirty_y1 = 0;
             return MR_OK;
         }
         mark = clock();
         st = emit_rgb(dec, &out.s_ivd_video_decode_op_t);
         s->timing.output_us = h264_elapsed_us(mark);
-        if (st == MR_OK) s->diag_emitted++;
         if (s->service) s->service(s->service_opaque);
         return st;
     }
-    s->diag_eagain++;
     return ret == IV_SUCCESS ? MR_EAGAIN : MR_EFORMAT;
 }
 
@@ -478,27 +453,6 @@ void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing)
     if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
     s = (h264_state *)dec->priv;
     *timing = s->timing;
-}
-
-void mr_h264_set_diag_log_rate(mr_decoder *dec, unsigned long every)
-{
-    h264_state *s;
-    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
-    s = (h264_state *)dec->priv;
-    s->diag_log_every = every;
-}
-
-void mr_h264_get_diag(mr_decoder *dec, mr_h264_diag *out)
-{
-    h264_state *s;
-    if (!out) return;
-    memset(out, 0, sizeof *out);
-    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
-    s = (h264_state *)dec->priv;
-    out->decoded = s->diag_decoded;
-    out->emitted = s->diag_emitted;
-    out->skipped = s->diag_skipped;
-    out->eagain  = s->diag_eagain;
 }
 
 static mr_status h264_flush(mr_decoder *dec)
