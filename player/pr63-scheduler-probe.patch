@@ -1,7 +1,7 @@
 diff --git a/player/amiga/mrplay.c b/player/amiga/mrplay.c
 --- a/player/amiga/mrplay.c
 +++ b/player/amiga/mrplay.c
-@@
+@@ -137,6 +137,7 @@
  static int h264_pipeline_diag_enabled;
  static int h264_pipeline_stage;
  static int h264_pipeline_width, h264_pipeline_height;
@@ -9,7 +9,7 @@ diff --git a/player/amiga/mrplay.c b/player/amiga/mrplay.c
  
  static void h264_pipeline_checkpoint_player(const char *stage, int qcount,
                                              int playback_started)
-@@
+@@ -164,4 +165,35 @@
      Close(fh);
  }
  
@@ -45,15 +45,14 @@ diff --git a/player/amiga/mrplay.c b/player/amiga/mrplay.c
 +}
 +
  static void control_port_close(void)
- {
-@@
+@@ -1365,5 +1397,6 @@
      h264_pipeline_width = vi->width;
      h264_pipeline_height = vi->height;
      h264_pipeline_stage = 0;
 +    h264_scheduler_diag_written = 0;
      if (h264_pipeline_diag_enabled)
          h264_pipeline_checkpoint_player("decoder-open", 0, 0);
-@@
+@@ -1758,6 +1791,13 @@
              }
              late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
              have_deadline = 1;
