@@ -19,6 +19,7 @@ typedef struct mr_h264_timing {
 } mr_h264_timing;
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
 void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
+void mr_h264_set_diag(mr_decoder *dec, const char *path, int width, int height);
 void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing);
 void mr_h264_set_skip_output(mr_decoder *dec, int skip);
 
