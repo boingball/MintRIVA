@@ -36,8 +36,15 @@ typedef struct {
     int       flush_done;
     mr_h264_service_fn service;
     void     *service_opaque;
+    mr_h264_quit_fn quit_fn;
+    void     *quit_opaque;
     mr_h264_timing timing;
     int       skip_output;
+    /* wedge-safe diagnostic state (active when diag_path != NULL) */
+    const char *diag_path;    /* e.g. "RAM:MintRIVA-H264.last"              */
+    uint32_t    diag_au_idx;  /* access-unit counter across frames           */
+    int         diag_width;
+    int         diag_height;
 } h264_state;
 
 static unsigned long h264_elapsed_us(clock_t begin)
@@ -207,7 +214,7 @@ static void fill_output_desc(const h264_state *s, ivd_out_bufdesc_t *out)
     }
 }
 
-static IV_API_CALL_STATUS_T decode_annexb(h264_state *s,
+static IV_API_CALL_STATUS_T decode_annexb(h264_state *s, uint32_t ts,
                                           const uint8_t *data, uint32_t len,
                                           ih264d_video_decode_op_t *out)
 {
@@ -216,7 +223,7 @@ static IV_API_CALL_STATUS_T decode_annexb(h264_state *s,
     memset(out, 0, sizeof *out);
     in.s_ivd_video_decode_ip_t.u4_size = sizeof in;
     in.s_ivd_video_decode_ip_t.e_cmd = IVD_CMD_VIDEO_DECODE;
-    in.s_ivd_video_decode_ip_t.u4_ts = s->timestamp++;
+    in.s_ivd_video_decode_ip_t.u4_ts = ts;
     in.s_ivd_video_decode_ip_t.pv_stream_buffer = (void *)data;
     in.s_ivd_video_decode_ip_t.u4_num_Bytes = len;
     fill_output_desc(s, &in.s_ivd_video_decode_ip_t.s_out_buffer);
@@ -330,7 +337,7 @@ static mr_status h264_open(mr_decoder *dec)
     off = 0;
     while (off < cfg_len) {
         IV_API_CALL_STATUS_T ret =
-            decode_annexb(s, s->packet + off, cfg_len - off, &decode_out);
+            decode_annexb(s, 0, s->packet + off, cfg_len - off, &decode_out);
         uint32_t used =
             decode_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
         if (!used || used > cfg_len - off) {
@@ -387,6 +394,7 @@ static mr_status h264_decode(mr_decoder *dec,
     ih264d_video_decode_op_t out;
     IV_API_CALL_STATUS_T ret;
     uint32_t annexb_len;
+    uint32_t au_ts;           /* one timestamp for the entire access unit */
     mr_status st;
     clock_t mark;
     if (!s || !data || !len) return MR_EFORMAT;
@@ -398,42 +406,130 @@ static mr_status h264_decode(mr_decoder *dec,
     s->timing.input_us = h264_elapsed_us(mark);
     if (st != MR_OK) return st;
     if (s->service) s->service(s->service_opaque);
+
+    /* Allocate one timestamp for the whole AU; every libavc sub-call
+     * for this AU shares it so that the DPB associates reordered output
+     * correctly with this input position. */
+    au_ts = s->timestamp++;
+
     mark = clock();
     /* libavc may not consume an entire access unit in one call when the
      * Annex B buffer contains multiple NAL units (e.g. AUD+SPS+PPS+IDR as
      * emitted by MPEG-TS encoders).  Loop, advancing the read position by
-     * u4_num_bytes_consumed each iteration, until output is produced, all
-     * bytes are consumed, or an error is returned.  This mirrors the loop
-     * used in h264_open for header-mode feeding. */
+     * u4_num_bytes_consumed each iteration, until all bytes are consumed or
+     * an error is returned.
+     *
+     * Fix 2: When output_present fires mid-buffer (libavc returned a
+     * reordered frame before consuming the whole AU), record the frame but
+     * continue the loop to drain any remaining NAL bytes so they are not
+     * silently lost.  A second output_present in the same AU is unexpected
+     * but handled: the first frame wins and the extra is treated as decoded
+     * but not output.
+     *
+     * Fix 3: Check the quit probe between sub-calls so Ctrl-F/C is
+     * honoured once the current (potentially long) libavc call returns,
+     * without starting another sub-call. */
     {
         uint32_t off = 0;
+        int output_captured = 0;  /* have we already stored a frame this AU? */
         ret = IV_SUCCESS;
         memset(&out, 0, sizeof out);
         while (off < annexb_len) {
-            IV_API_CALL_STATUS_T r =
-                decode_annexb(s, s->packet + off, annexb_len - off, &out);
-            uint32_t used =
-                out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
+            ih264d_video_decode_op_t sub_out;
+            IV_API_CALL_STATUS_T r;
+            uint32_t used;
+            unsigned long elapsed_before = 0;
+
+            /* Fix 3: quit probe between sub-calls */
+            if (!output_captured && s->quit_fn &&
+                s->quit_fn(s->quit_opaque))
+                break;
+
+            /* Fix 4: wedge-safe pre-call checkpoint */
+            if (s->diag_path) {
+#ifdef __amigaos__
+                BPTR fh = Open((CONST_STRPTR)s->diag_path, MODE_NEWFILE);
+                if (fh) {
+                    char buf[256];
+                    ULONG fast_before = AvailMem(MEMF_FAST);
+                    elapsed_before = h264_elapsed_us(mark);
+                    int n = snprintf(buf, sizeof buf,
+                        "au=%lu sub-pre off=%lu rem=%lu ts=%lu "
+                        "res=%dx%d fast=%lu elapsed=%lu us\n",
+                        (unsigned long)s->diag_au_idx,
+                        (unsigned long)off,
+                        (unsigned long)(annexb_len - off),
+                        (unsigned long)au_ts,
+                        s->diag_width, s->diag_height,
+                        (unsigned long)fast_before,
+                        elapsed_before);
+                    if (n > 0) Write(fh, (APTR)buf, (LONG)n);
+                    Close(fh);
+                }
+#endif
+            }
+
+            r = decode_annexb(s, au_ts, s->packet + off, annexb_len - off,
+                              &sub_out);
+            used = sub_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
+
+            /* Fix 4: wedge-safe post-call checkpoint */
+            if (s->diag_path) {
+#ifdef __amigaos__
+                BPTR fh = Open((CONST_STRPTR)s->diag_path, MODE_NEWFILE);
+                if (fh) {
+                    char buf[256];
+                    ULONG fast_after = AvailMem(MEMF_FAST);
+                    unsigned long elapsed_after = h264_elapsed_us(mark);
+                    int n = snprintf(buf, sizeof buf,
+                        "au=%lu sub-post off=%lu rem=%lu ts=%lu "
+                        "res=%dx%d fast=%lu elapsed=%lu us "
+                        "consumed=%lu output=%lu error=%08lx ret=%d\n",
+                        (unsigned long)s->diag_au_idx,
+                        (unsigned long)off,
+                        (unsigned long)(annexb_len - off),
+                        (unsigned long)au_ts,
+                        s->diag_width, s->diag_height,
+                        (unsigned long)fast_after,
+                        elapsed_after,
+                        (unsigned long)used,
+                        (unsigned long)sub_out.s_ivd_video_decode_op_t
+                                           .u4_output_present,
+                        (unsigned long)sub_out.s_ivd_video_decode_op_t
+                                           .u4_error_code,
+                        (int)r);
+                    if (n > 0) Write(fh, (APTR)buf, (LONG)n);
+                    Close(fh);
+                }
+#endif
+            }
+
 #ifdef MR_H264_DEBUG
             fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu off=%lu "
                     "ret=%d consumed=%lu decoded=%lu output=%lu "
                     "error=%08lx type=%d\n",
-                    (unsigned long)(s->timestamp - 1), (unsigned long)len,
+                    (unsigned long)au_ts, (unsigned long)len,
                     (unsigned long)annexb_len, (unsigned long)off,
                     (int)r, (unsigned long)used,
-                    (unsigned long)out.s_ivd_video_decode_op_t.u4_frame_decoded_flag,
-                    (unsigned long)out.s_ivd_video_decode_op_t.u4_output_present,
-                    (unsigned long)out.s_ivd_video_decode_op_t.u4_error_code,
-                    (int)out.s_ivd_video_decode_op_t.e_pic_type);
+                    (unsigned long)sub_out.s_ivd_video_decode_op_t.u4_frame_decoded_flag,
+                    (unsigned long)sub_out.s_ivd_video_decode_op_t.u4_output_present,
+                    (unsigned long)sub_out.s_ivd_video_decode_op_t.u4_error_code,
+                    (int)sub_out.s_ivd_video_decode_op_t.e_pic_type);
 #endif
-            if (out.s_ivd_video_decode_op_t.u4_output_present) {
-                ret = r; break;
+            /* Capture the first output_present result; keep looping to drain
+             * remaining NAL bytes (Fix 2). */
+            if (sub_out.s_ivd_video_decode_op_t.u4_output_present &&
+                !output_captured) {
+                out = sub_out;
+                ret = r;
+                output_captured = 1;
             }
-            if (r != IV_SUCCESS) { ret = r; break; }
+            if (r != IV_SUCCESS && !output_captured) { ret = r; break; }
             if (!used || used > annexb_len - off) break;
             if (s->service) s->service(s->service_opaque);
             off += used;
         }
+        s->diag_au_idx++;
     }
     s->timing.core_us = h264_elapsed_us(mark);
     /* libavc's frame call is synchronous, but this boundary is safe: all
@@ -501,7 +597,7 @@ static mr_status h264_flush(mr_decoder *dec)
         }
         s->flushing = 1;
     }
-    ret = decode_annexb(s, s->packet, 0, &out);
+    ret = decode_annexb(s, s->timestamp, s->packet, 0, &out);
     if (out.s_ivd_video_decode_op_t.u4_output_present)
         return emit_rgb(dec, &out.s_ivd_video_decode_op_t);
     s->flush_done = 1;
