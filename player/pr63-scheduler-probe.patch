@@ -9,7 +9,7 @@ diff --git a/player/amiga/mrplay.c b/player/amiga/mrplay.c
  
  static void h264_pipeline_checkpoint_player(const char *stage, int qcount,
                                              int playback_started)
-@@ -164,4 +165,75 @@
+@@ -164,4 +165,82 @@
      Close(fh);
  }
  
@@ -92,14 +92,14 @@ diff --git a/player/amiga/mrplay.c b/player/amiga/mrplay.c
 +}
 +
  static void control_port_close(void)
-@@ -1365,5 +1437,6 @@
+@@ -1365,5 +1444,6 @@
      h264_pipeline_width = vi->width;
      h264_pipeline_height = vi->height;
      h264_pipeline_stage = 0;
 +    h264_scheduler_diag_written = 0;
      if (h264_pipeline_diag_enabled)
          h264_pipeline_checkpoint_player("decoder-open", 0, 0);
-@@ -1758,6 +1831,13 @@
+@@ -1758,6 +1838,13 @@
              }
              late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
              have_deadline = 1;
@@ -113,7 +113,7 @@ diff --git a/player/amiga/mrplay.c b/player/amiga/mrplay.c
          }
  
          /* Catastrophic fall-behind recovery. A multi-second network stall can
-@@ -2342,6 +2422,16 @@
+@@ -2342,6 +2429,18 @@
                              audio_set_running(audio, 1);
                          }
                          display_set_status(disp, NULL);  /* clear Buffering... */
