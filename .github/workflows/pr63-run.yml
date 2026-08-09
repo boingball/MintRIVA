@@ -1,0 +1,40 @@
+name: PR63 patch runner
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.ref == 'fix/h264-1080p-decode'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/h264-1080p-decode
+          fetch-depth: 0
+
+      - name: Apply PR63 patch
+        run: python3 .github/pr63_patch.py
+
+      - name: Validate patch
+        run: |
+          git diff --check
+          grep -q 'pv_mem_ctxt = s' player/core/mr_h264.c
+          grep -q 'allocated lazily by emit_rgb' player/core/mr_h264.c
+          grep -q 'h264-decode-oom' player/amiga/mrplay.c
+          test ! -e .github/pr63_patch.py
+          test ! -e .github/workflows/pr63-run.yml
+          test ! -e .github/workflows/pr63-one-shot.yml
+
+      - name: Commit code changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix 1080p H.264 fatal decoder OOM"
+          git push origin HEAD:fix/h264-1080p-decode
