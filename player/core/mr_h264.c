@@ -52,6 +52,7 @@ typedef struct {
     uint32_t    diag_au_idx;
     int         diag_width;
     int         diag_height;
+    int         pipeline_rgb_done;
 } h264_state;
 
 static unsigned long h264_elapsed_us(clock_t begin)
@@ -116,17 +117,82 @@ static void h264_diag_checkpoint(h264_state *s, const char *phase,
     }
     Close(fh);
 }
+
+/* Leave a second, allocation-specific breadcrumb. Total free Fast RAM can be
+ * misleading on a fragmented Amiga heap, so record the largest contiguous Fast
+ * block as well as the exact allocation libavc asked us to make. */
+static void h264_diag_allocfail(h264_state *s, WORD32 alignment, WORD32 size)
+{
+    BPTR fh;
+    char buf[320];
+    int n;
+    ULONG fast_total, fast_largest, any_total, any_largest;
+
+    if (!s || !s->diag_path) return;
+    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.allocfail", MODE_NEWFILE);
+    if (!fh) return;
+
+    fast_total = AvailMem(MEMF_FAST);
+    fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
+    any_total = AvailMem(MEMF_ANY);
+    any_largest = AvailMem(MEMF_ANY | MEMF_LARGEST);
+    n = snprintf(buf, sizeof buf,
+                 "res=%dx%d requested=%ld alignment=%ld fast_total=%lu "
+                 "fast_largest=%lu any_total=%lu any_largest=%lu\n",
+                 s->diag_width, s->diag_height, (long)size, (long)alignment,
+                 (unsigned long)fast_total, (unsigned long)fast_largest,
+                 (unsigned long)any_total, (unsigned long)any_largest);
+    if (n > 0) {
+        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);
+        Write(fh, (APTR)buf, bytes);
+    }
+    Close(fh);
+}
+static void h264_pipeline_checkpoint(h264_state *s, const char *stage)
+{
+    BPTR fh;
+    char buf[256];
+    int n;
+    ULONG fast_total, fast_largest;
+
+    if (!s || !s->diag_path || !stage) return;
+    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.pipeline", MODE_NEWFILE);
+    if (!fh) return;
+    fast_total = AvailMem(MEMF_FAST);
+    fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
+    n = snprintf(buf, sizeof buf,
+                 "stage=%s res=%dx%d fast=%lu fast_largest=%lu\n",
+                 stage, s->diag_width, s->diag_height,
+                 (unsigned long)fast_total, (unsigned long)fast_largest);
+    if (n > 0) {
+        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);
+        Write(fh, (APTR)buf, bytes);
+    }
+    Close(fh);
+}
 #endif
 
 static void *h264_aligned_alloc(void *context, WORD32 alignment, WORD32 size)
 {
+    h264_state *s = (h264_state *)context;
     uintptr_t p, aligned;
+    size_t total;
     void *raw;
-    (void)context;
+
+    if (size <= 0) return NULL;
     if (alignment < (WORD32)sizeof(void *))
         alignment = (WORD32)sizeof(void *);
-    raw = malloc((size_t)size + (size_t)alignment - 1 + sizeof(void *));
-    if (!raw) return NULL;
+    total = (size_t)size + (size_t)alignment - 1 + sizeof(void *);
+    if (total < (size_t)size) return NULL;
+    raw = malloc(total);
+    if (!raw) {
+#ifdef AMIGA_M68K
+        h264_diag_allocfail(s, alignment, size);
+#else
+        (void)s;
+#endif
+        return NULL;
+    }
     p = (uintptr_t)raw + sizeof(void *);
     aligned = (p + (uintptr_t)alignment - 1) &
               ~((uintptr_t)alignment - 1);
@@ -314,7 +380,30 @@ static mr_status emit_rgb(mr_decoder *dec,
     const uint8_t *vp = (const uint8_t *)f->pv_v_buf;
     int width = dec->width, height = dec->height;
     int y;
-    if (!yp || !up || !vp || !s->rgb) return MR_ERR;
+    if (!yp || !up || !vp) return MR_ERR;
+#ifdef AMIGA_M68K
+    if (!s->pipeline_rgb_done) h264_pipeline_checkpoint(s, "rgb-enter");
+#endif
+
+    /* Do not reserve a full RGB24 frame during h264_open(). At 1080p that is
+     * 6,220,800 bytes held idle while libavc performs its much larger first-
+     * picture / DPB allocations. Allocate RGB only after libavc has actually
+     * produced a picture, giving its decoder state first claim on contiguous
+     * Fast RAM. */
+    if (!s->rgb) {
+        size_t rgb_bytes;
+        if ((size_t)dec->width * (size_t)dec->height > SIZE_MAX / 3u)
+            return MR_ENOMEM;
+        rgb_bytes = (size_t)dec->width * (size_t)dec->height * 3u;
+        s->rgb = (uint8_t *)malloc(rgb_bytes);
+        if (!s->rgb) {
+#ifdef AMIGA_M68K
+            h264_diag_allocfail(s, (WORD32)sizeof(void *), (WORD32)rgb_bytes);
+#endif
+            return MR_ENOMEM;
+        }
+        dec->frame.data = s->rgb;
+    }
     if ((int)f->u4_y_wd < width) width = (int)f->u4_y_wd;
     if ((int)f->u4_y_ht < height) height = (int)f->u4_y_ht;
 
@@ -343,6 +432,12 @@ static mr_status emit_rgb(mr_decoder *dec,
     dec->frame.data = s->rgb;
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = dec->height;
+#ifdef AMIGA_M68K
+    if (!s->pipeline_rgb_done) {
+        h264_pipeline_checkpoint(s, "rgb-complete");
+        s->pipeline_rgb_done = 1;
+    }
+#endif
     return MR_OK;
 }
 
@@ -391,6 +486,7 @@ static mr_status h264_open(mr_decoder *dec)
     create_in.s_ivd_create_ip_t.u4_share_disp_buf = 0;
     create_in.s_ivd_create_ip_t.pf_aligned_alloc = h264_aligned_alloc;
     create_in.s_ivd_create_ip_t.pf_aligned_free = h264_aligned_free;
+    create_in.s_ivd_create_ip_t.pv_mem_ctxt = s;
     create_out.s_ivd_create_op_t.u4_size = sizeof create_out;
     if (ih264d_api_function(NULL, &create_in, &create_out) != IV_SUCCESS)
         goto bad_format;
@@ -446,10 +542,6 @@ static mr_status h264_open(mr_decoder *dec)
         s->out[i] = (uint8_t *)malloc(s->out_size[i]);
         if (!s->out[i]) goto no_memory;
     }
-    if ((size_t)dec->width * (size_t)dec->height >
-        (SIZE_MAX / 3u)) goto no_memory;
-    s->rgb = (uint8_t *)malloc((size_t)dec->width * dec->height * 3u);
-    if (!s->rgb) goto no_memory;
     if (set_decode_mode(s, IVD_DECODE_FRAME) != IV_SUCCESS)
         goto bad_format;
 
@@ -457,7 +549,7 @@ static mr_status h264_open(mr_decoder *dec)
     dec->frame.height = dec->height;
     dec->frame.fmt = MR_PIX_RGB24;
     dec->frame.stride = dec->width * 3;
-    dec->frame.data = s->rgb;
+    dec->frame.data = NULL; /* allocated lazily by emit_rgb() */
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = 0;
     return MR_OK;
@@ -479,6 +571,7 @@ static mr_status h264_decode(mr_decoder *dec,
     uint32_t au_ts;
     mr_status st;
     mr_status captured_status = MR_EAGAIN;
+    mr_status decode_failure = MR_OK;
     int output_captured = 0;
     clock_t input_mark;
     clock_t au_mark;
@@ -563,7 +656,15 @@ static mr_status h264_decode(mr_decoder *dec,
             }
 
             if (r != IV_SUCCESS) {
+                uint32_t error = sub_out.s_ivd_video_decode_op_t.u4_error_code;
                 ret = r;
+                /* Hardware caught 0x0000402b at 1080p: fatal plus
+                 * IVD_MEM_ALLOC_FAILED. Preserve that distinction so mrplay can
+                 * tear down cleanly instead of feeding more AUs to a dead codec. */
+                if ((error & IVD_ERROR_MASK) == IVD_MEM_ALLOC_FAILED)
+                    decode_failure = MR_ENOMEM;
+                else
+                    decode_failure = MR_EFORMAT;
                 break;
             }
             if (!used || used > annexb_len - off)
@@ -576,6 +677,8 @@ static mr_status h264_decode(mr_decoder *dec,
     }
 
     if (s->service) s->service(s->service_opaque);
+    if (decode_failure != MR_OK)
+        return decode_failure;
     if (output_captured)
         return captured_status;
     return ret == IV_SUCCESS ? MR_EAGAIN : MR_EFORMAT;

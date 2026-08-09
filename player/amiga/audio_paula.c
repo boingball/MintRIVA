@@ -352,35 +352,43 @@ static void audio_pump(mr_audio *a)
         int oldest = oldest_request(a);
         if (oldest >= 0) a->request[oldest].state = AUDIO_REQ_PLAYING;
     }
-    /* Submit idle buffers from the FIFO. */
-    for (i = 0; i < NBUF; i++) {
-        if (!a->busy[i] && a->request[i].state == AUDIO_REQ_IDLE) {
-            int had_outstanding = oldest_request(a) >= 0;
-            int n;
-            Forbid();
-            n = fifo_pop_into(a, a->chip[i], a->bufsz);
-            Permit();
-            if (n <= 0) continue;
-            a->io[i]->ioa_Request.io_Command = CMD_WRITE;
-            a->io[i]->ioa_Request.io_Flags   = ADIOF_PERVOL;
-            a->io[i]->ioa_Data   = (UBYTE *)a->chip[i];
-            a->io[i]->ioa_Length = (ULONG)n;
-            a->io[i]->ioa_Period = a->period;
-            a->io[i]->ioa_Volume = 64;
-            a->io[i]->ioa_Cycles = 1;
-            BeginIO((struct IORequest *)a->io[i]);
-            a->busy[i] = 1;
-            a->nsub[i] = n;
-            a->request[i].sequence = a->next_sequence++;
-            a->request[i].submitted_samples = (unsigned)n;
-            a->request[i].scheduled_start_us = now > a->timeline_end_us
-                                               ? now : a->timeline_end_us;
-            a->request[i].scheduled_end_us =
-                a->request[i].scheduled_start_us +
-                request_duration_us(a, (unsigned)n);
-            a->timeline_end_us = a->request[i].scheduled_end_us;
-            a->request[i].state = had_outstanding
-                                ? AUDIO_REQ_QUEUED : AUDIO_REQ_PLAYING;
+
+    /* `running` is the actual Paula gate, not just a diagnostics flag. During
+     * startup/rebuffer/pause keep newly decoded PCM in the software FIFO so
+     * mrplay can build its requested cushion before audio.device starts
+     * consuming it. Already-submitted requests are allowed to finish cleanly;
+     * no new CMD_WRITE is issued until playback is resumed. */
+    if (a->running) {
+        /* Submit idle buffers from the FIFO. */
+        for (i = 0; i < NBUF; i++) {
+            if (!a->busy[i] && a->request[i].state == AUDIO_REQ_IDLE) {
+                int had_outstanding = oldest_request(a) >= 0;
+                int n;
+                Forbid();
+                n = fifo_pop_into(a, a->chip[i], a->bufsz);
+                Permit();
+                if (n <= 0) continue;
+                a->io[i]->ioa_Request.io_Command = CMD_WRITE;
+                a->io[i]->ioa_Request.io_Flags   = ADIOF_PERVOL;
+                a->io[i]->ioa_Data   = (UBYTE *)a->chip[i];
+                a->io[i]->ioa_Length = (ULONG)n;
+                a->io[i]->ioa_Period = a->period;
+                a->io[i]->ioa_Volume = 64;
+                a->io[i]->ioa_Cycles = 1;
+                BeginIO((struct IORequest *)a->io[i]);
+                a->busy[i] = 1;
+                a->nsub[i] = n;
+                a->request[i].sequence = a->next_sequence++;
+                a->request[i].submitted_samples = (unsigned)n;
+                a->request[i].scheduled_start_us = now > a->timeline_end_us
+                                                   ? now : a->timeline_end_us;
+                a->request[i].scheduled_end_us =
+                    a->request[i].scheduled_start_us +
+                    request_duration_us(a, (unsigned)n);
+                a->timeline_end_us = a->request[i].scheduled_end_us;
+                a->request[i].state = had_outstanding
+                                    ? AUDIO_REQ_QUEUED : AUDIO_REQ_PLAYING;
+            }
         }
     }
     buffered = audio_buffered_ms(a);
@@ -633,17 +641,24 @@ int audio_active_requests(mr_audio *a)
 
 void audio_set_running(mr_audio *a, int running)
 {
+    int wake = 0;
     if (!a) return;
     Forbid();
+    running = running != 0;
     if (running && !a->ever_started) {
         a->startup_clock_largest_step_us = a->clock_largest_step_us;
         a->clock_largest_step_us = 0;
         a->ever_started = 1;
     }
-    a->running = running != 0;
+    if (running && !a->running) wake = 1;
+    a->running = running;
     a->hardware_starved = 0;
     a->no_active_since = 0;
     Permit();
+    /* The worker may be asleep with a full startup FIFO and no outstanding
+     * audio.device request. Wake it when playback/resume opens the gate. */
+    if (wake && a->worker_task && a->wake_sig >= 0)
+        Signal(a->worker_task, 1UL << a->wake_sig);
 }
 
 int audio_starved(mr_audio *a)
