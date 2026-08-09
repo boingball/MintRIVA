@@ -2215,7 +2215,7 @@ int main(int argc, char **argv)
                                     printf("warning: queue_copy OOM - "
                                            "frame %ux%u dropped; "
                                            "further OOM drops will be silent\n",
-                                           dec.frame.w, dec.frame.h);
+                                           dec.frame.width, dec.frame.height);
                                     oom_warned = 1;
                                 }
                                 stats.dropped++;
