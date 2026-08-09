@@ -132,6 +132,38 @@ struct Device *TimerBase;
  * back the codec that is playing, or why a stream refused to play. */
 static mr_player_control_port *control_block;
 
+/* One-shot high-resolution pipeline breadcrumb. It advances only when a new
+ * stage is reached, so diagnostics cannot turn every 1080p frame into DOS I/O. */
+static int h264_pipeline_diag_enabled;
+static int h264_pipeline_stage;
+static int h264_pipeline_width, h264_pipeline_height;
+
+static void h264_pipeline_checkpoint_player(const char *stage, int qcount,
+                                            int playback_started)
+{
+    BPTR fh;
+    char buf[256];
+    int n;
+    ULONG fast_total, fast_largest;
+
+    if (!h264_pipeline_diag_enabled || !stage) return;
+    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.pipeline", MODE_NEWFILE);
+    if (!fh) return;
+    fast_total = AvailMem(MEMF_FAST);
+    fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
+    n = snprintf(buf, sizeof buf,
+                 "stage=%s res=%dx%d qcount=%d playback=%d fast=%lu "
+                 "fast_largest=%lu\n",
+                 stage, h264_pipeline_width, h264_pipeline_height, qcount,
+                 playback_started, (unsigned long)fast_total,
+                 (unsigned long)fast_largest);
+    if (n > 0) {
+        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);
+        Write(fh, (APTR)buf, bytes);
+    }
+    Close(fh);
+}
+
 static void control_port_close(void)
 {
     if (control_block) {
@@ -597,8 +629,18 @@ static void present_service_frame(video_presenter *vp)
     }
     if (late_us > 0) vp->stats->late++;
 
+    if (h264_pipeline_diag_enabled && h264_pipeline_stage < 4) {
+        h264_pipeline_checkpoint_player("pre-display-service",
+                                        *vp->qcount, *vp->playback_started);
+        h264_pipeline_stage = 4;
+    }
     display_show_rgb(vp->disp, front->rgb, front->width, front->height,
                      front->stride, front->dirty_y0, front->dirty_y1);
+    if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
+        h264_pipeline_checkpoint_player("post-display-service",
+                                        *vp->qcount, *vp->playback_started);
+        h264_pipeline_stage = 5;
+    }
     vp->stats->latency_us += monotonic_us() - front->decoded_at_us;
     vp->stats->presented++;
     if (vp->frames) (*vp->frames)++;
@@ -1318,6 +1360,14 @@ int main(int argc, char **argv)
         free(buf); return 10;
     }
 
+    h264_pipeline_diag_enabled = want_time && codec == &mr_codec_h264 &&
+        (uint64_t)vi->width * (uint64_t)vi->height >= 1280ULL * 720ULL;
+    h264_pipeline_width = vi->width;
+    h264_pipeline_height = vi->height;
+    h264_pipeline_stage = 0;
+    if (h264_pipeline_diag_enabled)
+        h264_pipeline_checkpoint_player("decoder-open", 0, 0);
+
     printf("media: file=%s, container=%s, video=%s (%c%c%c%c), "
            "%dx%d, %lu.%03lu fps\n", media_path, mr_demux_container_name(dx),
            codec->name, (int)(vi->fourcc & 255), (int)((vi->fourcc >> 8) & 255),
@@ -1867,8 +1917,18 @@ int main(int argc, char **argv)
                 unsigned long audio_before = audio ? audio_buffered_ms(audio) : 0;
             trace_phase(&trace, "cgx-prepare/transfer");
             if (audio) service_audio_for_display(&trace);
+            if (h264_pipeline_diag_enabled && h264_pipeline_stage < 4) {
+                h264_pipeline_checkpoint_player("pre-display-main",
+                                                qcount, playback_started);
+                h264_pipeline_stage = 4;
+            }
             display_show_rgb(disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
+            if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
+                h264_pipeline_checkpoint_player("post-display-main",
+                                                qcount, playback_started);
+                h264_pipeline_stage = 5;
+            }
                 if (audio) service_audio_for_display(&trace);
                 if (want_time) {
                     mr_display_timing rt;
@@ -2153,6 +2213,11 @@ int main(int argc, char **argv)
                                (unsigned long)pkt.len);
                     }
                     if (decode_status == MR_OK) {
+                        if (h264_pipeline_diag_enabled && h264_pipeline_stage < 1) {
+                            h264_pipeline_checkpoint_player("decoder-return",
+                                                            qcount, playback_started);
+                            h264_pipeline_stage = 1;
+                        }
                         unsigned long decode_us =
                             (unsigned long)(decode_end - a);
                         uint64_t synthetic_pts = vi->rate
@@ -2244,6 +2309,11 @@ int main(int argc, char **argv)
                             if (audio) service_audio_for_display(&trace);
                             stats.frame_copy_us += decode_end - a;
                             qcount++;
+                            if (h264_pipeline_diag_enabled && h264_pipeline_stage < 2) {
+                                h264_pipeline_checkpoint_player("queue-copy",
+                                                                qcount, playback_started);
+                                h264_pipeline_stage = 2;
+                            }
                             if (rescue_active) {
                                 rescue_episode_queued++;
                                 stats.rescue_video_queued++;
@@ -2274,6 +2344,11 @@ int main(int argc, char **argv)
                             audio_set_running(audio, 1);
                         }
                         display_set_status(disp, NULL);  /* clear Buffering... */
+                        if (h264_pipeline_diag_enabled && h264_pipeline_stage < 3) {
+                            h264_pipeline_checkpoint_player("playback-start",
+                                                            qcount, playback_started);
+                            h264_pipeline_stage = 3;
+                        }
                     }
                 }
                 continue;

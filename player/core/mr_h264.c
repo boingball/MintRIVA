@@ -52,6 +52,7 @@ typedef struct {
     uint32_t    diag_au_idx;
     int         diag_width;
     int         diag_height;
+    int         pipeline_rgb_done;
 } h264_state;
 
 static unsigned long h264_elapsed_us(clock_t begin)
@@ -141,6 +142,28 @@ static void h264_diag_allocfail(h264_state *s, WORD32 alignment, WORD32 size)
                  s->diag_width, s->diag_height, (long)size, (long)alignment,
                  (unsigned long)fast_total, (unsigned long)fast_largest,
                  (unsigned long)any_total, (unsigned long)any_largest);
+    if (n > 0) {
+        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);
+        Write(fh, (APTR)buf, bytes);
+    }
+    Close(fh);
+}
+static void h264_pipeline_checkpoint(h264_state *s, const char *stage)
+{
+    BPTR fh;
+    char buf[256];
+    int n;
+    ULONG fast_total, fast_largest;
+
+    if (!s || !s->diag_path || !stage) return;
+    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.pipeline", MODE_NEWFILE);
+    if (!fh) return;
+    fast_total = AvailMem(MEMF_FAST);
+    fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
+    n = snprintf(buf, sizeof buf,
+                 "stage=%s res=%dx%d fast=%lu fast_largest=%lu\n",
+                 stage, s->diag_width, s->diag_height,
+                 (unsigned long)fast_total, (unsigned long)fast_largest);
     if (n > 0) {
         LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);
         Write(fh, (APTR)buf, bytes);
@@ -358,6 +381,9 @@ static mr_status emit_rgb(mr_decoder *dec,
     int width = dec->width, height = dec->height;
     int y;
     if (!yp || !up || !vp) return MR_ERR;
+#ifdef AMIGA_M68K
+    if (!s->pipeline_rgb_done) h264_pipeline_checkpoint(s, "rgb-enter");
+#endif
 
     /* Do not reserve a full RGB24 frame during h264_open(). At 1080p that is
      * 6,220,800 bytes held idle while libavc performs its much larger first-
@@ -406,6 +432,12 @@ static mr_status emit_rgb(mr_decoder *dec,
     dec->frame.data = s->rgb;
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = dec->height;
+#ifdef AMIGA_M68K
+    if (!s->pipeline_rgb_done) {
+        h264_pipeline_checkpoint(s, "rgb-complete");
+        s->pipeline_rgb_done = 1;
+    }
+#endif
     return MR_OK;
 }
 
