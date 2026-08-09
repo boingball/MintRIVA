@@ -1,0 +1,104 @@
+name: PR63 pipeline patcher
+
+on:
+  pull_request:
+    branches: [main]
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'fix/h264-1080p-decode'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/h264-1080p-decode
+          fetch-depth: 0
+
+      - name: Apply one-shot high-res pipeline diagnostics
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
+              return text.replace(old, new, 1)
+
+          hp = Path('player/core/mr_h264.c')
+          h = hp.read_text()
+
+          h = replace_once(h,
+          '''    int         diag_width;\n    int         diag_height;\n} h264_state;''',
+          '''    int         diag_width;\n    int         diag_height;\n    int         pipeline_rgb_done;\n} h264_state;''',
+          'h264 state pipeline flag')
+
+          h = replace_once(h,
+          '''#endif\n\nstatic void *h264_aligned_alloc(void *context, WORD32 alignment, WORD32 size)''',
+          '''static void h264_pipeline_checkpoint(h264_state *s, const char *stage)\n{\n    BPTR fh;\n    char buf[256];\n    int n;\n    ULONG fast_total, fast_largest;\n\n    if (!s || !s->diag_path || !stage) return;\n    fh = Open((CONST_STRPTR)\"RAM:MintRIVA-H264.pipeline\", MODE_NEWFILE);\n    if (!fh) return;\n    fast_total = AvailMem(MEMF_FAST);\n    fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);\n    n = snprintf(buf, sizeof buf,\n                 \"stage=%s res=%dx%d fast=%lu fast_largest=%lu\\n\",\n                 stage, s->diag_width, s->diag_height,\n                 (unsigned long)fast_total, (unsigned long)fast_largest);\n    if (n > 0) {\n        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);\n        Write(fh, (APTR)buf, bytes);\n    }\n    Close(fh);\n}\n#endif\n\nstatic void *h264_aligned_alloc(void *context, WORD32 alignment, WORD32 size)''',
+          'h264 pipeline helper')
+
+          h = replace_once(h,
+          '''    int width = dec->width, height = dec->height;\n    int y;\n    if (!yp || !up || !vp) return MR_ERR;\n\n    /* Do not reserve a full RGB24 frame during h264_open(). At 1080p that is''',
+          '''    int width = dec->width, height = dec->height;\n    int y;\n    if (!yp || !up || !vp) return MR_ERR;\n#ifdef AMIGA_M68K\n    if (!s->pipeline_rgb_done) h264_pipeline_checkpoint(s, \"rgb-enter\");\n#endif\n\n    /* Do not reserve a full RGB24 frame during h264_open(). At 1080p that is''',
+          'h264 rgb enter')
+
+          h = replace_once(h,
+          '''    dec->frame.data = s->rgb;\n    dec->frame.dirty_y0 = 0;\n    dec->frame.dirty_y1 = dec->height;\n    return MR_OK;''',
+          '''    dec->frame.data = s->rgb;\n    dec->frame.dirty_y0 = 0;\n    dec->frame.dirty_y1 = dec->height;\n#ifdef AMIGA_M68K\n    if (!s->pipeline_rgb_done) {\n        h264_pipeline_checkpoint(s, \"rgb-complete\");\n        s->pipeline_rgb_done = 1;\n    }\n#endif\n    return MR_OK;''',
+          'h264 rgb complete')
+
+          hp.write_text(h)
+
+          mp = Path('player/amiga/mrplay.c')
+          m = mp.read_text()
+
+          m = replace_once(m,
+          '''static mr_player_control_port *control_block;\n\nstatic void control_port_close(void)''',
+          '''static mr_player_control_port *control_block;\n\n/* One-shot high-resolution pipeline breadcrumb. It advances only when a new\n * stage is reached, so diagnostics cannot turn every 1080p frame into DOS I/O. */\nstatic int h264_pipeline_diag_enabled;\nstatic int h264_pipeline_stage;\nstatic int h264_pipeline_width, h264_pipeline_height;\n\nstatic void h264_pipeline_checkpoint_player(const char *stage, int qcount,\n                                            int playback_started)\n{\n    BPTR fh;\n    char buf[256];\n    int n;\n    ULONG fast_total, fast_largest;\n\n    if (!h264_pipeline_diag_enabled || !stage) return;\n    fh = Open((CONST_STRPTR)\"RAM:MintRIVA-H264.pipeline\", MODE_NEWFILE);\n    if (!fh) return;\n    fast_total = AvailMem(MEMF_FAST);\n    fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);\n    n = snprintf(buf, sizeof buf,\n                 \"stage=%s res=%dx%d qcount=%d playback=%d fast=%lu \"\n                 \"fast_largest=%lu\\n\",\n                 stage, h264_pipeline_width, h264_pipeline_height, qcount,\n                 playback_started, (unsigned long)fast_total,\n                 (unsigned long)fast_largest);\n    if (n > 0) {\n        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);\n        Write(fh, (APTR)buf, bytes);\n    }\n    Close(fh);\n}\n\nstatic void control_port_close(void)''',
+          'mrplay pipeline helper')
+
+          m = replace_once(m,
+          '''        free(buf); return 10;\n    }\n\n    printf(\"media: file=%s, container=%s, video=%s (%c%c%c%c), \"''',
+          '''        free(buf); return 10;\n    }\n\n    h264_pipeline_diag_enabled = want_time && codec == &mr_codec_h264 &&\n        (uint64_t)vi->width * (uint64_t)vi->height >= 1280ULL * 720ULL;\n    h264_pipeline_width = vi->width;\n    h264_pipeline_height = vi->height;\n    h264_pipeline_stage = 0;\n    if (h264_pipeline_diag_enabled)\n        h264_pipeline_checkpoint_player(\"decoder-open\", 0, 0);\n\n    printf(\"media: file=%s, container=%s, video=%s (%c%c%c%c), \"''',
+          'enable pipeline diag')
+
+          m = replace_once(m,
+          '''                    if (decode_status == MR_OK) {\n                        unsigned long decode_us =''',
+          '''                    if (decode_status == MR_OK) {\n                        if (h264_pipeline_diag_enabled && h264_pipeline_stage < 1) {\n                            h264_pipeline_checkpoint_player(\"decoder-return\",\n                                                            qcount, playback_started);\n                            h264_pipeline_stage = 1;\n                        }\n                        unsigned long decode_us =''',
+          'decoder-return stage')
+
+          m = replace_once(m,
+          '''                            stats.frame_copy_us += decode_end - a;\n                            qcount++;\n                            if (rescue_active) {''',
+          '''                            stats.frame_copy_us += decode_end - a;\n                            qcount++;\n                            if (h264_pipeline_diag_enabled && h264_pipeline_stage < 2) {\n                                h264_pipeline_checkpoint_player(\"queue-copy\",\n                                                                qcount, playback_started);\n                                h264_pipeline_stage = 2;\n                            }\n                            if (rescue_active) {''',
+          'queue-copy stage')
+
+          m = replace_once(m,
+          '''                        display_set_status(disp, NULL);  /* clear Buffering... */\n                    }\n                }''',
+          '''                        display_set_status(disp, NULL);  /* clear Buffering... */\n                        if (h264_pipeline_diag_enabled && h264_pipeline_stage < 3) {\n                            h264_pipeline_checkpoint_player(\"playback-start\",\n                                                            qcount, playback_started);\n                            h264_pipeline_stage = 3;\n                        }\n                    }\n                }''',
+          'playback-start stage')
+
+          m = replace_once(m,
+          '''    display_show_rgb(vp->disp, front->rgb, front->width, front->height,\n                     front->stride, front->dirty_y0, front->dirty_y1);\n    vp->stats->latency_us += monotonic_us() - front->decoded_at_us;''',
+          '''    if (h264_pipeline_diag_enabled && h264_pipeline_stage < 4) {\n        h264_pipeline_checkpoint_player(\"pre-display-service\",\n                                        *vp->qcount, *vp->playback_started);\n        h264_pipeline_stage = 4;\n    }\n    display_show_rgb(vp->disp, front->rgb, front->width, front->height,\n                     front->stride, front->dirty_y0, front->dirty_y1);\n    if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {\n        h264_pipeline_checkpoint_player(\"post-display-service\",\n                                        *vp->qcount, *vp->playback_started);\n        h264_pipeline_stage = 5;\n    }\n    vp->stats->latency_us += monotonic_us() - front->decoded_at_us;''',
+          'service display stages')
+
+          m = replace_once(m,
+          '''            trace_phase(&trace, \"cgx-prepare/transfer\");\n            if (audio) service_audio_for_display(&trace);\n            display_show_rgb(disp, front->rgb, front->width, front->height,\n                             front->stride, front->dirty_y0, front->dirty_y1);\n                if (audio) service_audio_for_display(&trace);''',
+          '''            trace_phase(&trace, \"cgx-prepare/transfer\");\n            if (audio) service_audio_for_display(&trace);\n            if (h264_pipeline_diag_enabled && h264_pipeline_stage < 4) {\n                h264_pipeline_checkpoint_player(\"pre-display-main\",\n                                                qcount, playback_started);\n                h264_pipeline_stage = 4;\n            }\n            display_show_rgb(disp, front->rgb, front->width, front->height,\n                             front->stride, front->dirty_y0, front->dirty_y1);\n            if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {\n                h264_pipeline_checkpoint_player(\"post-display-main\",\n                                                qcount, playback_started);\n                h264_pipeline_stage = 5;\n            }\n                if (audio) service_audio_for_display(&trace);''',
+          'main display stages')
+
+          mp.write_text(m)
+
+      - name: Remove one-shot workflow and commit result
+        run: |
+          rm .github/workflows/pr63-pipeline-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add player/core/mr_h264.c player/amiga/mrplay.c .github/workflows/pr63-pipeline-patcher.yml
+          git commit -m "diag: trace first high-res frame through RGB, queue and display"
+          git push origin HEAD:fix/h264-1080p-decode
