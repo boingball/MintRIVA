@@ -25,15 +25,23 @@
 #include <time.h>
 #include <stdio.h>
 
+/* Number of destination rows scaled (and blitted) at a time when the stream
+ * is not native size. Keeping this small means a downscaled 720p/1080p
+ * stream never needs a full second RGB24 destination frame resident in Fast
+ * RAM - only this many rows of it at once. */
+#define MR_CGX_STRIP_ROWS 32
+
 typedef struct {
     struct Window *win;
     int            bl, bt;   /* blit origin inside the window borders       */
     int            iw, ih;   /* current resizeable inner dimensions         */
     int            pending_w, pending_h;
     clock_t        resize_at;
-    unsigned char *scaled;   /* persistent RGB24 destination                */
+    unsigned char *scaled;   /* persistent RGB24 scale strip (MR_CGX_STRIP_ROWS
+                               * rows tall, s->iw wide); NULL until the first
+                               * non-native frame actually needs it          */
     size_t         scaled_size;
-    int            scaled_w, scaled_h, scaled_stride;
+    int            scaled_w, scaled_stride;
     /* geometry cache --------------------------------------------------------
      * These are initialised to impossible sentinels so that the first call to
      * cgx_show() always enters cgx_rebuild_geometry(), fully priming the RTG
@@ -53,7 +61,7 @@ typedef struct {
 
 /* Forward declarations (implementations follow cgx_open in source order). */
 static void cgx_rebuild_geometry(cgx_state *s, const char *reason);
-static int  ensure_scaled(cgx_state *s, int w, int h);
+static int  ensure_scaled(cgx_state *s, int w);
 
 /* Having cybergraphics.library is not enough - the actual public screen we'd
  * render into must be an RTG/truecolour mode. On an AGA (planar) Workbench,
@@ -152,7 +160,10 @@ static void *cgx_open(int w, int h, const char *title)
     s->cached_bitmap = NULL;
     s->geometry_valid = 0;
 
-    /* Prime the cache before the first frame is presented. */
+    /* Prime the cache before the first frame is presented. Note this does
+     * NOT allocate s->scaled: a scale buffer is only ever needed once
+     * cgx_show() determines a given frame is non-native, and is allocated
+     * lazily there (see ensure_scaled()).                                   */
     cgx_rebuild_geometry(s, "init");
 
     return s;
@@ -170,11 +181,22 @@ static unsigned long elapsed_us(clock_t begin)
  * and screen/bitmap changes.  Callers set geometry_valid = 0 (or the sentinel
  * values) to force a rebuild; the result is stored back into the cache so
  * subsequent frames skip the work entirely.
+ *
+ * This deliberately does NOT touch s->scaled. Native-size rendering (the
+ * common case for 720p/1080p streams, whose window opens at the stream's own
+ * resolution) never reads s->scaled - cgx_show() sends the incoming RGB
+ * straight to WritePixelArray for native frames. Allocating a full-frame
+ * scale buffer here unconditionally would waste Fast RAM (~2.7MB at 720p,
+ * ~6.2MB at 1080p) for streams that will never use it, and if that
+ * allocation failed it was previously ignored, leaving cgx_show() rendering
+ * onto an otherwise untouched (grey) RTG window with no diagnostic. The
+ * scale buffer is now allocated lazily, and much smaller, in cgx_show() -
+ * see ensure_scaled() / MR_CGX_STRIP_ROWS.
  */
 static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
 {
     struct BitMap *bm;
-    int buf_reallocd, bm_changed, scale_map_changed;
+    int bm_changed, scale_map_changed;
     ULONG bm_depth = 0;
 
     /* Re-read inner dimensions from the live window struct; these reflect the
@@ -197,11 +219,6 @@ static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
     if (bm && CyberGfxBase)
         bm_depth = GetCyberMapAttr(bm, CYBRMATTR_DEPTH);
 
-    /* Allocate or reallocate the persistent scale buffer now, before the
-     * first frame, so there is no heap allocation during presentation.      */
-    buf_reallocd = !(s->scaled && s->scaled_w == s->iw && s->scaled_h == s->ih);
-    ensure_scaled(s, s->iw, s->ih);   /* failure handled in cgx_show        */
-
     /* Cache the new geometry. */
     s->cached_dst_w  = s->iw;
     s->cached_dst_h  = s->ih;
@@ -210,11 +227,11 @@ static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
 
     if (g_display_want_time)
         printf("rtg-geometry reason=%s iw=%d ih=%d "
-               "bm-changed=%d buf-realloc=%d scale-map-rebuild=%d "
+               "bm-changed=%d scale-map-rebuild=%d "
                "depth=%lu\n",
                reason ? reason : "?",
                s->iw, s->ih,
-               bm_changed, buf_reallocd, scale_map_changed,
+               bm_changed, scale_map_changed,
                (unsigned long)bm_depth);
 }
 
@@ -227,35 +244,41 @@ static void report_slow(const char *operation, unsigned long usec,
     if (service) service(opaque);
 }
 
-static int ensure_scaled(cgx_state *s, int w, int h)
+/* Allocate (or reuse) the scale strip buffer: MR_CGX_STRIP_ROWS destination
+ * rows, s->iw wide, RGB24. Only called from cgx_show() once it has actually
+ * determined a frame is non-native, so native-size streams (640x360 today,
+ * and typically 720p/1080p too) never allocate this at all. */
+static int ensure_scaled(cgx_state *s, int w)
 {
     size_t stride, bytes;
     unsigned char *p;
-    if (w <= 0 || h <= 0 || w > 65535 || h > 65535) return 0;
+    if (w <= 0 || w > 65535) return 0;
     if ((size_t)w > (size_t)-1 / 3) return 0;
     stride = (size_t)w * 3;
-    if ((size_t)h > (size_t)-1 / stride) return 0;
-    bytes = stride * (size_t)h;
-    if (s->scaled && s->scaled_w == w && s->scaled_h == h) return 1;
+    if ((size_t)MR_CGX_STRIP_ROWS > (size_t)-1 / stride) return 0;
+    bytes = stride * (size_t)MR_CGX_STRIP_ROWS;
+    if (s->scaled && s->scaled_w == w) return 1;
     p = (unsigned char *)AllocVec(bytes, MEMF_ANY);
     if (!p) return 0; /* retain the old buffer and the existing failure mode */
     if (s->scaled) FreeVec(s->scaled);
     s->scaled = p; s->scaled_size = bytes;
-    s->scaled_w = w; s->scaled_h = h; s->scaled_stride = (int)stride;
+    s->scaled_w = w; s->scaled_stride = (int)stride;
     return 1;
 }
 
-/* Integer nearest-neighbour RGB24 scaler. Geometry increments are calculated
- * once per frame (and never per pixel); strips bound time between Paula pumps. */
-static void scale_rgb24(cgx_state *s, const unsigned char *src, int sw, int sh,
-                        int src_stride, mr_display_service_fn service,
-                        void *opaque)
+/* Integer nearest-neighbour RGB24 scaler, one strip at a time. Geometry
+ * increments are calculated once per strip (and never per pixel); dst_y0 is
+ * the absolute destination row the strip starts at, so the fixed-point
+ * source-row accumulator stays correct across strip boundaries. */
+static void scale_rgb24_strip(cgx_state *s, const unsigned char *src, int sw,
+                              int sh, int src_stride, int dst_y0, int rows,
+                              mr_display_service_fn service, void *opaque)
 {
     unsigned long xstep = ((unsigned long)sw << 16) / (unsigned long)s->iw;
     unsigned long ystep = ((unsigned long)sh << 16) / (unsigned long)s->ih;
-    unsigned long syfp = 0;
+    unsigned long syfp = (unsigned long)dst_y0 * ystep;
     int y;
-    for (y = 0; y < s->ih; y++, syfp += ystep) {
+    for (y = 0; y < rows; y++, syfp += ystep) {
         const unsigned char *sp = src + (size_t)(syfp >> 16) * src_stride;
         unsigned char *dp = s->scaled + (size_t)y * s->scaled_stride;
         unsigned long sx = 0;
@@ -274,7 +297,7 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
 {
     cgx_state *s = (cgx_state *)h;
     clock_t total, mark;
-    int native, y;
+    int native;
     if (!s || !s->win) return;
     memset(&s->timing, 0, sizeof s->timing);
     total = mark = clock();
@@ -310,49 +333,68 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     s->timing.geometry_us = elapsed_us(mark);
     report_slow("geometry-format-setup", s->timing.geometry_us,
                 service, service_opaque);
+
     if (!native) {
-        int buffer_reused = s->scaled && s->scaled_w == s->iw &&
-                            s->scaled_h == s->ih;
+        /* Downscaled path: only here do we ever need a scale buffer, and only
+         * MR_CGX_STRIP_ROWS destination rows of it at a time - source RGB is
+         * scaled a strip at a time and blitted immediately, so at most one
+         * small strip (not a whole second destination frame) is resident. */
+        int y;
         mark = clock();
         if (service) service(service_opaque);
-        if (!ensure_scaled(s, s->iw, s->ih)) return;
+        if (!ensure_scaled(s, s->iw)) {
+            if (service) service(service_opaque);
+            printf("cgx-error: scale strip allocation failed (%dx%d, "
+                   "%lu bytes) - dropping frame\n",
+                   s->iw, MR_CGX_STRIP_ROWS,
+                   (unsigned long)((size_t)s->iw * 3 *
+                                   (size_t)MR_CGX_STRIP_ROWS));
+            return;
+        }
         if (service) service(service_opaque);
         s->timing.allocation_us = elapsed_us(mark);
-        report_slow(buffer_reused ? "destination-buffer-check"
-                                  : "destination-buffer-allocation",
-                    s->timing.allocation_us, service, service_opaque);
+        report_slow("destination-buffer-allocation", s->timing.allocation_us,
+                    service, service_opaque);
+
+        s->timing.prepare_us = elapsed_us(total);
+        if (service) service(service_opaque);
+
         mark = clock();
-        scale_rgb24(s, rgb, w, hh, stride, service, service_opaque);
+        for (y = 0; y < s->ih; y += MR_CGX_STRIP_ROWS) {
+            int rows = s->ih - y < MR_CGX_STRIP_ROWS ? s->ih - y
+                                                      : MR_CGX_STRIP_ROWS;
+            scale_rgb24_strip(s, rgb, w, hh, stride, y, rows,
+                              service, service_opaque);
+            WritePixelArray((APTR)s->scaled, 0, 0, (UWORD)s->scaled_stride,
+                            s->win->RPort, (UWORD)s->bl, (UWORD)(s->bt + y),
+                            (UWORD)s->iw, (UWORD)rows, RECTFMT_RGB);
+            if (service) service(service_opaque);
+        }
         s->timing.scale_us = elapsed_us(mark);
-        report_slow("software-scale", s->timing.scale_us,
+        report_slow("software-scale+blit", s->timing.scale_us,
                     service, service_opaque);
         s->timing.pixels = (unsigned long)s->iw * (unsigned long)s->ih;
-        s->timing.bytes = (unsigned long)s->scaled_size;
-        s->timing.copies = 1;
-        rgb = s->scaled; stride = s->scaled_stride; dy0 = 0; dy1 = s->ih;
-        w = s->iw;
+        s->timing.bytes = (unsigned long)s->scaled_size *
+                          (unsigned long)((s->ih + MR_CGX_STRIP_ROWS - 1) /
+                                          MR_CGX_STRIP_ROWS);
+        s->timing.copies = (unsigned long)((s->ih + MR_CGX_STRIP_ROWS - 1) /
+                                           MR_CGX_STRIP_ROWS);
+        s->timing.blit_us = s->timing.scale_us;
+        if (service) service(service_opaque);
+        s->timing.total_us = elapsed_us(total);
+        return;
     }
+
     s->timing.prepare_us = elapsed_us(total);
     if (service) service(service_opaque);
     mark = clock();
-    if (native) {
-        /* At native size retain the dirty-row fast path. */
-        WritePixelArray((APTR)(rgb + (size_t)dy0 * stride), 0, 0,
-                        (UWORD)stride, s->win->RPort, (UWORD)s->bl,
-                        (UWORD)(s->bt + dy0), (UWORD)w,
-                        (UWORD)(dy1 - dy0), RECTFMT_RGB);
-    } else {
-        /* Band large transfers so audio.device is serviced even when the RTG
-         * driver copies slowly. Each source row is transferred exactly once. */
-        for (y = 0; y < s->ih; y += 32) {
-            int rows = s->ih - y < 32 ? s->ih - y : 32;
-            WritePixelArray((APTR)(rgb + (size_t)y * stride), 0, 0,
-                            (UWORD)stride, s->win->RPort, (UWORD)s->bl,
-                            (UWORD)(s->bt + y), (UWORD)w, (UWORD)rows,
-                            RECTFMT_RGB);
-            if (service) service(service_opaque);
-        }
-    }
+    /* At native size retain the dirty-row fast path. This is byte-for-byte
+     * unchanged from before: 640x360 (and any other native-size stream)
+     * behaviour is preserved exactly. */
+    WritePixelArray((APTR)(rgb + (size_t)dy0 * stride), 0, 0,
+                    (UWORD)stride, s->win->RPort, (UWORD)s->bl,
+                    (UWORD)(s->bt + dy0), (UWORD)w,
+                    (UWORD)(dy1 - dy0), RECTFMT_RGB);
     s->timing.blit_us = elapsed_us(mark);
     if (service) service(service_opaque);
     s->timing.total_us = elapsed_us(total);
