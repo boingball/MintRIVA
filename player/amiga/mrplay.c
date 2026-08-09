@@ -1526,7 +1526,7 @@ int main(int argc, char **argv)
         if (want_time)
             printf("video-queue: cap=%d frames (%s, cushion=%lu ms, "
                    "frame=%lu KB, free-after-decoder=%lu KB, "
-                   "budget=%lu KB budget_frames=%d)\n",
+                   "budget=%lu KB, budget_frames=%d)\n",
                    video_cap, network_source ? "network" : "disk", cushion_ms,
                    (unsigned long)(frame_bytes / 1024),
                    (unsigned long)(free_any / 1024),
