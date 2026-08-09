@@ -65,9 +65,16 @@
 #define HTTP_CACHE_SIZE  (4096UL * 1024)
 #endif
 /* Minimum forward window kept ahead of the caller by a (blocking) read, enough
- * to span the video/audio chunk lag so interleaved reads never reconnect. */
+ * to span the video/audio chunk lag so interleaved reads never reconnect. The
+ * large default suits random-access AVI/MOV, whose audio and video chunks sit
+ * far apart in the file. A forward-only HLS TS interleaves audio and video PES
+ * within milliseconds, so it needs almost no window - and a smaller one keeps
+ * each blocking refill short enough for the decoded-frame queue to cover it. */
 #ifndef HTTP_MIN_WINDOW
 #define HTTP_MIN_WINDOW  (512UL * 1024)
+#endif
+#ifndef HTTP_STREAM_MIN_WINDOW
+#define HTTP_STREAM_MIN_WINDOW (128UL * 1024)
 #endif
 /* Keep at least this much already-read data behind the newest request so the
  * trailing (video) read still hits the window after the leading (audio) read
@@ -398,6 +405,17 @@ void mr_http_net_shutdown(void)
 int mr_http_tls_disabled(void)
 {
     return 0;
+}
+
+/* Cooperative service hook (see mr_http.h). Called between socket reads during a
+ * body fetch so a single-threaded caller keeps presenting/servicing. */
+static mr_http_service_fn g_http_service;
+static void              *g_http_service_opaque;
+
+void mr_http_set_service(mr_http_service_fn fn, void *opaque)
+{
+    g_http_service = fn;
+    g_http_service_opaque = opaque;
 }
 
 static int platform_open(http_source *h)
@@ -1199,6 +1217,12 @@ static int copy_response_bytes(http_source *h, unsigned char *dst, size_t len)
             h->chunk_left -= (size_t)n;
             if (!h->chunk_left) h->chunk_need_crlf = 1;
         }
+        /* Between socket reads, let the caller present queued video / feed audio.
+         * This is what stops a blocking segment fetch from freezing playback for
+         * its whole duration: the single task services here instead of only
+         * after the read returns (when the backlog is already late). Cheap when
+         * nothing is due; NULL (host builds) skips it entirely. */
+        if (g_http_service) g_http_service(g_http_service_opaque);
     }
     return (int)done;
 }
@@ -1306,6 +1330,9 @@ static void http_cache_trim(http_source *h)
 static void http_readahead(http_source *h, int min_only)
 {
     size_t cache_end, forward;
+    /* Forward-only streams need only a tiny window (see HTTP_STREAM_MIN_WINDOW);
+     * keeping it small also keeps each blocking refill short. */
+    size_t min_window = h->streaming ? HTTP_STREAM_MIN_WINDOW : HTTP_MIN_WINDOW;
 
     if (!h->socket_ready || !h->cache) return;
     if (h->cache_start + h->cache_len != h->body_pos) return; /* not contiguous */
@@ -1321,9 +1348,9 @@ static void http_readahead(http_source *h, int min_only)
     forward = cache_end > h->max_read ? cache_end - h->max_read : 0;
 
     /* Bootstrap: guarantee a minimum forward window with blocking reads. */
-    while (forward < HTTP_MIN_WINDOW && h->cache_len < HTTP_CACHE_SIZE) {
+    while (forward < min_window && h->cache_len < HTTP_CACHE_SIZE) {
         size_t room = HTTP_CACHE_SIZE - h->cache_len;
-        size_t want = HTTP_MIN_WINDOW - forward;
+        size_t want = min_window - forward;
         int n;
 
         if (want > room) want = room;

@@ -1420,6 +1420,10 @@ int main(int argc, char **argv)
     /* Keep audio/video/UI alive (and quit responsive) while the HLS live path
      * polls for new segments at the edge; see hls_wait_service. */
     mr_hls_set_wait(hls_wait_service, &trace);
+    /* Present queued video / feed audio between the socket reads of a blocking
+     * segment fetch, so an ordinary ~350 ms download no longer freezes video for
+     * its whole duration. Fires while released is set around the demux read. */
+    mr_http_set_service(audio ? service_audio_for_display : NULL, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -2275,9 +2279,11 @@ int main(int argc, char **argv)
      * hook is still installed and fires during the teardown flush's blits, so
      * drop the now-dangling pointer before any of that can dereference it. */
     trace.presenter = NULL;
-    /* The HLS wait hook holds &trace too; the teardown flush no longer reads the
-     * demux, so retire it here for symmetry before the scheduler locals die. */
+    /* The HLS wait and HTTP service hooks hold &trace too; the teardown flush no
+     * longer reads the demux, so retire them here before the scheduler locals
+     * die. */
     mr_hls_set_wait(NULL, NULL);
+    mr_http_set_service(NULL, NULL);
 
     if (audio) audio_set_running(audio, 0); /* following drain is intentional */
 
