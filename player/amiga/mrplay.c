@@ -2134,6 +2134,11 @@ int main(int argc, char **argv)
                         if (ht.output_us > stats.h264_output_max_us)
                             stats.h264_output_max_us = ht.output_us;
                     }
+                    if (decode_status == MR_EFORMAT) {
+                        printf("h264-decode-error: packet %lu len=%lu\n",
+                               (unsigned long)decoded_index,
+                               (unsigned long)pkt.len);
+                    }
                     if (decode_status == MR_OK) {
                         unsigned long decode_us =
                             (unsigned long)(decode_end - a);

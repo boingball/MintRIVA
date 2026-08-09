@@ -399,22 +399,46 @@ static mr_status h264_decode(mr_decoder *dec,
     if (st != MR_OK) return st;
     if (s->service) s->service(s->service_opaque);
     mark = clock();
-    ret = decode_annexb(s, s->packet, annexb_len, &out);
+    /* libavc may not consume an entire access unit in one call when the
+     * Annex B buffer contains multiple NAL units (e.g. AUD+SPS+PPS+IDR as
+     * emitted by MPEG-TS encoders).  Loop, advancing the read position by
+     * u4_num_bytes_consumed each iteration, until output is produced, all
+     * bytes are consumed, or an error is returned.  This mirrors the loop
+     * used in h264_open for header-mode feeding. */
+    {
+        uint32_t off = 0;
+        ret = IV_SUCCESS;
+        memset(&out, 0, sizeof out);
+        while (off < annexb_len) {
+            IV_API_CALL_STATUS_T r =
+                decode_annexb(s, s->packet + off, annexb_len - off, &out);
+            uint32_t used =
+                out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
+#ifdef MR_H264_DEBUG
+            fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu off=%lu "
+                    "ret=%d consumed=%lu decoded=%lu output=%lu "
+                    "error=%08lx type=%d\n",
+                    (unsigned long)(s->timestamp - 1), (unsigned long)len,
+                    (unsigned long)annexb_len, (unsigned long)off,
+                    (int)r, (unsigned long)used,
+                    (unsigned long)out.s_ivd_video_decode_op_t.u4_frame_decoded_flag,
+                    (unsigned long)out.s_ivd_video_decode_op_t.u4_output_present,
+                    (unsigned long)out.s_ivd_video_decode_op_t.u4_error_code,
+                    (int)out.s_ivd_video_decode_op_t.e_pic_type);
+#endif
+            if (out.s_ivd_video_decode_op_t.u4_output_present) {
+                ret = r; break;
+            }
+            if (r != IV_SUCCESS) { ret = r; break; }
+            if (!used || used > annexb_len - off) break;
+            if (s->service) s->service(s->service_opaque);
+            off += used;
+        }
+    }
     s->timing.core_us = h264_elapsed_us(mark);
     /* libavc's frame call is synchronous, but this boundary is safe: all
      * decoder state has returned to the adapter and RGB output has not begun. */
     if (s->service) s->service(s->service_opaque);
-#ifdef MR_H264_DEBUG
-    fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu ret=%d consumed=%lu "
-            "decoded=%lu output=%lu error=%08lx type=%d\n",
-            (unsigned long)(s->timestamp - 1), (unsigned long)len,
-            (unsigned long)annexb_len, (int)ret,
-            (unsigned long)out.s_ivd_video_decode_op_t.u4_num_bytes_consumed,
-            (unsigned long)out.s_ivd_video_decode_op_t.u4_frame_decoded_flag,
-            (unsigned long)out.s_ivd_video_decode_op_t.u4_output_present,
-            (unsigned long)out.s_ivd_video_decode_op_t.u4_error_code,
-            (int)out.s_ivd_video_decode_op_t.e_pic_type);
-#endif
     if (out.s_ivd_video_decode_op_t.u4_output_present) {
         if (s->skip_output) {
             dec->frame.dirty_y0 = dec->frame.dirty_y1 = 0;
