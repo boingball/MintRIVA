@@ -1,0 +1,69 @@
+diff --git a/player/amiga/mrplay.c b/player/amiga/mrplay.c
+--- a/player/amiga/mrplay.c
++++ b/player/amiga/mrplay.c
+@@
+ static int h264_pipeline_diag_enabled;
+ static int h264_pipeline_stage;
+ static int h264_pipeline_width, h264_pipeline_height;
++static int h264_scheduler_diag_written;
+ 
+ static void h264_pipeline_checkpoint_player(const char *stage, int qcount,
+                                             int playback_started)
+@@
+     Close(fh);
+ }
+ 
++static void h264_scheduler_checkpoint(int rescue_active, int rescue_priority,
++                                      int starved, int source, int holdover,
++                                      int qcount, unsigned long audio_ms,
++                                      uint64_t audio_raw, uint64_t master_clock,
++                                      uint64_t mono_clock, uint64_t front_pts,
++                                      int64_t late_us)
++{
++    BPTR fh;
++    char buf[384];
++    int n;
++
++    if (!h264_pipeline_diag_enabled || h264_scheduler_diag_written) return;
++    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.scheduler", MODE_NEWFILE);
++    if (!fh) return;
++    n = snprintf(buf, sizeof buf,
++                 "res=%dx%d rescue=%d priority=%d starved=%d source=%d "
++                 "holdover=%d qcount=%d audio_ms=%lu audio_raw=%lu "
++                 "master=%lu mono=%lu front_pts=%lu late=%ld\n",
++                 h264_pipeline_width, h264_pipeline_height,
++                 rescue_active, rescue_priority, starved, source, holdover,
++                 qcount, audio_ms, (unsigned long)audio_raw,
++                 (unsigned long)master_clock, (unsigned long)mono_clock,
++                 (unsigned long)front_pts, (long)late_us);
++    if (n > 0) {
++        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);
++        Write(fh, (APTR)buf, bytes);
++    }
++    Close(fh);
++    h264_scheduler_diag_written = 1;
++}
++
+ static void control_port_close(void)
+ {
+@@
+     h264_pipeline_width = vi->width;
+     h264_pipeline_height = vi->height;
+     h264_pipeline_stage = 0;
++    h264_scheduler_diag_written = 0;
+     if (h264_pipeline_diag_enabled)
+         h264_pipeline_checkpoint_player("decoder-open", 0, 0);
+@@
+             }
+             late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
+             have_deadline = 1;
++            if (h264_pipeline_diag_enabled && !h264_scheduler_diag_written)
++                h264_scheduler_checkpoint(rescue_active, rescue_priority,
++                                          starved, mc.source, mc.holdover_active,
++                                          qcount, audio_ms,
++                                          audio_elapsed_raw_us, master_clock_us,
++                                          mono_media_clock_us, front->pts_us,
++                                          late_us);
+         }
+ 
+         /* Catastrophic fall-behind recovery. A multi-second network stall can
