@@ -1,15 +1,14 @@
 name: Build
 
-# Temporary one-shot PR63 source patch. The job restores this workflow from
-# main before committing, so the PR remains source-only.
+# Compile MintRIVA for AmigaOS (m68k) on every push and pull request.
+# MintRIVA uses submodules for MintAMP and libavc, so checkout must recurse.
+# The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
+
 on:
   push:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -20,112 +19,7 @@ jobs:
       - name: Check out the code and submodules
         uses: actions/checkout@v4
         with:
-          ref: fix/h264-1080p-decode
           submodules: recursive
-          fetch-depth: 0
-
-      - name: Add one-shot high-res scheduler breadcrumb
-        shell: python
-        run: |
-          from pathlib import Path
-
-          p = Path('player/amiga/mrplay.c')
-          s = p.read_text()
-
-          def once(old, new, label):
-              global s
-              n = s.count(old)
-              if n != 1:
-                  raise SystemExit(f'{label}: expected 1 match, got {n}')
-              s = s.replace(old, new, 1)
-
-          once(
-'''static int h264_pipeline_diag_enabled;
-static int h264_pipeline_stage;
-static int h264_pipeline_width, h264_pipeline_height;
-''',
-'''static int h264_pipeline_diag_enabled;
-static int h264_pipeline_stage;
-static int h264_pipeline_width, h264_pipeline_height;
-static int h264_scheduler_diag_written;
-''', 'diag globals')
-
-          marker = '''static void control_port_close(void)
-'''
-          helper = r'''static void h264_scheduler_checkpoint(int rescue_active, int rescue_priority,
-                                      int starved, int source, int holdover,
-                                      int qcount, unsigned long audio_ms,
-                                      uint64_t audio_raw, uint64_t master_clock,
-                                      uint64_t mono_clock, uint64_t front_pts,
-                                      int64_t late_us)
-{
-    BPTR fh;
-    char buf[384];
-    int n;
-
-    if (!h264_pipeline_diag_enabled || h264_scheduler_diag_written) return;
-    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.scheduler", MODE_NEWFILE);
-    if (!fh) return;
-    n = snprintf(buf, sizeof buf,
-                 "res=%dx%d rescue=%d priority=%d starved=%d source=%d "
-                 "holdover=%d qcount=%d audio_ms=%lu audio_raw=%lu "
-                 "master=%lu mono=%lu front_pts=%lu late=%ld\n",
-                 h264_pipeline_width, h264_pipeline_height,
-                 rescue_active, rescue_priority, starved, source, holdover,
-                 qcount, audio_ms, (unsigned long)audio_raw,
-                 (unsigned long)master_clock, (unsigned long)mono_clock,
-                 (unsigned long)front_pts, (long)late_us);
-    if (n > 0) {
-        LONG bytes = n < (int)sizeof buf ? (LONG)n : (LONG)(sizeof buf - 1);
-        Write(fh, (APTR)buf, bytes);
-    }
-    Close(fh);
-    h264_scheduler_diag_written = 1;
-}
-
-'''
-          once(marker, helper + marker, 'helper insertion')
-
-          once(
-'''    h264_pipeline_stage = 0;
-    if (h264_pipeline_diag_enabled)
-''',
-'''    h264_pipeline_stage = 0;
-    h264_scheduler_diag_written = 0;
-    if (h264_pipeline_diag_enabled)
-''', 'diag reset')
-
-          once(
-'''            late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
-            have_deadline = 1;
-        }
-
-        /* Catastrophic fall-behind recovery.''',
-'''            late_us = (int64_t)master_clock_us - (int64_t)front->pts_us;
-            have_deadline = 1;
-            if (h264_pipeline_diag_enabled && !h264_scheduler_diag_written)
-                h264_scheduler_checkpoint(rescue_active, rescue_priority,
-                                          starved, mc.source, mc.holdover_active,
-                                          qcount, audio_ms,
-                                          audio_elapsed_raw_us, master_clock_us,
-                                          mono_media_clock_us, front->pts_us,
-                                          late_us);
-        }
-
-        /* Catastrophic fall-behind recovery.''', 'scheduler call')
-
-          p.write_text(s)
-
-      - name: Restore normal workflow and commit source-only patch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/build.yml
-          rm -f .github/pr63-scheduler-kick.txt
-          git add player/amiga/mrplay.c .github/workflows/build.yml .github/pr63-scheduler-kick.txt || true
-          git diff --cached --quiet || git commit -m "diag: capture first high-res scheduler gate"
-          git push origin HEAD:fix/h264-1080p-decode
 
       - name: Compile with the Amiga cross-compiler
         run: |
