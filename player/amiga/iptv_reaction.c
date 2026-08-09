@@ -55,6 +55,9 @@
 /* Cleared at GUI launch: the first logged stream truncates the file, later ones
  * append, so a whole session's streams accumulate in one log (see start_stream). */
 static int mrplay_log_session_open;
+/* Set by start_stream() when stop_player() times out: lets callers show a more
+ * specific error instead of the generic "mrplay could not start" message. */
+static int last_stop_wedged;
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
@@ -485,8 +488,17 @@ static int start_stream(const mr_iptv_stream *stream,
     args_add_time(args, sizeof(args));
   /* Never let two players run at once: pressing Play/Next while a stream is up
    * would otherwise double CPU load. Stop the current player and wait for it to
-   * release the display and Paula before we spawn the replacement. */
+   * release the display and Paula before we spawn the replacement. If the old
+   * player is still alive after the full stop-and-wait sequence (e.g. it is
+   * wedged decoding a high-res frame), refuse to launch a replacement: starting
+   * a second player while the first still owns its high-resolution buffers and
+   * the control port causes RAM collapse and an unresponsive GUI. */
   stop_player();
+  if (player_is_running()) {
+    last_stop_wedged = 1;
+    return 0;
+  }
+  last_stop_wedged = 0;
   seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
   if (!seglist)
     seglist = LoadSeg((CONST_STRPTR) "mrplay");
@@ -1010,7 +1022,10 @@ int main(int argc, char **argv) {
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
         if (!start_url(text ? (char *)text : "", &play_options, debug_log))
-          set_status(status, window, "Invalid URL or mrplay could not start.");
+          set_status(status, window,
+                     last_stop_wedged
+                         ? "Previous player did not stop; try again shortly."
+                         : "Invalid URL or mrplay could not start.");
       } else if ((result & WMHI_GADGETMASK) == G_PLAY ||
                  (result & WMHI_GADGETMASK) == G_NEXT_STREAM) {
         GetAttr(LISTBROWSER_SelectedNode, channels, (ULONG *)&node);
@@ -1038,7 +1053,9 @@ int main(int argc, char **argv) {
           if (!start_stream(&channel->streams[active_stream], &play_options,
                             debug_log))
             set_status(status, window,
-                       "Invalid stream metadata or mrplay could not start.");
+                       last_stop_wedged
+                           ? "Previous player did not stop; try again shortly."
+                           : "Invalid stream metadata or mrplay could not start.");
         }
       }
     }

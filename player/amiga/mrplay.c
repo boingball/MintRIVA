@@ -1118,6 +1118,7 @@ int main(int argc, char **argv)
     clock_t t_dec = 0, t_show = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
     int qhead = 0, qcount = 0, input_eof = 0;
+    int oom_warned = 0; /* set after first queue_copy OOM is logged */
     int rescue_active = 0;
     int rescue_priority = 0;
     unsigned rescue_cooldown = 0;
@@ -2133,6 +2134,11 @@ int main(int argc, char **argv)
                         if (ht.output_us > stats.h264_output_max_us)
                             stats.h264_output_max_us = ht.output_us;
                     }
+                    if (decode_status == MR_EFORMAT) {
+                        printf("h264-decode-error: packet %lu len=%lu\n",
+                               (unsigned long)decoded_index,
+                               (unsigned long)pkt.len);
+                    }
                     if (decode_status == MR_OK) {
                         unsigned long decode_us =
                             (unsigned long)(decode_end - a);
@@ -2207,7 +2213,16 @@ int main(int argc, char **argv)
                                  * quit: drop this frame exactly as a full queue
                                  * would and keep recycling the slots we own. The
                                  * cap is the ring modulus so it must not change;
-                                 * the slot simply stays empty and is retried. */
+                                 * the slot simply stays empty and is retried.
+                                 * Log once so hardware tests can confirm whether
+                                 * a grey window is caused by this OOM path. */
+                                if (!oom_warned) {
+                                    printf("warning: queue_copy OOM - "
+                                           "frame %ux%u dropped; "
+                                           "further OOM drops will be silent\n",
+                                           dec.frame.width, dec.frame.height);
+                                    oom_warned = 1;
+                                }
                                 stats.dropped++;
                                 decoded_index++;
                                 continue;
