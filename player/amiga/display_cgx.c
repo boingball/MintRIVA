@@ -8,6 +8,7 @@
  */
 #include "amiga_display.h"
 #include "display_backend.h"
+#include "mr_aspect.h"
 
 #include <stddef.h>
 #include <exec/types.h>
@@ -35,10 +36,12 @@ typedef struct {
     struct Window *win;
     int            bl, bt;   /* blit origin inside the window borders       */
     int            iw, ih;   /* current resizeable inner dimensions         */
+    int            source_w, source_h;
+    int            dx, dy, dw, dh; /* aspect-fitted video rectangle          */
     int            pending_w, pending_h;
     clock_t        resize_at;
     unsigned char *scaled;   /* persistent RGB24 scale strip (MR_CGX_STRIP_ROWS
-                               * rows tall, s->iw wide); NULL until the first
+                               * rows tall, s->dw wide); NULL until the first
                                * non-native frame actually needs it          */
     size_t         scaled_size;
     int            scaled_w, scaled_stride;
@@ -172,6 +175,8 @@ static void *cgx_open(int w, int h, const char *title)
     }
 
     s->fullscreen = g_display_fullscreen;
+    s->source_w = w;
+    s->source_h = h;
     s->title = title;
     s->win = cgx_open_window(s, title, win_w, win_h);
     if (!s->win) { FreeVec(s); return NULL; }
@@ -236,11 +241,14 @@ static unsigned long elapsed_us(clock_t begin)
 static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
 {
     struct BitMap *bm;
-    int bm_changed, scale_map_changed;
+    int bm_changed, scale_map_changed, old_iw, old_ih;
+    mr_aspect_rect fit;
     ULONG bm_depth = 0;
 
     /* Re-read inner dimensions from the live window struct; these reflect the
      * post-open, post-resize values as reported by Intuition.               */
+    old_iw = s->iw;
+    old_ih = s->ih;
     s->bl = s->win->BorderLeft;
     s->bt = s->win->BorderTop;
     s->iw = s->win->Width  - s->win->BorderLeft - s->win->BorderRight;
@@ -248,9 +256,14 @@ static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
     if (s->iw < 1) s->iw = 1;
     if (s->ih < 1) s->ih = 1;
 
-    /* Detect whether the output dimensions (and thus the scale factors) have
-     * changed from the previously cached values.                             */
-    scale_map_changed = (s->iw != s->cached_dst_w || s->ih != s->cached_dst_h);
+    fit = mr_aspect_fit(s->source_w, s->source_h, s->iw, s->ih);
+
+    /* Detect whether the aspect-fitted output dimensions (and thus the scale
+     * factors) changed. The enclosing window may be any shape; video never is. */
+    scale_map_changed = (fit.w != s->cached_dst_w ||
+                         fit.h != s->cached_dst_h ||
+                         fit.x != s->dx || fit.y != s->dy ||
+                         s->iw != old_iw || s->ih != old_ih);
 
     /* Query destination bitmap for depth / pitch.  Available only on real RTG
      * hardware where CyberGfxBase is present; safe to skip if not.          */
@@ -260,17 +273,27 @@ static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
         bm_depth = GetCyberMapAttr(bm, CYBRMATTR_DEPTH);
 
     /* Cache the new geometry. */
-    s->cached_dst_w  = s->iw;
-    s->cached_dst_h  = s->ih;
+    s->dx = fit.x; s->dy = fit.y;
+    s->dw = fit.w; s->dh = fit.h;
+    s->cached_dst_w  = s->dw;
+    s->cached_dst_h  = s->dh;
     s->cached_bitmap = bm;
     s->geometry_valid = 1;
+    if (scale_map_changed || bm_changed) {
+        /* Clear the whole client area once so resized/toggled windows acquire
+         * clean black letterbox or pillarbox bars. Later frames touch only the
+         * fitted video rectangle. FillPixelArray is clipped by the window layer. */
+        FillPixelArray(s->win->RPort, (UWORD)s->bl, (UWORD)s->bt,
+                       (UWORD)s->iw, (UWORD)s->ih, 0x00000000UL);
+        s->force_full_redraw = 1;
+    }
 
     if (g_display_want_time)
-        printf("rtg-geometry reason=%s iw=%d ih=%d "
+        printf("rtg-geometry reason=%s iw=%d ih=%d video=%d,%d %dx%d "
                "bm-changed=%d scale-map-rebuild=%d "
                "depth=%lu\n",
                reason ? reason : "?",
-               s->iw, s->ih,
+               s->iw, s->ih, s->dx, s->dy, s->dw, s->dh,
                bm_changed, scale_map_changed,
                (unsigned long)bm_depth);
 }
@@ -285,7 +308,7 @@ static void report_slow(const char *operation, unsigned long usec,
 }
 
 /* Allocate (or reuse) the scale strip buffer: MR_CGX_STRIP_ROWS destination
- * rows, s->iw wide, RGB24. Only called from cgx_show() once it has actually
+ * rows, s->dw wide, RGB24. Only called from cgx_show() once it has actually
  * determined a frame is non-native, so native-size streams (640x360 today,
  * and typically 720p/1080p too) never allocate this at all. */
 static int ensure_scaled(cgx_state *s, int w)
@@ -314,8 +337,8 @@ static void scale_rgb24_strip(cgx_state *s, const unsigned char *src, int sw,
                               int sh, int src_stride, int dst_y0, int rows,
                               mr_display_service_fn service, void *opaque)
 {
-    unsigned long xstep = ((unsigned long)sw << 16) / (unsigned long)s->iw;
-    unsigned long ystep = ((unsigned long)sh << 16) / (unsigned long)s->ih;
+    unsigned long xstep = ((unsigned long)sw << 16) / (unsigned long)s->dw;
+    unsigned long ystep = ((unsigned long)sh << 16) / (unsigned long)s->dh;
     unsigned long syfp = (unsigned long)dst_y0 * ystep;
     int y;
     for (y = 0; y < rows; y++, syfp += ystep) {
@@ -323,7 +346,7 @@ static void scale_rgb24_strip(cgx_state *s, const unsigned char *src, int sw,
         unsigned char *dp = s->scaled + (size_t)y * s->scaled_stride;
         unsigned long sx = 0;
         int x;
-        for (x = 0; x < s->iw; x++, sx += xstep) {
+        for (x = 0; x < s->dw; x++, sx += xstep) {
             const unsigned char *p = sp + (size_t)(sx >> 16) * 3;
             *dp++ = p[0]; *dp++ = p[1]; *dp++ = p[2];
         }
@@ -372,9 +395,9 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     report_slow("clipping-setup", s->timing.clip_us, service, service_opaque);
     mark = clock();
     s->timing.src_w = w; s->timing.src_h = hh;
-    s->timing.dst_w = s->iw; s->timing.dst_h = s->ih;
+    s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
     s->timing.src_format = s->timing.dst_format = "RGB24";
-    native = s->iw == w && s->ih == hh;
+    native = s->dw == w && s->dh == hh;
     s->timing.geometry_us = elapsed_us(mark);
     report_slow("geometry-format-setup", s->timing.geometry_us,
                 service, service_opaque);
@@ -387,12 +410,12 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         int y;
         mark = clock();
         if (service) service(service_opaque);
-        if (!ensure_scaled(s, s->iw)) {
+        if (!ensure_scaled(s, s->dw)) {
             if (service) service(service_opaque);
             printf("cgx-error: scale strip allocation failed (%dx%d, "
                    "%lu bytes) - dropping frame\n",
-                   s->iw, MR_CGX_STRIP_ROWS,
-                   (unsigned long)((size_t)s->iw * 3 *
+                   s->dw, MR_CGX_STRIP_ROWS,
+                   (unsigned long)((size_t)s->dw * 3 *
                                    (size_t)MR_CGX_STRIP_ROWS));
             return;
         }
@@ -405,24 +428,25 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         if (service) service(service_opaque);
 
         mark = clock();
-        for (y = 0; y < s->ih; y += MR_CGX_STRIP_ROWS) {
-            int rows = s->ih - y < MR_CGX_STRIP_ROWS ? s->ih - y
+        for (y = 0; y < s->dh; y += MR_CGX_STRIP_ROWS) {
+            int rows = s->dh - y < MR_CGX_STRIP_ROWS ? s->dh - y
                                                       : MR_CGX_STRIP_ROWS;
             scale_rgb24_strip(s, rgb, w, hh, stride, y, rows,
                               service, service_opaque);
             WritePixelArray((APTR)s->scaled, 0, 0, (UWORD)s->scaled_stride,
-                            s->win->RPort, (UWORD)s->bl, (UWORD)(s->bt + y),
-                            (UWORD)s->iw, (UWORD)rows, RECTFMT_RGB);
+                            s->win->RPort, (UWORD)(s->bl + s->dx),
+                            (UWORD)(s->bt + s->dy + y),
+                            (UWORD)s->dw, (UWORD)rows, RECTFMT_RGB);
             if (service) service(service_opaque);
         }
         s->timing.scale_us = elapsed_us(mark);
         report_slow("software-scale+blit", s->timing.scale_us,
                     service, service_opaque);
-        s->timing.pixels = (unsigned long)s->iw * (unsigned long)s->ih;
+        s->timing.pixels = (unsigned long)s->dw * (unsigned long)s->dh;
         s->timing.bytes = (unsigned long)s->scaled_size *
-                          (unsigned long)((s->ih + MR_CGX_STRIP_ROWS - 1) /
+                          (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
                                           MR_CGX_STRIP_ROWS);
-        s->timing.copies = (unsigned long)((s->ih + MR_CGX_STRIP_ROWS - 1) /
+        s->timing.copies = (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
                                            MR_CGX_STRIP_ROWS);
         s->timing.blit_us = s->timing.scale_us;
         if (service) service(service_opaque);
@@ -437,8 +461,9 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
      * unchanged from before: 640x360 (and any other native-size stream)
      * behaviour is preserved exactly. */
     WritePixelArray((APTR)(rgb + (size_t)dy0 * stride), 0, 0,
-                    (UWORD)stride, s->win->RPort, (UWORD)s->bl,
-                    (UWORD)(s->bt + dy0), (UWORD)w,
+                    (UWORD)stride, s->win->RPort,
+                    (UWORD)(s->bl + s->dx),
+                    (UWORD)(s->bt + s->dy + dy0), (UWORD)w,
                     (UWORD)(dy1 - dy0), RECTFMT_RGB);
     s->timing.blit_us = elapsed_us(mark);
     if (service) service(service_opaque);

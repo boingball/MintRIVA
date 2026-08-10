@@ -123,6 +123,9 @@ mr_pcm_u8_check: tests/mr_pcm_u8_check.c audio/mr_pcm.c audio/mr_pcm.h \
 mr_audio_rate_check: tests/mr_audio_rate_check.c amiga/mr_audio_rate.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_audio_rate_check.c
 
+mr_aspect_check: tests/mr_aspect_check.c amiga/mr_aspect.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_aspect_check.c
+
 mr_iptv_check: tests/mr_iptv_check.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
                iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c iptv/mr_iptv.h \
                core/mr_play_options.c core/mr_play_options.h
@@ -141,13 +144,14 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_iptv_check mr_youtube_check mr_youtube_search_check
+check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_iptv_check mr_youtube_check mr_youtube_search_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_iptv_check
 	./mr_codec_registry_check
 	./mr_pcm_u8_check
 	./mr_audio_rate_check
+	./mr_aspect_check
 	./mr_decode ../testfiles/mov+cinepak+pcm_s8++grosspnt.mov 2>&1 \
 	    | grep -F "audio: PCM S8 mono 11025 Hz (twos)"
 	./mr_rawvideo_check
@@ -235,6 +239,7 @@ clean:
 	rm -f mr_rawvideo_check mr_codec_registry_check
 	rm -f mr_pcm_u8_check
 	rm -f mr_audio_rate_check
+	rm -f mr_aspect_check
 	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean
