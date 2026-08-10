@@ -277,6 +277,7 @@ int main(void) {
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
     assert(strstr(args, "--aga --wpa --hls-low --hls-max-width=640"));
+    assert(!strstr(args, "--h264-speed=")); /* Auto is mrplay's default. */
     assert(strstr(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.c2p = MR_C2P_KALMS;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
@@ -332,21 +333,24 @@ int main(void) {
     {
       char *inherited[] = {"iptvgui", "--display", "aga", "--c2p",
                            "kalms", "--laced", "--scale-2x", "--hls-low",
-                           "--hls-max-width=640"};
+                           "--hls-max-width=640", "--h264-speed=fast"};
       char summary[160], first[4096], second[4096], error[128];
       mr_play_options parsed;
       mr_play_options_default(&parsed);
-      assert(mr_play_options_parse(&parsed, 9, inherited, error,
+      assert(mr_play_options_parse(&parsed, 10, inherited, error,
                                    sizeof(error)));
       assert(parsed.display == MR_DISPLAY_AGA &&
-             parsed.c2p == MR_C2P_KALMS && parsed.laced && parsed.scale_2x);
+             parsed.c2p == MR_C2P_KALMS && parsed.laced && parsed.scale_2x &&
+             parsed.h264_performance == MR_H264_PERF_FAST);
       assert(mr_build_player_arguments(first, sizeof(first), &parsed,
                                        launch.url, NULL, NULL));
       assert(mr_build_player_arguments(second, sizeof(second), &parsed,
                                        launch.url, NULL, NULL));
       assert(!strcmp(first, second));
+      assert(strstr(first, "--h264-speed=fast"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "AGA / kalms / Lace on / 2x on"));
+      assert(strstr(summary, "H264 Fast"));
     }
   }
   remove("/tmp/mr_channels.json");

@@ -796,6 +796,40 @@ void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing)
     *timing = s->timing;
 }
 
+int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
+{
+    h264_state *s;
+    ih264d_ctl_degrade_ip_t in;
+    ih264d_ctl_degrade_op_t out;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return 0;
+    s = (h264_state *)dec->priv;
+    memset(&in, 0, sizeof in);
+    memset(&out, 0, sizeof out);
+    in.u4_size = sizeof in;
+    in.e_cmd = IVD_CMD_VIDEO_CTL;
+    in.e_sub_cmd =
+        (IVD_CONTROL_API_COMMAND_TYPE_T)IH264D_CMD_CTL_DEGRADE;
+    in.i4_nondegrade_interval = 4;
+    switch (mode) {
+    case MR_H264_SPEED_BALANCED:
+        /* Disable deblocking + cheaper interpolation on non-reference frames. */
+        in.i4_degrade_type = (1 << 1) | (1 << 2);
+        in.i4_degrade_pics = 1;
+        break;
+    case MR_H264_SPEED_FAST:
+        /* Keep keyframes pristine; favour throughput everywhere else. */
+        in.i4_degrade_type = (1 << 1) | (1 << 3);
+        in.i4_degrade_pics = 3;
+        break;
+    default:
+        in.i4_degrade_type = 0;
+        in.i4_degrade_pics = 0;
+        break;
+    }
+    out.u4_size = sizeof out;
+    return ih264d_api_function(s->handle, &in, &out) == IV_SUCCESS;
+}
+
 static mr_status h264_flush(mr_decoder *dec)
 {
     h264_state *s = (h264_state *)dec->priv;

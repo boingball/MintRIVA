@@ -59,6 +59,28 @@ static int mrplay_log_session_open;
  * specific error instead of the generic "mrplay could not start" message. */
 static int last_stop_wedged;
 
+static void clear_player_status_snapshot(void) {
+  DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_FILE);
+  DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_TMP);
+}
+
+static int read_player_status_snapshot(mr_player_status *out) {
+  mr_player_status_snapshot snapshot;
+  BPTR file = Open((CONST_STRPTR)MR_PLAYER_STATUS_FILE, MODE_OLDFILE);
+  LONG got;
+  if (!file)
+    return 0;
+  got = Read(file, &snapshot, (LONG)sizeof snapshot);
+  Close(file);
+  if (got != (LONG)sizeof snapshot ||
+      !mr_player_status_snapshot_valid(&snapshot))
+    return 0;
+  *out = snapshot.status;
+  out->codec[sizeof(out->codec) - 1] = 0;
+  out->text[sizeof(out->text) - 1] = 0;
+  return 1;
+}
+
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
 struct Library *ChooserBase, *ListBrowserBase, *StringBase, *LabelBase;
@@ -499,6 +521,7 @@ static int start_stream(const mr_iptv_stream *stream,
     return 0;
   }
   last_stop_wedged = 0;
+  clear_player_status_snapshot();
   seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
   if (!seglist)
     seglist = LoadSeg((CONST_STRPTR) "mrplay");
@@ -629,7 +652,8 @@ static void poll_timer_close(void) {
 static void poll_player_status(Object *status, struct Window *window,
                                ULONG *seq, char *out, size_t out_size) {
   mr_player_status ps;
-  if (!mr_player_status_read(&ps)) {
+  int live = mr_player_status_read(&ps);
+  if (!live && !read_player_status_snapshot(&ps)) {
     *seq = 0; /* no player: leave the controller's own text alone */
     return;
   }
@@ -638,10 +662,17 @@ static void poll_player_status(Object *status, struct Window *window,
   *seq = ps.seq;
   switch (ps.state) {
   case MR_PLAYER_STATE_OPENING:
-    snprintf(out, out_size, "%s", ps.text[0] ? ps.text : "Connecting...");
+    if (!live)
+      snprintf(out, out_size, "Player exited during startup: %s",
+               ps.text[0] ? ps.text : "connection did not complete");
+    else
+      snprintf(out, out_size, "%s", ps.text[0] ? ps.text : "Connecting...");
     break;
   case MR_PLAYER_STATE_PLAYING:
-    if (ps.codec[0] && ps.text[0])
+    if (!live)
+      snprintf(out, out_size, "Player stopped unexpectedly%s%s",
+               ps.text[0] ? ": " : "", ps.text[0] ? ps.text : "");
+    else if (ps.codec[0] && ps.text[0])
       snprintf(out, out_size, "Playing (%s): %s", ps.codec, ps.text);
     else if (ps.codec[0])
       snprintf(out, out_size, "Playing: %s", ps.codec);
@@ -1026,6 +1057,8 @@ int main(int argc, char **argv) {
                      last_stop_wedged
                          ? "Previous player did not stop; try again shortly."
                          : "Invalid URL or mrplay could not start.");
+        else
+          player_status_seq = ~0UL;
       } else if ((result & WMHI_GADGETMASK) == G_PLAY ||
                  (result & WMHI_GADGETMASK) == G_NEXT_STREAM) {
         GetAttr(LISTBROWSER_SelectedNode, channels, (ULONG *)&node);
@@ -1056,6 +1089,8 @@ int main(int argc, char **argv) {
                        last_stop_wedged
                            ? "Previous player did not stop; try again shortly."
                            : "Invalid stream metadata or mrplay could not start.");
+          else
+            player_status_seq = ~0UL;
         }
       }
     }

@@ -22,6 +22,7 @@ void mr_play_options_default(mr_play_options *o)
      * a direct "mrplay <url>" invocation keeps its own conservative default of
      * off. Disable with --no-live-resync. */
     o->live_resync = 1;
+    o->h264_performance = MR_H264_PERF_AUTO;
 }
 
 static int append_text(char *out, size_t cap, const char *text)
@@ -123,6 +124,13 @@ static int append_playback_flags(char *out, size_t cap,
     }
     if (o->hls_prefetch && !append_option(out, cap, "--hls-prefetch")) return 0;
     if (o->live_resync && !append_option(out, cap, "--live-resync")) return 0;
+    if (o->h264_performance != MR_H264_PERF_AUTO) {
+        const char *mode = o->h264_performance == MR_H264_PERF_QUALITY
+                         ? "--h264-speed=quality" :
+                           o->h264_performance == MR_H264_PERF_BALANCED
+                         ? "--h264-speed=balanced" : "--h264-speed=fast";
+        if (!append_option(out, cap, mode)) return 0;
+    }
     return 1;
 }
 
@@ -198,6 +206,14 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--hls-prefetch")) o->hls_prefetch = 1;
         else if (!strcmp(arg, "--live-resync")) o->live_resync = 1;
         else if (!strcmp(arg, "--no-live-resync")) o->live_resync = 0;
+        else if (!strncmp(arg, "--h264-speed=", 13)) {
+            value = arg + 13;
+            if (!strcmp(value, "auto")) o->h264_performance = MR_H264_PERF_AUTO;
+            else if (!strcmp(value, "quality")) o->h264_performance = MR_H264_PERF_QUALITY;
+            else if (!strcmp(value, "balanced")) o->h264_performance = MR_H264_PERF_BALANCED;
+            else if (!strcmp(value, "fast")) o->h264_performance = MR_H264_PERF_FAST;
+            else goto bad;
+        }
         else if (!strncmp(arg, "--hls-max-width=", 16)) {
             if (!parse_uint(arg + 16, &o->hls_max_width)) goto bad;
         } else if (!strncmp(arg, "--hls-max-height=", 17)) {
@@ -226,16 +242,20 @@ static void hls_policy_text(const mr_play_options *o, char *out, size_t cap)
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
     char hls[24];
+    const char *h264;
     if (!out || !cap || !o) return;
     hls_policy_text(o, hls, sizeof hls);
+    h264 = o->h264_performance == MR_H264_PERF_QUALITY ? "Quality" :
+           o->h264_performance == MR_H264_PERF_BALANCED ? "Balanced" :
+           o->h264_performance == MR_H264_PERF_FAST ? "Fast" : "Auto";
     if (o->display == MR_DISPLAY_CGX)
-        snprintf(out, cap, "Playback: RTG / %s%s", hls,
+        snprintf(out, cap, "Playback: RTG / %s / H264 %s%s", hls, h264,
                  o->live_resync ? " / Live-resync" : "");
     else
-        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / %s%s",
+        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / %s / H264 %s%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" : "AGA",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
-                 o->scale_2x ? "on" : "off", hls,
+                 o->scale_2x ? "on" : "off", hls, h264,
                  o->live_resync ? " / Live-resync" : "");
 }

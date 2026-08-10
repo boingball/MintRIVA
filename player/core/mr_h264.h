@@ -17,6 +17,11 @@ typedef int  (*mr_h264_quit_fn)(void *opaque);
 typedef struct mr_h264_timing {
     unsigned long input_us, core_us, output_us;
 } mr_h264_timing;
+typedef enum mr_h264_speed_mode {
+    MR_H264_SPEED_QUALITY = 0,
+    MR_H264_SPEED_BALANCED,
+    MR_H264_SPEED_FAST
+} mr_h264_speed_mode;
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
 void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
 void mr_h264_set_diag(mr_decoder *dec, const char *path, int width, int height);
@@ -27,5 +32,9 @@ void mr_h264_set_skip_output(mr_decoder *dec, int skip);
  * the PTS belonging to that emitted frame rather than the current input. */
 void mr_h264_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us);
 int mr_h264_output_pts(mr_decoder *dec, uint64_t *pts_us);
+/* Select libavc's quality/performance trade-off. Balanced only degrades
+ * non-reference pictures; Fast applies cheaper filtering to all non-key
+ * pictures. Returns non-zero when the decoder accepted the control call. */
+int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode);
 
 #endif /* MR_H264_H */

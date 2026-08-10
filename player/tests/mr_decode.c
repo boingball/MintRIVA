@@ -14,6 +14,7 @@
 #include "../core/mr_codec.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_ham.h"
+#include "../core/mr_h264.h"
 #ifdef MR_HAVE_MPEG1               /* host only - pl_mpeg pulls in soft-float */
 #include "../core/mr_mpeg1.h"
 #endif
@@ -119,6 +120,7 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
 int main(int argc, char **argv)
 {
     int argi = 2, force_memory = 0, hls_buffer_segments = 0;
+    int h264_speed = -1;
     const char *user_agent = NULL, *referer = NULL;
     mr_http_options http_options;
     const char *mode;
@@ -141,6 +143,16 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[argi], "--referer") && argc > argi + 1) {
             referer = argv[argi + 1];
             argi += 2;
+        } else if (!strncmp(argv[argi], "--h264-speed=", 13)) {
+            const char *speed = argv[argi] + 13;
+            h264_speed = !strcmp(speed, "quality") ? MR_H264_SPEED_QUALITY :
+                         !strcmp(speed, "balanced") ? MR_H264_SPEED_BALANCED :
+                         !strcmp(speed, "fast") ? MR_H264_SPEED_FAST : -2;
+            if (h264_speed < 0) {
+                fprintf(stderr, "invalid H.264 speed mode\n");
+                return 2;
+            }
+            argi++;
         } else {
             break;
         }
@@ -226,6 +238,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "decoder open failed\n");
         mr_demux_close(dx); free(buf); return 1;
     }
+#ifdef MR_HAVE_H264
+    if (h264_speed >= 0 && codec == &mr_codec_h264 &&
+        !mr_h264_set_speed_mode(&dec, (mr_h264_speed_mode)h264_speed)) {
+        fprintf(stderr, "H.264 speed mode rejected\n");
+        mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 1;
+    }
+#endif
 
     int frame = 0, bad = 0;
     long worst_mae = 0;   /* MAE * 1000 */

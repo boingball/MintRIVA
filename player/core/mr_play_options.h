@@ -18,6 +18,13 @@ typedef enum {
     MR_C2P_WPA
 } mr_c2p_mode;
 
+typedef enum {
+    MR_H264_PERF_AUTO = 0,
+    MR_H264_PERF_QUALITY,
+    MR_H264_PERF_BALANCED,
+    MR_H264_PERF_FAST
+} mr_h264_performance;
+
 typedef struct mr_play_options {
     mr_display_mode display;
     mr_c2p_mode c2p;
@@ -29,6 +36,7 @@ typedef struct mr_play_options {
     unsigned hls_max_fps;
     int hls_prefetch;  /* pass --hls-prefetch: background HLS segment reader     */
     int live_resync;   /* pass --live-resync: catch up / reconnect live streams */
+    mr_h264_performance h264_performance;
 } mr_play_options;
 
 void mr_play_options_default(mr_play_options *options);

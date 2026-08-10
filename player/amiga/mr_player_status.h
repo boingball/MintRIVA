@@ -35,6 +35,8 @@
 #include "../iptv/mr_iptv.h" /* MR_IPTV_PLAYER_PORT */
 
 #define MR_PLAYER_STATUS_MAGIC 0x4D525653UL /* 'MRVS' */
+#define MR_PLAYER_STATUS_FILE "T:MintRIVA.player-status"
+#define MR_PLAYER_STATUS_TMP  "T:MintRIVA.player-status.tmp"
 #define MR_PLAYER_STATUS_TEXT_MAX 208
 #define MR_PLAYER_CODEC_MAX 48
 
@@ -60,6 +62,22 @@ typedef struct {
   char codec[MR_PLAYER_CODEC_MAX];       /* video codec name, "" if unknown  */
   char text[MR_PLAYER_STATUS_TEXT_MAX];  /* human-readable line for the GUI  */
 } mr_player_status;
+
+/* A terminal status must outlive mrplay's public port: otherwise a controller
+ * which polls just after process exit loses the reason and remains stuck on
+ * "Connecting...".  mrplay atomically replaces this tiny T: snapshot whenever
+ * state changes; the trailing magic rejects partial/stale writes. */
+typedef struct {
+  mr_player_status status;
+  ULONG trailer_magic;
+} mr_player_status_snapshot;
+
+static inline int
+mr_player_status_snapshot_valid(const mr_player_status_snapshot *snapshot) {
+  return snapshot &&
+         snapshot->status.magic == MR_PLAYER_STATUS_MAGIC &&
+         snapshot->trailer_magic == MR_PLAYER_STATUS_MAGIC;
+}
 
 /* MsgPort first so a FindPort() result is also the wrapper address. */
 typedef struct {

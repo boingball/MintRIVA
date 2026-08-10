@@ -135,6 +135,10 @@ static mr_player_control_port *control_block;
 static mr_audio *control_audio;
 static int control_volume = 64;
 static int deferred_player_event;
+static ULONG status_file_seq;
+static int playing_status_published;
+static char playing_status_codec[MR_PLAYER_CODEC_MAX];
+static char playing_status_text[MR_PLAYER_STATUS_TEXT_MAX];
 
 /* One-shot high-resolution pipeline breadcrumb. It advances only when a new
  * stage is reached, so diagnostics cannot turn every 1080p frame into DOS I/O. */
@@ -204,7 +208,48 @@ static void control_port_open(void)
  * created). Thin wrapper so call sites read cleanly. */
 static void player_status(LONG state, const char *codec, const char *text)
 {
+    mr_player_status_snapshot snapshot;
+    BPTR file;
     mr_player_status_set(control_block, state, codec, text);
+    memset(&snapshot, 0, sizeof snapshot);
+    snapshot.status.magic = MR_PLAYER_STATUS_MAGIC;
+    snapshot.status.seq = ++status_file_seq;
+    snapshot.status.state = state;
+    mr_player_status_copy(snapshot.status.codec,
+                          sizeof snapshot.status.codec, codec ? codec : "");
+    mr_player_status_copy(snapshot.status.text,
+                          sizeof snapshot.status.text, text ? text : "");
+    snapshot.trailer_magic = MR_PLAYER_STATUS_MAGIC;
+    file = Open((CONST_STRPTR)MR_PLAYER_STATUS_TMP, MODE_NEWFILE);
+    if (file) {
+        LONG written = Write(file, &snapshot, (LONG)sizeof snapshot);
+        Close(file);
+        if (written == (LONG)sizeof snapshot) {
+            DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_FILE);
+            if (!Rename((CONST_STRPTR)MR_PLAYER_STATUS_TMP,
+                        (CONST_STRPTR)MR_PLAYER_STATUS_FILE))
+                DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_TMP);
+        } else {
+            DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_TMP);
+        }
+    }
+}
+
+static void player_prepare_playing_status(const char *codec, const char *text)
+{
+    mr_player_status_copy(playing_status_codec,
+                          sizeof playing_status_codec, codec ? codec : "");
+    mr_player_status_copy(playing_status_text,
+                          sizeof playing_status_text, text ? text : "");
+    playing_status_published = 0;
+}
+
+static void player_first_frame_presented(void)
+{
+    if (playing_status_published) return;
+    playing_status_published = 1;
+    player_status(MR_PLAYER_STATE_PLAYING, playing_status_codec,
+                  playing_status_text);
 }
 
 /* Turn a video fourcc into its four printable characters (non-printables shown
@@ -660,6 +705,7 @@ static void present_service_frame(video_presenter *vp)
     }
     display_show_rgb(vp->disp, front->rgb, front->width, front->height,
                      front->stride, front->dirty_y0, front->dirty_y1);
+    player_first_frame_presented();
     if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
         h264_pipeline_checkpoint_player("post-display-service",
                                         *vp->qcount, *vp->playback_started);
@@ -940,6 +986,32 @@ static void decoded_audio_sink(void *user, const int16_t *pcm,
 {
     audio_write_s16((mr_audio *)user, (const short *)pcm, frames,
                     (int)channels);
+}
+
+static mr_h264_speed_mode effective_h264_speed(int requested, int width,
+                                                int height)
+{
+    if (requested == MR_H264_SPEED_QUALITY ||
+        requested == MR_H264_SPEED_BALANCED ||
+        requested == MR_H264_SPEED_FAST)
+        return (mr_h264_speed_mode)requested;
+    return (uint64_t)width * (uint64_t)height > 854ULL * 480ULL
+         ? MR_H264_SPEED_BALANCED : MR_H264_SPEED_QUALITY;
+}
+
+static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
+{
+    mr_h264_speed_mode mode;
+    const char *name;
+    if (!dec || dec->codec != &mr_codec_h264) return 1;
+    mode = effective_h264_speed(requested, dec->width, dec->height);
+    name = mode == MR_H264_SPEED_FAST ? "Fast" :
+           mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
+    if (!mr_h264_set_speed_mode(dec, mode)) return 0;
+    if (verbose || requested < 0)
+        printf("H.264 performance: %s%s\n", name,
+               requested < 0 ? " (automatic)" : "");
+    return 1;
 }
 
 /* The ReAction controller uses Ctrl-F for a normal stop so AmigaDOS does not
@@ -1252,6 +1324,7 @@ int main(int argc, char **argv)
     int live_resync = 0;  /* --live-resync: catch up after a big stall, and
                            * reconnect a live stream that drops out            */
     int auto_close_eof = 0; /* finite GUI media should release its window      */
+    int h264_speed = -1; /* automatic: Quality <=480p, Balanced above 480p    */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -1290,6 +1363,9 @@ int main(int argc, char **argv)
      * later step hangs or crashes (libnix stdout can otherwise block-buffer). */
     setvbuf(stdout, NULL, _IONBF, 0);
     control_port_open();
+    DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_FILE);
+    DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_TMP);
+    player_status(MR_PLAYER_STATE_STARTING, "", "Starting player...");
     if (!playback_timer_open())
         printf("warning: timer.device unavailable; pacing timer is coarse\n");
 
@@ -1300,6 +1376,7 @@ int main(int argc, char **argv)
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
+               "[--h264-speed=auto|quality|balanced|fast] "
                "[--time]\n");
         return mrplay_exit(5);
     }
@@ -1343,6 +1420,17 @@ int main(int argc, char **argv)
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (!strcmp(argv[i], "--hls-prefetch")) hls_prefetch = 1;
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
+            else if (!strncmp(argv[i], "--h264-speed=", 13)) {
+                const char *mode = argv[i] + 13;
+                if (!strcmp(mode, "auto")) h264_speed = -1;
+                else if (!strcmp(mode, "quality")) h264_speed = MR_H264_SPEED_QUALITY;
+                else if (!strcmp(mode, "balanced")) h264_speed = MR_H264_SPEED_BALANCED;
+                else if (!strcmp(mode, "fast")) h264_speed = MR_H264_SPEED_FAST;
+                else {
+                    printf("invalid H.264 speed mode: %s\n", mode);
+                    return mrplay_exit(5);
+                }
+            }
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -1523,6 +1611,14 @@ int main(int argc, char **argv)
         if (prefetch_on) STOP_PREFETCH(NULL);
         free(buf); return mrplay_exit(10);
     }
+    if (!apply_h264_speed(&dec, h264_speed, want_time)) {
+        player_status(MR_PLAYER_STATE_ERROR, codec->name,
+                      "H.264 performance mode was rejected by decoder");
+        status_hold();
+        mr_decoder_close(&dec); mr_demux_close(dx);
+        if (prefetch_on) STOP_PREFETCH(NULL);
+        free(buf); return mrplay_exit(10);
+    }
 
     h264_pipeline_diag_enabled = want_time && codec == &mr_codec_h264 &&
         (uint64_t)vi->width * (uint64_t)vi->height >= 1280ULL * 720ULL;
@@ -1541,12 +1637,16 @@ int main(int argc, char **argv)
            (unsigned long)(((vi->rate % (vi->scale ? vi->scale : 1)) * 1000) /
                            (vi->scale ? vi->scale : 1)));
     printf("%dx%d, opening display...\n", vi->width, vi->height);
-    /* Tell the IPTV controller which codec is on screen. */
+    /* Prepare the eventual first-frame status, but do not claim Playing until
+     * a frame has actually reached the display. */
     {
         char line[MR_PLAYER_STATUS_TEXT_MAX];
         snprintf(line, sizeof line, "%dx%d, %s", vi->width, vi->height,
                  mr_demux_container_name(dx));
-        player_status(MR_PLAYER_STATE_PLAYING, codec->name, line);
+        player_prepare_playing_status(codec->name, line);
+        snprintf(line, sizeof line, "Opening display for %dx%d %s...",
+                 vi->width, vi->height, codec->name);
+        player_status(MR_PLAYER_STATE_OPENING, codec->name, line);
     }
     disp = display_open(vi->width, vi->height, "MintRIVA");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
@@ -1557,6 +1657,8 @@ int main(int argc, char **argv)
                  if (prefetch_on) STOP_PREFETCH(NULL);
                  free(buf); return mrplay_exit(10); }
     printf("display backend: %s\n", display_backend_name(disp));
+    player_status(MR_PLAYER_STATE_OPENING, codec->name,
+                  "Display open; buffering first frame...");
     if (prefetch_on)
         hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
                                    prefetch_quit_probe, disp);
@@ -2092,6 +2194,7 @@ int main(int argc, char **argv)
             }
             display_show_rgb(disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
+            player_first_frame_presented();
             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
                 h264_pipeline_checkpoint_player("post-display-main",
                                                 qcount, playback_started);
@@ -2174,7 +2277,8 @@ int main(int argc, char **argv)
         if (input_eof && !qcount && loop) {
             if (audio) audio_set_running(audio, 0);
             mr_demux_rewind(dx);
-            if (mr_decoder_reset(&dec) != MR_OK) break;
+            if (mr_decoder_reset(&dec) != MR_OK ||
+                !apply_h264_speed(&dec, h264_speed, 0)) break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2243,7 +2347,8 @@ int main(int argc, char **argv)
                 nvi->height != vi->height)
                 break;                          /* different shape: stop cleanly */
             vi = nvi;
-            if (mr_decoder_reset(&dec) != MR_OK) break;
+            if (mr_decoder_reset(&dec) != MR_OK ||
+                !apply_h264_speed(&dec, h264_speed, 0)) break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2601,6 +2706,7 @@ int main(int argc, char **argv)
         display_show_rgb(disp, dec.frame.data, dec.frame.width,
                          dec.frame.height, dec.frame.stride,
                          dec.frame.dirty_y0, dec.frame.dirty_y1);
+        player_first_frame_presented();
         t_show += clock() - a;
         frames++;
     }

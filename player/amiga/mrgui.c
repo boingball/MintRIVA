@@ -77,6 +77,7 @@ enum {
     G_FF,
     G_MODE,
     G_C2P,
+    G_H264,
     G_LACE,
     G_2X,
     G_IPTV,
@@ -245,13 +246,16 @@ static void stop_player_and_wait(void)
 
 static void set_info(Object *info, struct Window *window, const char *text);
 
-static void read_play_options(Object *mode, Object *c2p, Object *lace,
+static void read_play_options(Object *mode, Object *c2p, Object *h264,
+                              Object *lace,
                               Object *twox, mr_play_options *options)
 {
-    ULONG selected = 0, selected_c2p = 0, checked_lace = 0, checked_2x = 0;
+    ULONG selected = 0, selected_c2p = 0, selected_h264 = 0;
+    ULONG checked_lace = 0, checked_2x = 0;
     mr_play_options_default(options);
     GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
+    GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHECKBOX_Checked, lace, &checked_lace);
     GetAttr(CHECKBOX_Checked, twox, &checked_2x);
     options->display = selected == 1 ? MR_DISPLAY_HAM6 :
@@ -261,9 +265,13 @@ static void read_play_options(Object *mode, Object *c2p, Object *lace,
                    selected_c2p == 2 ? MR_C2P_KALMS : MR_C2P_STANDARD;
     options->laced = checked_lace != 0;
     options->scale_2x = checked_2x != 0;
+    options->h264_performance = selected_h264 <= MR_H264_PERF_FAST
+                              ? (mr_h264_performance)selected_h264
+                              : MR_H264_PERF_AUTO;
 }
 
-static void open_iptv_browser(Object *mode, Object *c2p, Object *lace,
+static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
+                              Object *lace,
                               Object *twox, Object *info,
                               struct Window *window)
 {
@@ -272,7 +280,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *lace,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, lace, twox, &options);
+    read_play_options(mode, c2p, h264, lace, twox, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build IPTV playback options.");
         return;
@@ -307,7 +315,8 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *lace,
     }
 }
 
-static void open_youtube_browser(Object *mode, Object *c2p, Object *lace,
+static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
+                                 Object *lace,
                                  Object *twox, Object *info,
                                  struct Window *window)
 {
@@ -316,7 +325,7 @@ static void open_youtube_browser(Object *mode, Object *c2p, Object *lace,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, lace, twox, &options);
+    read_play_options(mode, c2p, h264, lace, twox, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build YouTube playback options.");
         return;
@@ -408,6 +417,7 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
 }
 
 static void start_player(Object *file, Object *mode, Object *c2p,
+                         Object *h264,
                          Object *lace, Object *twox, Object *info,
                          struct Window *window)
 {
@@ -435,7 +445,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
     strncpy(path, (const char *)full_file, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
 
-    read_play_options(mode, c2p, lace, twox, &options);
+    read_play_options(mode, c2p, h264, lace, twox, &options);
     if (!mr_build_player_arguments(args, sizeof(args), &options, path,
                                    NULL, NULL)) {
         set_info(info, window, "Could not build player arguments.");
@@ -475,6 +485,7 @@ int main(void)
     Object *file;
     Object *mode;
     Object *c2p;
+    Object *h264;
     Object *lace;
     Object *twox;
     Object *info;
@@ -484,6 +495,7 @@ int main(void)
     Object *file_label;
     Object *display_label;
     Object *c2p_label;
+    Object *h264_label;
     Object *play_button;
     Object *pause_button;
     Object *stop_button;
@@ -493,6 +505,7 @@ int main(void)
     struct Window *window;
     struct List modes;
     struct List c2p_modes;
+    struct List h264_modes;
     ULONG sigmask;
     ULONG result;
     ULONG signals;
@@ -504,6 +517,7 @@ int main(void)
     file = NULL;
     mode = NULL;
     c2p = NULL;
+    h264 = NULL;
     lace = NULL;
     twox = NULL;
     info = NULL;
@@ -513,6 +527,7 @@ int main(void)
     file_label = NULL;
     display_label = NULL;
     c2p_label = NULL;
+    h264_label = NULL;
     play_button = NULL;
     pause_button = NULL;
     stop_button = NULL;
@@ -529,6 +544,9 @@ int main(void)
     c2p_modes.lh_Head = (struct Node *)&c2p_modes.lh_Tail;
     c2p_modes.lh_Tail = NULL;
     c2p_modes.lh_TailPred = (struct Node *)&c2p_modes.lh_Head;
+    h264_modes.lh_Head = (struct Node *)&h264_modes.lh_Tail;
+    h264_modes.lh_Tail = NULL;
+    h264_modes.lh_TailPred = (struct Node *)&h264_modes.lh_Head;
 
     if (!open_reaction_classes()) {
         fprintf(stderr, "mrgui: ReAction V%ld classes are not available.\n",
@@ -545,6 +563,11 @@ int main(void)
     if (!add_chooser_node(&c2p_modes, "Standard") ||
         !add_chooser_node(&c2p_modes, "CD32") ||
         !add_chooser_node(&c2p_modes, "Kalms"))
+        goto cleanup;
+    if (!add_chooser_node(&h264_modes, "Auto") ||
+        !add_chooser_node(&h264_modes, "Quality") ||
+        !add_chooser_node(&h264_modes, "Balanced") ||
+        !add_chooser_node(&h264_modes, "Fast"))
         goto cleanup;
 
     file = (Object *)NewObject(GETFILE_GetClass(), NULL,
@@ -566,6 +589,12 @@ int main(void)
                               CHOOSER_Labels, (ULONG)&c2p_modes,
                               CHOOSER_Selected, 0,
                               TAG_DONE);
+    h264 = (Object *)NewObject(CHOOSER_GetClass(), NULL,
+                               GA_ID, G_H264,
+                               GA_RelVerify, TRUE,
+                               CHOOSER_Labels, (ULONG)&h264_modes,
+                               CHOOSER_Selected, MR_H264_PERF_AUTO,
+                               TAG_DONE);
     lace = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_LACE,
                                GA_Text, (ULONG)"Laced",
@@ -588,9 +617,12 @@ int main(void)
     c2p_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                     LABEL_Text, (ULONG)"C2P",
                                     TAG_DONE);
+    h264_label = (Object *)NewObject(LABEL_GetClass(), NULL,
+                                     LABEL_Text, (ULONG)"H.264",
+                                     TAG_DONE);
 
-    if (!file || !mode || !c2p || !lace || !twox || !info ||
-        !file_label || !display_label || !c2p_label)
+    if (!file || !mode || !c2p || !h264 || !lace || !twox || !info ||
+        !file_label || !display_label || !c2p_label || !h264_label)
         goto cleanup;
 
     controls = (Object *)NewObject(LAYOUT_GetClass(), NULL,
@@ -599,6 +631,8 @@ int main(void)
                                     CHILD_Label, (ULONG)display_label,
                                     LAYOUT_AddChild, (ULONG)c2p,
                                     CHILD_Label, (ULONG)c2p_label,
+                                    LAYOUT_AddChild, (ULONG)h264,
+                                    CHILD_Label, (ULONG)h264_label,
                                     LAYOUT_AddChild, (ULONG)lace,
                                     LAYOUT_AddChild, (ULONG)twox,
                                     TAG_DONE);
@@ -717,7 +751,8 @@ int main(void)
                     break;
 
                 case G_PLAY:
-                    start_player(file, mode, c2p, lace, twox, info, window);
+                    start_player(file, mode, c2p, h264, lace, twox, info,
+                                 window);
                     break;
 
                 case G_PAUSE:
@@ -733,11 +768,13 @@ int main(void)
                     break;
 
                 case G_IPTV:
-                    open_iptv_browser(mode, c2p, lace, twox, info, window);
+                    open_iptv_browser(mode, c2p, h264, lace, twox, info,
+                                      window);
                     break;
 
                 case G_YOUTUBE:
-                    open_youtube_browser(mode, c2p, lace, twox, info, window);
+                    open_youtube_browser(mode, c2p, h264, lace, twox, info,
+                                         window);
                     break;
 
                 default:
@@ -772,6 +809,8 @@ cleanup:
                 DisposeObject(mode);
             if (c2p)
                 DisposeObject(c2p);
+            if (h264)
+                DisposeObject(h264);
             if (lace)
                 DisposeObject(lace);
             if (twox)
@@ -780,6 +819,8 @@ cleanup:
                 DisposeObject(display_label);
             if (c2p_label)
                 DisposeObject(c2p_label);
+            if (h264_label)
+                DisposeObject(h264_label);
         }
 
         if (buttons) {
@@ -809,6 +850,7 @@ cleanup:
 
     free_chooser_nodes(&modes);
     free_chooser_nodes(&c2p_modes);
+    free_chooser_nodes(&h264_modes);
     close_reaction_classes();
     return status;
 }
