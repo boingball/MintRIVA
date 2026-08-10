@@ -21,7 +21,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Container-agnostic demux (auto-detect) | ✅ |
 | AVI, QuickTime MOV/MP4 and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
-| Public YouTube Live URLs | ✅ native watch-page resolution into the existing HLS path; ordinary uploads are not supported |
+| Public YouTube URLs | ✅ live HLS plus experimental muxed 360p/720p H.264/AAC playback for compatible uploads |
 | ReAction YouTube search | ✅ no-key search browser with live-only filter and native playback handoff |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
@@ -118,7 +118,7 @@ handshake instead of the full per-segment bring-up.
 mrplay --net-queue=24 --live-resync "https://example.net/live/master.m3u8"
 ```
 
-### YouTube Live
+### YouTube
 
 `mrplay` can resolve a public YouTube Live watch/share URL natively. It fetches
 the watch page with a browser user agent, extracts and JSON-decodes the signed
@@ -129,19 +129,31 @@ remote service. `--hls-low` and the HLS quality ceilings still apply.
 The HTTP/HLS path accepts signed URLs up to 4095 bytes, since current YouTube
 manifest URLs can exceed the older 1 KiB media-URL limit.
 
-This deliberately supports public live HLS only. Ordinary uploaded videos,
-age/login/region-restricted streams, DRM, and pages on which YouTube withholds
-the HLS field are rejected cleanly. YouTube's private watch-page schema can
-change, so this resolver may require maintenance when YouTube changes it.
+For ordinary uploads, the resolver also experiments with YouTube's muxed
+360p MP4 (`itag 18`) and, where still supplied, muxed 720p MP4 (`itag 22`).
+Those formats contain H.264 video and AAC audio together,
+so it can use MintRIVA's existing seekable HTTP/MP4 path without downloading or
+merging separate streams. Only a direct signed HTTPS Google Video URL is
+accepted; ciphered URLs and unresolved player `n` challenges are rejected.
+Selecting 720p, 1080p, or Best makes recorded playback try 720p first and fall
+back to 360p automatically. Low, 360p, and 480p retain the 360p muxed format.
+There is no standard muxed 480p or 1080p target here: dependable higher
+resolutions require separate adaptive video and audio streams and are deferred
+to the next phase.
+
+This remains intentionally narrow: age/login/region-restricted videos, DRM,
+uploads without a usable muxed 360p/720p format, and private-schema changes can
+all produce a clean unsupported error. YouTube can change these internal clients
+and responses, so the resolver may require maintenance.
 
 The ReAction controller's **YouTube...** button opens the separate `ytgui`
 search window. It searches YouTube's public results page without an API key,
-shows the title and channel, and starts the selected public live result through
-the same native resolver. The **Quality** button cycles through Low, 360p, 480p,
-720p, 1080p, and unrestricted Best for the next playback. **Live only** is
-enabled by default. It can be unticked to inspect ordinary uploaded-video
-results, but those entries are clearly refused by Play until non-live YouTube
-playback is implemented. Build
+shows the title and channel, and starts the selected result through the same
+native resolver. The **Quality** button cycles through Low, 360p, 480p, 720p,
+1080p, and unrestricted Best. For recorded videos, 720p/1080p/Best try the
+compatible muxed 720p format and fall back to 360p; the other choices use 360p.
+**Live only** is enabled by default; untick it to search and play ordinary
+uploads. Build
 with `SSL=1` and keep `ytgui` beside `mrgui` and `mrplay`. As with watch-page
 resolution, this deliberately small parser may need maintenance if YouTube
 changes its private page schema.

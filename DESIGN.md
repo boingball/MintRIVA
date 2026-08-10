@@ -260,9 +260,12 @@ No account, cookies, Google API key, JavaScript engine, or remote resolver is
 required.
 
 The live-only checkbox is selected by default and adds YouTube's live search
-filter while also verifying each result's live badge locally. A selected live
-ID is converted back to a canonical watch URL and launched through `mrplay`,
-which performs the existing native live-manifest resolution. Non-live results
-can be displayed for diagnostics but are rejected before process launch. The
-controller passes the same immutable `mr_play_options` snapshot used by
+filter while also verifying each result's live badge locally. A selected ID is
+converted back to a canonical watch URL and launched through `mrplay`. Live
+results use the existing native HLS resolution. Recorded results accept a
+direct muxed 360p MP4 (`itag 18`) or optional 720p MP4 (`itag 22`), both H.264
+plus AAC. The latter is preferred for 720p-or-higher GUI settings and falls
+back to 360p when absent. Ciphered, foreign-host, and unsolved `n`-challenge
+URLs are rejected before the HTTP demux path sees them.
+The controller passes the same immutable `mr_play_options` snapshot used by
 `iptvgui`, so display and HLS policy remain consistent across child windows.

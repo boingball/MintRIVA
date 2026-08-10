@@ -195,7 +195,7 @@ static int start_video(const mr_youtube_search_result *video,
     BPTR seglist;
     struct Process *process;
 
-    if (!video || !video->live ||
+    if (!video ||
         !mr_youtube_search_watch_url(watch_url, sizeof(watch_url), video) ||
         !mr_build_player_arguments(arguments, sizeof(arguments), options,
                                    watch_url, NULL, NULL))
@@ -449,14 +449,15 @@ int main(int argc, char **argv)
                                             (ULONG)&video, TAG_DONE);
                 if (!video)
                     set_status(status, window, "Select a video first.");
-                else if (!video->live)
-                    set_status(status, window,
-                               "Recorded YouTube videos are not supported yet.");
                 else if (!start_video(video, &play_options))
                     set_status(status, window,
                                "Could not start mrplay (or old player is busy).");
                 else
-                    set_status(status, window, "Resolving YouTube Live...");
+                    set_status(status, window, video->live
+                               ? "Resolving YouTube Live..."
+                               : (quality_index >= 3
+                                  ? "Resolving YouTube 720p (360p fallback)..."
+                                  : "Resolving YouTube 360p video..."));
             }
         }
     }

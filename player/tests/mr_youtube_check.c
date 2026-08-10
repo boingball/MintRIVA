@@ -19,6 +19,7 @@ int main(int argc, char **argv)
 {
     char out[1024];
     char video_id[12];
+    mr_youtube_media_kind media_kind;
     mr_http_options base_options, youtube_options;
     const char *raw =
         "before \"hlsManifestUrl\":\"https://manifest.googlevideo.com/"
@@ -28,6 +29,21 @@ int main(int argc, char **argv)
         "api\\/manifest\\/hls_variant\\/index.m3u8?x=1\\u0026y=2\"}";
     const char *foreign =
         "\"hlsManifestUrl\":\"https://evil.example/live/index.m3u8\"";
+    const char *progressive =
+        "{\"streamingData\":{\"formats\":["
+        "{\"itag\":17,\"mimeType\":\"video/3gpp; codecs=\\\"mp4v.20.3, "
+        "mp4a.40.2\\\"\",\"url\":\"https://r1.googlevideo.com/low\"},"
+        "{\"itag\":18,\"mimeType\":\"video/mp4; codecs=\\\"avc1.42001E, "
+        "mp4a.40.2\\\"\",\"width\":640,\"height\":360,"
+        "\"url\":\"https://r2---sn-test.googlevideo.com/videoplayback?"
+        "expire=1\\u0026sig=ok\"}]}}";
+    const char *progressive_hd =
+        "{\"streamingData\":{\"formats\":["
+        "{\"itag\":18,\"mimeType\":\"video/mp4; codecs=\\\"avc1.42001E, "
+        "mp4a.40.2\\\"\",\"url\":\"https://r1.googlevideo.com/360\"},"
+        "{\"itag\":22,\"mimeType\":\"video/mp4; codecs=\\\"avc1.64001F, "
+        "mp4a.40.2\\\"\",\"width\":1280,\"height\":720,"
+        "\"url\":\"https://r2.googlevideo.com/720\"}]}}";
 
     if (argc == 2 || (argc == 3 && !strcmp(argv[1], "--post"))) {
         char *html = NULL;
@@ -104,6 +120,48 @@ int main(int argc, char **argv)
            "non-live page rejected");
     expect(!mr_youtube_extract_live_manifest(raw, out, 24),
            "truncated output rejected");
+    expect(mr_youtube_extract_progressive_360p(progressive, out,
+                                                sizeof out) &&
+           !strcmp(out, "https://r2---sn-test.googlevideo.com/videoplayback?"
+                        "expire=1&sig=ok"),
+           "muxed progressive 360p MP4 extracted");
+    expect(mr_youtube_extract_progressive(progressive_hd, 1, out,
+                                           sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P &&
+           !strcmp(out, "https://r2.googlevideo.com/720"),
+           "muxed progressive 720p MP4 preferred");
+    expect(mr_youtube_extract_progressive(progressive_hd, 0, out,
+                                           sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
+           !strcmp(out, "https://r1.googlevideo.com/360"),
+           "360p retained for lower quality setting");
+    expect(mr_youtube_extract_progressive(progressive, 1, out,
+                                           sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P,
+           "missing 720p automatically falls back to 360p");
+    expect(!mr_youtube_extract_progressive_360p(
+               "{\"formats\":[{\"itag\":18,\"mimeType\":\"video/mp4; "
+               "codecs=\\\"avc1.42001E, mp4a.40.2\\\"\","
+               "\"url\":\"https://evil.example/videoplayback\"}]}",
+               out, sizeof out), "foreign progressive host rejected");
+    expect(!mr_youtube_extract_progressive_360p(
+               "{\"formats\":[{\"itag\":18,\"mimeType\":\"video/mp4; "
+               "codecs=\\\"avc1.42001E, mp4a.40.2\\\"\","
+               "\"url\":\"https://r1.googlevideo.com/videoplayback?x=1"
+               "\\u0026n=unsolved\"}]}", out, sizeof out),
+           "progressive n challenge rejected");
+    expect(!mr_youtube_extract_progressive_360p(
+               "{\"formats\":[{\"itag\":18,\"mimeType\":\"video/mp4; "
+               "codecs=\\\"avc1.42001E, mp4a.40.2\\\"\","
+               "\"signatureCipher\":\"url=hidden\"}]}", out, sizeof out),
+           "cipher-only progressive format rejected");
+    expect(!mr_youtube_extract_progressive_360p(
+               "{\"adaptiveFormats\":[{\"itag\":134,"
+               "\"mimeType\":\"video/mp4; codecs=\\\"avc1.4d401e\\\"\","
+               "\"url\":\"https://r1.googlevideo.com/video-only\"}]}",
+               out, sizeof out), "adaptive video-only format rejected");
+    expect(!mr_youtube_extract_progressive_360p(progressive, out, 24),
+           "truncated progressive output rejected");
     expect(!strcmp(mr_youtube_last_client(), ""),
            "client diagnostic empty before a successful resolution");
 

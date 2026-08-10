@@ -172,8 +172,9 @@ static mr_source *open_local_file(const char *path)
 mr_source *mr_source_open_ex(const char *path,
                              const struct mr_http_options *options)
 {
-    char youtube_manifest[MR_HTTP_URL_MAX];
+    char youtube_media[MR_HTTP_URL_MAX];
     mr_http_options youtube_options;
+    mr_youtube_media_kind youtube_kind;
     g_source_error[0] = '\0';
     if (!path || !*path) {
         mr_source_set_error("empty media path");
@@ -183,10 +184,13 @@ mr_source *mr_source_open_ex(const char *path,
         return mr_hls_source_open_ex(path, options);
     if (mr_youtube_is_url(path)) {
         if (!mr_youtube_http_options_init(&youtube_options, options) ||
-            !mr_youtube_resolve_live(path, &youtube_options, youtube_manifest,
-                                     sizeof youtube_manifest))
+            !mr_youtube_resolve_media(path, &youtube_options, youtube_media,
+                                      sizeof youtube_media, &youtube_kind) ||
+            !mr_youtube_media_http_options_init(&youtube_options, options))
             return NULL;
-        return mr_hls_source_open_ex(youtube_manifest, &youtube_options);
+        if (youtube_kind == MR_YOUTUBE_MEDIA_HLS)
+            return mr_hls_source_open_ex(youtube_media, &youtube_options);
+        return mr_http_source_open_ex(youtube_media, &youtube_options);
     }
     if (mr_source_is_url(path))
         return mr_http_source_open_ex(path, options);

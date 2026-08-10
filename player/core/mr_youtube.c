@@ -1,10 +1,9 @@
 /*
- * MintRIVA - native YouTube Live watch-page resolver.
+ * MintRIVA - native YouTube live and progressive MP4 resolver.
  *
- * No JavaScript engine, Innertube client or signature decipher is attempted.
- * A public live watch page may contain streamingData.hlsManifestUrl; this
- * module downloads the bounded page, decodes that JSON string, and accepts it
- * only when it is an HTTPS manifest.googlevideo.com M3U8 URL.
+ * No JavaScript engine or signature decipher is attempted. Public live HLS is
+ * handed to the existing HLS path; compatible recorded uploads may provide
+ * itag 18/22, HTTPS Google Video MP4s containing H.264 and AAC at 360p/720p.
  */
 #include "mr_youtube.h"
 
@@ -23,8 +22,16 @@
 #define MINT_RIVA_DEFAULT_UA "MintRIVA/0.1 AmigaOS"
 #define YOUTUBE_LIVE_START_SEGMENTS 2
 #define YOUTUBE_ANDROID_VERSION "21.08.266"
+#define YOUTUBE_ANDROID_UA \
+    "com.google.android.youtube/21.08.266 (Linux; U; Android 11) gzip"
+#define YOUTUBE_ANDROID_VR_VERSION "1.65.10"
+#define YOUTUBE_ANDROID_VR_UA \
+    "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
+    "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
 
 static const char *g_last_client = "";
+static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
+static mr_youtube_media_kind g_last_kind = MR_YOUTUBE_MEDIA_NONE;
 
 static int ascii_tolower(int c)
 {
@@ -202,6 +209,32 @@ const char *mr_youtube_last_client(void)
     return g_last_client;
 }
 
+mr_youtube_media_kind mr_youtube_last_media_kind(void)
+{
+    return g_last_kind;
+}
+
+int mr_youtube_media_http_options_init(mr_http_options *out,
+                                       const mr_http_options *base)
+{
+    mr_http_options resolved;
+    if (!mr_youtube_http_options_init(&resolved, base)) return 0;
+    if (g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P ||
+        g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+        if (!mr_http_options_init(out, g_last_media_ua, YOUTUBE_REFERER))
+            return 0;
+        out->hls_low = resolved.hls_low;
+        out->hls_max_width = resolved.hls_max_width;
+        out->hls_max_height = resolved.hls_max_height;
+        out->hls_max_fps = resolved.hls_max_fps;
+        out->hls_live_start_segments = resolved.hls_live_start_segments;
+        out->hls_buffer_segments = resolved.hls_buffer_segments;
+        return 1;
+    }
+    *out = resolved;
+    return 1;
+}
+
 static int extract_config_string(const char *html, const char *name,
                                  char *out, size_t out_size)
 {
@@ -242,12 +275,211 @@ int mr_youtube_extract_live_manifest(const char *html, char *out,
     return 0;
 }
 
-/* Returns 1 for an immediately usable HLS URL, -1 when an HLS URL was present
- * but carried an unsolved n challenge, and 0 for a failed/no-manifest reply. */
-static int try_player_manifest(const char *api_url,
-                               const mr_http_options *options,
-                               const char *json, const char *client,
-                               char *out, size_t out_size)
+static const char *skip_json_space(const char *p, const char *end)
+{
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+        p++;
+    return p;
+}
+
+static const char *json_string_end(const char *p, const char *end)
+{
+    if (p >= end || *p != '"') return NULL;
+    for (p++; p < end; p++) {
+        if (*p == '\\') {
+            if (++p >= end) return NULL;
+        } else if (*p == '"') {
+            return p + 1;
+        }
+    }
+    return NULL;
+}
+
+static const char *json_compound_end(const char *p, const char *end,
+                                     char open, char close)
+{
+    unsigned depth = 0;
+    for (; p < end; p++) {
+        const char *next;
+        if (*p == '"') {
+            next = json_string_end(p, end);
+            if (!next) return NULL;
+            p = next - 1;
+        } else if (*p == open) {
+            depth++;
+        } else if (*p == close) {
+            if (!depth || !--depth) return p + 1;
+        }
+    }
+    return NULL;
+}
+
+static const char *json_value_end(const char *p, const char *end)
+{
+    p = skip_json_space(p, end);
+    if (p >= end) return NULL;
+    if (*p == '"') return json_string_end(p, end);
+    if (*p == '{') return json_compound_end(p, end, '{', '}');
+    if (*p == '[') return json_compound_end(p, end, '[', ']');
+    while (p < end && *p != ',' && *p != '}' && *p != ']') p++;
+    return p;
+}
+
+static const char *json_object_field(const char *object,
+                                     const char *object_end,
+                                     const char *name)
+{
+    const char *p = object + 1;
+    size_t name_len = strlen(name);
+    while (p < object_end) {
+        const char *key_end, *value, *value_end;
+        p = skip_json_space(p, object_end);
+        if (p >= object_end || *p == '}') break;
+        if (*p != '"' || !(key_end = json_string_end(p, object_end)))
+            return NULL;
+        value = skip_json_space(key_end, object_end);
+        if (value >= object_end || *value++ != ':') return NULL;
+        value = skip_json_space(value, object_end);
+        value_end = json_value_end(value, object_end);
+        if (!value_end) return NULL;
+        if ((size_t)(key_end - p) == name_len + 2 &&
+            !strncmp(p + 1, name, name_len))
+            return value;
+        p = skip_json_space(value_end, object_end);
+        if (p < object_end && *p == ',') p++;
+    }
+    return NULL;
+}
+
+static int googlevideo_url(const char *url)
+{
+    const char *host, *end;
+    size_t len, suffix_len;
+    static const char suffix[] = ".googlevideo.com";
+    if (!url || strncmp(url, "https://", 8)) return 0;
+    host = url + 8;
+    end = host + strcspn(host, "/?#:");
+    len = (size_t)(end - host);
+    suffix_len = sizeof suffix - 1;
+    return host_equal(host, len, "googlevideo.com") ||
+           (len > suffix_len &&
+            !ascii_ncasecmp(host + len - suffix_len, suffix, suffix_len));
+}
+
+static int url_has_n_parameter(const char *url)
+{
+    const char *p = strchr(url, '?');
+    if (!p) return 0;
+    p++;
+    while (*p) {
+        const char *amp;
+        if (p[0] == 'n' && p[1] == '=') return 1;
+        amp = strchr(p, '&');
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return 0;
+}
+
+static int extract_progressive_itag(const char *json, unsigned wanted_itag,
+                                    char *out, size_t out_size)
+{
+    static const char formats_key[] = "\"formats\"";
+    const char *p, *end;
+    if (!json || !out || out_size < 2) return 0;
+    out[0] = '\0';
+    end = json + strlen(json);
+    p = json;
+    while ((p = strstr(p, formats_key)) != NULL) {
+        const char *array, *array_end;
+        p += sizeof formats_key - 1;
+        array = skip_json_space(p, end);
+        if (array >= end || *array++ != ':') continue;
+        array = skip_json_space(array, end);
+        if (array >= end || *array != '[') continue;
+        array_end = json_compound_end(array, end, '[', ']');
+        if (!array_end) return 0;
+        p = array + 1;
+        while (p < array_end - 1) {
+            const char *object_end, *itag, *mime, *media_url;
+            char mime_text[160];
+            p = skip_json_space(p, array_end - 1);
+            if (p >= array_end - 1) break;
+            if (*p != '{') {
+                const char *next = json_value_end(p, array_end - 1);
+                if (!next) return 0;
+                p = next;
+                if (p < array_end - 1 && *p == ',') p++;
+                continue;
+            }
+            object_end = json_compound_end(p, array_end, '{', '}');
+            if (!object_end) return 0;
+            itag = json_object_field(p, object_end, "itag");
+            mime = json_object_field(p, object_end, "mimeType");
+            media_url = json_object_field(p, object_end, "url");
+            if (itag &&
+                ((wanted_itag == 18 && itag[0] == '1' && itag[1] == '8' &&
+                  (itag[2] == ',' || itag[2] == '}' || itag[2] == ' ' ||
+                   itag[2] == '\t' || itag[2] == '\r' || itag[2] == '\n')) ||
+                 (wanted_itag == 22 && itag[0] == '2' && itag[1] == '2' &&
+                  (itag[2] == ',' || itag[2] == '}' || itag[2] == ' ' ||
+                   itag[2] == '\t' || itag[2] == '\r' || itag[2] == '\n'))) &&
+                mime && decode_json_string(mime, mime_text,
+                                            sizeof mime_text) &&
+                strstr(mime_text, "video/mp4") &&
+                strstr(mime_text, "avc1") && strstr(mime_text, "mp4a") &&
+                media_url && decode_json_string(media_url, out, out_size) &&
+                googlevideo_url(out) && !url_has_n_parameter(out))
+                return 1;
+            p = object_end;
+            if (p < array_end - 1 && *p == ',') p++;
+        }
+        p = array_end;
+    }
+    out[0] = '\0';
+    return 0;
+}
+
+int mr_youtube_extract_progressive(const char *json, int prefer_720p,
+                                   char *out, size_t out_size,
+                                   mr_youtube_media_kind *kind)
+{
+    if (!kind) return 0;
+    *kind = MR_YOUTUBE_MEDIA_NONE;
+    if (prefer_720p && extract_progressive_itag(json, 22, out, out_size)) {
+        *kind = MR_YOUTUBE_MEDIA_PROGRESSIVE_720P;
+        return 1;
+    }
+    if (extract_progressive_itag(json, 18, out, out_size)) {
+        *kind = MR_YOUTUBE_MEDIA_PROGRESSIVE_360P;
+        return 1;
+    }
+    return 0;
+}
+
+int mr_youtube_extract_progressive_360p(const char *json, char *out,
+                                        size_t out_size)
+{
+    return extract_progressive_itag(json, 18, out, out_size);
+}
+
+static int options_prefer_720p(const mr_http_options *options)
+{
+    if (!options || options->hls_low) return 0;
+    if (options->hls_max_height)
+        return options->hls_max_height >= 720;
+    if (options->hls_max_width)
+        return options->hls_max_width >= 1280;
+    return 1;
+}
+
+/* Returns 1 for immediately usable media, -1 when media was present but
+ * carried an unsolved n challenge, and 0 for a failed/no-media reply. */
+static int try_player_media(const char *api_url,
+                            const mr_http_options *options,
+                            const char *json, const char *client,
+                            const char *media_ua, char *out, size_t out_size,
+                            int prefer_720p, mr_youtube_media_kind *kind)
 {
     char *reply = NULL;
     size_t reply_len = 0;
@@ -257,25 +489,45 @@ static int try_player_manifest(const char *api_url,
         return 0;
     (void)reply_len;
     ok = mr_youtube_extract_live_manifest(reply, out, out_size);
+    if (ok && !manifest_needs_n_transform(out)) {
+        g_last_client = client;
+        g_last_media_ua = media_ua;
+        g_last_kind = MR_YOUTUBE_MEDIA_HLS;
+        *kind = g_last_kind;
+        mr_free(reply);
+        return 1;
+    }
+    if (ok) {
+        mr_free(reply);
+        return -1;
+    }
+    ok = mr_youtube_extract_progressive(reply, prefer_720p, out, out_size,
+                                        kind);
     mr_free(reply);
     if (!ok) return 0;
-    if (manifest_needs_n_transform(out)) return -1;
     g_last_client = client;
+    g_last_media_ua = media_ua;
+    g_last_kind = *kind;
     return 1;
 }
 
-int mr_youtube_resolve_live(const char *url,
-                            const mr_http_options *options,
-                            char *out, size_t out_size)
+int mr_youtube_resolve_media(const char *url,
+                             const mr_http_options *options,
+                             char *out, size_t out_size,
+                             mr_youtube_media_kind *kind)
 {
-    mr_http_options fetch_options;
+    mr_http_options fetch_options, vr_options;
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
     char api_url[256], json[1024];
     int n, ok, result, saw_n_challenge = 0;
+    int prefer_720p = options_prefer_720p(options);
     g_last_client = "";
-    if (!mr_youtube_is_url(url) || !out || out_size < 2) {
+    g_last_media_ua = YOUTUBE_BROWSER_UA;
+    g_last_kind = MR_YOUTUBE_MEDIA_NONE;
+    if (kind) *kind = MR_YOUTUBE_MEDIA_NONE;
+    if (!mr_youtube_is_url(url) || !out || out_size < 2 || !kind) {
         mr_source_set_error("invalid YouTube URL or output buffer");
         return 0;
     }
@@ -288,10 +540,19 @@ int mr_youtube_resolve_live(const char *url,
     ok = mr_youtube_extract_live_manifest(html, out, out_size);
     if (ok && !manifest_needs_n_transform(out)) {
         g_last_client = "watch page";
+        g_last_kind = MR_YOUTUBE_MEDIA_HLS;
+        *kind = g_last_kind;
         mr_free(html);
         return 1;
     }
     if (ok) saw_n_challenge = 1;
+    if (mr_youtube_extract_progressive(html, prefer_720p, out, out_size,
+                                       kind)) {
+        g_last_client = "watch page";
+        g_last_kind = *kind;
+        mr_free(html);
+        return 1;
+    }
 
     /* Modern watch pages often omit streamingData even for a public live
      * stream. The same page still publishes its Innertube API key and current
@@ -334,8 +595,34 @@ int mr_youtube_resolve_live(const char *url,
         mr_source_set_error("YouTube Android player request is too large");
         return 0;
     }
-    result = try_player_manifest(api_url, &fetch_options, json, "ANDROID",
-                                 out, out_size);
+    result = try_player_media(api_url, &fetch_options, json, "ANDROID",
+                              YOUTUBE_ANDROID_UA, out, out_size, prefer_720p,
+                              kind);
+    if (result > 0) return 1;
+    if (result < 0) saw_n_challenge = 1;
+
+    /* Android VR still exposes the classic muxed 360p MP4 on many public
+     * recorded videos. This is MintRIVA's deliberately narrow VOD target:
+     * itag 18 contains H.264 video and AAC audio in one seekable file. */
+    n = snprintf(json, sizeof json,
+                 "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
+                 "\"racyCheckOk\":true,\"context\":{\"client\":{"
+                 "\"clientName\":\"ANDROID_VR\","
+                 "\"clientVersion\":\"%s\",\"deviceMake\":\"Oculus\","
+                 "\"deviceModel\":\"Quest 3\",\"androidSdkVersion\":32,"
+                 "\"userAgent\":\"%s\",\"osName\":\"Android\","
+                 "\"osVersion\":\"12L\"}}}",
+                 video_id, YOUTUBE_ANDROID_VR_VERSION, YOUTUBE_ANDROID_VR_UA);
+    if (n <= 0 || (size_t)n >= sizeof json) {
+        mr_source_set_error("YouTube Android VR request is too large");
+        return 0;
+    }
+    if (!mr_http_options_init(&vr_options, YOUTUBE_ANDROID_VR_UA,
+                              YOUTUBE_REFERER))
+        return 0;
+    result = try_player_media(api_url, &vr_options, json, "ANDROID_VR",
+                              YOUTUBE_ANDROID_VR_UA, out, out_size,
+                              prefer_720p, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -354,8 +641,9 @@ int mr_youtube_resolve_live(const char *url,
         mr_source_set_error("YouTube player API request is too large");
         return 0;
     }
-    result = try_player_manifest(api_url, &fetch_options, json,
-                                 "WEB_EMBEDDED_PLAYER", out, out_size);
+    result = try_player_media(api_url, &fetch_options, json,
+                              "WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
+                              out, out_size, prefer_720p, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -369,12 +657,28 @@ int mr_youtube_resolve_live(const char *url,
                  "\"racyCheckOk\":true}", client_version, video_id);
     if (n <= 0 || (size_t)n >= sizeof json)
         return 0;
-    result = try_player_manifest(api_url, &fetch_options, json, "WEB",
-                                 out, out_size);
+    result = try_player_media(api_url, &fetch_options, json, "WEB",
+                              YOUTUBE_BROWSER_UA, out, out_size, prefer_720p,
+                              kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
     mr_source_set_error(saw_n_challenge
-        ? "YouTube HLS manifest requires a player n challenge"
-        : "YouTube player APIs returned no live HLS manifest");
+        ? "YouTube media URL requires a player n challenge"
+        : "YouTube returned no compatible live HLS or muxed MP4");
+    return 0;
+}
+
+int mr_youtube_resolve_live(const char *url,
+                            const mr_http_options *options,
+                            char *out, size_t out_size)
+{
+    mr_youtube_media_kind kind;
+    if (!mr_youtube_resolve_media(url, options, out, out_size, &kind))
+        return 0;
+    if (kind == MR_YOUTUBE_MEDIA_HLS) return 1;
+    out[0] = '\0';
+    mr_source_set_error("YouTube URL is not a public live HLS stream");
+    g_last_client = "";
+    g_last_kind = MR_YOUTUBE_MEDIA_NONE;
     return 0;
 }

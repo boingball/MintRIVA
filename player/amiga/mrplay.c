@@ -1171,7 +1171,8 @@ int main(int argc, char **argv)
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
-    char youtube_manifest[MR_HTTP_URL_MAX];
+    char youtube_media[MR_HTTP_URL_MAX];
+    mr_youtube_media_kind youtube_kind = MR_YOUTUBE_MEDIA_NONE;
     mr_http_options http_options;
     int have_http_options = 0;
     media_clock mc;
@@ -1293,30 +1294,39 @@ int main(int argc, char **argv)
                    hls_max_width, hls_max_height, hls_max_fps);
     }
     if (mr_youtube_is_url(media_path)) {
-        printf("YouTube Live: resolving...\n");
+        printf("YouTube: resolving...\n");
         player_status(MR_PLAYER_STATE_OPENING, "",
-                      "Resolving YouTube Live stream...");
-        if (!mr_youtube_resolve_live(media_path,
-                                     have_http_options ? &http_options : NULL,
-                                     youtube_manifest,
-                                     sizeof youtube_manifest)) {
+                      "Resolving YouTube media...");
+        if (!mr_youtube_resolve_media(media_path,
+                                      have_http_options ? &http_options : NULL,
+                                      youtube_media, sizeof youtube_media,
+                                      &youtube_kind) ||
+            !mr_youtube_media_http_options_init(
+                &http_options, have_http_options ? &http_options : NULL)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];
             const char *why = mr_source_last_error();
-            printf("cannot resolve YouTube Live stream: %s\n", why);
-            snprintf(reason, sizeof reason, "YouTube Live: %s", why);
+            printf("cannot resolve YouTube media: %s\n", why);
+            snprintf(reason, sizeof reason, "YouTube: %s", why);
             player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
             status_hold();
             return mrplay_exit(10);
         }
-        media_path = youtube_manifest;
-        printf("YouTube Live: HLS manifest found\n");
+        have_http_options = 1;
+        media_path = youtube_media;
+        if (youtube_kind == MR_YOUTUBE_MEDIA_HLS)
+            printf("YouTube: live HLS manifest found\n");
+        else if (youtube_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P)
+            printf("YouTube: progressive 720p MP4 found\n");
+        else
+            printf("YouTube: progressive 360p MP4 found\n");
         if (want_time)
-            printf("YouTube Live: source client %s\n",
+            printf("YouTube: source client %s\n",
                    mr_youtube_last_client());
         /* The optional HLS worker must own bsdsocket/AmiSSL from its own task.
          * Resolution ran on the main task, so release that task's persistent
          * network state before starting the worker. */
-        if (hls_prefetch) mr_http_net_shutdown();
+        if (hls_prefetch && youtube_kind == MR_YOUTUBE_MEDIA_HLS)
+            mr_http_net_shutdown();
     }
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
