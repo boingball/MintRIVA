@@ -79,7 +79,8 @@ enum {
     G_C2P,
     G_LACE,
     G_2X,
-    G_IPTV
+    G_IPTV,
+    G_YOUTUBE
 };
 
 static int open_reaction_classes(void)
@@ -306,6 +307,43 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *lace,
     }
 }
 
+static void open_youtube_browser(Object *mode, Object *c2p, Object *lace,
+                                 Object *twox, Object *info,
+                                 struct Window *window)
+{
+    BPTR seglist;
+    struct Process *process;
+    char arguments[512];
+    mr_play_options options;
+
+    read_play_options(mode, c2p, lace, twox, &options);
+    if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
+        set_info(info, window, "Could not build YouTube playback options.");
+        return;
+    }
+    seglist = LoadSeg((CONST_STRPTR)"PROGDIR:ytgui");
+    if (!seglist)
+        seglist = LoadSeg((CONST_STRPTR)"ytgui");
+    if (!seglist) {
+        set_info(info, window,
+                 "Could not load ytgui (keep it beside mrgui).");
+        return;
+    }
+    process = CreateNewProcTags(
+        NP_Seglist, seglist,
+        NP_FreeSeglist, TRUE,
+        NP_Arguments, (ULONG)arguments,
+        NP_StackSize, MRPLAY_STACK_SIZE,
+        NP_Cli, TRUE,
+        NP_CommandName, (ULONG)"ytgui",
+        NP_Name, (ULONG)"MintRIVA YouTube",
+        TAG_END);
+    if (!process) {
+        UnLoadSeg(seglist);
+        set_info(info, window, "Could not create the ytgui process.");
+    }
+}
+
 static void set_info(Object *info, struct Window *window, const char *text)
 {
     if (!info || !window)
@@ -451,6 +489,7 @@ int main(void)
     Object *stop_button;
     Object *ff_button;
     Object *iptv_button;
+    Object *youtube_button;
     struct Window *window;
     struct List modes;
     struct List c2p_modes;
@@ -479,6 +518,7 @@ int main(void)
     stop_button = NULL;
     ff_button = NULL;
     iptv_button = NULL;
+    youtube_button = NULL;
     window = NULL;
     status = RETURN_FAIL;
     have_rtg = 0;
@@ -590,8 +630,13 @@ int main(void)
                                       GA_Text, (ULONG)"IPTV...",
                                       GA_RelVerify, TRUE,
                                       TAG_DONE);
+    youtube_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
+                                         GA_ID, G_YOUTUBE,
+                                         GA_Text, (ULONG)"YouTube...",
+                                         GA_RelVerify, TRUE,
+                                         TAG_DONE);
     if (!play_button || !pause_button || !stop_button || !ff_button ||
-        !iptv_button)
+        !iptv_button || !youtube_button)
         goto cleanup;
 
     buttons = (Object *)NewObject(LAYOUT_GetClass(), NULL,
@@ -602,6 +647,7 @@ int main(void)
                                    LAYOUT_AddChild, (ULONG)stop_button,
                                    LAYOUT_AddChild, (ULONG)ff_button,
                                    LAYOUT_AddChild, (ULONG)iptv_button,
+                                   LAYOUT_AddChild, (ULONG)youtube_button,
                                    TAG_DONE);
     if (!buttons)
         goto cleanup;
@@ -690,6 +736,10 @@ int main(void)
                     open_iptv_browser(mode, c2p, lace, twox, info, window);
                     break;
 
+                case G_YOUTUBE:
+                    open_youtube_browser(mode, c2p, lace, twox, info, window);
+                    break;
+
                 default:
                     break;
                 }
@@ -745,6 +795,8 @@ cleanup:
                 DisposeObject(ff_button);
             if (iptv_button)
                 DisposeObject(iptv_button);
+            if (youtube_button)
+                DisposeObject(youtube_button);
         }
 
         if (file)

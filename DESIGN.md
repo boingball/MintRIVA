@@ -247,3 +247,22 @@ overlong values, is copied into each HTTP/HLS source instance, and is reused by
 redirects, range reconnects, master/media playlist fetches, live refreshes, and
 segment requests. The default remains `MintRIVA/0.1 AmigaOS` with no Referer;
 there is deliberately no arbitrary-header command-line interface.
+
+# YouTube search
+
+`ytgui` is a separate ReAction process launched by `mrgui`, mirroring the IPTV
+browser boundary so a blocking search request cannot stall the main transport
+controls. It fetches YouTube's public search results page with the shared
+HTTP/AmiSSL layer and parses only bounded `videoRenderer` JSON objects embedded
+in that page. The compact result model retains an 11-byte video ID, title,
+channel, and live flag for at most 100 entries; duplicate IDs are discarded.
+No account, cookies, Google API key, JavaScript engine, or remote resolver is
+required.
+
+The live-only checkbox is selected by default and adds YouTube's live search
+filter while also verifying each result's live badge locally. A selected live
+ID is converted back to a canonical watch URL and launched through `mrplay`,
+which performs the existing native live-manifest resolution. Non-live results
+can be displayed for diagnostics but are rejected before process launch. The
+controller passes the same immutable `mr_play_options` snapshot used by
+`iptvgui`, so display and HLS policy remain consistent across child windows.

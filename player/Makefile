@@ -132,7 +132,14 @@ mr_youtube_check: tests/mr_youtube_check.c core/mr_youtube.c core/mr_http.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_check.c core/mr_youtube.c \
 	    core/mr_http.c core/mr_source.c core/mr_hls.c
 
-check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_iptv_check mr_youtube_check
+mr_youtube_search_check: tests/mr_youtube_search_check.c \
+                         youtube/mr_youtube_search.c \
+                         youtube/mr_youtube_search.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
+	    youtube/mr_youtube_search.c
+
+check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_iptv_check mr_youtube_check mr_youtube_search_check
+	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_iptv_check
 	./mr_codec_registry_check
@@ -223,6 +230,6 @@ clean:
 	rm -f mr_legacy_video_check
 	rm -f mr_rawvideo_check mr_codec_registry_check
 	rm -f mr_pcm_u8_check
-	rm -f mr_iptv_check mr_youtube_check
+	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean
