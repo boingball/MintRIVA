@@ -4,6 +4,7 @@
 #include "mr_source.h"
 #include "mr_hls.h"
 #include "mr_http.h"
+#include "mr_youtube.h"
 #include "mr_alloc.h"
 
 #include <stdio.h>
@@ -171,6 +172,8 @@ static mr_source *open_local_file(const char *path)
 mr_source *mr_source_open_ex(const char *path,
                              const struct mr_http_options *options)
 {
+    char youtube_manifest[MR_HTTP_URL_MAX];
+    mr_http_options youtube_options;
     g_source_error[0] = '\0';
     if (!path || !*path) {
         mr_source_set_error("empty media path");
@@ -178,6 +181,13 @@ mr_source *mr_source_open_ex(const char *path,
     }
     if (mr_source_is_hls(path))
         return mr_hls_source_open_ex(path, options);
+    if (mr_youtube_is_url(path)) {
+        if (!mr_youtube_http_options_init(&youtube_options, options) ||
+            !mr_youtube_resolve_live(path, &youtube_options, youtube_manifest,
+                                     sizeof youtube_manifest))
+            return NULL;
+        return mr_hls_source_open_ex(youtube_manifest, &youtube_options);
+    }
     if (mr_source_is_url(path))
         return mr_http_source_open_ex(path, options);
     return open_local_file(path);

@@ -22,6 +22,7 @@ CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
            -Wno-unused-but-set-variable -Wno-sign-compare \
            -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
+           core/mr_youtube.c \
            core/mr_demux.c core/mr_avi.c core/mr_mov.c \
            core/mr_ts.c core/mr_ps.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
@@ -44,6 +45,7 @@ MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/decoders/aac \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
 HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
+           core/mr_youtube.h \
            core/mr_demux.h core/mr_avi.h core/mr_mov.h \
            core/mr_ts.h core/mr_ps.h \
            core/mr_raw_mjpeg.h core/mr_raw_mpeg4.h \
@@ -125,7 +127,13 @@ mr_iptv_check: tests/mr_iptv_check.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
 	    iptv/mr_iptv_json.c iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c \
 	    core/mr_play_options.c
 
-check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_iptv_check
+mr_youtube_check: tests/mr_youtube_check.c core/mr_youtube.c core/mr_http.c \
+                  core/mr_source.c core/mr_hls.c core/mr_youtube.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_check.c core/mr_youtube.c \
+	    core/mr_http.c core/mr_source.c core/mr_hls.c
+
+check: mr_decode mr_codec_registry_check mr_scale_check mr_c2p_check mr_ham_check mr_mpeg1_probe_check mr_ps_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_iptv_check mr_youtube_check
+	./mr_youtube_check
 	./mr_iptv_check
 	./mr_codec_registry_check
 	./mr_pcm_u8_check
@@ -195,7 +203,7 @@ check-audio: mr_audio_check
 	./mr_audio_check tests/assets/test_aac.mp4 aac
 	./mr_audio_check tests/assets/test_h264_aac.ts aac
 
-check-http: mr_decode
+check-http: mr_decode mr_youtube_check
 	@test -d tests/assets/ref_mpeg2_ts \
 	    && test -d tests/assets/ref_h264_high \
 	    && test -d tests/assets/ref_mp42 \
@@ -215,6 +223,6 @@ clean:
 	rm -f mr_legacy_video_check
 	rm -f mr_rawvideo_check mr_codec_registry_check
 	rm -f mr_pcm_u8_check
-	rm -f mr_iptv_check
+	rm -f mr_iptv_check mr_youtube_check
 
 .PHONY: all check check-audio check-http check-https check-libavc clean

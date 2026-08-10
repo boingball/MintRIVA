@@ -21,6 +21,8 @@
 #include "mr_source.h"
 #include <stddef.h>
 
+#define MR_HTTP_URL_MAX  4096
+#define MR_HTTP_PATH_MAX 3840
 #define MR_HTTP_USER_AGENT_MAX 256
 #define MR_HTTP_REFERER_MAX 1024
 
@@ -28,6 +30,12 @@ typedef struct mr_http_options {
     char user_agent[MR_HTTP_USER_AGENT_MAX];
     char referer[MR_HTTP_REFERER_MAX];
     int hls_low;
+    /* For slow live-start resolvers, retain only this many newest segments
+     * from the first sliding playlist. Zero preserves the complete window. */
+    unsigned hls_live_start_segments;
+    /* Download each HLS segment to a bounded RAM buffer before exposing it to
+     * the demuxer. Required by CDNs that use chunked transfer without length. */
+    int hls_buffer_segments;
     unsigned hls_max_width;
     unsigned hls_max_height;
     unsigned hls_max_fps;
@@ -39,6 +47,24 @@ int mr_http_options_init(mr_http_options *options, const char *user_agent,
 mr_source *mr_http_source_open(const char *url);
 mr_source *mr_http_source_open_ex(const char *url,
                                   const mr_http_options *options);
+
+/* Download a complete text response into a task-safe allocated buffer. The
+ * caller owns *out and releases it with mr_free(). One NUL byte is appended but
+ * is not included in *out_len. Both fixed-length and chunked bodies work. */
+int mr_http_fetch_text(const char *url, const mr_http_options *options,
+                       char **out, size_t *out_len, size_t max_size);
+
+/* Binary-safe complete-response variant. The returned task-safe buffer belongs
+ * to the caller and must be released with mr_free(). */
+int mr_http_fetch_buffer(const char *url, const mr_http_options *options,
+                         unsigned char **out, size_t *out_len,
+                         size_t max_size);
+
+/* POST a small JSON document and return the complete text response. Used by
+ * lightweight resolver APIs that cannot be represented as a media GET. */
+int mr_http_post_json(const char *url, const mr_http_options *options,
+                      const char *json, char **out, size_t *out_len,
+                      size_t max_size);
 
 /* Download a complete response to a file using the shared redirect, TLS,
  * timeout and chunk decoder. The destination is removed on failure. */

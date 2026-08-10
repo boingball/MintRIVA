@@ -42,7 +42,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define PF_URL_MAX 1300           /* >= the longest HLS URL we resolve        */
+#define PF_URL_MAX MR_HTTP_URL_MAX /* signed HLS URLs can exceed 1 KiB         */
 #define PF_STACK   300000UL       /* HTTPS/AmiSSL needs a deep stack           */
 #define PF_SEGMENT_MAX (24UL * 1024 * 1024) /* refuse absurd segment lengths   */
 #define PF_MEM_FLOOR   (4UL * 1024 * 1024)  /* keep this much fast RAM spare -
@@ -124,32 +124,21 @@ static mr_source *pf_mem_source(void *buf, size_t len, const char *url)
 static int pf_download(const char *url, const mr_http_options *opts,
                        void **out_buf, size_t *out_len)
 {
-    mr_source *s;
+    ULONG available;
+    size_t max_size;
     size_t len;
     unsigned char *buf;
     *out_buf = NULL;
     *out_len = 0;
-    s = mr_http_source_open_ex(url, opts);
-    if (!s) return 0;
-    len = mr_source_length(s);
-    if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
     /* Refuse a segment that is implausibly large (a mis-parsed length or a live
      * endpoint that never ends), and never eat the last of fast RAM - either
      * would lock the machine. A refused prefetch just means no lookahead; a
      * refused priority open makes mr_hls treat the segment as unavailable. */
-    if (len > PF_SEGMENT_MAX ||
-        AvailMem(MEMF_ANY) < (ULONG)len + PF_MEM_FLOOR) {
-        mr_source_close(s);
-        return 0;
-    }
-    buf = (unsigned char *)AllocVec(len, MEMF_ANY);
-    if (!buf) { mr_source_close(s); return 0; }
-    if (!mr_source_read_at(s, 0, buf, len)) {
-        FreeVec(buf);
-        mr_source_close(s);
-        return 0;
-    }
-    mr_source_close(s);
+    available = AvailMem(MEMF_ANY);
+    if (available <= PF_MEM_FLOOR) return 0;
+    max_size = (size_t)(available - PF_MEM_FLOOR);
+    if (max_size > PF_SEGMENT_MAX) max_size = PF_SEGMENT_MAX;
+    if (!mr_http_fetch_buffer(url, opts, &buf, &len, max_size)) return 0;
     *out_buf = buf;
     *out_len = len;
     return 1;

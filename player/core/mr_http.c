@@ -48,11 +48,12 @@
 #define MR_HTTP_HAVE_TLS 0
 #endif
 
-#define HTTP_URL_MAX       1024
+#define HTTP_URL_MAX       MR_HTTP_URL_MAX
 #define HTTP_HOST_MAX       256
-#define HTTP_PATH_MAX       768
+#define HTTP_PATH_MAX       MR_HTTP_PATH_MAX
 #define HTTP_HEADER_MAX   16384
-#define HTTP_REQUEST_MAX   3072
+#define HTTP_REQUEST_MAX  (MR_HTTP_URL_MAX + MR_HTTP_USER_AGENT_MAX + \
+                           MR_HTTP_REFERER_MAX + 1536)
 #define HTTP_DEFAULT_USER_AGENT "MintRIVA/0.1 AmigaOS"
 #define HTTP_CHUNK_LINE_MAX 128
 /* Read-ahead / rewind window. Presentation-order delivery makes streaming
@@ -141,11 +142,20 @@ typedef struct {
     size_t response_left;
     int response_left_known;
     int streaming;              /* forward-only: no length, no range seeking  */
+    int bounded_fetch;          /* caller will buffer through chunked EOF      */
     int chunked;
     size_t chunk_left;
     int chunk_need_crlf;
     int chunk_done;
     unsigned char header[HTTP_HEADER_MAX];
+    /* Long signed media URLs need correspondingly large parse/request and
+     * redirect buffers. Keep them in this AllocVec-backed context rather than
+     * as nested automatic arrays: several 4 KiB locals on the classic Shell
+     * stack can corrupt AmiSSL before playback even opens. */
+    http_url parsed_url;
+    char request[HTTP_REQUEST_MAX];
+    char redirect_location[HTTP_URL_MAX];
+    char redirect_url[HTTP_URL_MAX];
     size_t prefetch_pos;
     size_t prefetch_len;
     unsigned char *cache;
@@ -900,32 +910,30 @@ static int probe_request_length(http_source *h, const char *method,
 {
     int redirects;
     for (redirects = 0; redirects <= HTTP_REDIRECT_MAX; redirects++) {
-        http_url url;
-        char request[HTTP_REQUEST_MAX];
+        http_url *url = &h->parsed_url;
         char option_headers[MR_HTTP_USER_AGENT_MAX + MR_HTTP_REFERER_MAX + 40];
         char host_header[HTTP_HOST_MAX + 16];
         char content_length[64], content_range[128];
-        char location[HTTP_URL_MAX], next_url[HTTP_URL_MAX];
         size_t header_len, length = 0;
         size_t range_start = 0, range_last = 0, total = 0;
         int status, n, default_port;
 
-        if (!parse_url(h->url, &url)) return 0;
+        if (!parse_url(h->url, url)) return 0;
         close_connection(h, 1);
-        if (!connect_socket(h, &url)) return 0;
-        default_port = (!url.tls && url.port == 80) ||
-                       (url.tls && url.port == 443);
+        if (!connect_socket(h, url)) return 0;
+        default_port = (!url->tls && url->port == 80) ||
+                       (url->tls && url->port == 443);
         if (default_port)
-            snprintf(host_header, sizeof host_header, "%s", url.host);
+            snprintf(host_header, sizeof host_header, "%s", url->host);
         else
             snprintf(host_header, sizeof host_header, "%s:%u",
-                     url.host, (unsigned)url.port);
+                     url->host, (unsigned)url->port);
         if (!format_option_headers(h, option_headers, sizeof option_headers)) {
             mr_source_set_error("HTTP option headers are too large");
             close_connection(h, 1);
             return 0;
         }
-        n = snprintf(request, sizeof request,
+        n = snprintf(h->request, sizeof h->request,
                      "%s %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
                      "%s"
@@ -934,10 +942,10 @@ static int probe_request_length(http_source *h, const char *method,
                      "%s"
                      "Connection: close\r\n"
                      "\r\n",
-                     method, url.path, host_header, option_headers,
+                     method, url->path, host_header, option_headers,
                      one_byte_range ? "Range: bytes=0-0\r\n" : "");
-        if (n <= 0 || (size_t)n >= sizeof request ||
-            !net_write_all(h, request, (size_t)n) ||
+        if (n <= 0 || (size_t)n >= sizeof h->request ||
+            !net_write_all(h, h->request, (size_t)n) ||
             !read_headers(h, &header_len)) {
             close_connection(h, 0);
             return 0;
@@ -947,13 +955,15 @@ static int probe_request_length(http_source *h, const char *method,
             status == 307 || status == 308) {
             if (redirects == HTTP_REDIRECT_MAX ||
                 !header_value(h->header, header_len, "Location",
-                              location, sizeof location) ||
-                !resolve_redirect(h->url, location,
-                                  next_url, sizeof next_url)) {
+                              h->redirect_location,
+                              sizeof h->redirect_location) ||
+                !resolve_redirect(h->url, h->redirect_location,
+                                  h->redirect_url,
+                                  sizeof h->redirect_url)) {
                 close_connection(h, 1);
                 return 0;
             }
-            strcpy(h->url, next_url);
+            strcpy(h->url, h->redirect_url);
             close_connection(h, 1);
             continue;
         }
@@ -1002,52 +1012,55 @@ static int begin_response(http_source *h, size_t offset)
 {
     int redirects;
     for (redirects = 0; redirects <= HTTP_REDIRECT_MAX; redirects++) {
-        http_url url;
-        char request[HTTP_REQUEST_MAX];
+        http_url *url = &h->parsed_url;
         char option_headers[MR_HTTP_USER_AGENT_MAX + MR_HTTP_REFERER_MAX + 40];
         char host_header[HTTP_HOST_MAX + 16];
+        char range_header[64];
         char content_length[64], content_range[128], transfer[64];
-        char location[HTTP_URL_MAX], next_url[HTTP_URL_MAX];
         size_t header_len, response_len = 0, content_length_value = 0;
         size_t range_start = 0, range_last = 0, total = 0;
         int status, n, default_port, have_content_length, chunked;
+        int bounded_unknown = 0;
 
-        if (!parse_url(h->url, &url)) {
+        if (!parse_url(h->url, url)) {
             mr_source_set_error("invalid HTTP/HTTPS URL");
             return 0;
         }
         close_connection(h, 1);
-        if (!connect_socket(h, &url)) return 0;
+        if (!connect_socket(h, url)) return 0;
 
-        default_port = (!url.tls && url.port == 80) ||
-                       (url.tls && url.port == 443);
+        default_port = (!url->tls && url->port == 80) ||
+                       (url->tls && url->port == 443);
         if (default_port)
-            snprintf(host_header, sizeof host_header, "%s", url.host);
+            snprintf(host_header, sizeof host_header, "%s", url->host);
         else
             snprintf(host_header, sizeof host_header, "%s:%u",
-                     url.host, (unsigned)url.port);
+                     url->host, (unsigned)url->port);
         if (!format_option_headers(h, option_headers, sizeof option_headers)) {
             mr_source_set_error("HTTP option headers are too large");
             close_connection(h, 1);
             return 0;
         }
-        n = snprintf(request, sizeof request,
+        range_header[0] = '\0';
+        if (offset)
+            snprintf(range_header, sizeof range_header,
+                     "Range: bytes=%lu-\r\n", (unsigned long)offset);
+        n = snprintf(h->request, sizeof h->request,
                      "GET %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
                      "%s"
                      "Accept: */*\r\n"
                      "Accept-Encoding: identity\r\n"
-                     "Range: bytes=%lu-\r\n"
+                     "%s"
                      "Connection: close\r\n"
                      "\r\n",
-                     url.path, host_header, option_headers,
-                     (unsigned long)offset);
-        if (n <= 0 || (size_t)n >= sizeof request) {
+                     url->path, host_header, option_headers, range_header);
+        if (n <= 0 || (size_t)n >= sizeof h->request) {
             mr_source_set_error("HTTP request is too large");
             close_connection(h, 1);
             return 0;
         }
-        if (!net_write_all(h, request, (size_t)n) ||
+        if (!net_write_all(h, h->request, (size_t)n) ||
             !read_headers(h, &header_len)) {
             close_connection(h, 0);
             return 0;
@@ -1061,14 +1074,16 @@ static int begin_response(http_source *h, size_t offset)
                 return 0;
             }
             if (!header_value(h->header, header_len, "Location",
-                              location, sizeof location) ||
-                !resolve_redirect(h->url, location,
-                                  next_url, sizeof next_url)) {
+                              h->redirect_location,
+                              sizeof h->redirect_location) ||
+                !resolve_redirect(h->url, h->redirect_location,
+                                  h->redirect_url,
+                                  sizeof h->redirect_url)) {
                 mr_source_set_error("invalid HTTP redirect");
                 close_connection(h, 1);
                 return 0;
             }
-            strcpy(h->url, next_url);
+            strcpy(h->url, h->redirect_url);
             close_connection(h, 1);
             continue;
         }
@@ -1129,6 +1144,11 @@ static int begin_response(http_source *h, size_t offset)
                 if (chunked && h->total_len) {
                     total = h->total_len;
                     response_len = total;
+                } else if (chunked && h->bounded_fetch) {
+                    /* A complete-response caller can read through the final
+                     * zero chunk and learn the length itself; avoid extra HEAD
+                     * and Range probes which this CDN may not support. */
+                    bounded_unknown = 1;
                 } else if (chunked && !h->streaming) {
                     /* No length in the response. Try to discover one (HEAD or a
                      * range probe) so the media stays seekable; if the server
@@ -1152,7 +1172,7 @@ static int begin_response(http_source *h, size_t offset)
                 total = response_len;
             }
         }
-        if (h->streaming) {
+        if (h->streaming || bounded_unknown) {
             /* A length-less stream can only be read from the start; a nonzero
              * offset would mean a seek the server cannot honour. */
             if (offset != 0) {
@@ -1185,6 +1205,119 @@ static int begin_response(http_source *h, size_t offset)
         h->body_pos = offset;
         h->response_left_known = 1;
         h->response_left = response_len;
+        h->chunked = chunked;
+        h->chunk_left = 0;
+        h->chunk_need_crlf = 0;
+        h->chunk_done = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static int begin_json_post_response(http_source *h, const char *json)
+{
+    int redirects;
+    size_t json_len = strlen(json);
+    if (json_len > 1024) {
+        mr_source_set_error("HTTP JSON request body is too large");
+        return 0;
+    }
+    for (redirects = 0; redirects <= HTTP_REDIRECT_MAX; redirects++) {
+        http_url *url = &h->parsed_url;
+        char option_headers[MR_HTTP_USER_AGENT_MAX + MR_HTTP_REFERER_MAX + 40];
+        char host_header[HTTP_HOST_MAX + 16];
+        char content_length[64], transfer[64];
+        size_t header_len, response_len = 0;
+        int status, n, default_port, chunked, have_content_length;
+
+        if (!parse_url(h->url, url)) {
+            mr_source_set_error("invalid HTTP/HTTPS URL");
+            return 0;
+        }
+        close_connection(h, 1);
+        if (!connect_socket(h, url)) return 0;
+        default_port = (!url->tls && url->port == 80) ||
+                       (url->tls && url->port == 443);
+        if (default_port)
+            snprintf(host_header, sizeof host_header, "%s", url->host);
+        else
+            snprintf(host_header, sizeof host_header, "%s:%u",
+                     url->host, (unsigned)url->port);
+        if (!format_option_headers(h, option_headers, sizeof option_headers)) {
+            mr_source_set_error("HTTP option headers are too large");
+            close_connection(h, 1);
+            return 0;
+        }
+        n = snprintf(h->request, sizeof h->request,
+                     "POST %s HTTP/1.1\r\n"
+                     "Host: %s\r\n"
+                     "%s"
+                     "Content-Type: application/json\r\n"
+                     "Accept: application/json\r\n"
+                     "Accept-Encoding: identity\r\n"
+                     "Content-Length: %lu\r\n"
+                     "Connection: close\r\n"
+                     "\r\n%s",
+                     url->path, host_header, option_headers,
+                     (unsigned long)json_len, json);
+        if (n <= 0 || (size_t)n >= sizeof h->request) {
+            mr_source_set_error("HTTP JSON request is too large");
+            close_connection(h, 1);
+            return 0;
+        }
+        if (!net_write_all(h, h->request, (size_t)n) ||
+            !read_headers(h, &header_len)) {
+            close_connection(h, 0);
+            return 0;
+        }
+        status = response_status(h->header, header_len);
+        if (status == 301 || status == 302 || status == 303 ||
+            status == 307 || status == 308) {
+            if (redirects == HTTP_REDIRECT_MAX ||
+                !header_value(h->header, header_len, "Location",
+                              h->redirect_location,
+                              sizeof h->redirect_location) ||
+                !resolve_redirect(h->url, h->redirect_location,
+                                  h->redirect_url,
+                                  sizeof h->redirect_url)) {
+                mr_source_set_error("invalid HTTP redirect");
+                close_connection(h, 1);
+                return 0;
+            }
+            strcpy(h->url, h->redirect_url);
+            close_connection(h, 1);
+            continue;
+        }
+        if (status != 200) {
+            source_error_status("HTTP JSON request failed", status);
+            close_connection(h, 1);
+            return 0;
+        }
+        chunked = header_value(h->header, header_len, "Transfer-Encoding",
+                               transfer, sizeof transfer) &&
+                  contains_nocase(transfer, "chunked");
+        have_content_length = header_value(h->header, header_len,
+                                           "Content-Length",
+                                           content_length,
+                                           sizeof content_length);
+        if (have_content_length) {
+            const char *end;
+            if (!parse_decimal(content_length, &end, &response_len)) {
+                mr_source_set_error("invalid HTTP Content-Length");
+                close_connection(h, 1);
+                return 0;
+            }
+            while (*end == ' ' || *end == '\t') end++;
+            if (*end) {
+                mr_source_set_error("invalid HTTP Content-Length");
+                close_connection(h, 1);
+                return 0;
+            }
+        }
+        h->body_pos = 0;
+        h->response_left_known = have_content_length;
+        h->response_left = have_content_length ? response_len : 0;
+        h->streaming = !have_content_length;
         h->chunked = chunked;
         h->chunk_left = 0;
         h->chunk_need_crlf = 0;
@@ -1468,6 +1601,9 @@ mr_source *mr_http_source_open_ex(const char *url,
     }
     if (options) {
         h->options.hls_low = options->hls_low;
+        h->options.hls_live_start_segments =
+            options->hls_live_start_segments;
+        h->options.hls_buffer_segments = options->hls_buffer_segments;
         h->options.hls_max_width = options->hls_max_width;
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
@@ -1494,6 +1630,193 @@ mr_source *mr_http_source_open_ex(const char *url,
 mr_source *mr_http_source_open(const char *url)
 {
     return mr_http_source_open_ex(url, NULL);
+}
+
+int mr_http_fetch_text(const char *url, const mr_http_options *options,
+                       char **out, size_t *out_len, size_t max_size)
+{
+    http_source *h;
+    unsigned char *buf = NULL;
+    size_t total = 0, cap = 0;
+    int ok = 0;
+    if (out) *out = NULL;
+    if (out_len) *out_len = 0;
+    if (!url || !*url || strlen(url) >= HTTP_URL_MAX || !out || !out_len ||
+        !max_size || max_size == (size_t)-1) {
+        mr_source_set_error("invalid HTTP text fetch arguments");
+        return 0;
+    }
+    h = (http_source *)mr_allocz(sizeof *h);
+    if (!h) {
+        mr_source_set_error("not enough memory for HTTP text fetch");
+        return 0;
+    }
+    h->sock = -1;
+    h->bounded_fetch = 1;
+    memcpy(h->url, url, strlen(url) + 1);
+    if (options) {
+        if (!mr_http_options_init(&h->options, options->user_agent,
+                                  options->referer)) goto done;
+    }
+    if (!platform_open(h) || !begin_response(h, 0)) goto done;
+    if (h->response_left_known && h->response_left > max_size) {
+        mr_source_set_error("HTTP text response exceeds size limit");
+        goto done;
+    }
+    cap = h->response_left_known ? h->response_left : 32768;
+    if (!cap) cap = 1;
+    if (cap > max_size) cap = max_size;
+    buf = (unsigned char *)mr_alloc(cap + 1);
+    if (!buf) {
+        mr_source_set_error("not enough memory for HTTP text response");
+        goto done;
+    }
+    for (;;) {
+        int n;
+        size_t want;
+        if (total == cap) {
+            unsigned char *grown;
+            size_t next;
+            if (cap == max_size) {
+                /* Read one byte to distinguish exactly-at-limit from overflow. */
+                unsigned char extra;
+                n = copy_response_bytes(h, &extra, 1);
+                if (n > 0) {
+                    mr_source_set_error("HTTP text response exceeds size limit");
+                    goto done;
+                }
+                break;
+            }
+            next = cap > max_size / 2 ? max_size : cap * 2;
+            grown = (unsigned char *)mr_alloc(next + 1);
+            if (!grown) {
+                mr_source_set_error("not enough memory for HTTP text response");
+                goto done;
+            }
+            memcpy(grown, buf, total);
+            mr_free(buf);
+            buf = grown;
+            cap = next;
+        }
+        want = cap - total;
+        if (want > 16384) want = 16384;
+        n = copy_response_bytes(h, buf + total, want);
+        if (n <= 0) break;
+        total += (size_t)n;
+    }
+    if (!total || (h->response_left_known && h->response_left) ||
+        (!h->response_left_known && h->chunked && !h->chunk_done)) {
+        mr_source_set_error("HTTP text response ended before completion");
+        goto done;
+    }
+    buf[total] = '\0';
+    *out = (char *)buf;
+    *out_len = total;
+    buf = NULL;
+    ok = 1;
+done:
+    platform_close(h);
+    mr_free(h);
+    mr_free(buf);
+    return ok;
+}
+
+int mr_http_fetch_buffer(const char *url, const mr_http_options *options,
+                         unsigned char **out, size_t *out_len,
+                         size_t max_size)
+{
+    char *buf = NULL;
+    if (out) *out = NULL;
+    if (!out || !mr_http_fetch_text(url, options, &buf, out_len, max_size))
+        return 0;
+    *out = (unsigned char *)buf;
+    return 1;
+}
+
+int mr_http_post_json(const char *url, const mr_http_options *options,
+                      const char *json, char **out, size_t *out_len,
+                      size_t max_size)
+{
+    http_source *h;
+    unsigned char *buf = NULL;
+    size_t total = 0, cap = 0;
+    int ok = 0;
+    if (out) *out = NULL;
+    if (out_len) *out_len = 0;
+    if (!url || !*url || strlen(url) >= HTTP_URL_MAX || !json || !out ||
+        !out_len || !max_size || max_size == (size_t)-1) {
+        mr_source_set_error("invalid HTTP JSON POST arguments");
+        return 0;
+    }
+    h = (http_source *)mr_allocz(sizeof *h);
+    if (!h) {
+        mr_source_set_error("not enough memory for HTTP JSON POST");
+        return 0;
+    }
+    h->sock = -1;
+    memcpy(h->url, url, strlen(url) + 1);
+    if (options && !mr_http_options_init(&h->options, options->user_agent,
+                                         options->referer)) goto done;
+    if (!platform_open(h) || !begin_json_post_response(h, json)) goto done;
+    if (h->response_left_known && h->response_left > max_size) {
+        mr_source_set_error("HTTP JSON response exceeds size limit");
+        goto done;
+    }
+    cap = h->response_left_known ? h->response_left : 32768;
+    if (!cap) cap = 1;
+    if (cap > max_size) cap = max_size;
+    buf = (unsigned char *)mr_alloc(cap + 1);
+    if (!buf) {
+        mr_source_set_error("not enough memory for HTTP JSON response");
+        goto done;
+    }
+    for (;;) {
+        int n;
+        size_t want;
+        if (total == cap) {
+            unsigned char *grown;
+            size_t next;
+            if (cap == max_size) {
+                unsigned char extra;
+                n = copy_response_bytes(h, &extra, 1);
+                if (n > 0) {
+                    mr_source_set_error("HTTP JSON response exceeds size limit");
+                    goto done;
+                }
+                break;
+            }
+            next = cap > max_size / 2 ? max_size : cap * 2;
+            grown = (unsigned char *)mr_alloc(next + 1);
+            if (!grown) {
+                mr_source_set_error("not enough memory for HTTP JSON response");
+                goto done;
+            }
+            memcpy(grown, buf, total);
+            mr_free(buf);
+            buf = grown;
+            cap = next;
+        }
+        want = cap - total;
+        if (want > 16384) want = 16384;
+        n = copy_response_bytes(h, buf + total, want);
+        if (n <= 0) break;
+        total += (size_t)n;
+    }
+    if (!total || (h->response_left_known && h->response_left) ||
+        (!h->response_left_known && h->chunked && !h->chunk_done)) {
+        mr_source_set_error("HTTP JSON response ended before completion");
+        goto done;
+    }
+    buf[total] = '\0';
+    *out = (char *)buf;
+    *out_len = total;
+    buf = NULL;
+    ok = 1;
+done:
+    platform_close(h);
+    mr_free(h);
+    mr_free(buf);
+    return ok;
 }
 
 int mr_http_download_file(const char *url, const char *path, size_t max_size)
