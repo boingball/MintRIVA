@@ -1,20 +1,21 @@
 # MintRIVA - AmigaOS (m68k) cross build.
 #
-# Two programs:
+# Programs:
 #   mrplay    - the player: opens an RTG window and plays an AVI/MOV clip.
 #   mrgui     - separate ReAction controller for mrplay.
 #   iptvgui   - separate ReAction IPTV directory browser.
+#   ytgui     - separate ReAction YouTube Live search browser.
 #   mr_decode - decoder test harness: dumps frames to PPM (no display), used to
 #               verify decoding on real hardware.
 #
 #     mrplay    UHD:clips/movie.mov
 #     mr_decode test_cinepak.avi --ppm ram:frames
 #
-#   make -f Makefile.amiga                 # builds both (gcc, default)
+#   make -f Makefile.amiga                 # builds all programs (gcc, default)
 #   make -f Makefile.amiga mrplay          # just the player
 #   make -f Makefile.amiga mrplay SSL=1    # add HTTPS via AmiSSL v5
 #   make -f Makefile.amiga mrplay SSL=1 SSLCERTS=1 # verify certificates
-#   make -f Makefile.amiga all SSL=1 SSLCERTS=1 # IPTV HTTPS + verification
+#   make -f Makefile.amiga all SSL=1 SSLCERTS=1 # IPTV/YouTube HTTPS
 #   make -f Makefile.amiga TOOLCHAIN=vbcc  # mr_decode via vbcc + vclib
 #
 # The compiler does NOT need to be on your PATH: this prefers whatever
@@ -68,6 +69,9 @@ IPTVGUI = amiga/iptv_reaction.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
           iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c \
           core/mr_source.c core/mr_http.c core/mr_hls.c core/mr_youtube.c \
           core/mr_play_options.c
+YTGUI = amiga/youtube_reaction.c youtube/mr_youtube_search.c \
+        core/mr_source.c core/mr_http.c core/mr_hls.c core/mr_youtube.c \
+        core/mr_play_options.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
               $(wildcard $(MINTAMP_ROOT)/real/*.c)
@@ -121,7 +125,7 @@ CFLAGS  = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra \
 GUI_CFLAGS = -O2 -std=c99 -m68030 -noixemul -fomit-frame-pointer -Wall -Wextra
 LDFLAGS = -noixemul -lgcc
 
-all: mrplay mrgui iptvgui mr_decode
+all: mrplay mrgui iptvgui ytgui mr_decode
 
 audio_task_stress: check-cc tests/amiga_audio_task_stress.c amiga/audio_paula.c
 	$(CC) $(CFLAGS) -o $@ tests/amiga_audio_task_stress.c \
@@ -161,6 +165,9 @@ mrgui: check-cc $(GUI)
 iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(IPTVGUI) $(LDFLAGS)
 
+ytgui: check-cc $(YTGUI) youtube/mr_youtube_search.h
+	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(YTGUI) $(LDFLAGS)
+
 check-mintamp:
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
 	      -f $(MINTAMP_ROOT)/decoders/aac/aacdec.h || { \
@@ -191,7 +198,7 @@ mr_decode: $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f mrplay mrgui iptvgui mr_decode kalms_c2p_check $(KALMS_OBJ)
+	rm -f mrplay mrgui iptvgui ytgui mr_decode kalms_c2p_check $(KALMS_OBJ)
 	rm -f audio_task_stress
 
 .PHONY: all clean check-cc check-mintamp check-libavc check-kalms \

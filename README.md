@@ -22,6 +22,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | AVI, QuickTime MOV/MP4 and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
 | Public YouTube Live URLs | ✅ native watch-page resolution into the existing HLS path; ordinary uploads are not supported |
+| ReAction YouTube search | ✅ no-key search browser with live-only filter and native playback handoff |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
 | Microsoft RLE8 — palettised AVI | ✅ native palette and delta-frame decoder (RLE4 deferred) |
@@ -133,6 +134,18 @@ age/login/region-restricted streams, DRM, and pages on which YouTube withholds
 the HLS field are rejected cleanly. YouTube's private watch-page schema can
 change, so this resolver may require maintenance when YouTube changes it.
 
+The ReAction controller's **YouTube...** button opens the separate `ytgui`
+search window. It searches YouTube's public results page without an API key,
+shows the title and channel, and starts the selected public live result through
+the same native resolver. The **Quality** button cycles through Low, 360p, 480p,
+720p, 1080p, and unrestricted Best for the next playback. **Live only** is
+enabled by default. It can be unticked to inspect ordinary uploaded-video
+results, but those entries are clearly refused by Play until non-live YouTube
+playback is implemented. Build
+with `SSL=1` and keep `ytgui` beside `mrgui` and `mrplay`. As with watch-page
+resolution, this deliberately small parser may need maintenance if YouTube
+changes its private page schema.
+
 ## ReAction controller
 
 The Amiga build also creates `mrgui`, a separate Workbench-friendly controller
@@ -164,9 +177,10 @@ whole-file input path and therefore do not accept URLs.
 
 The ReAction controller includes an **IPTV...** launcher for the separate
 `iptvgui` directory window. Build it together with the controller using
-`make -f Makefile.amiga all SSL=1 SSLCERTS=1`; keep `mrgui`, `iptvgui`, and
-`mrplay` together. `SSL=1` enables AmiSSL for the HTTPS iptv-org directory
-download and `SSLCERTS=1` enables certificate verification. A browser built
+`make -f Makefile.amiga all SSL=1 SSLCERTS=1`; keep `mrgui`, `iptvgui`,
+`ytgui`, and `mrplay` together. `SSL=1` enables AmiSSL for YouTube searches and
+the iptv-org directory download; `SSLCERTS=1` enables certificate verification.
+A browser built
 without HTTPS support remains usable for cached data and manual URLs, but a
 refresh explicitly reports that it must be rebuilt with `SSL=1`.
 The browser immediately reads valid cached `channels.json` and `streams.json`

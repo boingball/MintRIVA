@@ -1,0 +1,304 @@
+#include "mr_youtube_search.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char search_error[160];
+
+static void set_error(const char *text)
+{
+    snprintf(search_error, sizeof(search_error), "%s", text ? text : "");
+}
+
+const char *mr_youtube_search_last_error(void)
+{
+    return search_error;
+}
+
+void mr_youtube_search_results_init(mr_youtube_search_results *results)
+{
+    if (results) {
+        results->items = NULL;
+        results->count = 0;
+    }
+}
+
+void mr_youtube_search_results_free(mr_youtube_search_results *results)
+{
+    if (!results)
+        return;
+    free(results->items);
+    results->items = NULL;
+    results->count = 0;
+}
+
+static int append_char(char *out, size_t cap, size_t *used, char c)
+{
+    if (*used + 1 >= cap)
+        return 0;
+    out[(*used)++] = c;
+    out[*used] = 0;
+    return 1;
+}
+
+int mr_youtube_search_build_url(char *out, size_t cap,
+                                const char *query, int live_only)
+{
+    static const char prefix[] =
+        "https://www.youtube.com/results?search_query=";
+    static const char hex[] = "0123456789ABCDEF";
+    size_t used, i;
+
+    if (!out || !cap || !query || !*query) {
+        set_error("Enter something to search for.");
+        return 0;
+    }
+    if (sizeof(prefix) > cap) {
+        set_error("Search URL buffer is too small.");
+        return 0;
+    }
+    memcpy(out, prefix, sizeof(prefix));
+    used = sizeof(prefix) - 1;
+    for (i = 0; query[i]; i++) {
+        unsigned char c = (unsigned char)query[i];
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            if (!append_char(out, cap, &used, (char)c))
+                goto too_long;
+        } else {
+            if (used + 3 >= cap)
+                goto too_long;
+            out[used++] = '%';
+            out[used++] = hex[c >> 4];
+            out[used++] = hex[c & 15];
+            out[used] = 0;
+        }
+    }
+    if (live_only) {
+        /* YouTube's search-page link carries the already-escaped protobuf
+         * token as a query value, hence the deliberate second escaping. */
+        static const char filter[] = "&sp=EgJAAQ%253D%253D";
+        if (used + sizeof(filter) > cap)
+            goto too_long;
+        memcpy(out + used, filter, sizeof(filter));
+    }
+    set_error("");
+    return 1;
+
+too_long:
+    set_error("Search text is too long.");
+    return 0;
+}
+
+static const char *find_bounded(const char *start, const char *end,
+                                const char *needle)
+{
+    size_t length = strlen(needle);
+    const char *p;
+    if (!length || end < start || (size_t)(end - start) < length)
+        return NULL;
+    for (p = start; p + length <= end; p++)
+        if (!memcmp(p, needle, length))
+            return p;
+    return NULL;
+}
+
+/* Return the byte after a balanced JSON object, ignoring braces in strings. */
+static const char *json_object_end(const char *open, const char *end)
+{
+    const char *p;
+    unsigned depth = 0;
+    int in_string = 0, escaped = 0;
+    for (p = open; p < end; p++) {
+        char c = *p;
+        if (in_string) {
+            if (escaped)
+                escaped = 0;
+            else if (c == '\\')
+                escaped = 1;
+            else if (c == '"')
+                in_string = 0;
+        } else if (c == '"') {
+            in_string = 1;
+        } else if (c == '{') {
+            depth++;
+        } else if (c == '}' && depth) {
+            if (--depth == 0)
+                return p + 1;
+        }
+    }
+    return NULL;
+}
+
+static int hex_value(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Decode a JSON string into a display-safe byte string. Amiga system fonts do
+ * not reliably render arbitrary Unicode, so non-Latin \u escapes become '?'. */
+static int json_string(const char *quote, const char *end,
+                       char *out, size_t cap)
+{
+    const char *p;
+    size_t used = 0;
+    if (!quote || quote >= end || *quote != '"' || !cap)
+        return 0;
+    out[0] = 0;
+    for (p = quote + 1; p < end && *p != '"'; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\\') {
+            if (++p >= end)
+                return 0;
+            switch (*p) {
+            case '"': c = '"'; break;
+            case '\\': c = '\\'; break;
+            case '/': c = '/'; break;
+            case 'b': c = '\b'; break;
+            case 'f': c = '\f'; break;
+            case 'n': c = ' '; break;
+            case 'r': c = ' '; break;
+            case 't': c = ' '; break;
+            case 'u': {
+                int a, b, d, e;
+                unsigned value;
+                if (p + 4 >= end || (a = hex_value(p[1])) < 0 ||
+                    (b = hex_value(p[2])) < 0 ||
+                    (d = hex_value(p[3])) < 0 ||
+                    (e = hex_value(p[4])) < 0)
+                    return 0;
+                value = (unsigned)((a << 12) | (b << 8) | (d << 4) | e);
+                c = value >= 32 && value <= 255 ? (unsigned char)value : '?';
+                p += 4;
+                break;
+            }
+            default: return 0;
+            }
+        }
+        if (c < 32)
+            c = ' ';
+        if (used + 1 < cap)
+            out[used++] = (char)c;
+    }
+    if (p >= end || *p != '"')
+        return 0;
+    out[used] = 0;
+    return used != 0;
+}
+
+static int field_string(const char *start, const char *end, const char *field,
+                        char *out, size_t cap)
+{
+    const char *p = find_bounded(start, end, field);
+    if (!p)
+        return 0;
+    p += strlen(field);
+    return json_string(p, end, out, cap);
+}
+
+static int nested_text(const char *start, const char *end, const char *object,
+                       char *out, size_t cap)
+{
+    const char *p = find_bounded(start, end, object);
+    const char *object_open, *object_end;
+    if (!p)
+        return 0;
+    object_open = strchr(p + strlen(object), '{');
+    if (!object_open || object_open >= end)
+        return 0;
+    object_end = json_object_end(object_open, end);
+    if (!object_end)
+        return 0;
+    if (field_string(object_open, object_end, "\"text\":", out, cap))
+        return 1;
+    return field_string(object_open, object_end, "\"simpleText\":", out,
+                        cap);
+}
+
+static int already_present(const mr_youtube_search_results *results,
+                           const char *video_id)
+{
+    size_t i;
+    for (i = 0; i < results->count; i++)
+        if (!strcmp(results->items[i].video_id, video_id))
+            return 1;
+    return 0;
+}
+
+int mr_youtube_search_parse(mr_youtube_search_results *results,
+                            const char *document, size_t document_size,
+                            int live_only)
+{
+    static const char marker[] = "\"videoRenderer\":{";
+    const char *p, *end;
+    mr_youtube_search_result *items;
+
+    if (!results || !document) {
+        set_error("Invalid YouTube search document.");
+        return 0;
+    }
+    mr_youtube_search_results_free(results);
+    items = (mr_youtube_search_result *)calloc(
+        MR_YOUTUBE_SEARCH_MAX_RESULTS, sizeof(*items));
+    if (!items) {
+        set_error("Not enough memory for YouTube results.");
+        return 0;
+    }
+    results->items = items;
+    end = document + document_size;
+    p = document;
+    while (results->count < MR_YOUTUBE_SEARCH_MAX_RESULTS &&
+           (p = find_bounded(p, end, marker)) != NULL) {
+        const char *open = p + sizeof(marker) - 2;
+        const char *close = json_object_end(open, end);
+        mr_youtube_search_result item;
+        int live;
+        if (!close)
+            break;
+        memset(&item, 0, sizeof(item));
+        live = find_bounded(open, close, "BADGE_STYLE_TYPE_LIVE_NOW") != NULL ||
+               find_bounded(open, close, "\"style\":\"LIVE\"") != NULL ||
+               find_bounded(open, close, "\"isLive\":true") != NULL ||
+               find_bounded(open, close, "\"label\":\"LIVE NOW\"") != NULL;
+        if ((!live_only || live) &&
+            field_string(open, close, "\"videoId\":", item.video_id,
+                         sizeof(item.video_id)) &&
+            strlen(item.video_id) == 11 &&
+            !already_present(results, item.video_id) &&
+            nested_text(open, close, "\"title\":", item.title,
+                        sizeof(item.title))) {
+            if (!nested_text(open, close, "\"ownerText\":", item.channel,
+                             sizeof(item.channel)))
+                nested_text(open, close, "\"longBylineText\":", item.channel,
+                            sizeof(item.channel));
+            item.live = live;
+            snprintf(item.row, sizeof(item.row), "%s%s%s%s",
+                     live ? "[LIVE] " : "", item.title,
+                     item.channel[0] ? " - " : "", item.channel);
+            results->items[results->count++] = item;
+        }
+        p = close;
+    }
+    if (!results->count) {
+        set_error(live_only ? "No live YouTube results found."
+                            : "No YouTube video results found.");
+        return 1;
+    }
+    set_error("");
+    return 1;
+}
+
+int mr_youtube_search_watch_url(char *out, size_t cap,
+                                const mr_youtube_search_result *result)
+{
+    int length;
+    if (!out || !cap || !result || strlen(result->video_id) != 11)
+        return 0;
+    length = snprintf(out, cap, "https://www.youtube.com/watch?v=%s",
+                      result->video_id);
+    return length > 0 && (size_t)length < cap;
+}
