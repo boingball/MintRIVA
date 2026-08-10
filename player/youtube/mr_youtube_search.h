@@ -6,12 +6,14 @@
 #define MR_YOUTUBE_SEARCH_MAX_RESULTS 100
 #define MR_YOUTUBE_SEARCH_TITLE_MAX 192
 #define MR_YOUTUBE_SEARCH_CHANNEL_MAX 128
+#define MR_YOUTUBE_SEARCH_CHANNEL_ID_MAX 32
 #define MR_YOUTUBE_SEARCH_ROW_MAX 352
 
 typedef struct mr_youtube_search_result {
     char video_id[12];
     char title[MR_YOUTUBE_SEARCH_TITLE_MAX];
     char channel[MR_YOUTUBE_SEARCH_CHANNEL_MAX];
+    char channel_id[MR_YOUTUBE_SEARCH_CHANNEL_ID_MAX];
     char row[MR_YOUTUBE_SEARCH_ROW_MAX];
     int live;
 } mr_youtube_search_result;
@@ -35,6 +37,8 @@ int mr_youtube_search_parse(mr_youtube_search_results *results,
 
 int mr_youtube_search_watch_url(char *output, size_t output_size,
                                 const mr_youtube_search_result *result);
+int mr_youtube_channel_videos_url(char *output, size_t output_size,
+                                  const mr_youtube_search_result *result);
 
 const char *mr_youtube_search_last_error(void);
 

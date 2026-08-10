@@ -54,6 +54,11 @@ typedef struct {
     int            geometry_valid;  /* 0 = rebuild required                  */
     mr_display_timing timing;
     int            quit;
+    int            fullscreen;
+    int            have_window_geometry;
+    int            window_left, window_top, window_width, window_height;
+    int            window_iw, window_ih;
+    int            force_full_redraw;
     const char    *title;    /* last status shown, for idempotent updates      */
 } cgx_state;
 
@@ -62,6 +67,40 @@ typedef struct {
 /* Forward declarations (implementations follow cgx_open in source order). */
 static void cgx_rebuild_geometry(cgx_state *s, const char *reason);
 static int  ensure_scaled(cgx_state *s, int w);
+static int  cgx_toggle_fullscreen(void *h);
+
+static struct Window *cgx_open_window(cgx_state *s, const char *title,
+                                      int inner_w, int inner_h)
+{
+    struct Screen *scr = LockPubScreen(NULL);
+    struct Window *win = NULL;
+    if (!scr) return NULL;
+    if (s->fullscreen) {
+        win = OpenWindowTags(NULL,
+            WA_PubScreen, (ULONG)scr,
+            WA_Title, (ULONG)(title ? title : "MintRIVA"),
+            WA_Left, 0, WA_Top, 0,
+            WA_Width, (ULONG)scr->Width, WA_Height, (ULONG)scr->Height,
+            WA_Borderless, TRUE, WA_Activate, TRUE,
+            WA_Flags, WFLG_NOCAREREFRESH,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
+            TAG_END);
+    } else {
+        win = OpenWindowTags(NULL,
+            WA_PubScreen, (ULONG)scr,
+            WA_Title, (ULONG)(title ? title : "MintRIVA"),
+            WA_InnerWidth, (ULONG)inner_w,
+            WA_InnerHeight, (ULONG)inner_h,
+            WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
+                      WFLG_SIZEGADGET | WFLG_ACTIVATE | WFLG_NOCAREREFRESH,
+            WA_MinWidth, 160, WA_MinHeight, 100,
+            WA_MaxWidth, (ULONG)-1, WA_MaxHeight, (ULONG)-1,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
+            TAG_END);
+    }
+    UnlockPubScreen(NULL, scr);
+    return win;
+}
 
 /* Having cybergraphics.library is not enough - the actual public screen we'd
  * render into must be an RTG/truecolour mode. On an AGA (planar) Workbench,
@@ -132,18 +171,9 @@ static void *cgx_open(int w, int h, const char *title)
         fit_within(w, h, avail_w, avail_h, &win_w, &win_h);
     }
 
-    s->win = OpenWindowTags(NULL,
-        WA_Title,       (ULONG)(title ? title : "MintRIVA"),
-        WA_InnerWidth,  (ULONG)win_w,
-        WA_InnerHeight, (ULONG)win_h,
-        WA_Flags,       WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
-                        WFLG_SIZEGADGET | WFLG_ACTIVATE | WFLG_NOCAREREFRESH,
-        WA_MinWidth,    160,
-        WA_MinHeight,   100,
-        WA_MaxWidth,    (ULONG)-1,
-        WA_MaxHeight,   (ULONG)-1,
-        WA_IDCMP,       IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
-        TAG_END);
+    s->fullscreen = g_display_fullscreen;
+    s->title = title;
+    s->win = cgx_open_window(s, title, win_w, win_h);
     if (!s->win) { FreeVec(s); return NULL; }
 
     s->bl = s->win->BorderLeft;
@@ -151,6 +181,16 @@ static void *cgx_open(int w, int h, const char *title)
     s->iw = s->win->Width - s->win->BorderLeft - s->win->BorderRight;
     s->ih = s->win->Height - s->win->BorderTop - s->win->BorderBottom;
     s->pending_w = s->iw; s->pending_h = s->ih;
+    s->force_full_redraw = 1;
+    if (!s->fullscreen) {
+        s->have_window_geometry = 1;
+        s->window_left = s->win->LeftEdge;
+        s->window_top = s->win->TopEdge;
+        s->window_width = s->win->Width;
+        s->window_height = s->win->Height;
+        s->window_iw = s->iw;
+        s->window_ih = s->ih;
+    }
 
     /* Initialise geometry cache with impossible sentinels so that the first
      * cgx_show() call always triggers cgx_rebuild_geometry(), matching the
@@ -320,6 +360,11 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     s->timing.resize_us = elapsed_us(mark);
     report_slow("resize-handling", s->timing.resize_us, service, service_opaque);
     mark = clock();
+    if (s->force_full_redraw) {
+        dy0 = 0;
+        dy1 = hh;
+        s->force_full_redraw = 0;
+    }
     if (dy0 < 0) dy0 = 0;
     if (dy1 > hh) dy1 = hh;
     if (dy1 <= dy0) return;                       /* nothing changed         */
@@ -426,12 +471,59 @@ static int cgx_poll(void *h)
             switch (code) {
             case 0x45: s->quit = 1; break;             /* ESC              */
             case 0x40: ev = MR_EV_PAUSE; break;        /* space            */
+            case 0x23: cgx_toggle_fullscreen(s); break;/* F                */
             case 0x4E: ev = MR_EV_SEEK_FWD; break;     /* cursor right     */
             case 0x4F: ev = MR_EV_SEEK_BACK; break;    /* cursor left      */
             }
         }
     }
     return s->quit ? MR_EV_QUIT : ev;
+}
+
+static int cgx_toggle_fullscreen(void *h)
+{
+    cgx_state *s = (cgx_state *)h;
+    struct Window *old, *replacement;
+    struct IntuiMessage *msg;
+    int next_fullscreen;
+    if (!s || !s->win) return 0;
+    old = s->win;
+    if (!s->fullscreen) {
+        s->have_window_geometry = 1;
+        s->window_left = old->LeftEdge;
+        s->window_top = old->TopEdge;
+        s->window_width = old->Width;
+        s->window_height = old->Height;
+        s->window_iw = old->Width - old->BorderLeft - old->BorderRight;
+        s->window_ih = old->Height - old->BorderTop - old->BorderBottom;
+    }
+    next_fullscreen = !s->fullscreen;
+    s->fullscreen = next_fullscreen;
+    replacement = cgx_open_window(s, s->title,
+        s->have_window_geometry ? s->window_iw : s->iw,
+        s->have_window_geometry ? s->window_ih : s->ih);
+    if (!replacement) {
+        s->fullscreen = !next_fullscreen;
+        return 0;
+    }
+    while ((msg = (struct IntuiMessage *)GetMsg(old->UserPort)) != NULL)
+        ReplyMsg((struct Message *)msg);
+    CloseWindow(old);
+    s->win = replacement;
+    if (!s->fullscreen && s->have_window_geometry)
+        ChangeWindowBox(s->win, s->window_left, s->window_top,
+                        s->window_width, s->window_height);
+    s->bl = s->win->BorderLeft;
+    s->bt = s->win->BorderTop;
+    s->pending_w = s->iw = s->win->Width - s->win->BorderLeft -
+                            s->win->BorderRight;
+    s->pending_h = s->ih = s->win->Height - s->win->BorderTop -
+                            s->win->BorderBottom;
+    s->cached_dst_w = s->cached_dst_h = -1;
+    s->cached_bitmap = NULL;
+    s->geometry_valid = 0;
+    s->force_full_redraw = 1;
+    return 1;
 }
 
 static void cgx_status(void *h, const char *text)
@@ -465,5 +557,5 @@ static ULONG cgx_wait_mask(void *h)
 
 const display_backend backend_cgx = {
     "RTG (CGX)", cgx_open, cgx_show, cgx_timing, cgx_poll, cgx_close,
-    cgx_status, cgx_wait_mask
+    cgx_status, cgx_wait_mask, cgx_toggle_fullscreen
 };

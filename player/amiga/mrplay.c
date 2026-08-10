@@ -132,6 +132,8 @@ struct Device *TimerBase;
  * embedded status block (see mr_player_status.h) so the controller can read
  * back the codec that is playing, or why a stream refused to play. */
 static mr_player_control_port *control_block;
+static mr_audio *control_audio;
+static int control_volume = 64;
 
 /* One-shot high-resolution pipeline breadcrumb. It advances only when a new
  * stage is reached, so diagnostics cannot turn every 1080p frame into DOS I/O. */
@@ -943,13 +945,39 @@ static void decoded_audio_sink(void *user, const int16_t *pcm,
  * abort the CLI process before display/audio cleanup runs.  Shell Ctrl-C is
  * still accepted when mrplay sees it itself; Ctrl-D toggles pause and Ctrl-E
  * toggles fast-forward. */
-static int control_signal_event(void)
+static int control_signal_event(amiga_display *disp)
 {
     ULONG sig = SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D |
                              SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
+    ULONG commands = 0;
     if (sig & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) return MR_EV_QUIT;
     if (sig & SIGBREAKF_CTRL_D) return MR_EV_PAUSE;
-    if (sig & SIGBREAKF_CTRL_E) return MR_EV_SEEK_FWD;
+    if (sig & SIGBREAKF_CTRL_E) {
+        if (control_block) {
+            Forbid();
+            commands = control_block->commands;
+            control_block->commands = 0;
+            Permit();
+        }
+        if (commands & MR_PLAYER_COMMAND_FULLSCREEN)
+            display_toggle_fullscreen(disp);
+        if (commands & MR_PLAYER_COMMAND_VOLUME_DOWN) {
+            control_volume -= 8;
+            if (control_volume < 0) control_volume = 0;
+            if (control_audio) audio_set_volume(control_audio, control_volume);
+            printf("volume: %d%%\n", control_volume * 100 / 64);
+        }
+        if (commands & MR_PLAYER_COMMAND_VOLUME_UP) {
+            control_volume += 8;
+            if (control_volume > 64) control_volume = 64;
+            if (control_audio) audio_set_volume(control_audio, control_volume);
+            printf("volume: %d%%\n", control_volume * 100 / 64);
+        }
+        if (commands & MR_PLAYER_COMMAND_PAUSE) return MR_EV_PAUSE;
+        if (commands & MR_PLAYER_COMMAND_FAST) return MR_EV_SEEK_FWD;
+        /* Compatibility with older controllers that used bare Ctrl-E. */
+        if (!commands) return MR_EV_SEEK_FWD;
+    }
     return MR_EV_NONE;
 }
 
@@ -962,13 +990,13 @@ static int control_signal_event(void)
 static int prefetch_quit_probe(void *opaque)
 {
     amiga_display *disp = (amiga_display *)opaque;
-    if (control_signal_event() == MR_EV_QUIT) return 1;
+    if (control_signal_event(disp) == MR_EV_QUIT) return 1;
     return disp && display_poll_event(disp) == MR_EV_QUIT;
 }
 
 static int player_event(amiga_display *disp)
 {
-    int ev = control_signal_event();
+    int ev = control_signal_event(disp);
     return ev != MR_EV_NONE ? ev : display_poll_event(disp);
 }
 
@@ -1042,6 +1070,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     sr = mr_mpeg1_samplerate(mp);
     if (sr) {
         audio = audio_open(sr, 2, 16);
+        control_audio = audio;
+        if (audio) audio_set_volume(audio, control_volume);
         printf(audio ? "audio: Paula out, %u Hz (MP2 stereo)\n"
                      : "audio: Paula open failed, silent\n", sr);
     }
@@ -1138,6 +1168,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
     }
     player_status(MR_PLAYER_STATE_ENDED, "MPEG-1", "stream ended");
+    control_audio = NULL;
     if (audio) audio_close(audio);
     display_close(disp);
     mr_mpeg1_close(mp);
@@ -1160,6 +1191,7 @@ int main(int argc, char **argv)
     long ticks;
     int frames = 0;
     int want_time = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
+    int fullscreen = 0;
     int raw_diag_printed = 0;
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
@@ -1215,7 +1247,7 @@ int main(int argc, char **argv)
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] "
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
-               "[--cd32] [--hls-low] [--net-queue=N] [--live-resync] "
+               "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--time]\n");
         return mrplay_exit(5);
     }
@@ -1247,6 +1279,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
             else if (!strcmp(argv[i], "--time")) { want_time = 1; display_set_timing_mode(1); }
+            else if (!strcmp(argv[i], "--fullscreen")) fullscreen = 1;
             else if (!strcmp(argv[i], "--hls-low")) hls_low = 1;
             else if (!strncmp(argv[i], "--hls-max-width=", 16))
                 hls_max_width = (unsigned)strtoul(argv[i] + 16, NULL, 10);
@@ -1265,6 +1298,7 @@ int main(int argc, char **argv)
         printf("no media URL or filename supplied\n");
         return mrplay_exit(5);
     }
+    display_set_fullscreen(fullscreen);
     if (!mr_http_options_init(&http_options, user_agent, referer)) {
         printf("invalid HTTP options: %s\n", mr_source_last_error());
         return mrplay_exit(5);
@@ -1529,6 +1563,8 @@ int main(int argc, char **argv)
             }
         }
     }
+    control_audio = audio;
+    if (audio) audio_set_volume(audio, control_volume);
 
     ticks = frame_ticks(vi->rate, vi->scale);
     memset(&trace, 0, sizeof trace);
@@ -1549,7 +1585,7 @@ int main(int argc, char **argv)
                                            / vi->rate) : 83;
         if (period < 1) period = 1;
 
-    printf("playing: space=pause, </>=seek, ESC=quit%s...\n",
+    printf("playing: space=pause, F=fullscreen, right=fast, ESC=quit%s...\n",
            loop ? ", loop on" : "");
 
     memset(vq, 0, sizeof vq);
@@ -2532,6 +2568,7 @@ int main(int argc, char **argv)
     player_status(MR_PLAYER_STATE_ENDED, codec->name, "stream ended");
     { int qi; for (qi = 0; qi < VIDEO_QUEUE_CAP; qi++) free(vq[qi].rgb); }
     if (audio_dec) mr_audio_decoder_close(audio_dec);
+    control_audio = NULL;
     if (audio) audio_close(audio);
     display_close(disp);
     mr_decoder_close(&dec);

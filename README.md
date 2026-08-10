@@ -158,6 +158,12 @@ with `SSL=1` and keep `ytgui` beside `mrgui` and `mrplay`. As with watch-page
 resolution, this deliberately small parser may need maintenance if YouTube
 changes its private page schema.
 
+Selecting a result and pressing **Channel videos** follows its bounded channel
+ID to the public channel `/videos` page and lists that channel's uploads. The
+transport row controls the separate player process: Play first cleanly replaces
+the current video, Pause and Fast toggle their modes, Vol -/+ adjusts Paula in
+steps, Fullscreen toggles the RTG window, and Stop exits the player.
+
 ## ReAction controller
 
 The Amiga build also creates `mrgui`, a separate Workbench-friendly controller
@@ -169,6 +175,13 @@ scales the video as that window is resized. The **C2P** chooser selects the
 standard graphics.library path, CD32 Akiko hardware, or the Kalms converter for
 chipset playback, and is disabled for CGX. Play starts the selected movie,
 Pause toggles playback, Stop exits it, and Fast forward toggles unpaced decode.
+In RTG/CGX mode, `F` switches the live player between its resizeable window and
+a borderless public-screen-sized view without restarting decoding; `--fullscreen`
+starts in that view. Press `F` again—or use ytgui's **Fullscreen** button—to
+restore the previous window geometry. AGA display modes remain hotkey-driven
+and ignore the RTG-only fullscreen command. True timeline seeking is not yet
+implemented; it needs a demux keyframe/sample seek API rather than pretending
+that fast decode is a seek operation.
 
 The controller's file gadget identifies the selected file. On launch, `mrplay`
 also reports the container type, video codec/FourCC, dimensions, frame rate and

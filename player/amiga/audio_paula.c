@@ -82,6 +82,7 @@ struct mr_audio {
     unsigned long   minimum_active_ms;
     int             had_buffered_audio;
     int             running;
+    int             volume;         /* audio.device range 0..64             */
     int             ever_started;
     int             hardware_starved;
     clock_t         no_active_since;
@@ -193,6 +194,7 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->period = (unsigned)(PAL_CLOCK / rate);
     a->minimum_buffered_ms = ULONG_MAX;
     a->minimum_active_ms = ULONG_MAX;
+    a->volume = 64;
     if (a->period < MIN_PERIOD) a->period = MIN_PERIOD;
     a->output_rate = (unsigned)(PAL_CLOCK / a->period);
 
@@ -373,7 +375,7 @@ static void audio_pump(mr_audio *a)
                 a->io[i]->ioa_Data   = (UBYTE *)a->chip[i];
                 a->io[i]->ioa_Length = (ULONG)n;
                 a->io[i]->ioa_Period = a->period;
-                a->io[i]->ioa_Volume = 64;
+                a->io[i]->ioa_Volume = (UWORD)a->volume;
                 a->io[i]->ioa_Cycles = 1;
                 BeginIO((struct IORequest *)a->io[i]);
                 a->busy[i] = 1;
@@ -423,6 +425,14 @@ static void audio_pump(mr_audio *a)
             a->no_active_since = 0;
         }
     }
+}
+
+void audio_set_volume(mr_audio *a, int volume)
+{
+    if (!a) return;
+    if (volume < 0) volume = 0;
+    if (volume > 64) volume = 64;
+    a->volume = volume;
 }
 
 void audio_service(mr_audio *a)

@@ -20,6 +20,8 @@ int main(void)
         "{\"videoRenderer\":{\"videoId\":\"LIVE1234567\","
         "\"title\":{\"runs\":[{\"text\":\"News \\u0026 weather\"}]},"
         "\"ownerText\":{\"runs\":[{\"text\":\"Test Channel\"}]},"
+        "\"navigationEndpoint\":{\"browseEndpoint\":{"
+        "\"browseId\":\"UCTEST_channel-1234567890\"}},"
         "\"badges\":[{\"metadataBadgeRenderer\":{"
         "\"style\":\"BADGE_STYLE_TYPE_LIVE_NOW\"}}]}},"
         "{\"videoRenderer\":{\"videoId\":\"VIDEO123456\","
@@ -29,6 +31,10 @@ int main(void)
         "\"title\":{\"runs\":[{\"text\":\"Duplicate\"}]},"
         "\"badges\":[{\"metadataBadgeRenderer\":{"
         "\"style\":\"BADGE_STYLE_TYPE_LIVE_NOW\"}}]}}]};</script></html>";
+    static const char channel_fixture[] =
+        "{\"contents\":[{\"gridVideoRenderer\":{"
+        "\"videoId\":\"CHANV123456\","
+        "\"title\":{\"simpleText\":\"Channel upload\"}}}]}";
     mr_youtube_search_results results;
     char url[512];
 
@@ -49,13 +55,29 @@ int main(void)
               "JSON title decoded");
         CHECK(!strcmp(results.items[0].channel, "Test Channel"),
               "channel extracted");
+        CHECK(!strcmp(results.items[0].channel_id,
+                      "UCTEST_channel-1234567890"), "channel ID extracted");
         CHECK(results.items[0].live, "live badge detected");
         CHECK(mr_youtube_search_watch_url(url, sizeof(url), &results.items[0]),
               "watch URL built");
         CHECK(!strcmp(url,
                       "https://www.youtube.com/watch?v=LIVE1234567"),
               "watch URL correct");
+        CHECK(mr_youtube_channel_videos_url(url, sizeof(url),
+                                            &results.items[0]),
+              "channel videos URL built");
+        CHECK(!strcmp(url, "https://www.youtube.com/channel/"
+                           "UCTEST_channel-1234567890/videos"),
+              "channel videos URL correct");
     }
+    mr_youtube_search_results_free(&results);
+
+    CHECK(mr_youtube_search_parse(&results, channel_fixture,
+                                  strlen(channel_fixture), 0),
+          "parse channel grid-video fixture");
+    CHECK(results.count == 1 &&
+          !strcmp(results.items[0].video_id, "CHANV123456"),
+          "gridVideoRenderer channel upload extracted");
     mr_youtube_search_results_free(&results);
 
     CHECK(mr_youtube_search_parse(&results, fixture, strlen(fixture), 0),

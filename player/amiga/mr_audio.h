@@ -79,6 +79,7 @@ unsigned long audio_buffered_ms(mr_audio *a);
 void          audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag);
 int           audio_active_requests(mr_audio *a);
 void          audio_set_running(mr_audio *a, int running);
+void          audio_set_volume(mr_audio *a, int volume);
 
 /* Drop everything queued in the software FIFO. Used by the live-resync path to
  * throw away stale buffered audio after skipping the backlog; already-submitted

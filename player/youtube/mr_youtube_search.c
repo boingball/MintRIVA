@@ -229,11 +229,24 @@ static int already_present(const mr_youtube_search_results *results,
     return 0;
 }
 
+static int channel_id_valid(const char *id)
+{
+    size_t i, length;
+    if (!id || (length = strlen(id)) < 3 || length >=
+        MR_YOUTUBE_SEARCH_CHANNEL_ID_MAX || id[0] != 'U' || id[1] != 'C')
+        return 0;
+    for (i = 2; i < length; i++)
+        if (!isalnum((unsigned char)id[i]) && id[i] != '_' && id[i] != '-')
+            return 0;
+    return 1;
+}
+
 int mr_youtube_search_parse(mr_youtube_search_results *results,
                             const char *document, size_t document_size,
                             int live_only)
 {
     static const char marker[] = "\"videoRenderer\":{";
+    static const char grid_marker[] = "\"gridVideoRenderer\":{";
     const char *p, *end;
     mr_youtube_search_result *items;
 
@@ -251,9 +264,20 @@ int mr_youtube_search_parse(mr_youtube_search_results *results,
     results->items = items;
     end = document + document_size;
     p = document;
-    while (results->count < MR_YOUTUBE_SEARCH_MAX_RESULTS &&
-           (p = find_bounded(p, end, marker)) != NULL) {
-        const char *open = p + sizeof(marker) - 2;
+    while (results->count < MR_YOUTUBE_SEARCH_MAX_RESULTS) {
+        const char *video = find_bounded(p, end, marker);
+        const char *grid = find_bounded(p, end, grid_marker);
+        size_t marker_size;
+        const char *open;
+        if (!video && !grid) break;
+        if (!grid || (video && video < grid)) {
+            p = video;
+            marker_size = sizeof(marker);
+        } else {
+            p = grid;
+            marker_size = sizeof(grid_marker);
+        }
+        open = p + marker_size - 2;
         const char *close = json_object_end(open, end);
         mr_youtube_search_result item;
         int live;
@@ -275,6 +299,10 @@ int mr_youtube_search_parse(mr_youtube_search_results *results,
                              sizeof(item.channel)))
                 nested_text(open, close, "\"longBylineText\":", item.channel,
                             sizeof(item.channel));
+            if (!field_string(open, close, "\"browseId\":", item.channel_id,
+                              sizeof(item.channel_id)) ||
+                !channel_id_valid(item.channel_id))
+                item.channel_id[0] = 0;
             item.live = live;
             snprintf(item.row, sizeof(item.row), "%s%s%s%s",
                      live ? "[LIVE] " : "", item.title,
@@ -290,6 +318,17 @@ int mr_youtube_search_parse(mr_youtube_search_results *results,
     }
     set_error("");
     return 1;
+}
+
+int mr_youtube_channel_videos_url(char *out, size_t cap,
+                                  const mr_youtube_search_result *result)
+{
+    int length;
+    if (!out || !cap || !result || !channel_id_valid(result->channel_id))
+        return 0;
+    length = snprintf(out, cap, "https://www.youtube.com/channel/%s/videos",
+                      result->channel_id);
+    return length > 0 && (size_t)length < cap;
 }
 
 int mr_youtube_search_watch_url(char *out, size_t cap,

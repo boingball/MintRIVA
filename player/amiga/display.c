@@ -26,6 +26,7 @@ int g_aga_c2p   = 0;   /* WritePixelArray8 by default (measured faster);
 int g_aga_lace  = 0;
 int g_aga_akiko = 0;
 int g_display_want_time = 0;  /* enable RTG geometry diagnostics (--time)   */
+int g_display_fullscreen = 0;
 
 void display_set_force_aga(int on) { g_force_aga = on; }
 void display_set_ham(int bits) { g_aga_ham = bits; if (bits) g_force_aga = 1; }
@@ -36,6 +37,7 @@ void display_set_kalms_c2p(int on) { g_aga_c2p = on ? 3 : 0; }
 void display_set_lace(int on)  { g_aga_lace = on ? 1 : 0; }
 void display_set_akiko(int on) { g_aga_akiko = on ? 1 : 0; }
 void display_set_timing_mode(int on) { g_display_want_time = on ? 1 : 0; }
+void display_set_fullscreen(int on) { g_display_fullscreen = on ? 1 : 0; }
 
 struct amiga_display {
     const display_backend *be;
@@ -100,6 +102,12 @@ void display_set_service(amiga_display *d, mr_display_service_fn fn,
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing)
 {
     return d && d->be->timing ? d->be->timing(d->h, timing) : 0;
+}
+
+int display_toggle_fullscreen(amiga_display *d)
+{
+    return d && d->be->toggle_fullscreen
+         ? d->be->toggle_fullscreen(d->h) : 0;
 }
 
 int display_poll_event(amiga_display *d)

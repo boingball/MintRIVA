@@ -407,5 +407,6 @@ static ULONG aga_wait_mask(void *handle)
 }
 
 const display_backend backend_aga = {
-    "AGA", aga_open, aga_show, NULL, aga_poll, aga_close, NULL, aga_wait_mask
+    "AGA", aga_open, aga_show, NULL, aga_poll, aga_close, NULL, aga_wait_mask,
+    NULL
 };

@@ -38,6 +38,12 @@
 #define MR_PLAYER_STATUS_TEXT_MAX 208
 #define MR_PLAYER_CODEC_MAX 48
 
+#define MR_PLAYER_COMMAND_PAUSE      (1UL << 0)
+#define MR_PLAYER_COMMAND_FAST       (1UL << 1)
+#define MR_PLAYER_COMMAND_FULLSCREEN (1UL << 2)
+#define MR_PLAYER_COMMAND_VOLUME_DOWN (1UL << 3)
+#define MR_PLAYER_COMMAND_VOLUME_UP   (1UL << 4)
+
 enum {
   MR_PLAYER_STATE_STARTING = 0, /* process up, nothing opened yet            */
   MR_PLAYER_STATE_OPENING,      /* fetching/parsing the container / URL       */
@@ -58,8 +64,23 @@ typedef struct {
 /* MsgPort first so a FindPort() result is also the wrapper address. */
 typedef struct {
   struct MsgPort port;
+  volatile ULONG commands;
   mr_player_status status;
 } mr_player_control_port;
+
+static inline int mr_player_control_send(ULONG command) {
+  mr_player_control_port *block;
+  int sent = 0;
+  Forbid();
+  block = (mr_player_control_port *)FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT);
+  if (block && block->status.magic == MR_PLAYER_STATUS_MAGIC) {
+    block->commands |= command;
+    Signal(block->port.mp_SigTask, SIGBREAKF_CTRL_E);
+    sent = 1;
+  }
+  Permit();
+  return sent;
+}
 
 /* Copy a NUL-terminated string into a fixed field, always terminating. */
 static inline void mr_player_status_copy(char *dst, size_t size,

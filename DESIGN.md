@@ -148,7 +148,8 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       sample decodes 171/171 frames and matches ffmpeg at worst MAE 1.06/255.
       Gated in practice to PiStorm/Emu68-class machines; m68k timing pending.
 - [ ] Internet streaming (reuse MintAMP's radio_stream + AmiSSL HTTP stack)
-- [ ] Faster output: direct RGB565 / fullscreen RTG / port `RendererCGXInit.i`
+- [~] RTG fullscreen toggle is implemented with a borderless screen-sized CGX
+      window; direct RGB565 and porting `RendererCGXInit.i` remain future work
 - [~] Paula audio backend + audio-master A/V sync (`audio_paula.c`) - PCM,
       MP2, MP3-in-AVI and AAC-LC-in-MP4. MP3/AAC use the pinned MintAMP/Helix
       sources through `player/audio/mr_audio_decode.c`; host regression tests
@@ -253,9 +254,10 @@ there is deliberately no arbitrary-header command-line interface.
 `ytgui` is a separate ReAction process launched by `mrgui`, mirroring the IPTV
 browser boundary so a blocking search request cannot stall the main transport
 controls. It fetches YouTube's public search results page with the shared
-HTTP/AmiSSL layer and parses only bounded `videoRenderer` JSON objects embedded
-in that page. The compact result model retains an 11-byte video ID, title,
-channel, and live flag for at most 100 entries; duplicate IDs are discarded.
+HTTP/AmiSSL layer and parses bounded `videoRenderer`/`gridVideoRenderer` JSON
+objects embedded in that page. The compact result model retains an 11-byte
+video ID, title, channel, bounded channel ID, and live flag for at most 100
+entries; duplicate IDs are discarded.
 No account, cookies, Google API key, JavaScript engine, or remote resolver is
 required.
 
@@ -269,3 +271,8 @@ back to 360p when absent. Ciphered, foreign-host, and unsolved `n`-challenge
 URLs are rejected before the HTTP demux path sees them.
 The controller passes the same immutable `mr_play_options` snapshot used by
 `iptvgui`, so display and HLS policy remain consistent across child windows.
+The channel ID provides a direct no-key `/channel/<id>/videos` follow-up whose
+uploads reuse the same parser. A typed command word in the published player
+control block drives pause, fast mode, volume and RTG fullscreen; replacing a
+video uses the established clean-stop then Ctrl-C escalation before launching
+the next `mrplay` process.

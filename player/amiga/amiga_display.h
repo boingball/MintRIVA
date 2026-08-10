@@ -57,6 +57,7 @@ void display_set_akiko(int on);
 /* Enable timing/diagnostic output for the RTG backend (mirrors --time).
  * Must be called before display_open() to capture init diagnostics. */
 void display_set_timing_mode(int on);
+void display_set_fullscreen(int on);
 
 /* Accumulated AGA encode / blit time in ms (0 if the AGA backend wasn't used). */
 void display_aga_timing(unsigned long *enc_ms, unsigned long *blit_ms);
@@ -82,6 +83,7 @@ void display_show_rgb(amiga_display *d, const unsigned char *rgb,
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque);
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing);
+int display_toggle_fullscreen(amiga_display *d);
 
 /* Input events reported by display_poll_event. */
 enum {

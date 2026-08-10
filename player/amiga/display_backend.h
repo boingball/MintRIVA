@@ -25,6 +25,7 @@ typedef struct {
     void  (*status)(void *handle, const char *text);
     /* Optional: signal bits a caller may Wait() on to wake for backend events. */
     ULONG (*wait_mask)(void *handle);
+    int   (*toggle_fullscreen)(void *handle);
 } display_backend;
 
 extern const display_backend backend_cgx;
@@ -36,6 +37,7 @@ extern int g_aga_scale;  /* 1 or 2 (pixel doubling)                        */
 extern int g_aga_c2p;    /* 0 = WPA8, 1 = portable, 2 = RiVA, 3 = Kalms     */
 extern int g_aga_lace;   /* 1 = allow interlaced screens (taller fit)       */
 extern int g_aga_akiko;  /* 1 = use CD32 Akiko hardware C2P                  */
+extern int g_display_fullscreen;
 
 /* Library bases opened once by display.c and shared by the backends. */
 struct IntuitionBase;
