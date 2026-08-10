@@ -34,6 +34,8 @@
 
 typedef struct {
     struct Window *win;
+    struct Screen *screen;   /* owned private RTG screen, NULL on Workbench */
+    struct Screen *retired_screen; /* close retry after a transient refusal */
     int            bl, bt;   /* blit origin inside the window borders       */
     int            iw, ih;   /* current resizeable inner dimensions         */
     int            source_w, source_h;
@@ -72,11 +74,126 @@ static void cgx_rebuild_geometry(cgx_state *s, const char *reason);
 static int  ensure_scaled(cgx_state *s, int w);
 static int  cgx_toggle_fullscreen(void *h);
 
-static struct Window *cgx_open_window(cgx_state *s, const char *title,
-                                      int inner_w, int inner_h)
+/* CloseScreen() may temporarily refuse while Intuition still sees a window or
+ * screen lock.  Never forget a screen merely because the first close failed:
+ * retry across vertical blanks, then put it behind Workbench and retain it for
+ * the next toggle/shutdown attempt. */
+static int cgx_close_private_screen(struct Screen **screen, const char *reason)
 {
-    struct Screen *scr = LockPubScreen(NULL);
+    int attempt;
+    if (!screen || !*screen) return 1;
+    for (attempt = 0; attempt < 3; attempt++) {
+        if (CloseScreen(*screen)) {
+            *screen = NULL;
+            return 1;
+        }
+        WaitTOF();
+    }
+    ScreenToBack(*screen);
+    printf("rtg-fullscreen: private screen close deferred (%s)\n",
+           reason ? reason : "unknown");
+    return 0;
+}
+
+/* Open a private RTG screen close to the video's native dimensions.  A
+ * 16-bit mode is preferred to reduce RTG memory traffic; if unavailable,
+ * retain truecolour compatibility by trying 32 and 24-bit modes. */
+static struct Screen *cgx_open_private_screen(cgx_state *s, const char *title)
+{
+    static const ULONG depths[] = { 16, 32, 24 };
+    struct Screen *scr = NULL;
+    ULONG best_modeid = (ULONG)INVALID_ID;
+    ULONG best_depth = 0;
+    ULONG best_score = ~0UL;
+    unsigned i;
+    for (i = 0; i < sizeof depths / sizeof depths[0]; i++) {
+        ULONG modeid = BestCModeIDTags(
+            CYBRBIDTG_NominalWidth, (ULONG)s->source_w,
+            CYBRBIDTG_NominalHeight, (ULONG)s->source_h,
+            CYBRBIDTG_Depth, depths[i],
+            TAG_END);
+        ULONG mode_w, mode_h, mode_depth, score;
+        mr_aspect_rect fit;
+        if (modeid == (ULONG)INVALID_ID || !IsCyberModeID(modeid))
+            continue;
+        mode_w = GetCyberIDAttr(CYBRIDATTR_WIDTH, modeid);
+        mode_h = GetCyberIDAttr(CYBRIDATTR_HEIGHT, modeid);
+        mode_depth = GetCyberIDAttr(CYBRIDATTR_DEPTH, modeid);
+        if (!mode_w || !mode_h || mode_w == ~0UL || mode_h == ~0UL ||
+            mode_depth <= 8 || mode_depth == ~0UL)
+            continue;
+        fit = mr_aspect_fit(s->source_w, s->source_h,
+                            (int)mode_w, (int)mode_h);
+        score = (ULONG)(fit.w >= s->source_w ? fit.w - s->source_w
+                                             : s->source_w - fit.w) +
+                (ULONG)(fit.h >= s->source_h ? fit.h - s->source_h
+                                             : s->source_h - fit.h);
+        /* Avoiding scaling matters more than 16 versus 32-bit output.  For
+         * otherwise equal modes prefer the lower depth and memory traffic. */
+        if (score < best_score ||
+            (score == best_score && mode_depth < best_depth)) {
+            best_modeid = modeid;
+            best_depth = mode_depth;
+            best_score = score;
+        }
+    }
+    if (best_modeid != (ULONG)INVALID_ID)
+        scr = OpenScreenTags(NULL,
+            SA_DisplayID, best_modeid,
+            SA_Depth, best_depth,
+            SA_Type, CUSTOMSCREEN,
+            SA_Title, (ULONG)(title ? title : "MintRIVA"),
+            SA_Quiet, TRUE,
+            SA_ShowTitle, FALSE,
+            SA_Draggable, FALSE,
+            TAG_END);
+    /* Some older CGX versions may still open a mode with the wrong depth.
+     * Never let that turn the private path into an unusable LUT8 screen. */
+    if (scr && GetCyberMapAttr(scr->RastPort.BitMap,
+                               CYBRMATTR_DEPTH) <= 8) {
+        CloseScreen(scr);
+        scr = NULL;
+    }
+    if (scr && g_display_want_time)
+        printf("rtg-fullscreen private=%dx%d depth=%lu source=%dx%d\n",
+               scr->Width, scr->Height,
+               (unsigned long)GetCyberMapAttr(scr->RastPort.BitMap,
+                                               CYBRMATTR_DEPTH),
+               s->source_w, s->source_h);
+    return scr;
+}
+
+static struct Window *cgx_open_window(cgx_state *s, const char *title,
+                                      int inner_w, int inner_h,
+                                      struct Screen **private_screen)
+{
+    struct Screen *scr;
     struct Window *win = NULL;
+    if (private_screen) *private_screen = NULL;
+    if (s->fullscreen) {
+        scr = cgx_open_private_screen(s, title);
+        if (scr) {
+            win = OpenWindowTags(NULL,
+                WA_CustomScreen, (ULONG)scr,
+                WA_Title, (ULONG)(title ? title : "MintRIVA"),
+                WA_Left, 0, WA_Top, 0,
+                WA_Width, (ULONG)scr->Width, WA_Height, (ULONG)scr->Height,
+                WA_Flags, WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
+                          WFLG_RMBTRAP | WFLG_NOCAREREFRESH,
+                WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY,
+                TAG_END);
+            if (win) {
+                if (private_screen) *private_screen = scr;
+                return win;
+            }
+            CloseScreen(scr);
+        }
+        if (g_display_want_time)
+            printf("rtg-fullscreen: private screen unavailable, "
+                   "using Workbench screen\n");
+    }
+
+    scr = LockPubScreen(NULL);
     if (!scr) return NULL;
     if (s->fullscreen) {
         win = OpenWindowTags(NULL,
@@ -85,7 +202,7 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
             WA_Left, 0, WA_Top, 0,
             WA_Width, (ULONG)scr->Width, WA_Height, (ULONG)scr->Height,
             WA_Borderless, TRUE, WA_Activate, TRUE,
-            WA_Flags, WFLG_NOCAREREFRESH,
+            WA_Flags, WFLG_NOCAREREFRESH | WFLG_RMBTRAP,
             WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
             TAG_END);
     } else {
@@ -178,7 +295,7 @@ static void *cgx_open(int w, int h, const char *title)
     s->source_w = w;
     s->source_h = h;
     s->title = title;
-    s->win = cgx_open_window(s, title, win_w, win_h);
+    s->win = cgx_open_window(s, title, win_w, win_h, &s->screen);
     if (!s->win) { FreeVec(s); return NULL; }
 
     s->bl = s->win->BorderLeft;
@@ -509,10 +626,19 @@ static int cgx_toggle_fullscreen(void *h)
 {
     cgx_state *s = (cgx_state *)h;
     struct Window *old, *replacement;
+    struct Screen *old_screen, *replacement_screen = NULL;
     struct IntuiMessage *msg;
     int next_fullscreen;
     if (!s || !s->win) return 0;
+    cgx_close_private_screen(&s->retired_screen, "toggle retry");
+    if (!s->fullscreen && s->retired_screen) {
+        /* Do not accumulate custom screens if Intuition still has a lock on
+         * the previous one.  The current Workbench window remains usable. */
+        printf("rtg-fullscreen: previous private screen still busy\n");
+        return 0;
+    }
     old = s->win;
+    old_screen = s->screen;
     if (!s->fullscreen) {
         s->have_window_geometry = 1;
         s->window_left = old->LeftEdge;
@@ -526,7 +652,8 @@ static int cgx_toggle_fullscreen(void *h)
     s->fullscreen = next_fullscreen;
     replacement = cgx_open_window(s, s->title,
         s->have_window_geometry ? s->window_iw : s->iw,
-        s->have_window_geometry ? s->window_ih : s->ih);
+        s->have_window_geometry ? s->window_ih : s->ih,
+        &replacement_screen);
     if (!replacement) {
         s->fullscreen = !next_fullscreen;
         return 0;
@@ -535,6 +662,10 @@ static int cgx_toggle_fullscreen(void *h)
         ReplyMsg((struct Message *)msg);
     CloseWindow(old);
     s->win = replacement;
+    s->screen = replacement_screen;
+    if (old_screen &&
+        !cgx_close_private_screen(&old_screen, "fullscreen toggle"))
+        s->retired_screen = old_screen;
     if (!s->fullscreen && s->have_window_geometry)
         ChangeWindowBox(s->win, s->window_left, s->window_top,
                         s->window_width, s->window_height);
@@ -569,7 +700,9 @@ static void cgx_close(void *h)
     cgx_state *s = (cgx_state *)h;
     if (!s) return;
     if (s->scaled) FreeVec(s->scaled);
-    if (s->win) CloseWindow(s->win);
+    if (s->win) { CloseWindow(s->win); s->win = NULL; }
+    cgx_close_private_screen(&s->screen, "shutdown");
+    cgx_close_private_screen(&s->retired_screen, "shutdown retry");
     FreeVec(s);
 }
 

@@ -162,6 +162,7 @@ typedef struct {
     size_t cache_start;
     size_t cache_len;
     size_t max_read;            /* highest byte the demuxer has asked for      */
+    int interrupted;            /* cooperative service hook requested abort    */
 } http_source;
 
 static int copy_header_value(char *out, size_t cap, const char *value,
@@ -683,6 +684,41 @@ static int net_read_some(http_source *h, void *buf, size_t len)
 {
     int n;
     int amount = len > 0x7fffffffUL ? 0x7fffffff : (int)len;
+    /* SO_RCVTIMEO alone leaves the foreground task inside recv()/SSL_read()
+     * for as long as twenty seconds.  Slice that idle wait when a player
+     * service hook is installed: Intuition messages, Paula and queued video
+     * then keep moving even when the CDN temporarily sends no bytes. */
+    if (g_http_service) {
+        int slices;
+        for (slices = 0; slices < 200; slices++) {
+            fd_set rf;
+            struct timeval tv;
+            int ready;
+#if MR_HTTP_HAVE_TLS
+            if (h->using_tls && h->ssl && SSL_pending(h->ssl) > 0) break;
+#endif
+            if (g_http_service(g_http_service_opaque)) {
+                h->interrupted = 1;
+                mr_source_set_error("HTTP read interrupted");
+                return 0;
+            }
+            FD_ZERO(&rf);
+            FD_SET(h->sock, &rf);
+            tv.tv_sec = 0;
+            tv.tv_usec = 100000;
+#if MR_HTTP_AMIGA
+            ready = WaitSelect(h->sock + 1, &rf, NULL, NULL, &tv, NULL);
+#else
+            ready = select(h->sock + 1, &rf, NULL, NULL, &tv);
+#endif
+            if (ready > 0) break;
+            if (ready < 0) return 0;
+        }
+        if (slices == 200) {
+            mr_source_set_error("HTTP read timed out");
+            return 0;
+        }
+    }
 #if MR_HTTP_HAVE_TLS
     if (h->using_tls)
         n = SSL_read(h->ssl, buf, amount);
@@ -1330,6 +1366,7 @@ static int begin_json_post_response(http_source *h, const char *json)
 static int copy_response_bytes(http_source *h, unsigned char *dst, size_t len)
 {
     size_t done = 0;
+    if (h->interrupted) return 0;
     while (done < len) {
         size_t want = len - done;
         int n;
@@ -1355,7 +1392,11 @@ static int copy_response_bytes(http_source *h, unsigned char *dst, size_t len)
          * its whole duration: the single task services here instead of only
          * after the read returns (when the backlog is already late). Cheap when
          * nothing is due; NULL (host builds) skips it entirely. */
-        if (g_http_service) g_http_service(g_http_service_opaque);
+        if (g_http_service && g_http_service(g_http_service_opaque)) {
+            h->interrupted = 1;
+            mr_source_set_error("HTTP read interrupted");
+            break;
+        }
     }
     return (int)done;
 }
@@ -1543,6 +1584,7 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
             done += (size_t)n;
             continue;
         }
+        if (h->interrupted) return 0;
         close_connection(h, 0);
         if (done == len) break;
         if (retries++ >= HTTP_IO_RETRIES ||

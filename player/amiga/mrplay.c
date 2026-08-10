@@ -134,6 +134,7 @@ struct Device *TimerBase;
 static mr_player_control_port *control_block;
 static mr_audio *control_audio;
 static int control_volume = 64;
+static int deferred_player_event;
 
 /* One-shot high-resolution pipeline breadcrumb. It advances only when a new
  * stage is reached, so diagnostics cannot turn every 1080p frame into DOS I/O. */
@@ -981,7 +982,8 @@ static int control_signal_event(amiga_display *disp)
     return MR_EV_NONE;
 }
 
-#define PREFETCH_INTERRUPT_MASK (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)
+#define PREFETCH_INTERRUPT_MASK (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | \
+                                 SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F)
 #define PREFETCH_WAIT_MASK(disp_) \
     (PREFETCH_INTERRUPT_MASK | display_wait_mask((disp_)))
 #define STOP_PREFETCH(disp_) \
@@ -990,14 +992,63 @@ static int control_signal_event(amiga_display *disp)
 static int prefetch_quit_probe(void *opaque)
 {
     amiga_display *disp = (amiga_display *)opaque;
-    if (control_signal_event(disp) == MR_EV_QUIT) return 1;
-    return disp && display_poll_event(disp) == MR_EV_QUIT;
+    int ev = control_signal_event(disp);
+    if (ev == MR_EV_NONE && disp) ev = display_poll_event(disp);
+    /* display_poll_event() may have toggled fullscreen, replacing the CGX
+     * window and therefore its UserPort signal bit.  Publish the new mask
+     * before pf_wait_busy() enters its next Wait(). */
+    if (disp)
+        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
+                                   prefetch_quit_probe, disp);
+    /* Pause/seek events cannot be acted on inside the worker wait, but they
+     * must not disappear merely because a segment fetch was in flight. */
+    if (ev != MR_EV_NONE && ev != MR_EV_QUIT)
+        deferred_player_event = ev;
+    return ev == MR_EV_QUIT;
 }
 
 static int player_event(amiga_display *disp)
 {
-    int ev = control_signal_event(disp);
-    return ev != MR_EV_NONE ? ev : display_poll_event(disp);
+    int ev;
+    if (deferred_player_event != MR_EV_NONE) {
+        ev = deferred_player_event;
+        deferred_player_event = MR_EV_NONE;
+    } else {
+        ev = control_signal_event(disp);
+    }
+    if (ev == MR_EV_NONE) ev = display_poll_event(disp);
+    /* Keep an active HLS worker's interrupt context synchronized with a CGX
+     * window replaced by either the F key or the controller button. */
+    if (disp)
+        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
+                                   prefetch_quit_probe, disp);
+    return ev;
+}
+
+/* HTTP's synchronous reader runs on the player task.  Pump fresh Intuition
+ * input while it waits, but leave pause/seek/quit queued for the scheduler to
+ * perform at its normal safe point.  Fullscreen is handled immediately by the
+ * display backend, so its replacement window starts being drained at once. */
+static int service_player_during_io(void *opaque)
+{
+    scheduler_trace *trace = (scheduler_trace *)opaque;
+    amiga_display *disp = trace && trace->presenter ? trace->presenter->disp
+                                                    : NULL;
+    int ev = MR_EV_NONE;
+    if (disp && (!trace->presenter || !trace->presenter->presenting)) {
+        ev = control_signal_event(disp);
+        if (ev == MR_EV_NONE) ev = display_poll_event(disp);
+        if (ev != MR_EV_NONE &&
+            (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
+            deferred_player_event = ev;
+        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
+                                   prefetch_quit_probe, disp);
+    }
+    if (trace) {
+        if (trace->audio) service_audio_for_display(trace);
+        else if (trace->presenter) present_service_frame(trace->presenter);
+    }
+    return ev == MR_EV_QUIT || deferred_player_event == MR_EV_QUIT;
 }
 
 /*
@@ -1200,6 +1251,7 @@ int main(int argc, char **argv)
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
     int live_resync = 0;  /* --live-resync: catch up after a big stall, and
                            * reconnect a live stream that drops out            */
+    int auto_close_eof = 0; /* finite GUI media should release its window      */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -1353,6 +1405,15 @@ int main(int argc, char **argv)
             printf("YouTube: progressive 720p MP4 found\n");
         else
             printf("YouTube: progressive 360p MP4 found\n");
+        /* A progressive YouTube URL is a finite MP4.  The GUI enables
+         * --live-resync for IPTV by default, but carrying that policy into a
+         * VOD turns its clean EOF into a bogus "Reconnecting..." cycle. */
+        if (youtube_kind != MR_YOUTUBE_MEDIA_HLS) {
+            if (live_resync && want_time)
+                printf("YouTube: finite video; live reconnect disabled\n");
+            live_resync = 0;
+            auto_close_eof = 1;
+        }
         if (want_time)
             printf("YouTube: source client %s\n",
                    mr_youtube_last_client());
@@ -1579,7 +1640,7 @@ int main(int argc, char **argv)
     /* Present queued video / feed audio between the socket reads of a blocking
      * segment fetch, so an ordinary ~350 ms download no longer freezes video for
      * its whole duration. Fires while released is set around the demux read. */
-    mr_http_set_service(audio ? service_audio_for_display : NULL, &trace);
+    mr_http_set_service(service_player_during_io, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -1898,8 +1959,10 @@ int main(int argc, char **argv)
                 rdt = monotonic_us() - r0;
                 if (ns != MR_OK) { input_eof = 1; break; }
                 if (rdt > LIVE_RESYNC_EDGE_US) break;   /* reached the frontier */
-                if (pkt.is_video && pkt.len)
+                if (pkt.is_video && pkt.len) {
+                    mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_decoder_decode(&dec, pkt.data, pkt.len);
+                }
                 /* audio packets are discarded: the FIFO is flushed below */
                 if (pkt.has_pts) {
                     if (!have_base) { base_pts = pkt.pts_us; have_base = 1; }
@@ -2281,6 +2344,7 @@ int main(int argc, char **argv)
                      * intact without spending time producing RGB we discard.
                      * This is what makes the audio-cushion top-up above cheap. */
                     mr_h264_set_skip_output(&dec, qcount >= video_cap);
+                    mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
@@ -2330,19 +2394,30 @@ int main(int argc, char **argv)
                               (uint64_t)(vi->scale ? vi->scale : 1) *
                               1000000ULL / vi->rate
                             : decoded_index * 83333ULL;
+                        uint64_t frame_pts_us = pkt.pts_us;
+                        int frame_has_pts = pkt.has_pts;
                         uint64_t pts = synthetic_pts;
-                        if (pkt.has_pts) {
+                        /* Libavc emits pictures in display order, which may
+                         * differ from the current packet's decode order when
+                         * B-frames are present.  Use the PTS mapped from the
+                         * decoder's returned AU timestamp.  If that mapping is
+                         * unavailable, synthetic output-order timing is safer
+                         * than attaching the current packet's wrong PTS. */
+                        if (codec == &mr_codec_h264)
+                            frame_has_pts = mr_h264_output_pts(
+                                &dec, &frame_pts_us);
+                        if (frame_has_pts) {
                             int discontinuity = have_container_pts &&
-                                (pkt.pts_us + period_us * 10 < last_container_pts_us ||
-                                 pkt.pts_us > last_container_pts_us + period_us * 10);
+                                (frame_pts_us + period_us * 10 < last_container_pts_us ||
+                                 frame_pts_us > last_container_pts_us + period_us * 10);
                             if (!have_container_pts || discontinuity) {
                                 container_pts_adjust_us =
-                                    (int64_t)synthetic_pts - (int64_t)pkt.pts_us;
+                                    (int64_t)synthetic_pts - (int64_t)frame_pts_us;
                                 if (have_container_pts) stats.timing_rebases++;
                             }
-                            pts = (uint64_t)((int64_t)pkt.pts_us +
+                            pts = (uint64_t)((int64_t)frame_pts_us +
                                              container_pts_adjust_us);
-                            last_container_pts_us = pkt.pts_us;
+                            last_container_pts_us = frame_pts_us;
                             have_container_pts = 1;
                         }
                         stats.video_decode_us += decode_us; stats.decoded++;
@@ -2493,8 +2568,6 @@ int main(int argc, char **argv)
     mr_hls_set_wait(NULL, NULL);
     mr_http_set_service(NULL, NULL);
 
-    if (audio) audio_set_running(audio, 0); /* following drain is intentional */
-
     /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.
      * Drain it through the same pacing and display path so the player does not
      * silently finish one frame short (e.g. 129/130 on legacy OpenDivX). */
@@ -2544,7 +2617,7 @@ int main(int argc, char **argv)
             printf("Kalms conversion: %lu ms\n", blit_ms);
     }
     /* Let any queued audio drain (bounded, so a wedged clock can't loop). */
-    if (audio) {
+    if (audio && !quit) {
         int guard = 0;
         while (!audio_starved(audio) && guard++ < 4000) {
             if (player_event(disp) == MR_EV_QUIT) {
@@ -2555,8 +2628,9 @@ int main(int argc, char **argv)
             Delay(1);
         }
     }
+    if (audio) audio_set_running(audio, 0);
 
-    if (!quit) {
+    if (!quit && !auto_close_eof) {
         printf("played %d frames - press ESC or close the window to exit\n",
                frames);
         while (player_event(disp) != MR_EV_QUIT) {

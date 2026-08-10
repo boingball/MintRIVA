@@ -20,6 +20,18 @@
 #include <string.h>
 #include <time.h>
 
+/* H.264 permits at most 16 decoded pictures to be held for reordering.  Keep
+ * a wider power-of-two ring so the container PTS supplied with an input access
+ * unit is still available when libavc later emits that picture for display. */
+#define H264_PTS_MAP_CAP 64U
+
+typedef struct {
+    uint32_t timestamp;
+    uint64_t pts_us;
+    int      valid;
+    int      has_pts;
+} h264_pts_entry;
+
 #ifdef AMIGA_M68K
 #include <dos/dos.h>
 #include <exec/memory.h>
@@ -47,6 +59,12 @@ typedef struct {
     void     *quit_opaque;
     mr_h264_timing timing;
     int       skip_output;
+    h264_pts_entry pts_map[H264_PTS_MAP_CAP];
+    uint64_t  pending_input_pts_us;
+    int       pending_input_pts_set;
+    int       pending_input_has_pts;
+    uint64_t  output_pts_us;
+    int       output_pts_valid;
     /* Wedge-safe diagnostic state (active when diag_path != NULL). */
     const char *diag_path;
     uint32_t    diag_au_idx;
@@ -54,6 +72,25 @@ typedef struct {
     int         diag_height;
     int         pipeline_rgb_done;
 } h264_state;
+
+static void h264_remember_input_pts(h264_state *s, uint32_t timestamp)
+{
+    h264_pts_entry *entry = &s->pts_map[timestamp & (H264_PTS_MAP_CAP - 1U)];
+    entry->timestamp = timestamp;
+    entry->pts_us = s->pending_input_pts_us;
+    entry->valid = s->pending_input_pts_set;
+    entry->has_pts = s->pending_input_has_pts;
+    s->pending_input_pts_set = 0;
+    s->pending_input_has_pts = 0;
+}
+
+static void h264_remember_output_pts(h264_state *s, uint32_t timestamp)
+{
+    h264_pts_entry *entry = &s->pts_map[timestamp & (H264_PTS_MAP_CAP - 1U)];
+    s->output_pts_valid = entry->valid && entry->has_pts &&
+                          entry->timestamp == timestamp;
+    if (s->output_pts_valid) s->output_pts_us = entry->pts_us;
+}
 
 static unsigned long h264_elapsed_us(clock_t begin)
 {
@@ -91,7 +128,7 @@ static void h264_diag_checkpoint(h264_state *s, const char *phase,
     if (out) {
         n = snprintf(buf, sizeof buf,
                      "au=%lu %s off=%lu rem=%lu ts=%lu res=%dx%d "
-                     "fast=%lu elapsed=%lu us consumed=%lu output=%lu "
+                     "fast=%lu elapsed=%lu us consumed=%lu output=%lu out-ts=%lu "
                      "decoded=%lu error=%08lx ret=%d\n",
                      (unsigned long)s->diag_au_idx, phase,
                      (unsigned long)off, (unsigned long)remaining,
@@ -99,6 +136,7 @@ static void h264_diag_checkpoint(h264_state *s, const char *phase,
                      (unsigned long)fast, elapsed_us,
                      (unsigned long)out->s_ivd_video_decode_op_t.u4_num_bytes_consumed,
                      (unsigned long)out->s_ivd_video_decode_op_t.u4_output_present,
+                     (unsigned long)out->s_ivd_video_decode_op_t.u4_ts,
                      (unsigned long)out->s_ivd_video_decode_op_t.u4_frame_decoded_flag,
                      (unsigned long)out->s_ivd_video_decode_op_t.u4_error_code,
                      (int)ret);
@@ -579,6 +617,7 @@ static mr_status h264_decode(mr_decoder *dec,
     if (!s || !data || !len) return MR_EFORMAT;
     s->flushing = 0;
     s->flush_done = 0;
+    s->output_pts_valid = 0;
     memset(&s->timing, 0, sizeof s->timing);
 
     input_mark = clock();
@@ -590,6 +629,7 @@ static mr_status h264_decode(mr_decoder *dec,
     /* One input AU gets exactly one libavc timestamp, even when the decoder
      * consumes the Annex-B data over several sub-calls. */
     au_ts = s->timestamp++;
+    h264_remember_input_pts(s, au_ts);
     au_mark = clock();
     ret = IV_SUCCESS;
 
@@ -625,10 +665,12 @@ static mr_status h264_decode(mr_decoder *dec,
 #endif
 
 #ifdef MR_H264_DEBUG
-            fprintf(stderr, "h264 ts=%lu in=%lu annexb=%lu off=%lu "
+            fprintf(stderr, "h264 ts=%lu out-ts=%lu in=%lu annexb=%lu off=%lu "
                     "ret=%d consumed=%lu decoded=%lu output=%lu "
                     "error=%08lx type=%d\n",
-                    (unsigned long)au_ts, (unsigned long)len,
+                    (unsigned long)au_ts,
+                    (unsigned long)sub_out.s_ivd_video_decode_op_t.u4_ts,
+                    (unsigned long)len,
                     (unsigned long)annexb_len, (unsigned long)off,
                     (int)r, (unsigned long)used,
                     (unsigned long)sub_out.s_ivd_video_decode_op_t.u4_frame_decoded_flag,
@@ -644,6 +686,8 @@ static mr_status h264_decode(mr_decoder *dec,
             if (sub_out.s_ivd_video_decode_op_t.u4_output_present &&
                 !output_captured) {
                 output_captured = 1;
+                h264_remember_output_pts(
+                    s, sub_out.s_ivd_video_decode_op_t.u4_ts);
                 if (s->skip_output) {
                     dec->frame.dirty_y0 = dec->frame.dirty_y1 = 0;
                     captured_status = MR_OK;
@@ -690,6 +734,27 @@ void mr_h264_set_skip_output(mr_decoder *dec, int skip)
     if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
     s = (h264_state *)dec->priv;
     s->skip_output = skip != 0;
+}
+
+void mr_h264_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    s->pending_input_pts_us = pts_us;
+    s->pending_input_pts_set = 1;
+    s->pending_input_has_pts = has_pts != 0;
+}
+
+int mr_h264_output_pts(mr_decoder *dec, uint64_t *pts_us)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv || !pts_us)
+        return 0;
+    s = (h264_state *)dec->priv;
+    if (!s->output_pts_valid) return 0;
+    *pts_us = s->output_pts_us;
+    return 1;
 }
 
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque)
@@ -739,6 +804,7 @@ static mr_status h264_flush(mr_decoder *dec)
     ih264d_video_decode_op_t out;
     IV_API_CALL_STATUS_T ret;
     if (!s || s->flush_done) return MR_EAGAIN;
+    s->output_pts_valid = 0;
     if (!s->flushing) {
         memset(&flush_in, 0, sizeof flush_in);
         memset(&flush_out, 0, sizeof flush_out);
@@ -754,8 +820,10 @@ static mr_status h264_flush(mr_decoder *dec)
         s->flushing = 1;
     }
     ret = decode_annexb(s, s->timestamp, s->packet, 0, &out);
-    if (out.s_ivd_video_decode_op_t.u4_output_present)
+    if (out.s_ivd_video_decode_op_t.u4_output_present) {
+        h264_remember_output_pts(s, out.s_ivd_video_decode_op_t.u4_ts);
         return emit_rgb(dec, &out.s_ivd_video_decode_op_t);
+    }
     s->flush_done = 1;
     return MR_EAGAIN;
 }

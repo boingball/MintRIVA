@@ -224,8 +224,12 @@ static int pf_wait_busy(int break_on_quit)
     pf_reclaim();
     if (!pf_busy) return 1;
     reply_mask = 1UL << pf_reply_port->mp_SigBit;
-    wait_mask = reply_mask | pf_interrupt_mask;
     for (;;) {
+        /* A live RTG fullscreen toggle replaces the Intuition window and its
+         * UserPort signal.  The quit probe refreshes pf_interrupt_mask after
+         * processing that event, so rebuild the Wait() mask every iteration
+         * instead of sleeping forever on the destroyed window's signal bit. */
+        wait_mask = reply_mask | pf_interrupt_mask;
         sig = Wait(wait_mask);
         if (sig & reply_mask) pf_reclaim();
         if (!pf_busy) return 1;

@@ -22,5 +22,10 @@ void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
 void mr_h264_set_diag(mr_decoder *dec, const char *path, int width, int height);
 void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing);
 void mr_h264_set_skip_output(mr_decoder *dec, int skip);
+/* Associate the next compressed access unit with its container PTS.  Libavc
+ * may emit an older access unit after display reordering; output_pts() returns
+ * the PTS belonging to that emitted frame rather than the current input. */
+void mr_h264_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us);
+int mr_h264_output_pts(mr_decoder *dec, uint64_t *pts_us);
 
 #endif /* MR_H264_H */

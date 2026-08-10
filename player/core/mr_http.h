@@ -93,7 +93,10 @@ int mr_http_tls_disabled(void);
  * pump here so it keeps presenting already-decoded frames and feeding audio
  * while an HLS segment downloads, instead of freezing for the whole (blocking)
  * read. Pass NULL to disable (the default; host builds install none). */
-typedef void (*mr_http_service_fn)(void *opaque);
+/* Return non-zero to interrupt the current body read.  This lets a foreground
+ * player honour ESC/Close while the socket itself is idle, instead of waiting
+ * for the network timeout before it can begin normal teardown. */
+typedef int (*mr_http_service_fn)(void *opaque);
 void mr_http_set_service(mr_http_service_fn fn, void *opaque);
 
 #endif /* MR_HTTP_H */
