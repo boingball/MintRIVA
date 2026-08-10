@@ -11,6 +11,7 @@
  * or the device is closed, so Paula never DMAs freed memory.
  */
 #include "mr_audio.h"
+#include "mr_audio_rate.h"
 
 #include <exec/types.h>
 #include <exec/memory.h>
@@ -63,6 +64,7 @@ struct mr_audio {
     unsigned        period;
     unsigned        rate;
     unsigned        output_rate;
+    mr_audio_rate_state rate_state;
     int             src_channels;
     int             src_bits;
 
@@ -181,6 +183,9 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
 {
     mr_audio *a;
     struct Process *worker;
+    struct EClockVal eclock_value;
+    ULONG eclock_frequency;
+    unsigned long paula_clock;
 
     if (rate == 0 || (bits != 8 && bits != 16) || channels < 1)
         return NULL;
@@ -191,12 +196,19 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->rate = rate;
     a->src_channels = channels;
     a->src_bits = bits;
-    a->period = (unsigned)(PAL_CLOCK / rate);
+    /* Paula's colour clock is exactly five EClock ticks.  Using ReadEClock
+     * also selects the right PAL/NTSC clock instead of silently drifting on
+     * NTSC machines; retain the PAL value when timer.device is unavailable. */
+    eclock_frequency = TimerBase ? ReadEClock(&eclock_value) : 0;
+    paula_clock = eclock_frequency ? (unsigned long)eclock_frequency * 5UL
+                                   : PAL_CLOCK;
+    a->period = (unsigned)(paula_clock / rate);
     a->minimum_buffered_ms = ULONG_MAX;
     a->minimum_active_ms = ULONG_MAX;
     a->volume = 64;
     if (a->period < MIN_PERIOD) a->period = MIN_PERIOD;
-    a->output_rate = (unsigned)(PAL_CLOCK / a->period);
+    a->output_rate = (unsigned)(paula_clock / a->period);
+    mr_audio_rate_init(&a->rate_state, rate, a->output_rate);
 
     /* libavc is a synchronous API and has no safe slice-yield hook. Keep two
      * genuinely submitted requests, each long enough to span the observed
@@ -209,7 +221,7 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
      * starved during the video run - audible as chunky audio and stuttery
      * pacing. Buffer ~4 s so a burst fits and the video run does not starve.
      * Sync is unaffected: pacing follows samples actually played, not queued. */
-    a->fifo_size = rate * 4;                    /* ~4 s cushion              */
+    a->fifo_size = a->output_rate * 4;          /* ~4 s cushion              */
     if (a->fifo_size < 8192) a->fifo_size = 8192;
     a->fifo = (signed char *)malloc(a->fifo_size);
     if (!a->fifo) { audio_close(a); return NULL; }
@@ -260,6 +272,12 @@ void audio_close(mr_audio *a)
 
 /* ---- streaming ---------------------------------------------------------- */
 
+static void fifo_push_resampled(mr_audio *a, signed char sample)
+{
+    unsigned outputs = mr_audio_rate_outputs(&a->rate_state);
+    while (outputs--) fifo_push(a, sample);
+}
+
 void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
 {
     int bps, ch, framebytes;
@@ -291,7 +309,7 @@ void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
             } else s = l;
             s >>= 8;
         }
-        fifo_push(a, (signed char)s);
+        fifo_push_resampled(a, (signed char)s);
     }
     Permit();
     if (a->worker_task && a->wake_sig >= 0)
@@ -308,7 +326,7 @@ void audio_write_s16(mr_audio *a, const short *pcm,
         int s = pcm[(size_t)k * channels];
         if (channels >= 2)
             s = (s + pcm[(size_t)k * channels + 1]) / 2;
-        fifo_push(a, (signed char)(s >> 8));
+        fifo_push_resampled(a, (signed char)(s >> 8));
     }
     Permit();
     if (a->worker_task && a->wake_sig >= 0)
