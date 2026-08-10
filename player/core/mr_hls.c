@@ -16,6 +16,7 @@
  * finally turns the stream into a bounded one and it ends naturally.
  */
 #include "mr_hls.h"
+#include "mr_alloc.h"
 #include "mr_http.h"
 #include "mr_types.h"
 
@@ -38,6 +39,12 @@ static mr_hls_prefetch_fn  g_backend_prefetch;
 
 static mr_hls_wait_fn      g_wait_fn;
 static void               *g_wait_opaque;
+static int                 g_verbose;
+
+void mr_hls_set_verbose(int enabled)
+{
+    g_verbose = enabled != 0;
+}
 
 void mr_hls_set_wait(mr_hls_wait_fn fn, void *opaque)
 {
@@ -60,7 +67,8 @@ static mr_source *hls_open(const char *url, const mr_http_options *options,
 }
 
 #define HLS_PLAYLIST_MAX (8UL * 1024 * 1024)   /* sane cap on a playlist text  */
-#define HLS_URL_MAX      1024
+#define HLS_SEGMENT_MAX  (24UL * 1024 * 1024)  /* bounded RAM segment fallback */
+#define HLS_URL_MAX      MR_HTTP_URL_MAX
 
 /* How many times playback may re-fetch a live playlist that reports no new
  * segment before giving up and reporting end of stream (the player then hands
@@ -110,9 +118,20 @@ int mr_source_is_hls(const char *url)
 static char *fetch_text(const char *url, const mr_http_options *options)
 {
     clock_t started = clock();
-    mr_source *s = hls_open(url, options, 0);
+    mr_source *s;
     size_t len;
     char *buf;
+    /* Without a platform backend, use the complete-response reader directly.
+     * It accepts chunked playlists with no Content-Length and avoids pointless
+     * HEAD/Range probes before reading the body we need in full anyway. */
+    if (!g_backend_open) {
+        if (!mr_http_fetch_text(url, options, &buf, &len, HLS_PLAYLIST_MAX))
+            return NULL;
+        mr_source_timing_add_hls_playlist((unsigned long)
+            ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
+        return buf;
+    }
+    s = hls_open(url, options, 0);
     if (!s) return NULL;
     len = mr_source_length(s);
     if (!len || len == MR_SOURCE_LEN_UNKNOWN || len > HLS_PLAYLIST_MAX) {
@@ -157,6 +176,51 @@ static int starts(const char *s, const char *prefix)
     return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
+static int range_contains_nocase(const char *begin, const char *end,
+                                 const char *needle)
+{
+    size_t n = strlen(needle);
+    const char *p;
+    if (!n || end < begin || (size_t)(end - begin) < n) return 0;
+    for (p = begin; p + n <= end; p++) {
+        size_t i;
+        for (i = 0; i < n; i++) {
+            int a = (unsigned char)p[i];
+            int b = (unsigned char)needle[i];
+            if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+            if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+            if (a != b) break;
+        }
+        if (i == n) return 1;
+    }
+    return 0;
+}
+
+/* A master can advertise several codecs at the same resolution. YouTube now
+ * commonly offers AV1/VP9 beside AVC; choosing solely by bandwidth can select
+ * a rendition MintRIVA cannot decode and make the TS probe consume megabytes
+ * before it gives up. If CODECS is absent, retain the historical permissive
+ * behaviour. If it is present, require a video codec we actually support. */
+static int variant_codecs_supported(const char *stream_inf)
+{
+    const char *p = strstr(stream_inf, "CODECS=");
+    const char *end;
+    if (!p) return 1;
+    p += strlen("CODECS=");
+    if (*p == '"') {
+        p++;
+        end = strchr(p, '"');
+    } else {
+        end = strchr(p, ',');
+    }
+    if (!end) end = p + strlen(p);
+    return range_contains_nocase(p, end, "avc1") ||
+           range_contains_nocase(p, end, "avc3") ||
+           range_contains_nocase(p, end, "mp4v") ||
+           range_contains_nocase(p, end, "mp2v") ||
+           range_contains_nocase(p, end, "mp1v");
+}
+
 /* ---- segment list ------------------------------------------------------ */
 
 /* Ensure segs[] has room for one more entry; seg_start[] tracks nsegs + 1
@@ -189,6 +253,66 @@ static int append_seg(hls_source *h, const char *url)
     return 1;
 }
 
+typedef struct {
+    unsigned char *buf;
+    size_t len;
+} hls_mem_source;
+
+static int hls_mem_read(void *opaque, size_t off, void *dst, size_t len)
+{
+    hls_mem_source *m = (hls_mem_source *)opaque;
+    if (off > m->len || len > m->len - off) return 0;
+    memcpy(dst, m->buf + off, len);
+    return 1;
+}
+
+static void hls_mem_close(void *opaque)
+{
+    hls_mem_source *m = (hls_mem_source *)opaque;
+    if (!m) return;
+    mr_free(m->buf);
+    mr_free(m);
+}
+
+/* Some Google Video live segments are chunked and deliberately omit a length.
+ * Buffer one bounded segment so the concatenating HLS source can assign its
+ * byte offsets and still support the demuxer's short probe rewind. */
+static mr_source *hls_open_buffered(const char *url,
+                                    const mr_http_options *options)
+{
+    hls_mem_source *m;
+    mr_source *s;
+    unsigned char *buf = NULL;
+    size_t len = 0;
+    if (!mr_http_fetch_buffer(url, options, &buf, &len, HLS_SEGMENT_MAX))
+        return NULL;
+    m = (hls_mem_source *)mr_alloc(sizeof *m);
+    if (!m) {
+        mr_free(buf);
+        mr_source_set_error("not enough memory for buffered HLS segment");
+        return NULL;
+    }
+    m->buf = buf;
+    m->len = len;
+    s = mr_source_create(m, len, hls_mem_read, hls_mem_close, url);
+    return s;
+}
+
+/* Discard stale entries at the head of an initial sliding window. next_seq is
+ * deliberately unchanged: it already names the first segment after the full
+ * playlist, which prevents a refresh from re-queueing the discarded entries. */
+static void keep_live_tail(hls_source *h, size_t keep)
+{
+    size_t drop, i;
+    if (!keep || h->nsegs <= keep) return;
+    drop = h->nsegs - keep;
+    for (i = 0; i < drop; i++) free(h->segs[i]);
+    memmove(h->segs, h->segs + drop, keep * sizeof *h->segs);
+    h->nsegs = keep;
+    h->discovered = 0;
+    h->seg_start[0] = 0;
+}
+
 /* ---- playlist parsing -------------------------------------------------- */
 
 /* Choose a variant from a master playlist and resolve it against base_url into
@@ -210,6 +334,7 @@ static int pick_variant(char *text, const char *base_url,
     char *p = text;
     unsigned long chosen_bw = 0, fallback_bw = 0;
     int have_chosen = 0, have_fallback = 0, want_low, pending = 0;
+    int pending_supported = 1;
     unsigned long pending_bw = 0;
     unsigned pending_width = 0, pending_height = 0, pending_fps = 0;
     want_low = options && options->hls_low;
@@ -219,6 +344,7 @@ static int pick_variant(char *text, const char *base_url,
             const char *resolution = strstr(line, "RESOLUTION=");
             const char *fps = strstr(line, "FRAME-RATE=");
             pending = 1;
+            pending_supported = variant_codecs_supported(line);
             pending_bw = bw ? strtoul(bw + 10, NULL, 10) : 0;
             pending_width = pending_height = pending_fps = 0;
             if (resolution)
@@ -229,6 +355,7 @@ static int pick_variant(char *text, const char *base_url,
         } else if (line[0] && line[0] != '#' && pending) {
             int fits;
             pending = 0;
+            if (!pending_supported) continue;
             /* Always track the lowest-bandwidth variant as a safety net. */
             if (!have_fallback || pending_bw < fallback_bw) {
                 memcpy(fallback, line, sizeof fallback);
@@ -324,10 +451,32 @@ static int open_seg(hls_source *h, size_t i)
      * the second close tear the first's state down twice. Closing first also
      * keeps only one segment's read-ahead buffer resident at a time. */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
-    s = hls_open(h->segs[i], h->have_options ? &h->options : NULL, 1);
-    if (!s) return 0;
+    if (g_verbose)
+        printf("HLS: opening segment %lu of %lu\n",
+               (unsigned long)(i + 1), (unsigned long)h->nsegs);
+    if (!g_backend_open && h->have_options && h->options.hls_buffer_segments)
+        s = hls_open_buffered(h->segs[i], &h->options);
+    else
+        s = hls_open(h->segs[i], h->have_options ? &h->options : NULL, 1);
+    if (!s) {
+        if (g_verbose)
+            printf("HLS: segment %lu open failed: %s (URL %lu bytes)\n",
+                   (unsigned long)(i + 1), mr_source_last_error(),
+                   (unsigned long)strlen(h->segs[i]));
+        return 0;
+    }
     len = mr_source_length(s);
-    if (!len || len == MR_SOURCE_LEN_UNKNOWN) { mr_source_close(s); return 0; }
+    if (!len || len == MR_SOURCE_LEN_UNKNOWN) {
+        mr_source_close(s);
+        mr_source_set_error("HLS segment omitted a usable Content-Length");
+        if (g_verbose)
+            printf("HLS: segment %lu has no usable length\n",
+                   (unsigned long)(i + 1));
+        return 0;
+    }
+    if (g_verbose)
+        printf("HLS: segment %lu ready (%lu KB)\n",
+               (unsigned long)(i + 1), (unsigned long)(len / 1024));
     h->cur = s;
     h->cur_seg = i;
     h->seg_start[i + 1] = h->seg_start[i] + len;
@@ -345,14 +494,18 @@ static int open_seg(hls_source *h, size_t i)
 /* Return the segment index whose byte range contains `off`, opening segments
  * forward as needed to discover it. Returns nsegs if `off` is at/after the end
  * of the currently known segments. */
-static size_t locate(hls_source *h, size_t off)
+static size_t locate(hls_source *h, size_t off, int *open_failed)
 {
     size_t i;
+    *open_failed = 0;
     for (i = 0; i < h->discovered; i++)
         if (off < h->seg_start[i + 1]) return i;
     /* discover forward until off is covered or segments run out */
     while (h->discovered < h->nsegs) {
-        if (!open_seg(h, h->discovered)) break;
+        if (!open_seg(h, h->discovered)) {
+            *open_failed = 1;
+            break;
+        }
         if (off < h->seg_start[h->cur_seg + 1]) return h->cur_seg;
     }
     return h->nsegs;
@@ -403,8 +556,10 @@ static int hls_read_at(void *opaque, size_t off, void *dst, size_t len)
     unsigned char *out = (unsigned char *)dst;
     if (!len) return 1;
     while (len) {
-        size_t i = locate(h, off);
+        int open_failed;
+        size_t i = locate(h, off, &open_failed);
         size_t local, avail, take;
+        if (open_failed) return 0;
         if (i >= h->nsegs) {
             /* Ran off the end of the known segments. For live, pull more from
              * the playlist and retry; for VOD/ended, this is end of stream. */
@@ -452,11 +607,13 @@ mr_source *mr_hls_source_open_ex(const char *url,
     /* Master playlist? Resolve to one media variant and refetch. */
     base = url;
     if (strstr(text, "#EXT-X-STREAM-INF")) {
+        if (g_verbose) printf("HLS: master playlist received\n");
         if (!pick_variant(text, url, media_url, sizeof media_url, options)) {
             free(text);
             mr_source_set_error("no playable variant in HLS master playlist");
             return NULL;
         }
+        if (g_verbose) printf("HLS: compatible media variant selected\n");
         free(text);
         text = fetch_text(media_url, options);
         if (!text) return NULL;
@@ -479,6 +636,9 @@ mr_source *mr_hls_source_open_ex(const char *url,
         }
         h->have_options = 1;
         h->options.hls_low = options->hls_low;
+        h->options.hls_live_start_segments =
+            options->hls_live_start_segments;
+        h->options.hls_buffer_segments = options->hls_buffer_segments;
         h->options.hls_max_width = options->hls_max_width;
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
@@ -491,6 +651,17 @@ mr_source *mr_hls_source_open_ex(const char *url,
         mr_source_set_error("HLS playlist has no segments");
         return NULL;
     }
+    if (h->live && options && options->hls_live_start_segments &&
+        h->nsegs > options->hls_live_start_segments) {
+        size_t before = h->nsegs;
+        keep_live_tail(h, options->hls_live_start_segments);
+        if (g_verbose)
+            printf("HLS: skipped %lu stale startup segments\n",
+                   (unsigned long)(before - h->nsegs));
+    }
+    if (g_verbose)
+        printf("HLS: %lu initial segments (%s)\n",
+               (unsigned long)h->nsegs, h->live ? "live" : "bounded");
 
     /* A live playlist (no ENDLIST) keeps growing: remember its URL so playback
      * can re-fetch it to discover new segments as the stream advances. */

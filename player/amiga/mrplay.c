@@ -16,6 +16,7 @@
 #include "../core/mr_demux.h"
 #include "../core/mr_hls.h"
 #include "../core/mr_http.h"
+#include "../core/mr_youtube.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
@@ -270,15 +271,23 @@ static void status_hold(void)
     }
 }
 
+static void playback_timer_close(void);
+
 static int playback_timer_open(void)
 {
     timer_port = CreateMsgPort();
     if (!timer_port) return 0;
     timer_request = (struct timerequest *)CreateIORequest(timer_port,
                                                           sizeof *timer_request);
-    if (!timer_request) return 0;
+    if (!timer_request) {
+        playback_timer_close();
+        return 0;
+    }
     if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ,
-                   (struct IORequest *)timer_request, 0) != 0) return 0;
+                   (struct IORequest *)timer_request, 0) != 0) {
+        playback_timer_close();
+        return 0;
+    }
     TimerBase = timer_request->tr_node.io_Device;
     return 1;
 }
@@ -291,6 +300,18 @@ static void playback_timer_close(void)
     if (timer_request) DeleteIORequest((struct IORequest *)timer_request);
     if (timer_port) DeleteMsgPort(timer_port);
     timer_request = NULL; timer_port = NULL;
+}
+
+/* Every main() exit, including resolver/stream failures, must release Amiga
+ * device and library state explicitly. Repeated failed launches otherwise
+ * leave timer.device requests and, on some libnix setups, socket/AmiSSL state
+ * behind until reboot. All three shutdowns are idempotent. */
+static int mrplay_exit(int code)
+{
+    playback_timer_close();
+    mr_http_net_shutdown();
+    control_port_close();
+    return code;
 }
 
 /* ---- Media-clock source tags ------------------------------------------- */
@@ -1150,6 +1171,7 @@ int main(int argc, char **argv)
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
+    char youtube_manifest[MR_HTTP_URL_MAX];
     mr_http_options http_options;
     int have_http_options = 0;
     media_clock mc;
@@ -1194,7 +1216,7 @@ int main(int argc, char **argv)
                "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--time]\n");
-        return 5;
+        return mrplay_exit(5);
     }
     {   /* display options anywhere on the command line */
         int i;
@@ -1202,13 +1224,13 @@ int main(int argc, char **argv)
             if (!strcmp(argv[i], "--user-agent")) {
                 if (++i >= argc) {
                     printf("--user-agent requires a value\n");
-                    return 5;
+                    return mrplay_exit(5);
                 }
                 user_agent = argv[i];
             } else if (!strcmp(argv[i], "--referer")) {
                 if (++i >= argc) {
                     printf("--referer requires a value\n");
-                    return 5;
+                    return mrplay_exit(5);
                 }
                 referer = argv[i];
             }
@@ -1240,11 +1262,11 @@ int main(int argc, char **argv)
     }
     if (!media_path) {
         printf("no media URL or filename supplied\n");
-        return 5;
+        return mrplay_exit(5);
     }
     if (!mr_http_options_init(&http_options, user_agent, referer)) {
         printf("invalid HTTP options: %s\n", mr_source_last_error());
-        return 5;
+        return mrplay_exit(5);
     }
     http_options.hls_low = hls_low;
     http_options.hls_max_width = hls_max_width;
@@ -1252,16 +1274,53 @@ int main(int argc, char **argv)
     http_options.hls_max_fps = hls_max_fps;
     have_http_options = user_agent || referer || hls_low || hls_max_width ||
                         hls_max_height || hls_max_fps;
+    if (mr_youtube_is_url(media_path)) {
+        mr_http_options youtube_options;
+        if (!mr_youtube_http_options_init(&youtube_options, &http_options)) {
+            printf("invalid YouTube HTTP options: %s\n",
+                   mr_source_last_error());
+            return mrplay_exit(5);
+        }
+        http_options = youtube_options;
+        have_http_options = 1;
+    }
     if (want_time) {
-        printf("HTTP User-Agent: %s\n",
-               user_agent ? user_agent : "MintRIVA/0.1 AmigaOS");
-        if (referer) printf("HTTP Referer: %s\n", referer);
+        printf("HTTP User-Agent: %s\n", http_options.user_agent);
+        if (http_options.referer[0])
+            printf("HTTP Referer: %s\n", http_options.referer);
         if (hls_low)
             printf("HLS preference: low bandwidth (max %ux%u @ %u fps)\n",
                    hls_max_width, hls_max_height, hls_max_fps);
     }
+    if (mr_youtube_is_url(media_path)) {
+        printf("YouTube Live: resolving...\n");
+        player_status(MR_PLAYER_STATE_OPENING, "",
+                      "Resolving YouTube Live stream...");
+        if (!mr_youtube_resolve_live(media_path,
+                                     have_http_options ? &http_options : NULL,
+                                     youtube_manifest,
+                                     sizeof youtube_manifest)) {
+            char reason[MR_PLAYER_STATUS_TEXT_MAX];
+            const char *why = mr_source_last_error();
+            printf("cannot resolve YouTube Live stream: %s\n", why);
+            snprintf(reason, sizeof reason, "YouTube Live: %s", why);
+            player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
+            status_hold();
+            return mrplay_exit(10);
+        }
+        media_path = youtube_manifest;
+        printf("YouTube Live: HLS manifest found\n");
+        if (want_time)
+            printf("YouTube Live: source client %s\n",
+                   mr_youtube_last_client());
+        /* The optional HLS worker must own bsdsocket/AmiSSL from its own task.
+         * Resolution ran on the main task, so release that task's persistent
+         * network state before starting the worker. */
+        if (hls_prefetch) mr_http_net_shutdown();
+    }
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
+    mr_hls_set_verbose(want_time);
 
     /* Opt-in background segment reader (HLS only): downloads segments into RAM
      * ahead of the reader so a fetch never freezes presentation. Installed
@@ -1301,7 +1360,7 @@ int main(int argc, char **argv)
             }
             status_hold();
             if (prefetch_on) STOP_PREFETCH(NULL);
-            return 10;
+            return mrplay_exit(10);
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input
          * buffer because their current decoders parse directly from it. */
@@ -1309,13 +1368,13 @@ int main(int argc, char **argv)
         if (!buf) { printf("cannot read %s\n", media_path);
                     player_status(MR_PLAYER_STATE_ERROR, "",
                                   "cannot read stream data");
-                    status_hold(); return 10; }
+                    status_hold(); return mrplay_exit(10); }
         printf("loaded %ld bytes\n", len);
 
         if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
             int rc = play_mpeg1(buf, len, loop, want_time);
             free(buf);
-            return rc;
+            return mrplay_exit(rc);
         }
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {
@@ -1326,7 +1385,7 @@ int main(int argc, char **argv)
                           "MJPEG/M4V/MPEG-1)");
             status_hold();
             free(buf);
-            return 10;
+            return mrplay_exit(10);
         }
     }
 
@@ -1339,7 +1398,7 @@ int main(int argc, char **argv)
                   status_hold();
                   mr_demux_close(dx);
                   if (prefetch_on) STOP_PREFETCH(NULL);
-                  free(buf); return 10; }
+                  free(buf); return mrplay_exit(10); }
 
     if (want_time)
         printf("video fourcc='%c%c%c%c'\n", (int)(vi->fourcc & 255),
@@ -1357,7 +1416,7 @@ int main(int argc, char **argv)
         status_hold();
         mr_demux_close(dx);
         if (prefetch_on) STOP_PREFETCH(NULL);
-        free(buf); return 10;
+        free(buf); return mrplay_exit(10);
     }
 
     h264_pipeline_diag_enabled = want_time && codec == &mr_codec_h264 &&
@@ -1391,7 +1450,7 @@ int main(int argc, char **argv)
                  status_hold();
                  mr_decoder_close(&dec); mr_demux_close(dx);
                  if (prefetch_on) STOP_PREFETCH(NULL);
-                 free(buf); return 10; }
+                 free(buf); return mrplay_exit(10); }
     printf("display backend: %s\n", display_backend_name(disp));
     if (prefetch_on)
         hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
@@ -2471,6 +2530,5 @@ int main(int argc, char **argv)
      * its own socket/TLS state ahead of the atexit teardown. */
     if (prefetch_on) STOP_PREFETCH(NULL);
     free(buf);
-    playback_timer_close();
-    return 0;
+    return mrplay_exit(0);
 }

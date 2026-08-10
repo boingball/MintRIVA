@@ -118,7 +118,7 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
 
 int main(int argc, char **argv)
 {
-    int argi = 2, force_memory = 0;
+    int argi = 2, force_memory = 0, hls_buffer_segments = 0;
     const char *user_agent = NULL, *referer = NULL;
     mr_http_options http_options;
     const char *mode;
@@ -131,6 +131,9 @@ int main(int argc, char **argv)
     while (argc > argi) {
         if (!strcmp(argv[argi], "--memory")) {
             force_memory = 1;
+            argi++;
+        } else if (!strcmp(argv[argi], "--hls-buffer-segments")) {
+            hls_buffer_segments = 1;
             argi++;
         } else if (!strcmp(argv[argi], "--user-agent") && argc > argi + 1) {
             user_agent = argv[argi + 1];
@@ -151,8 +154,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "invalid HTTP options: %s\n", mr_source_last_error());
         return 2;
     }
+    http_options.hls_buffer_segments = hls_buffer_segments;
     mr_demux *dx = force_memory ? NULL :
-        mr_demux_open_file_ex(argv[1], (user_agent || referer)
+        mr_demux_open_file_ex(argv[1], (user_agent || referer ||
+                                        hls_buffer_segments)
                                       ? &http_options : NULL);
 
     if (!dx) {

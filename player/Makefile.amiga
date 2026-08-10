@@ -50,6 +50,7 @@ LIBMPEG2_SRC = $(LIBMPEG2_ROOT)/libmpeg2/alloc.c \
                $(LIBMPEG2_ROOT)/libmpeg2/motion_comp.c \
                $(LIBMPEG2_ROOT)/libmpeg2/slice.c
 CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
+        core/mr_youtube.c \
         core/mr_demux.c core/mr_avi.c core/mr_mov.c \
         core/mr_ts.c core/mr_ps.c \
         core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
@@ -65,7 +66,8 @@ PLAY  = amiga/mrplay.c core/mr_play_options.c amiga/display.c amiga/display_cgx.
 GUI   = amiga/mrgui.c core/mr_play_options.c
 IPTVGUI = amiga/iptv_reaction.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
           iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c \
-          core/mr_source.c core/mr_http.c core/mr_hls.c core/mr_play_options.c
+          core/mr_source.c core/mr_http.c core/mr_hls.c core/mr_youtube.c \
+          core/mr_play_options.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
               $(wildcard $(MINTAMP_ROOT)/real/*.c)

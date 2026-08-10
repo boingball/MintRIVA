@@ -130,9 +130,14 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self._record_headers()
         path, chunked, head_length, streaming, drop = self._route()
+        if (path.endswith("/no-zero-range.ts") and
+                self.headers.get("Range") == "bytes=0-"):
+            self.send_error(403)
+            return
         if path == "/live/playlist.m3u8":
             self._serve_live_playlist()
             return
+
         if path.startswith("/redirect/"):
             location = "/media/" + path[len("/redirect/"):]
             if head_length:
@@ -224,6 +229,30 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(b"0\r\nX-Fixture: done\r\n\r\n")
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+
+    def do_POST(self):
+        self._record_headers()
+        path = urllib.parse.urlsplit(self.path).path
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400)
+            return
+        body_in = self.rfile.read(length)
+        if path != "/youtubei/v1/player" or not body_in:
+            self.send_error(404)
+            return
+        body = (
+            '{"streamingData":{"hlsManifestUrl":'
+            '"https://manifest.googlevideo.com/api/manifest/'
+            'hls_variant/file/index.m3u8"}}'
+        ).encode("ascii")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def main():

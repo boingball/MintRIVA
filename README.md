@@ -21,6 +21,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Container-agnostic demux (auto-detect) | ✅ |
 | AVI, QuickTime MOV/MP4 and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
+| Public YouTube Live URLs | ✅ native watch-page resolution into the existing HLS path; ordinary uploads are not supported |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
 | Microsoft RLE8 — palettised AVI | ✅ native palette and delta-frame decoder (RLE4 deferred) |
@@ -76,6 +77,8 @@ mrplay "http://example.net/video.avi"
 mrplay "https://example.net/video.mp4"
 mrplay --user-agent "Mozilla/5.0" --referer "https://example.net/" \
   "https://example.net/live/master.m3u8"
+mrplay --hls-max-width=640 --hls-max-height=360 \
+  "https://www.youtube.com/watch?v=LIVE_STREAM_ID"
 ```
 
 Plain HTTP is present in the normal Amiga build. HTTPS uses
@@ -114,6 +117,22 @@ handshake instead of the full per-segment bring-up.
 mrplay --net-queue=24 --live-resync "https://example.net/live/master.m3u8"
 ```
 
+### YouTube Live
+
+`mrplay` can resolve a public YouTube Live watch/share URL natively. It fetches
+the watch page with a browser user agent, extracts and JSON-decodes the signed
+`hlsManifestUrl`, validates that it is an HTTPS `manifest.googlevideo.com`
+playlist, then hands it to the normal HLS variant/segment pipeline. Resolution
+happens on the Amiga itself, so IP-bound signed URLs are not borrowed from a
+remote service. `--hls-low` and the HLS quality ceilings still apply.
+The HTTP/HLS path accepts signed URLs up to 4095 bytes, since current YouTube
+manifest URLs can exceed the older 1 KiB media-URL limit.
+
+This deliberately supports public live HLS only. Ordinary uploaded videos,
+age/login/region-restricted streams, DRM, and pages on which YouTube withholds
+the HLS field are rejected cleanly. YouTube's private watch-page schema can
+change, so this resolver may require maintenance when YouTube changes it.
+
 ## ReAction controller
 
 The Amiga build also creates `mrgui`, a separate Workbench-friendly controller
@@ -131,10 +150,11 @@ also reports the container type, video codec/FourCC, dimensions, frame rate and
 audio format to its console, which is useful metadata when testing unfamiliar
 files.
 
-URL input currently means a finite, directly addressable media file: the
-server must supply `Content-Length` or `Content-Range`, and must honour byte
-ranges when the container seeks. Chunked live streams, HLS playlists and
-fragmented MP4 are not supported yet.
+Direct AVI/MOV/MP4 URL input still needs a finite, byte-addressable resource:
+the server must supply `Content-Length` or `Content-Range`, and must honour byte
+ranges when the container seeks. MPEG-TS also accepts a forward-only chunked
+response, while HLS playlists use the dedicated live/VOD source. Fragmented MP4
+is not supported yet.
 
 TS currently supports MPEG-1/2 or AVC/H.264 video with ADTS AAC audio; AC3 is
 not decoded. Raw MJPEG/M4V and MPEG-1 program streams still use the original

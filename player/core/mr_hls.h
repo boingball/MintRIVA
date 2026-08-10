@@ -21,6 +21,11 @@ mr_source *mr_hls_source_open(const char *url);
 mr_source *mr_hls_source_open_ex(const char *url,
                                  const struct mr_http_options *options);
 
+/* Emit concise playlist/segment startup diagnostics. Intended for mrplay's
+ * --time mode so a slow CDN or incompatible rendition cannot look like a
+ * silent player hang. */
+void mr_hls_set_verbose(int enabled);
+
 /* Optional pluggable network backend. When installed, mr_hls routes every
  * playlist/segment open through `open_fn` (is_segment distinguishes them) and
  * calls `prefetch_fn` to hint the next segment. A platform uses this to funnel

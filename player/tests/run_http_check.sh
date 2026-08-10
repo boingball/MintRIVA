@@ -12,7 +12,7 @@ cleanup()
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
-    rm -rf "$tmpdir" tests/assets/hls
+    rm -rf "$tmpdir" tests/assets/hls tests/assets/no-zero-range.ts
 }
 trap cleanup EXIT INT TERM
 
@@ -23,6 +23,7 @@ python3 - <<'PY'
 import os
 d=open('tests/assets/test_mpeg2.ts','rb').read(); PKT=188; n=len(d)//PKT
 os.makedirs('tests/assets/hls',exist_ok=True)
+open('tests/assets/no-zero-range.ts','wb').write(d)
 b1=(n//3)*PKT; b2=(2*n//3)*PKT; parts=[d[:b1],d[b1:b2],d[b2:]]
 m=["#EXTM3U","#EXT-X-VERSION:3","#EXT-X-TARGETDURATION:2","#EXT-X-MEDIA-SEQUENCE:0"]
 for i,p in enumerate(parts):
@@ -30,8 +31,15 @@ for i,p in enumerate(parts):
 m.append("#EXT-X-ENDLIST")
 open('tests/assets/hls/media.m3u8','w').write("\n".join(m)+"\n")
 open('tests/assets/hls/master.m3u8','w').write(
- "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200000\nmissing.m3u8\n"
- "#EXT-X-STREAM-INF:BANDWIDTH=300000\nmedia.m3u8\n")
+ "#EXTM3U\n"
+ "#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=640x360,"
+ "CODECS=\"av01.0.05M.08,mp4a.40.2\"\nmissing-av1.m3u8\n"
+ "#EXT-X-STREAM-INF:BANDWIDTH=100000\nmissing.m3u8\n"
+ "#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=640x360,"
+ "CODECS=\"avc1.4d401e,mp4a.40.2\"\nmedia.m3u8\n")
+open('tests/assets/hls/youtube.html','w').write(
+ '{"hlsManifestUrl":"https:\\/\\/manifest.googlevideo.com\\/api\\/'
+ 'manifest\\/hls_variant\\/file\\/index.m3u8?x=1\\u0026y=2"}')
 # Also a 6-way split for the live playlist: the fixture server hands these out
 # through a growing, sliding EXT-X-MEDIA-SEQUENCE window (see http_fixture_server
 # /live/), so the client must re-fetch to follow segments lseg0..lseg5. In order
@@ -69,7 +77,22 @@ done
 port=$(cat "$tmpdir/port")
 base="$scheme://127.0.0.1:$port"
 
+# The YouTube resolver's bounded text downloader accepts both a regular body
+# and chunked transfer encoding. HTTPS uses the separately linked SSL harness;
+# this parser/downloader target is intentionally the plain host build.
+if test "$mode" = http; then
+    ./mr_youtube_check "$base/media/hls/youtube.html"
+    ./mr_youtube_check "$base/chunked/media/hls/youtube.html"
+    long_token=$(awk 'BEGIN { for (i=0; i<1500; i++) printf "x" }')
+    ./mr_youtube_check "$base/media/hls/youtube.html?token=$long_token"
+    ./mr_youtube_check --post "$base/youtubei/v1/player"
+fi
+
 "$decoder" "$base/media/test_mpeg2.ts" \
+    --check tests/assets/ref_mpeg2_ts
+# Some CDNs reject an unnecessary open-ended Range on the initial request.
+# A normal offset-zero GET must be used; later nonzero reconnects still Range.
+"$decoder" "$base/media/no-zero-range.ts" \
     --check tests/assets/ref_mpeg2_ts
 "$decoder" "$base/redirect/test_mpeg2.ts" \
     --check tests/assets/ref_mpeg2_ts
@@ -115,6 +138,12 @@ base="$scheme://127.0.0.1:$port"
     --check tests/assets/ref_mpeg2_ts
 "$decoder" "$base/media/hls/master.m3u8" \
     --check tests/assets/ref_mpeg2_ts
+
+# A CDN may use chunked transfer for both playlists and segments while refusing
+# HEAD/range length probes. Buffering each bounded segment must still expose a
+# seekable concatenated source to the MPEG-TS demuxer.
+"$decoder" "$base/stream/media/hls/master.m3u8" \
+    --hls-buffer-segments --check tests/assets/ref_mpeg2_ts
 
 # Live HLS: a sliding-window playlist with no EXT-X-ENDLIST that the server
 # grows one segment per poll (advancing EXT-X-MEDIA-SEQUENCE) until it caps and
