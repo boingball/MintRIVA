@@ -8,6 +8,7 @@
  * the current display backends.
  */
 #include "mr_h264.h"
+#include "mr_yuv.h"
 
 #include "ih264_typedefs.h"
 #include "iv.h"
@@ -401,13 +402,6 @@ static IV_API_CALL_STATUS_T decode_annexb(h264_state *s, uint32_t ts,
     return ih264d_api_function(s->handle, &in, out);
 }
 
-static int clip8(int v)
-{
-    if (v < 0) return 0;
-    if (v > 255) return 255;
-    return v;
-}
-
 static mr_status emit_rgb(mr_decoder *dec,
                           const ivd_video_decode_op_t *base)
 {
@@ -417,7 +411,6 @@ static mr_status emit_rgb(mr_decoder *dec,
     const uint8_t *up = (const uint8_t *)f->pv_u_buf;
     const uint8_t *vp = (const uint8_t *)f->pv_v_buf;
     int width = dec->width, height = dec->height;
-    int y;
     if (!yp || !up || !vp) return MR_ERR;
 #ifdef AMIGA_M68K
     if (!s->pipeline_rgb_done) h264_pipeline_checkpoint(s, "rgb-enter");
@@ -445,24 +438,11 @@ static mr_status emit_rgb(mr_decoder *dec,
     if ((int)f->u4_y_wd < width) width = (int)f->u4_y_wd;
     if ((int)f->u4_y_ht < height) height = (int)f->u4_y_ht;
 
-    for (y = 0; y < height; y++) {
-        const uint8_t *yr = yp + (size_t)y * f->u4_y_strd;
-        const uint8_t *ur = up + (size_t)(y >> 1) * f->u4_u_strd;
-        const uint8_t *vr = vp + (size_t)(y >> 1) * f->u4_v_strd;
-        uint8_t *dst = s->rgb + (size_t)y * dec->width * 3u;
-        int x;
-        for (x = 0; x < width; x++) {
-            int c = (int)yr[x] - 16;
-            int d = (int)ur[x >> 1] - 128;
-            int e = (int)vr[x >> 1] - 128;
-            if (c < 0) c = 0;
-            dst[x * 3 + 0] = (uint8_t)clip8((298 * c + 409 * e + 128) >> 8);
-            dst[x * 3 + 1] = (uint8_t)clip8((298 * c - 100 * d -
-                                            208 * e + 128) >> 8);
-            dst[x * 3 + 2] = (uint8_t)clip8((298 * c + 516 * d + 128) >> 8);
-        }
-        if (s->service && (y & 15) == 15) s->service(s->service_opaque);
-    }
+    mr_yuv420_to_rgb24(s->rgb, dec->width * 3,
+                       yp, (int)f->u4_y_strd,
+                       up, (int)f->u4_u_strd,
+                       vp, (int)f->u4_v_strd,
+                       width, height, s->service, s->service_opaque);
     dec->frame.width = dec->width;
     dec->frame.height = dec->height;
     dec->frame.fmt = MR_PIX_RGB24;

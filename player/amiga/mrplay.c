@@ -26,7 +26,6 @@
 #include "amiga_display.h"
 #include "mr_audio.h"
 #include "mr_player_status.h"
-#include "hls_prefetch.h"
 
 #include <proto/dos.h>
 #include <proto/exec.h>
@@ -99,11 +98,8 @@ void __chkabort(void) { }
  * audio. For synchronous network playback the active cushion is therefore
  * reduced after video_cap is known to roughly (video_cap - 2) frame periods,
  * clamped between AUDIO_CUSHION_MIN_MS and this ceiling. Local files keep the
- * ceiling, and the prefetch worker has its own smaller target below. */
+ * ceiling. */
 #define AUDIO_CUSHION_TARGET_MS 2500UL
-/* Cushion when the prefetch worker is on: it absorbs segment stalls at the
- * (cheap) compressed level, so the decoder need only reach a little ahead. */
-#define AUDIO_CUSHION_PREFETCH_MS 600UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
@@ -250,60 +246,6 @@ static void player_first_frame_presented(void)
     playing_status_published = 1;
     player_status(MR_PLAYER_STATE_PLAYING, playing_status_codec,
                   playing_status_text);
-}
-
-/* Turn a video fourcc into its four printable characters (non-printables shown
- * as '?'), for status messages about codecs we cannot decode. */
-static void fourcc_to_tag(uint32_t fourcc, char tag[5])
-{
-    int i;
-    tag[0] = (char)(fourcc & 255);
-    tag[1] = (char)((fourcc >> 8) & 255);
-    tag[2] = (char)((fourcc >> 16) & 255);
-    tag[3] = (char)((fourcc >> 24) & 255);
-    tag[4] = 0;
-    for (i = 0; i < 4; i++)
-        if (tag[i] < 32 || tag[i] > 126) tag[i] = '?';
-}
-
-/* Friendly name for a video codec we have no decoder for, so the IPTV status
- * line names the missing codec (and we know what to port next). NULL when the
- * fourcc is not one of the common streaming codecs. */
-static const char *unsupported_codec_name(uint32_t fourcc)
-{
-    char tag[5];
-    int i;
-    fourcc_to_tag(fourcc, tag);
-    for (i = 0; i < 4; i++)
-        if (tag[i] >= 'a' && tag[i] <= 'z') tag[i] = (char)(tag[i] - 32);
-    if (!strcmp(tag, "H264") || !strcmp(tag, "AVC1") || !strcmp(tag, "X264") ||
-        !strcmp(tag, "DAVC")) return "H.264/AVC";
-    if (!strcmp(tag, "HEVC") || !strcmp(tag, "HVC1") || !strcmp(tag, "HEV1") ||
-        !strcmp(tag, "H265") || !strcmp(tag, "DHEV")) return "H.265/HEVC";
-    if (!strcmp(tag, "AV01")) return "AV1";
-    if (!strcmp(tag, "VP80")) return "VP8";
-    if (!strcmp(tag, "VP90")) return "VP9";
-    if (!strcmp(tag, "VP60") || !strcmp(tag, "VP61") || !strcmp(tag, "VP62"))
-        return "VP6";
-    if (!strcmp(tag, "WMV1") || !strcmp(tag, "WMV2")) return "Windows Media Video";
-    if (!strcmp(tag, "WMV3")) return "Windows Media Video 9";
-    if (!strcmp(tag, "VC1") || !strcmp(tag, "WVC1")) return "VC-1";
-    if (!strcmp(tag, "THEO")) return "Theora";
-    if (!strcmp(tag, "FLV1")) return "Sorenson Spark";
-    if (!strcmp(tag, "SVQ1") || !strcmp(tag, "SVQ3")) return "Sorenson Video";
-    return NULL;
-}
-
-/* Build the "reason" line for a video codec we cannot decode. */
-static void describe_unsupported_video(uint32_t fourcc, char *buf, size_t n)
-{
-    const char *name = unsupported_codec_name(fourcc);
-    char tag[5];
-    fourcc_to_tag(fourcc, tag);
-    if (name)
-        snprintf(buf, n, "%s video (fourcc '%s') has no decoder", name, tag);
-    else
-        snprintf(buf, n, "video codec '%s' has no decoder", tag);
 }
 
 /* Keep a failure status readable by the IPTV controller for a moment before we
@@ -995,6 +937,13 @@ static mr_h264_speed_mode effective_h264_speed(int requested, int width,
         requested == MR_H264_SPEED_BALANCED ||
         requested == MR_H264_SPEED_FAST)
         return (mr_h264_speed_mode)requested;
+    /* At 1080p the decoder is already far beyond a 68k frame budget. Balanced
+     * only degrades non-reference pictures, so it can do effectively nothing
+     * on IPTV encodes whose every P-picture is a reference. Fast also disables
+     * deblocking on non-key pictures. Keep 720p and below on the less damaging
+     * Balanced/Quality policy; make >720p throughput-first automatically. */
+    if ((uint64_t)width * (uint64_t)height > 1280ULL * 720ULL)
+        return MR_H264_SPEED_FAST;
     return (uint64_t)width * (uint64_t)height > 854ULL * 480ULL
          ? MR_H264_SPEED_BALANCED : MR_H264_SPEED_QUALITY;
 }
@@ -1054,31 +1003,6 @@ static int control_signal_event(amiga_display *disp)
     return MR_EV_NONE;
 }
 
-#define PREFETCH_INTERRUPT_MASK (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D | \
-                                 SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F)
-#define PREFETCH_WAIT_MASK(disp_) \
-    (PREFETCH_INTERRUPT_MASK | display_wait_mask((disp_)))
-#define STOP_PREFETCH(disp_) \
-    hls_prefetch_stop(PREFETCH_WAIT_MASK((disp_)), prefetch_quit_probe, (disp_))
-
-static int prefetch_quit_probe(void *opaque)
-{
-    amiga_display *disp = (amiga_display *)opaque;
-    int ev = control_signal_event(disp);
-    if (ev == MR_EV_NONE && disp) ev = display_poll_event(disp);
-    /* display_poll_event() may have toggled fullscreen, replacing the CGX
-     * window and therefore its UserPort signal bit.  Publish the new mask
-     * before pf_wait_busy() enters its next Wait(). */
-    if (disp)
-        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
-                                   prefetch_quit_probe, disp);
-    /* Pause/seek events cannot be acted on inside the worker wait, but they
-     * must not disappear merely because a segment fetch was in flight. */
-    if (ev != MR_EV_NONE && ev != MR_EV_QUIT)
-        deferred_player_event = ev;
-    return ev == MR_EV_QUIT;
-}
-
 static int player_event(amiga_display *disp)
 {
     int ev;
@@ -1089,11 +1013,6 @@ static int player_event(amiga_display *disp)
         ev = control_signal_event(disp);
     }
     if (ev == MR_EV_NONE) ev = display_poll_event(disp);
-    /* Keep an active HLS worker's interrupt context synchronized with a CGX
-     * window replaced by either the F key or the controller button. */
-    if (disp)
-        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
-                                   prefetch_quit_probe, disp);
     return ev;
 }
 
@@ -1113,8 +1032,6 @@ static int service_player_during_io(void *opaque)
         if (ev != MR_EV_NONE &&
             (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
             deferred_player_event = ev;
-        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
-                                   prefetch_quit_probe, disp);
     }
     if (trace) {
         if (trace->audio) service_audio_for_display(trace);
@@ -1305,6 +1222,7 @@ int main(int argc, char **argv)
     unsigned char *buf = NULL;
     mr_demux *dx;
     const mr_video_info *vi;
+    const mr_audio_info *ai;
     const mr_codec *codec;
     mr_decoder dec;
     amiga_display *disp;
@@ -1318,17 +1236,18 @@ int main(int argc, char **argv)
     int raw_diag_printed = 0;
     int hls_low = 0;
     unsigned hls_max_width = 0, hls_max_height = 0, hls_max_fps = 0;
-    int hls_prefetch = 0;  /* --hls-prefetch: background segment reader (opt-in) */
-    int prefetch_on = 0;   /* worker actually running                            */
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
     int live_resync = 0;  /* --live-resync: catch up after a big stall, and
                            * reconnect a live stream that drops out            */
     int auto_close_eof = 0; /* finite GUI media should release its window      */
+    int audio_unavailable = 0;
     int h264_speed = -1; /* automatic: Quality <=480p, Balanced above 480p    */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
     char youtube_media[MR_HTTP_URL_MAX];
+    char video_description[96], audio_description[96];
+    char playing_detail[MR_PLAYER_STATUS_TEXT_MAX];
     mr_youtube_media_kind youtube_kind = MR_YOUTUBE_MEDIA_NONE;
     mr_http_options http_options;
     int have_http_options = 0;
@@ -1418,7 +1337,6 @@ int main(int argc, char **argv)
                 hls_max_fps = (unsigned)strtoul(argv[i] + 14, NULL, 10);
             else if (!strncmp(argv[i], "--net-queue=", 12))
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
-            else if (!strcmp(argv[i], "--hls-prefetch")) hls_prefetch = 1;
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (!strncmp(argv[i], "--h264-speed=", 13)) {
                 const char *mode = argv[i] + 13;
@@ -1505,25 +1423,10 @@ int main(int argc, char **argv)
         if (want_time)
             printf("YouTube: source client %s\n",
                    mr_youtube_last_client());
-        /* The optional HLS worker must own bsdsocket/AmiSSL from its own task.
-         * Resolution ran on the main task, so release that task's persistent
-         * network state before starting the worker. */
-        if (hls_prefetch && youtube_kind == MR_YOUTUBE_MEDIA_HLS)
-            mr_http_net_shutdown();
     }
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
     mr_hls_set_verbose(want_time);
-
-    /* Opt-in background segment reader (HLS only): downloads segments into RAM
-     * ahead of the reader so a fetch never freezes presentation. Installed
-     * before the demuxer opens so the very first playlist/segment go through it.
-     * If it fails to come up we simply fall back to synchronous fetching. */
-    if (hls_prefetch && mr_source_is_hls(media_path)) {
-        prefetch_on = hls_prefetch_start(want_time, PREFETCH_INTERRUPT_MASK,
-                                         prefetch_quit_probe, NULL);
-        printf("hls prefetch: %s\n", prefetch_on ? "on" : "unavailable");
-    }
 
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
@@ -1552,7 +1455,6 @@ int main(int argc, char **argv)
                 player_status(MR_PLAYER_STATE_ERROR, "", reason);
             }
             status_hold();
-            if (prefetch_on) STOP_PREFETCH(NULL);
             return mrplay_exit(10);
         }
         /* MPEG-1 and raw elementary streams still require a contiguous input
@@ -1583,14 +1485,21 @@ int main(int argc, char **argv)
     }
 
     vi = mr_demux_video(dx);
+    ai = mr_demux_audio(dx);
+    mr_demux_describe_video_codec(dx, video_description,
+                                  sizeof video_description);
+    mr_demux_describe_audio_codec(dx, audio_description,
+                                  sizeof audio_description);
+    printf("codec probe: container=%s, video=%s, audio=%s\n",
+           mr_demux_container_name(dx), video_description, audio_description);
     codec = mr_codec_find(vi->fourcc);
     if (!codec) { char reason[MR_PLAYER_STATUS_TEXT_MAX];
-                  printf("no decoder for this video codec\n");
-                  describe_unsupported_video(vi->fourcc, reason, sizeof reason);
+                  snprintf(reason, sizeof reason, "%s has no decoder",
+                           video_description);
+                  printf("no decoder: %s\n", reason);
                   player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
                   status_hold();
                   mr_demux_close(dx);
-                  if (prefetch_on) STOP_PREFETCH(NULL);
                   free(buf); return mrplay_exit(10); }
 
     if (want_time)
@@ -1608,7 +1517,6 @@ int main(int argc, char **argv)
         player_status(MR_PLAYER_STATE_ERROR, codec->name, reason);
         status_hold();
         mr_demux_close(dx);
-        if (prefetch_on) STOP_PREFETCH(NULL);
         free(buf); return mrplay_exit(10);
     }
     if (!apply_h264_speed(&dec, h264_speed, want_time)) {
@@ -1616,7 +1524,6 @@ int main(int argc, char **argv)
                       "H.264 performance mode was rejected by decoder");
         status_hold();
         mr_decoder_close(&dec); mr_demux_close(dx);
-        if (prefetch_on) STOP_PREFETCH(NULL);
         free(buf); return mrplay_exit(10);
     }
 
@@ -1639,11 +1546,11 @@ int main(int argc, char **argv)
     printf("%dx%d, opening display...\n", vi->width, vi->height);
     /* Prepare the eventual first-frame status, but do not claim Playing until
      * a frame has actually reached the display. */
+    snprintf(playing_detail, sizeof playing_detail, "%dx%d, %s",
+             vi->width, vi->height, mr_demux_container_name(dx));
+    player_prepare_playing_status(codec->name, playing_detail);
     {
         char line[MR_PLAYER_STATUS_TEXT_MAX];
-        snprintf(line, sizeof line, "%dx%d, %s", vi->width, vi->height,
-                 mr_demux_container_name(dx));
-        player_prepare_playing_status(codec->name, line);
         snprintf(line, sizeof line, "Opening display for %dx%d %s...",
                  vi->width, vi->height, codec->name);
         player_status(MR_PLAYER_STATE_OPENING, codec->name, line);
@@ -1654,19 +1561,14 @@ int main(int argc, char **argv)
                                "cannot open a display (RTG or AGA)");
                  status_hold();
                  mr_decoder_close(&dec); mr_demux_close(dx);
-                 if (prefetch_on) STOP_PREFETCH(NULL);
                  free(buf); return mrplay_exit(10); }
     printf("display backend: %s\n", display_backend_name(disp));
     player_status(MR_PLAYER_STATE_OPENING, codec->name,
                   "Display open; buffering first frame...");
-    if (prefetch_on)
-        hls_prefetch_set_interrupt(PREFETCH_WAIT_MASK(disp),
-                                   prefetch_quit_probe, disp);
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
      * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
     {
-        const mr_audio_info *ai = mr_demux_audio(dx);
         if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
             audio_dec = mr_audio_decoder_open(ai);
             if (want_time && audio_dec) {
@@ -1696,6 +1598,7 @@ int main(int argc, char **argv)
             else {
                 printf("audio: unsupported PCM layout or Paula open failed, "
                        "playing silent\n");
+                audio_unavailable = 1;
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);
                     audio_dec = NULL;
@@ -1719,12 +1622,23 @@ int main(int argc, char **argv)
                        "playing silent\n",
                        ai->format_tag == MR_AUDIO_FORMAT_MP2 ? "MP2" :
                        ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" : "AAC");
+                audio_unavailable = 1;
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);
                     audio_dec = NULL;
                 }
             }
+        } else if (strcmp(audio_description, "none detected")) {
+            printf("audio: %s is not supported; playing silent\n",
+                   audio_description);
+            audio_unavailable = 1;
         }
+    }
+    if (audio_unavailable) {
+        size_t used = strlen(playing_detail);
+        snprintf(playing_detail + used, sizeof playing_detail - used,
+                 "; audio %s unavailable (silent)", audio_description);
+        player_prepare_playing_status(codec->name, playing_detail);
     }
     control_audio = audio;
     if (audio) audio_set_volume(audio, control_volume);
@@ -1793,9 +1707,7 @@ int main(int argc, char **argv)
          * clock, no discards); a deeper queue also rides short stalls outright.
          * The clamps below keep the footprint within a safe slice of free RAM,
          * and video_cap is the ring modulus so the footprint is exactly
-         * video_cap * frame_bytes. (Fully gap-free video would need the queue to
-         * span the whole cushion - ~63 frames / ~42 MB here - which no RAM-safe
-         * queue can hold; that is the compressed-prefetch worker's job.) */
+         * video_cap * frame_bytes. */
         unsigned long cushion_ms;
         size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
         ULONG free_any = AvailMem(MEMF_ANY);
@@ -1814,9 +1726,7 @@ int main(int argc, char **argv)
             video_cap = budget_frames;
         if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
         if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
-        if (prefetch_on) {
-            cushion_ms = AUDIO_CUSHION_PREFETCH_MS;
-        } else if (network_source) {
+        if (network_source) {
             uint64_t frame_period_us = vi->rate
                 ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
                 : 83333ULL;
@@ -1840,9 +1750,8 @@ int main(int argc, char **argv)
 
         /* Wire the present-during-fetch context onto the shared service callback.
          * It touches the queue only while `released` is set around the blocking
-         * demux read below, so it can advance video through a segment stall the
-         * single loop is stuck in - the smooth-playback goal the prefetch worker
-         * chased, without a second task, its socket lifecycle, or its teardown. */
+         * demux read below, so it can advance video through a segment stall even
+         * while the single playback loop is blocked in the synchronous reader. */
         video_presenter presenter;
         presenter.released = 0;
         presenter.presenting = 0;
@@ -2378,10 +2287,9 @@ int main(int argc, char **argv)
              * decoded alongside it is presented as it comes (present-as-decoded)
              * rather than piling into a deep buffer.
              *
-             * The cushion rides segment-fetch stalls for audio; it is deliberate
-             * that it does NOT drive the decoded-video queue deep (that was the
-             * judder). A smaller cushion is used when the prefetch worker is on,
-             * since it absorbs stalls at the compressed level. */
+         * The cushion rides segment-fetch stalls for audio; it deliberately
+         * does not drive the decoded-video queue deep, which previously caused
+         * visible judder and excessive RGB memory use. */
             int feed_audio_full = audio && qcount >= target_depth &&
                                   audio_ms < cushion_ms;
             int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
@@ -2753,9 +2661,6 @@ int main(int argc, char **argv)
     display_close(disp);
     mr_decoder_close(&dec);
     mr_demux_close(dx);
-    /* Stop the prefetch worker from the main task before we exit, so it releases
-     * its own socket/TLS state ahead of the atexit teardown. */
-    if (prefetch_on) STOP_PREFETCH(NULL);
     free(buf);
     return mrplay_exit(0);
 }

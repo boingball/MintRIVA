@@ -95,25 +95,41 @@ static int cgx_close_private_screen(struct Screen **screen, const char *reason)
     return 0;
 }
 
-/* Open a private RTG screen close to the video's native dimensions.  A
- * 16-bit mode is preferred to reduce RTG memory traffic; if unavailable,
+/* Open a private RTG screen matching the current public-screen geometry.
+ * Fullscreen means the whole display, not the closest mode to the video's
+ * native dimensions; cgx_rebuild_geometry() aspect-fits the video afterwards.
+ * A 16-bit mode is preferred to reduce RTG memory traffic; if unavailable,
  * retain truecolour compatibility by trying 32 and 24-bit modes. */
 static struct Screen *cgx_open_private_screen(cgx_state *s, const char *title)
 {
     static const ULONG depths[] = { 16, 32, 24 };
+    struct Screen *public_screen;
     struct Screen *scr = NULL;
     ULONG best_modeid = (ULONG)INVALID_ID;
     ULONG best_depth = 0;
     ULONG best_score = ~0UL;
+    int target_w = s->source_w;
+    int target_h = s->source_h;
     unsigned i;
+
+    /* Preserve the user's chosen Workbench size (for example 1024x768) while
+     * still allowing a lower-depth private screen for faster video uploads. */
+    public_screen = LockPubScreen(NULL);
+    if (public_screen) {
+        if (public_screen->Width > 0 && public_screen->Height > 0) {
+            target_w = public_screen->Width;
+            target_h = public_screen->Height;
+        }
+        UnlockPubScreen(NULL, public_screen);
+    }
+
     for (i = 0; i < sizeof depths / sizeof depths[0]; i++) {
         ULONG modeid = BestCModeIDTags(
-            CYBRBIDTG_NominalWidth, (ULONG)s->source_w,
-            CYBRBIDTG_NominalHeight, (ULONG)s->source_h,
+            CYBRBIDTG_NominalWidth, (ULONG)target_w,
+            CYBRBIDTG_NominalHeight, (ULONG)target_h,
             CYBRBIDTG_Depth, depths[i],
             TAG_END);
         ULONG mode_w, mode_h, mode_depth, score;
-        mr_aspect_rect fit;
         if (modeid == (ULONG)INVALID_ID || !IsCyberModeID(modeid))
             continue;
         mode_w = GetCyberIDAttr(CYBRIDATTR_WIDTH, modeid);
@@ -122,14 +138,12 @@ static struct Screen *cgx_open_private_screen(cgx_state *s, const char *title)
         if (!mode_w || !mode_h || mode_w == ~0UL || mode_h == ~0UL ||
             mode_depth <= 8 || mode_depth == ~0UL)
             continue;
-        fit = mr_aspect_fit(s->source_w, s->source_h,
-                            (int)mode_w, (int)mode_h);
-        score = (ULONG)(fit.w >= s->source_w ? fit.w - s->source_w
-                                             : s->source_w - fit.w) +
-                (ULONG)(fit.h >= s->source_h ? fit.h - s->source_h
-                                             : s->source_h - fit.h);
-        /* Avoiding scaling matters more than 16 versus 32-bit output.  For
-         * otherwise equal modes prefer the lower depth and memory traffic. */
+        score = (ULONG)((int)mode_w >= target_w ? (int)mode_w - target_w
+                                                     : target_w - (int)mode_w) +
+                (ULONG)((int)mode_h >= target_h ? (int)mode_h - target_h
+                                                     : target_h - (int)mode_h);
+        /* Match the public-screen dimensions first. For otherwise equal modes
+         * prefer the lower depth and lower RTG memory traffic. */
         if (score < best_score ||
             (score == best_score && mode_depth < best_depth)) {
             best_modeid = modeid;
@@ -155,11 +169,12 @@ static struct Screen *cgx_open_private_screen(cgx_state *s, const char *title)
         scr = NULL;
     }
     if (scr && g_display_want_time)
-        printf("rtg-fullscreen private=%dx%d depth=%lu source=%dx%d\n",
+        printf("rtg-fullscreen private=%dx%d depth=%lu target=%dx%d "
+               "source=%dx%d\n",
                scr->Width, scr->Height,
                (unsigned long)GetCyberMapAttr(scr->RastPort.BitMap,
                                                CYBRMATTR_DEPTH),
-               s->source_w, s->source_h);
+               target_w, target_h, s->source_w, s->source_h);
     return scr;
 }
 
@@ -574,16 +589,29 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     s->timing.prepare_us = elapsed_us(total);
     if (service) service(service_opaque);
     mark = clock();
-    /* At native size retain the dirty-row fast path. This is byte-for-byte
-     * unchanged from before: 640x360 (and any other native-size stream)
-     * behaviour is preserved exactly. */
-    WritePixelArray((APTR)(rgb + (size_t)dy0 * stride), 0, 0,
-                    (UWORD)stride, s->win->RPort,
-                    (UWORD)(s->bl + s->dx),
-                    (UWORD)(s->bt + s->dy + dy0), (UWORD)w,
-                    (UWORD)(dy1 - dy0), RECTFMT_RGB);
+    /* Keep the dirty-row fast path, but split tall native pictures into small
+     * writes. Several real P96/CGX drivers visibly retain old horizontal
+     * bands when handed one multi-megabyte 1080p RGB24 WritePixelArray. The
+     * same pixels and source stride are used here; only the transfer height is
+     * bounded, which also gives Paula/input a service point during a large
+     * frame upload. */
+    {
+        int y;
+        for (y = dy0; y < dy1; y += MR_CGX_STRIP_ROWS) {
+            int rows = dy1 - y < MR_CGX_STRIP_ROWS ? dy1 - y
+                                                    : MR_CGX_STRIP_ROWS;
+            WritePixelArray((APTR)(rgb + (size_t)y * stride), 0, 0,
+                            (UWORD)stride, s->win->RPort,
+                            (UWORD)(s->bl + s->dx),
+                            (UWORD)(s->bt + s->dy + y), (UWORD)w,
+                            (UWORD)rows, RECTFMT_RGB);
+            s->timing.copies++;
+            if (service) service(service_opaque);
+        }
+    }
     s->timing.blit_us = elapsed_us(mark);
-    if (service) service(service_opaque);
+    s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
+    s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
     s->timing.total_us = elapsed_us(total);
 }
 

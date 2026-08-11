@@ -199,8 +199,12 @@ int main(int argc, char **argv)
     }
     const mr_video_info *vi = mr_demux_video(dx);
     const mr_audio_info *ai = mr_demux_audio(dx);
+    char video_codec[96], audio_codec[96];
     uint32_t fc = vi->fourcc;
     printf("container: %s\n", mr_demux_container_name(dx));
+    mr_demux_describe_video_codec(dx, video_codec, sizeof video_codec);
+    mr_demux_describe_audio_codec(dx, audio_codec, sizeof audio_codec);
+    printf("codecs: video=%s, audio=%s\n", video_codec, audio_codec);
     /* uint32_t is 'unsigned long' on m68k-amigaos but 'unsigned int' on the
      * host, so cast explicitly to keep the formats portable and warning-clean:
      * %lu + unsigned long, and %c fourcc bytes promoted to int. */

@@ -96,7 +96,6 @@ enum {
   G_STOP,
   G_OPEN_URL,
   G_DEBUG,
-  G_PREFETCH,
   G_CLOSE
 };
 
@@ -713,7 +712,6 @@ int main(int argc, char **argv) {
   Object *stop_button = NULL;
   Object *open_button = NULL;
   Object *debug_button = NULL;
-  Object *prefetch_button = NULL;
   Object *close_button = NULL;
   Object *search_label = NULL, *country_label = NULL, *category_label = NULL;
   Object *url_label = NULL;
@@ -825,11 +823,6 @@ int main(int argc, char **argv) {
   debug_button =
       (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_DEBUG, GA_Text,
                           (ULONG) "Log: Off", GA_RelVerify, TRUE, TAG_DONE);
-  prefetch_button =
-      (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_PREFETCH, GA_Text,
-                          (ULONG)(play_options.hls_prefetch ? "Prefetch: On"
-                                                            : "Prefetch: Off"),
-                          GA_RelVerify, TRUE, TAG_DONE);
   close_button =
       (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, G_CLOSE, GA_Text,
                           (ULONG) "Close", GA_RelVerify, TRUE, TAG_DONE);
@@ -842,7 +835,7 @@ int main(int argc, char **argv) {
   url_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
                                   (ULONG) "Manual URL", TAG_DONE);
   if (!refresh_button || !play_button || !next_button || !stop_button ||
-      !open_button || !debug_button || !prefetch_button || !close_button ||
+      !open_button || !debug_button || !close_button ||
       !search_label || !country_label || !category_label || !url_label)
     goto cleanup;
 
@@ -851,8 +844,8 @@ int main(int argc, char **argv) {
       LAYOUT_EvenSize, TRUE, LAYOUT_AddChild, (ULONG)refresh_button,
       LAYOUT_AddChild, (ULONG)play_button, LAYOUT_AddChild, (ULONG)next_button,
       LAYOUT_AddChild, (ULONG)stop_button, LAYOUT_AddChild, (ULONG)open_button,
-      LAYOUT_AddChild, (ULONG)debug_button, LAYOUT_AddChild, (ULONG)prefetch_button,
-      LAYOUT_AddChild, (ULONG)close_button, TAG_DONE);
+      LAYOUT_AddChild, (ULONG)debug_button, LAYOUT_AddChild, (ULONG)close_button,
+      TAG_DONE);
   if (!buttons)
     goto cleanup;
   layout = (Object *)NewObject(
@@ -1040,16 +1033,6 @@ int main(int argc, char **argv) {
         set_status(status, window,
                    debug_log ? "Debug log ON: next Play writes " MRPLAY_LOG_FILE
                              : "Debug log off");
-      } else if ((result & WMHI_GADGETMASK) == G_PREFETCH) {
-        play_options.hls_prefetch = !play_options.hls_prefetch;
-        SetGadgetAttrs((struct Gadget *)prefetch_button, window, NULL, GA_Text,
-                       (ULONG)(play_options.hls_prefetch ? "Prefetch: On"
-                                                         : "Prefetch: Off"),
-                       TAG_DONE);
-        set_status(status, window,
-                   play_options.hls_prefetch
-                       ? "HLS prefetch ON (applies to the next Play)"
-                       : "HLS prefetch off");
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
         if (!start_url(text ? (char *)text : "", &play_options, debug_log))
@@ -1121,8 +1104,6 @@ cleanup:
         DisposeObject(open_button);
       if (debug_button)
         DisposeObject(debug_button);
-      if (prefetch_button)
-        DisposeObject(prefetch_button);
       if (close_button)
         DisposeObject(close_button);
     }

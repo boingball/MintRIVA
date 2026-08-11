@@ -403,11 +403,9 @@ static void http_register_shutdown(void)
     if (!registered) { registered = 1; atexit(http_platform_shutdown); }
 }
 
-/* Release the socket/TLS state from the calling task. bsdsocket and AmiSSL must
- * be closed by the task that opened them, so a helper task that did all the
- * networking (the HLS prefetch worker) calls this before it exits. The shutdown
- * is idempotent and fully guarded, so the atexit copy that runs later in the
- * main task then finds everything already released and does nothing. */
+/* Release the socket/TLS state from the calling task. The shutdown is
+ * idempotent and fully guarded, so explicit early-exit cleanup and the atexit
+ * copy can safely meet without releasing the libraries twice. */
 void mr_http_net_shutdown(void)
 {
     http_platform_shutdown();

@@ -34,7 +34,6 @@ typedef struct mr_play_options {
     unsigned hls_max_width;
     unsigned hls_max_height;
     unsigned hls_max_fps;
-    int hls_prefetch;  /* pass --hls-prefetch: background HLS segment reader     */
     int live_resync;   /* pass --live-resync: catch up / reconnect live streams */
     mr_h264_performance h264_performance;
 } mr_play_options;

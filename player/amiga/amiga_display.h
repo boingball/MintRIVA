@@ -28,8 +28,9 @@ typedef struct mr_display_timing {
  * display_open; default is RTG-first with automatic AGA fallback. */
 void display_set_force_aga(int on);
 
-/* AGA colour mode: 0 = 256-colour dither (default), 6 = HAM6, 8 = HAM8.
- * A non-zero HAM depth implies the AGA backend (HAM is AGA-only). */
+/* Planar colour mode: 0 = indexed dither (256 colours on AGA, 32 on
+ * OCS/ECS), 6 = HAM6 on any chipset, 8 = HAM8 on AGA. A non-zero HAM depth
+ * forces the native planar backend. */
 void display_set_ham(int bits);
 
 /* Integer upscale for the AGA backend: 1 (default) or 2. */

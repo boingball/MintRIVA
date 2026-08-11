@@ -1,9 +1,9 @@
 /*
  * MintRIVA - MPEG transport stream demuxer.
  *
- * Supports 188-byte TS and 192-byte M2TS carrying H.264/AVC video and ADTS
- * AAC audio. PES payloads are assembled into the packet interface used by the
- * existing codec/audio layers.
+ * Supports 188-byte TS and 192-byte M2TS carrying MPEG-1/2 or H.264/AVC video,
+ * plus MPEG Layer II or ADTS AAC audio. PES payloads are assembled into the
+ * packet interface used by the existing codec/audio layers.
  */
 #ifndef MR_TS_H
 #define MR_TS_H
@@ -59,6 +59,8 @@ mr_status mr_ts_open_source(mr_ts *t, mr_source *source, size_t len);
 /* Human-readable name for a PMT video stream_type we don't decode (e.g. HEVC),
  * or NULL if the type is not a recognised video codec. */
 const char *mr_ts_video_type_name(unsigned stream_type);
+/* Human-readable PMT audio stream_type, including codecs not decoded yet. */
+const char *mr_ts_audio_type_name(unsigned stream_type);
 mr_status mr_ts_next_packet(mr_ts *t, mr_packet *pkt);
 void      mr_ts_rewind(mr_ts *t);
 void      mr_ts_close(mr_ts *t);

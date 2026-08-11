@@ -319,3 +319,134 @@ const char *mr_demux_container_name(const mr_demux *d)
          : d->kind == MR_CONTAINER_RAW_MJPEG ? "raw MJPEG"
          : d->kind == MR_CONTAINER_RAW_MPEG4 ? "raw M4V" : "?";
 }
+
+static void fourcc_text(uint32_t fourcc, char tag[5])
+{
+    int i;
+    tag[0] = (char)(fourcc & 255);
+    tag[1] = (char)((fourcc >> 8) & 255);
+    tag[2] = (char)((fourcc >> 16) & 255);
+    tag[3] = (char)((fourcc >> 24) & 255);
+    tag[4] = 0;
+    for (i = 0; i < 4; i++)
+        if (tag[i] < 32 || tag[i] > 126) tag[i] = '?';
+}
+
+static const char *video_fourcc_name(uint32_t fourcc)
+{
+    char tag[5];
+    int i;
+    fourcc_text(fourcc, tag);
+    for (i = 0; i < 4; i++)
+        if (tag[i] >= 'a' && tag[i] <= 'z') tag[i] -= 'a' - 'A';
+    if (!strcmp(tag, "H264") || !strcmp(tag, "AVC1") ||
+        !strcmp(tag, "X264") || !strcmp(tag, "DAVC")) return "H.264/AVC";
+    if (!strcmp(tag, "HEVC") || !strcmp(tag, "HVC1") ||
+        !strcmp(tag, "HEV1") || !strcmp(tag, "H265") ||
+        !strcmp(tag, "DHEV")) return "H.265/HEVC";
+    if (!strcmp(tag, "VVC1") || !strcmp(tag, "VVI1")) return "H.266/VVC";
+    if (!strcmp(tag, "MPG1")) return "MPEG-1 video";
+    if (!strcmp(tag, "MPG2")) return "MPEG-2 video";
+    if (!strcmp(tag, "CVID")) return "Cinepak";
+    if (!strcmp(tag, "MJPG") || !strcmp(tag, "JPEG")) return "Motion JPEG";
+    if (!strcmp(tag, "MP4V") || !strcmp(tag, "DIVX") ||
+        !strcmp(tag, "XVID") || !strcmp(tag, "DX50") ||
+        !strcmp(tag, "FMP4")) return "MPEG-4 Part 2";
+    if (!strcmp(tag, "MP42") || !strcmp(tag, "DIV2"))
+        return "Microsoft MPEG-4 v2";
+    if (!strcmp(tag, "H263") || !strcmp(tag, "S263")) return "H.263";
+    if (!strcmp(tag, "MSVC") || !strcmp(tag, "CRAM"))
+        return "Microsoft Video 1";
+    if (!strcmp(tag, "MRLE") || !strcmp(tag, "RLE8")) return "Microsoft RLE";
+    if (!strcmp(tag, "2VUY") || !strcmp(tag, "UYVY")) return "raw UYVY422";
+    if (!strcmp(tag, "AV01")) return "AV1";
+    if (!strcmp(tag, "VP80")) return "VP8";
+    if (!strcmp(tag, "VP90")) return "VP9";
+    if (!strncmp(tag, "VP6", 3)) return "VP6";
+    if (!strcmp(tag, "WMV1") || !strcmp(tag, "WMV2")) return "Windows Media Video";
+    if (!strcmp(tag, "WMV3")) return "Windows Media Video 9";
+    if (!strcmp(tag, "VC-1") || !strcmp(tag, "WVC1")) return "VC-1";
+    if (!strcmp(tag, "THEO")) return "Theora";
+    if (!strcmp(tag, "FLV1")) return "Sorenson Spark";
+    if (!strcmp(tag, "SVQ1") || !strcmp(tag, "SVQ3")) return "Sorenson Video";
+    return NULL;
+}
+
+static const char *audio_fourcc_name(uint32_t fourcc)
+{
+    char tag[5];
+    int i;
+    fourcc_text(fourcc, tag);
+    for (i = 0; i < 4; i++)
+        if (tag[i] >= 'a' && tag[i] <= 'z') tag[i] -= 'a' - 'A';
+    if (!strcmp(tag, "MP4A")) return "AAC/MPEG-4 audio";
+    if (!strcmp(tag, "AC-3")) return "AC-3";
+    if (!strcmp(tag, "EC-3")) return "E-AC-3";
+    if (!strcmp(tag, "OPUS")) return "Opus";
+    if (!strcmp(tag, "FLAC")) return "FLAC";
+    if (!strcmp(tag, "ALAC")) return "Apple Lossless";
+    if (!strcmp(tag, "VORB")) return "Vorbis";
+    if (!strcmp(tag, "WMA1") || !strcmp(tag, "WMA2")) return "Windows Media Audio";
+    return NULL;
+}
+
+void mr_demux_describe_video_codec(const mr_demux *d, char *out, size_t cap)
+{
+    const mr_video_info *vi;
+    const char *name;
+    char tag[5];
+    if (!out || !cap) return;
+    out[0] = 0;
+    if (!d) { snprintf(out, cap, "unknown"); return; }
+    vi = mr_demux_video(d);
+    if (!vi || !vi->valid) {
+        if (d->kind == MR_CONTAINER_TS && d->u.ts.unsupported_video_type) {
+            name = mr_ts_video_type_name(d->u.ts.unsupported_video_type);
+            snprintf(out, cap, "%s (MPEG-TS type 0x%02x)",
+                     name ? name : "unknown video",
+                     (unsigned)d->u.ts.unsupported_video_type);
+        } else {
+            snprintf(out, cap, "none detected");
+        }
+        return;
+    }
+    fourcc_text(vi->fourcc, tag);
+    name = video_fourcc_name(vi->fourcc);
+    if (name) snprintf(out, cap, "%s (fourcc '%s')", name, tag);
+    else snprintf(out, cap, "video fourcc '%s'", tag);
+}
+
+void mr_demux_describe_audio_codec(const mr_demux *d, char *out, size_t cap)
+{
+    const mr_audio_info *ai;
+    const char *name = NULL;
+    char tag[5];
+    if (!out || !cap) return;
+    out[0] = 0;
+    if (!d) { snprintf(out, cap, "unknown"); return; }
+    ai = mr_demux_audio(d);
+    if (ai && ai->valid) {
+        if (ai->format_tag == MR_AUDIO_FORMAT_PCM) name = "PCM";
+        else if (ai->format_tag == MR_AUDIO_FORMAT_MP2) name = "MPEG Layer II";
+        else if (ai->format_tag == MR_AUDIO_FORMAT_MP3) name = "MP3";
+        else if (ai->format_tag == MR_AUDIO_FORMAT_AAC) name = "AAC-LC";
+        if (name) { snprintf(out, cap, "%s", name); return; }
+        if (ai->codec_tag > 0xffffU) {
+            fourcc_text(ai->codec_tag, tag);
+            name = audio_fourcc_name(ai->codec_tag);
+            if (name) snprintf(out, cap, "%s (fourcc '%s')", name, tag);
+            else snprintf(out, cap, "audio fourcc '%s'", tag);
+        } else {
+            snprintf(out, cap, "WAVE audio format 0x%04x",
+                     (unsigned)ai->format_tag);
+        }
+        return;
+    }
+    if (d->kind == MR_CONTAINER_TS && d->u.ts.audio_type) {
+        name = mr_ts_audio_type_name(d->u.ts.audio_type);
+        snprintf(out, cap, "%s (MPEG-TS type 0x%02x)",
+                 name ? name : "unknown audio", (unsigned)d->u.ts.audio_type);
+    } else {
+        snprintf(out, cap, "none detected");
+    }
+}

@@ -50,6 +50,25 @@ continues to build the lighter codecs without libavc.
 substantially more stack than the classic Shell default. On systems that do
 not honour stack cookies, run `Stack 320000` before starting the player.
 
+The normal Amiga build remains 68030-compatible. Optimised 68040 and 68060
+builds can be selected explicitly, or packaged together in `player/release/`:
+
+```sh
+cd player
+make -f Makefile.amiga all SSL=1 CPU=68030
+make -f Makefile.amiga all SSL=1 CPU=68040
+make -f Makefile.amiga all SSL=1 CPU=68060
+make -f Makefile.amiga release SSL=1   # release/MintRIVA030, 040 and 060
+```
+
+Use the `.040` build for a PiStorm configured as a 68040 and `.060` only on a
+68060-compatible CPU. `release/MintRIVA030`, `release/MintRIVA040` and
+`release/MintRIVA060` are ready-to-run sets with ordinary unsuffixed program
+names. Each contains `mrplay`, `mrgui`, `iptvgui` and `ytgui`, so the GUI can
+launch its companion programs without any renaming, plus the command-line
+`mr_decode` codec probe/test harness. The release target finishes by restoring
+the working binaries to the universal 030 build.
+
 ```sh
 git submodule update --init --recursive
 cd player

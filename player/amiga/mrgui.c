@@ -84,6 +84,32 @@ enum {
     G_YOUTUBE
 };
 
+/* Chooser rows are chipset-dependent, so never infer a display mode from a
+ * hard-coded row number. This map is populated alongside the labels. */
+static mr_display_mode mode_values[4];
+static unsigned mode_count;
+static int add_chooser_node(struct List *list, const char *text);
+
+static int chipset_has_aga(void)
+{
+    return GfxBase && (GfxBase->ChipRevBits0 & GFXF_AA_LISA) != 0;
+}
+
+static int chipset_has_ecs_denise(void)
+{
+    return GfxBase && (GfxBase->ChipRevBits0 & GFXF_HR_DENISE) != 0;
+}
+
+static int add_mode_node(struct List *list, const char *text,
+                         mr_display_mode value)
+{
+    if (mode_count >= sizeof mode_values / sizeof mode_values[0] ||
+        !add_chooser_node(list, text))
+        return 0;
+    mode_values[mode_count++] = value;
+    return 1;
+}
+
 static int open_reaction_classes(void)
 {
     IntuitionBase = (struct IntuitionBase *)OpenLibrary(
@@ -258,9 +284,8 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHECKBOX_Checked, lace, &checked_lace);
     GetAttr(CHECKBOX_Checked, twox, &checked_2x);
-    options->display = selected == 1 ? MR_DISPLAY_HAM6 :
-                       selected == 2 ? MR_DISPLAY_HAM8 :
-                       selected == 3 ? MR_DISPLAY_CGX : MR_DISPLAY_AGA;
+    options->display = selected < mode_count
+                     ? mode_values[selected] : MR_DISPLAY_AGA;
     options->c2p = selected_c2p == 1 ? MR_C2P_AKIKO :
                    selected_c2p == 2 ? MR_C2P_KALMS : MR_C2P_STANDARD;
     options->laced = checked_lace != 0;
@@ -403,7 +428,9 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
 
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
-    disable_chipset_options = selected == 3 ? TRUE : FALSE;
+    disable_chipset_options = selected < mode_count &&
+                              mode_values[selected] == MR_DISPLAY_CGX
+                            ? TRUE : FALSE;
 
     SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                    GA_Disabled, disable_chipset_options,
@@ -512,6 +539,7 @@ int main(void)
     UWORD code;
     int status;
     int have_rtg;
+    int default_mode;
 
     window_object = NULL;
     file = NULL;
@@ -537,6 +565,8 @@ int main(void)
     window = NULL;
     status = RETURN_FAIL;
     have_rtg = 0;
+    default_mode = 0;
+    mode_count = 0;
 
     modes.lh_Head = (struct Node *)&modes.lh_Tail;
     modes.lh_Tail = NULL;
@@ -555,11 +585,17 @@ int main(void)
     }
 
     have_rtg = default_screen_is_rtg();
-    if (!add_chooser_node(&modes, "AGA") ||
-        !add_chooser_node(&modes, "HAM6") ||
-        !add_chooser_node(&modes, "HAM8") ||
-        (have_rtg && !add_chooser_node(&modes, "CGX")))
+    if (!add_mode_node(&modes,
+                       chipset_has_aga() ? "AGA (256 colours)" :
+                       chipset_has_ecs_denise() ? "ECS (32 colours)" :
+                                                  "OCS (32 colours)",
+                       MR_DISPLAY_AGA) ||
+        !add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
+        (chipset_has_aga() &&
+         !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
+        (have_rtg && !add_mode_node(&modes, "CGX/RTG", MR_DISPLAY_CGX)))
         goto cleanup;
+    if (have_rtg) default_mode = (int)mode_count - 1;
     if (!add_chooser_node(&c2p_modes, "Standard") ||
         !add_chooser_node(&c2p_modes, "CD32") ||
         !add_chooser_node(&c2p_modes, "Kalms"))
@@ -581,7 +617,7 @@ int main(void)
                                GA_ID, G_MODE,
                                GA_RelVerify, TRUE,
                                CHOOSER_Labels, (ULONG)&modes,
-                               CHOOSER_Selected, have_rtg ? 3 : 0,
+                               CHOOSER_Selected, default_mode,
                                TAG_DONE);
     c2p = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                               GA_ID, G_C2P,

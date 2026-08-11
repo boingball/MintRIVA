@@ -122,7 +122,6 @@ static int append_playback_flags(char *out, size_t cap,
         snprintf(number, sizeof(number), "--hls-max-fps=%u", o->hls_max_fps);
         if (!append_option(out, cap, number)) return 0;
     }
-    if (o->hls_prefetch && !append_option(out, cap, "--hls-prefetch")) return 0;
     if (o->live_resync && !append_option(out, cap, "--live-resync")) return 0;
     if (o->h264_performance != MR_H264_PERF_AUTO) {
         const char *mode = o->h264_performance == MR_H264_PERF_QUALITY
@@ -203,7 +202,6 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--scale-2x")) o->scale_2x = 1;
         else if (!strcmp(arg, "--no-scale-2x")) o->scale_2x = 0;
         else if (!strcmp(arg, "--hls-low")) o->hls_low = 1;
-        else if (!strcmp(arg, "--hls-prefetch")) o->hls_prefetch = 1;
         else if (!strcmp(arg, "--live-resync")) o->live_resync = 1;
         else if (!strcmp(arg, "--no-live-resync")) o->live_resync = 0;
         else if (!strncmp(arg, "--h264-speed=", 13)) {
@@ -254,7 +252,7 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
     else
         snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / %s / H264 %s%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
-                 o->display == MR_DISPLAY_HAM8 ? "HAM8" : "AGA",
+                 o->display == MR_DISPLAY_HAM8 ? "HAM8" : "Native planar",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
                  o->scale_2x ? "on" : "off", hls, h264,
                  o->live_resync ? " / Live-resync" : "");

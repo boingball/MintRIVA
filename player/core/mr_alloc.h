@@ -1,18 +1,10 @@
 /*
- * MintRIVA - task-safe allocation for code reachable from a background task.
+ * MintRIVA - Amiga-safe allocation for shared networking/source objects.
  *
- * The HLS prefetch worker (player/amiga/hls_prefetch.c) runs the HTTP/source
- * download path on a *separate* Amiga task, concurrently with the main player
- * task. libnix's malloc arena is not safe to call from two tasks at once, so any
- * allocation on the worker's call path must instead use exec's AllocVec/FreeVec,
- * which draw from the system pool and are task-safe. The main task is free to
- * keep using malloc for everything else - the two allocators are independent
- * heaps, so they never collide.
- *
- * Only code the worker can reach (mr_http.c, and mr_source_create/close) needs
- * these. Everywhere else keeps using the C allocator directly. On the host, and
- * any non-Amiga build, these map straight back to malloc/calloc/free so the
- * portable core still builds and behaves identically.
+ * HTTP documents are returned to callers in the GUI programs as well as the
+ * player. Keep their ownership on Exec's AllocVec/FreeVec heap instead of
+ * exposing libnix allocator assumptions across program modules. On host builds
+ * these wrappers map directly to malloc/calloc/free.
  */
 #ifndef MR_ALLOC_H
 #define MR_ALLOC_H

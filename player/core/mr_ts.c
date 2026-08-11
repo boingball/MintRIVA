@@ -130,9 +130,31 @@ const char *mr_ts_video_type_name(unsigned stream_type)
     case 0x10: return "MPEG-4 Part 2";
     case 0x24:
     case 0x25: return "H.265/HEVC";
+    case 0x33: return "H.266/VVC";
     case 0x42: return "AVS";
     case 0xd1: return "Dirac";
     case 0xea: return "VC-1";
+    default:   return NULL;
+    }
+}
+
+/* Audio stream_type names are retained even when MintRIVA cannot decode the
+ * track yet. This makes IPTV failures useful codec-porting data instead of a
+ * generic silent-audio result. Type 0x06 is intentionally described as private
+ * PES: its registration descriptor, which we do not parse yet, identifies the
+ * actual codec (often AC-3, E-AC-3 or another private format). */
+const char *mr_ts_audio_type_name(unsigned stream_type)
+{
+    switch (stream_type) {
+    case 0x03: return "MPEG-1 audio";
+    case 0x04: return "MPEG-2 audio";
+    case 0x0f: return "AAC (ADTS)";
+    case 0x11: return "AAC (LATM)";
+    case 0x06: return "private PES audio (descriptor required)";
+    case 0x81: return "AC-3";
+    case 0x82:
+    case 0x8a: return "DTS";
+    case 0x87: return "E-AC-3";
     default:   return NULL;
     }
 }
@@ -162,9 +184,15 @@ static void parse_pmt(mr_ts *t, const uint8_t *p, size_t len, int pusi)
             t->video_pid == TS_PID_NONE) {
             t->video_pid = pid;                  /* MPEG-1/2 or AVC/H.264    */
             t->video_type = type;
-        } else if ((type == 0x0f || type == 0x06) &&
+        } else if ((type == 0x03 || type == 0x04 ||
+                    type == 0x0f || type == 0x06) &&
                    t->audio_pid == TS_PID_NONE) {
-            t->audio_pid = pid;                  /* AAC with ADTS            */
+            t->audio_pid = pid;                  /* MPEG audio or ADTS AAC   */
+            t->audio_type = type;
+        } else if (!t->audio_type && mr_ts_audio_type_name(type)) {
+            /* Remember an unsupported audio track for diagnostics. Do not
+             * select its PID: the packet path must not feed it to an AAC
+             * decoder merely because the video track itself is supported. */
             t->audio_type = type;
         } else if (t->video_pid == TS_PID_NONE &&
                    !t->unsupported_video_type &&
@@ -463,6 +491,35 @@ static void parse_adts_info(mr_ts *t, const uint8_t *p, size_t len)
     }
 }
 
+/* PMT stream types 0x03/0x04 identify an MPEG audio elementary stream, but
+ * the actual layer and clock live in each frame header. MintRIVA's existing
+ * pl_mpeg audio path decodes Layer II, so accept that layer only and leave
+ * Layer I/III visible as an unsupported PMT track rather than feeding it to
+ * the wrong decoder. MPEG-2.5 is not represented by stream type 0x04 and is
+ * deliberately excluded here. */
+static void parse_mp2_info(mr_ts *t, const uint8_t *p, size_t len)
+{
+    static const uint32_t rates[3] = { 44100, 48000, 32000 };
+    size_t i;
+    if (t->audio.valid) return;
+    for (i = 0; i + 4 <= len; i++) {
+        unsigned version, layer, sri, mode;
+        if (p[i] != 0xff || (p[i + 1] & 0xe0) != 0xe0) continue;
+        version = (p[i + 1] >> 3) & 3;
+        layer = (p[i + 1] >> 1) & 3;
+        sri = (p[i + 2] >> 2) & 3;
+        mode = p[i + 3] >> 6;
+        if ((version != 2 && version != 3) || layer != 2 || sri == 3)
+            continue;
+        t->audio.format_tag = MR_AUDIO_FORMAT_MP2;
+        t->audio.sample_rate = rates[sri] / (version == 2 ? 2 : 1);
+        t->audio.channels = (uint16_t)(mode == 3 ? 1 : 2);
+        t->audio.bits_per_sample = 16;
+        t->audio.valid = 1;
+        return;
+    }
+}
+
 static mr_status probe_stream(mr_ts *t)
 {
     uint8_t packet[192];
@@ -519,7 +576,10 @@ static mr_status probe_stream(mr_ts *t)
                 es = pes_payload(p, &es_len, &pts, &has_pts, &expected);
                 if (!es) continue;
             }
-            parse_adts_info(t, es, es_len);
+            if (t->audio_type == 0x03 || t->audio_type == 0x04)
+                parse_mp2_info(t, es, es_len);
+            else
+                parse_adts_info(t, es, es_len);
         }
         if (t->video_pid != TS_PID_NONE && video_len) {
             int video_ready =

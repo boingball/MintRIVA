@@ -107,5 +107,9 @@ void         mr_demux_close(mr_demux *d);
 const mr_video_info *mr_demux_video(const mr_demux *d);
 const mr_audio_info *mr_demux_audio(const mr_demux *d);
 const char          *mr_demux_container_name(const mr_demux *d);
+/* Human-readable codec identities for diagnostics and GUI error reporting.
+ * These describe tracks even when no decoder exists. */
+void mr_demux_describe_video_codec(const mr_demux *d, char *out, size_t cap);
+void mr_demux_describe_audio_codec(const mr_demux *d, char *out, size_t cap);
 
 #endif /* MR_DEMUX_H */

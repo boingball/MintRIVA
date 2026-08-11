@@ -349,7 +349,7 @@ int main(void) {
       assert(!strcmp(first, second));
       assert(strstr(first, "--h264-speed=fast"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
-      assert(strstr(summary, "AGA / kalms / Lace on / 2x on"));
+      assert(strstr(summary, "Native planar / kalms / Lace on / 2x on"));
       assert(strstr(summary, "H264 Fast"));
     }
   }
