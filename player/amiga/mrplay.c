@@ -1127,7 +1127,11 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         int got;
         while (paused && !quit) {
             int ev = player_event(disp);
-            if (ev == MR_EV_QUIT) quit = 1; else if (ev == MR_EV_PAUSE) paused = 0;
+            if (ev == MR_EV_QUIT) quit = 1;
+            else if (ev == MR_EV_PAUSE) {
+                paused = 0;
+                if (audio) audio_set_running(audio, 1);
+            }
             Delay(2);
         }
         if (quit) break;
@@ -1140,13 +1144,18 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
         if (audio) {                             /* top up audio (bounded)    */
             int n, k = 0;
-            /* ~2 MP2 frames per video frame keeps Paula just ahead; draining
-             * everything here would stall video before the first frame shows. */
-            while (k < 2 && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
+            /* Build one complete Paula request before opening its playback
+             * gate.  The generic streaming player does this explicitly, but
+             * this older MPEG-1 path pre-dates the gate.  Leaving it closed
+             * queues PCM forever and deadlocks on the second video frame while
+             * waiting for an audio clock that cannot advance. */
+            int limit = frames == 0 ? 4 : 2;
+            while (k < limit && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
                 audio_write(audio, abuf, (unsigned)(n * 4));
                 audio_service(audio);
                 k++;
             }
+            if (frames == 0) audio_set_running(audio, 1);
         }
 
         if (audio) {                             /* pace to the audio clock   */
@@ -1154,7 +1163,11 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             for (;;) {
                 int ev = player_event(disp);
                 if (ev == MR_EV_QUIT)  { quit = 1; break; }
-                if (ev == MR_EV_PAUSE) { paused = 1; break; }
+                if (ev == MR_EV_PAUSE) {
+                    paused = 1;
+                    audio_set_running(audio, 0);
+                    break;
+                }
                 if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
                 audio_service(audio);
                 if (fast_forward) break;
@@ -1199,14 +1212,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             Delay(1);
         }
     }
-    if (!quit) {
-        printf("played %d frames - press ESC or close the window to exit\n",
-               frames);
-        while (player_event(disp) != MR_EV_QUIT) {
-            if (audio) audio_service(audio);
-            Delay(2);
-        }
-    }
+    if (!quit) printf("played %d frames\n", frames);
     player_status(MR_PLAYER_STATE_ENDED, "MPEG-1", "stream ended");
     control_audio = NULL;
     if (audio) audio_close(audio);
