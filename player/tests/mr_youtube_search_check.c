@@ -35,6 +35,13 @@ int main(void)
         "{\"contents\":[{\"gridVideoRenderer\":{"
         "\"videoId\":\"CHANV123456\","
         "\"title\":{\"simpleText\":\"Channel upload\"}}}]}";
+    static const char shorts_fixture[] =
+        "{\"items\":[{\"shortsLockupViewModel\":{"
+        "\"entityId\":\"shorts-shelf-item-SHORT123456\","
+        "\"onTap\":{\"reelWatchEndpoint\":{"
+        "\"videoId\":\"SHORT123456\"}},"
+        "\"overlayMetadata\":{\"primaryText\":{"
+        "\"content\":\"Tiny Amiga adventure\"}}}}]}";
     mr_youtube_search_results results;
     char url[512];
 
@@ -44,6 +51,16 @@ int main(void)
     CHECK(strstr(url, "Amiga%20live%21") != NULL, "URL encodes query");
     CHECK(strstr(url, "sp=EgJAAQ%253D%253D") != NULL,
           "live search includes YouTube live filter");
+    CHECK(mr_youtube_search_build_url_mode(
+              url, sizeof(url), "Amiga", MR_YOUTUBE_SEARCH_VIDEOS),
+          "build long-form video search URL");
+    CHECK(strstr(url, "sp=EgIQAQ%253D%253D") != NULL,
+          "video search includes YouTube Videos filter");
+    CHECK(mr_youtube_search_build_url_mode(
+              url, sizeof(url), "Amiga", MR_YOUTUBE_SEARCH_SHORTS),
+          "build Shorts search URL");
+    CHECK(strstr(url, "sp=EgIQCQ%253D%253D") != NULL,
+          "Shorts search includes YouTube Shorts filter");
 
     CHECK(mr_youtube_search_parse(&results, fixture, strlen(fixture), 1),
           "parse live-only fixture");
@@ -70,6 +87,28 @@ int main(void)
                            "UCTEST_channel-1234567890/videos"),
               "channel videos URL correct");
     }
+    mr_youtube_search_results_free(&results);
+
+    CHECK(mr_youtube_search_parse_mode(
+              &results, shorts_fixture, strlen(shorts_fixture),
+              MR_YOUTUBE_SEARCH_SHORTS),
+          "parse Shorts fixture");
+    CHECK(results.count == 1, "Shorts renderer extracted");
+    if (results.count) {
+        CHECK(!strcmp(results.items[0].video_id, "SHORT123456"),
+              "Shorts video ID extracted");
+        CHECK(!strcmp(results.items[0].title, "Tiny Amiga adventure"),
+              "Shorts title extracted");
+        CHECK(strstr(results.items[0].row, "[SHORT]") != NULL,
+              "Shorts result labelled");
+    }
+    mr_youtube_search_results_free(&results);
+
+    CHECK(mr_youtube_search_parse_mode(
+              &results, shorts_fixture, strlen(shorts_fixture),
+              MR_YOUTUBE_SEARCH_ALL),
+          "all search accepts Shorts renderers");
+    CHECK(results.count == 1, "all search includes Shorts");
     mr_youtube_search_results_free(&results);
 
     CHECK(mr_youtube_search_parse(&results, channel_fixture,

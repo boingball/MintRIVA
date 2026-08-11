@@ -23,17 +23,30 @@ typedef struct mr_youtube_search_results {
     size_t count;
 } mr_youtube_search_results;
 
+typedef enum mr_youtube_search_mode {
+    MR_YOUTUBE_SEARCH_ALL = 0,
+    MR_YOUTUBE_SEARCH_VIDEOS,
+    MR_YOUTUBE_SEARCH_LIVE,
+    MR_YOUTUBE_SEARCH_SHORTS
+} mr_youtube_search_mode;
+
 void mr_youtube_search_results_init(mr_youtube_search_results *results);
 void mr_youtube_search_results_free(mr_youtube_search_results *results);
 
 /* Build the public YouTube search-page URL. No API key or account is needed. */
 int mr_youtube_search_build_url(char *output, size_t output_size,
                                 const char *query, int live_only);
+int mr_youtube_search_build_url_mode(char *output, size_t output_size,
+                                     const char *query,
+                                     mr_youtube_search_mode mode);
 
-/* Parse videoRenderer objects from YouTube's embedded search-page JSON. */
+/* Parse normal video and Shorts objects from YouTube's search-page JSON. */
 int mr_youtube_search_parse(mr_youtube_search_results *results,
                             const char *document, size_t document_size,
                             int live_only);
+int mr_youtube_search_parse_mode(mr_youtube_search_results *results,
+                                 const char *document, size_t document_size,
+                                 mr_youtube_search_mode mode);
 
 int mr_youtube_search_watch_url(char *output, size_t output_size,
                                 const mr_youtube_search_result *result);

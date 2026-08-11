@@ -8,6 +8,7 @@
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 #include "mr_player_status.h"
+#include "mr_master_options.h"
 
 #include <classes/window.h>
 #include <devices/timer.h>
@@ -781,7 +782,7 @@ int main(int argc, char **argv) {
   channels = (Object *)NewObject(
       LISTBROWSER_GetClass(), NULL, GA_ID, G_CHANNELS, GA_RelVerify, TRUE,
       LISTBROWSER_Labels, (ULONG)&channel_nodes, LISTBROWSER_AutoFit, TRUE,
-      LISTBROWSER_ShowSelected, TRUE, TAG_DONE);
+      LISTBROWSER_ShowSelected, TRUE, LISTBROWSER_MinVisible, 15, TAG_DONE);
   url = (Object *)NewObject(STRING_GetClass(), NULL, STRINGA_MaxChars,
                             MR_IPTV_URL_MAX, TAG_DONE);
   if (refresh_attempted)
@@ -1035,6 +1036,12 @@ int main(int argc, char **argv) {
                              : "Debug log off");
       } else if ((result & WMHI_GADGETMASK) == G_OPEN_URL) {
         GetAttr(STRINGA_TextVal, url, (ULONG *)&text);
+        if (mr_master_options_apply(&play_options)) {
+          mr_play_options_summary(&play_options, playback_text,
+                                  sizeof(playback_text));
+          SetGadgetAttrs((struct Gadget *)playback_summary, window, NULL,
+                         STRINGA_TextVal, (ULONG)playback_text, TAG_DONE);
+        }
         if (!start_url(text ? (char *)text : "", &play_options, debug_log))
           set_status(status, window,
                      last_stop_wedged
@@ -1066,6 +1073,12 @@ int main(int argc, char **argv) {
                    (unsigned long)active_stream + 1,
                    (unsigned long)channel->stream_count);
           set_status(status, window, status_text);
+          if (mr_master_options_apply(&play_options)) {
+            mr_play_options_summary(&play_options, playback_text,
+                                    sizeof(playback_text));
+            SetGadgetAttrs((struct Gadget *)playback_summary, window, NULL,
+                           STRINGA_TextVal, (ULONG)playback_text, TAG_DONE);
+          }
           if (!start_stream(&channel->streams[active_stream], &play_options,
                             debug_log))
             set_status(status, window,

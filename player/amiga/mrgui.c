@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../core/mr_play_options.h"
+#include "mr_master_options.h"
 
 #ifndef MRGUI_CLASS_VERSION
 #define MRGUI_CLASS_VERSION 44
@@ -295,6 +296,16 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
                               : MR_H264_PERF_AUTO;
 }
 
+static void publish_play_options(mr_master_options_port *master_options,
+                                 Object *mode, Object *c2p, Object *h264,
+                                 Object *lace, Object *twox)
+{
+    mr_play_options options;
+
+    read_play_options(mode, c2p, h264, lace, twox, &options);
+    mr_master_options_publish(master_options, &options);
+}
+
 static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
                               Object *lace,
                               Object *twox, Object *info,
@@ -530,6 +541,7 @@ int main(void)
     Object *iptv_button;
     Object *youtube_button;
     struct Window *window;
+    mr_master_options_port *master_options;
     struct List modes;
     struct List c2p_modes;
     struct List h264_modes;
@@ -563,6 +575,7 @@ int main(void)
     iptv_button = NULL;
     youtube_button = NULL;
     window = NULL;
+    master_options = NULL;
     status = RETURN_FAIL;
     have_rtg = 0;
     default_mode = 0;
@@ -634,10 +647,12 @@ int main(void)
     lace = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_LACE,
                                GA_Text, (ULONG)"Laced",
+                               GA_RelVerify, TRUE,
                                TAG_DONE);
     twox = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_2X,
                                GA_Text, (ULONG)"2x",
+                               GA_RelVerify, TRUE,
                                TAG_DONE);
     info = (Object *)NewObject(STRING_GetClass(), NULL,
                                GA_ReadOnly, TRUE,
@@ -762,6 +777,8 @@ int main(void)
         goto cleanup;
 
     update_mode_controls(mode, c2p, lace, twox, window);
+    master_options = mr_master_options_open();
+    publish_play_options(master_options, mode, c2p, h264, lace, twox);
     GetAttr(WINDOW_SigMask, window_object, &sigmask);
 
     for (;;) {
@@ -784,6 +801,16 @@ int main(void)
 
                 case G_MODE:
                     update_mode_controls(mode, c2p, lace, twox, window);
+                    publish_play_options(master_options, mode, c2p, h264,
+                                         lace, twox);
+                    break;
+
+                case G_C2P:
+                case G_H264:
+                case G_LACE:
+                case G_2X:
+                    publish_play_options(master_options, mode, c2p, h264,
+                                         lace, twox);
                     break;
 
                 case G_PLAY:
@@ -804,11 +831,15 @@ int main(void)
                     break;
 
                 case G_IPTV:
+                    publish_play_options(master_options, mode, c2p, h264,
+                                         lace, twox);
                     open_iptv_browser(mode, c2p, h264, lace, twox, info,
                                       window);
                     break;
 
                 case G_YOUTUBE:
+                    publish_play_options(master_options, mode, c2p, h264,
+                                         lace, twox);
                     open_youtube_browser(mode, c2p, h264, lace, twox, info,
                                          window);
                     break;
@@ -829,6 +860,7 @@ done:
     stop_player_and_wait();
 
 cleanup:
+    mr_master_options_close(&master_options);
     /* Dispose only the highest successfully-created owner.  The window owns
      * the root layout; layouts own their child layouts and gadgets. */
     if (window_object) {

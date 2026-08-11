@@ -9,6 +9,7 @@
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 #include "mr_player_status.h"
+#include "mr_master_options.h"
 #include "../youtube/mr_youtube_search.h"
 
 #include <classes/window.h>
@@ -19,14 +20,14 @@
 #include <exec/ports.h>
 #include <exec/types.h>
 #include <gadgets/button.h>
-#include <gadgets/checkbox.h>
+#include <gadgets/chooser.h>
 #include <gadgets/layout.h>
 #include <gadgets/listbrowser.h>
 #include <gadgets/string.h>
 #include <images/label.h>
 #include <intuition/intuition.h>
 #include <proto/button.h>
-#include <proto/checkbox.h>
+#include <proto/chooser.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
@@ -48,12 +49,12 @@
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
-struct Library *CheckBoxBase, *ListBrowserBase, *StringBase, *LabelBase;
+struct Library *ChooserBase, *ListBrowserBase, *StringBase, *LabelBase;
 
 enum {
     G_QUERY = 1,
     G_SEARCH,
-    G_LIVE_ONLY,
+    G_SEARCH_TYPE,
     G_RESULTS,
     G_PLAY,
     G_QUALITY,
@@ -112,8 +113,8 @@ static int open_classes(void)
                              YT_CLASS_VERSION);
     ButtonBase = OpenLibrary((CONST_STRPTR)"gadgets/button.gadget",
                              YT_CLASS_VERSION);
-    CheckBoxBase = OpenLibrary((CONST_STRPTR)"gadgets/checkbox.gadget",
-                               YT_CLASS_VERSION);
+    ChooserBase = OpenLibrary((CONST_STRPTR)"gadgets/chooser.gadget",
+                              YT_CLASS_VERSION);
     ListBrowserBase = OpenLibrary((CONST_STRPTR)"gadgets/listbrowser.gadget",
                                   YT_CLASS_VERSION);
     StringBase = OpenLibrary((CONST_STRPTR)"gadgets/string.gadget",
@@ -121,7 +122,7 @@ static int open_classes(void)
     LabelBase = OpenLibrary((CONST_STRPTR)"images/label.image",
                             YT_CLASS_VERSION);
     return IntuitionBase && UtilityBase && WindowBase && LayoutBase &&
-           ButtonBase && CheckBoxBase && ListBrowserBase && StringBase &&
+           ButtonBase && ChooserBase && ListBrowserBase && StringBase &&
            LabelBase;
 }
 
@@ -133,7 +134,7 @@ static void close_classes(void)
     CLOSE_BASE(LabelBase);
     CLOSE_BASE(StringBase);
     CLOSE_BASE(ListBrowserBase);
-    CLOSE_BASE(CheckBoxBase);
+    CLOSE_BASE(ChooserBase);
     CLOSE_BASE(ButtonBase);
     CLOSE_BASE(LayoutBase);
     CLOSE_BASE(WindowBase);
@@ -147,6 +148,22 @@ static void free_nodes(struct List *list)
     struct Node *node;
     while ((node = RemHead(list)) != NULL)
         FreeListBrowserNode(node);
+}
+
+static int add_search_type(struct List *list, const char *label)
+{
+    struct Node *node = AllocChooserNode(CNA_Text, (ULONG)label, TAG_END);
+    if (!node)
+        return 0;
+    AddTail(list, node);
+    return 1;
+}
+
+static void free_search_types(struct List *list)
+{
+    struct Node *node;
+    while ((node = RemHead(list)) != NULL)
+        FreeChooserNode(node);
 }
 
 static size_t build_nodes(struct List *list,
@@ -339,7 +356,7 @@ static int start_video(const mr_youtube_search_result *video,
     return 1;
 }
 
-static void load_results_url(const char *url, int live_only,
+static void load_results_url(const char *url, mr_youtube_search_mode mode,
                              const char *busy_text, const char *summary_text,
                              Object *list, Object *play_button, Object *status,
                              struct Window *window, struct List *nodes,
@@ -375,8 +392,8 @@ static void load_results_url(const char *url, int live_only,
                    LISTBROWSER_Labels, ~0UL, TAG_DONE);
     free_nodes(nodes);
     mr_youtube_search_results_free(results);
-    if (!mr_youtube_search_parse(results, document, document_size,
-                                 live_only)) {
+    if (!mr_youtube_search_parse_mode(results, document, document_size,
+                                      mode)) {
         set_status(status, window, mr_youtube_search_last_error());
         mr_free(document);
         SetGadgetAttrs((struct Gadget *)list, window, NULL,
@@ -399,24 +416,32 @@ static void load_results_url(const char *url, int live_only,
 #endif
 }
 
-static void run_search(Object *query, Object *live_checkbox, Object *list,
+static void run_search(Object *query, Object *type_chooser, Object *list,
                        Object *play_button, Object *status,
                        struct Window *window, struct List *nodes,
                        mr_youtube_search_results *results)
 {
+    static const char *const result_summaries[] = {
+        "all video results shown", "long-form videos shown",
+        "live results shown", "Shorts shown"
+    };
     STRPTR query_text = NULL;
-    ULONG live_only = TRUE;
+    ULONG selected = MR_YOUTUBE_SEARCH_LIVE;
+    mr_youtube_search_mode mode;
     char search_url[1024];
     GetAttr(STRINGA_TextVal, query, (ULONG *)&query_text);
-    GetAttr(CHECKBOX_Checked, live_checkbox, &live_only);
-    if (!mr_youtube_search_build_url(search_url, sizeof(search_url),
-                                     query_text ? (char *)query_text : "",
-                                     live_only != 0)) {
+    GetAttr(CHOOSER_Selected, type_chooser, &selected);
+    if (selected > MR_YOUTUBE_SEARCH_SHORTS)
+        selected = MR_YOUTUBE_SEARCH_ALL;
+    mode = (mr_youtube_search_mode)selected;
+    if (!mr_youtube_search_build_url_mode(
+            search_url, sizeof(search_url),
+            query_text ? (char *)query_text : "", mode)) {
         set_status(status, window, mr_youtube_search_last_error());
         return;
     }
-    load_results_url(search_url, live_only != 0, "Searching YouTube...",
-                     live_only ? "live results shown" : "results shown",
+    load_results_url(search_url, mode, "Searching YouTube...",
+                     result_summaries[selected],
                      list, play_button, status, window, nodes, results);
 }
 
@@ -437,14 +462,15 @@ static void run_channel(const mr_youtube_search_result *selected, Object *list,
     }
     snprintf(summary, sizeof(summary), "videos shown from %s",
              selected->channel[0] ? selected->channel : "selected channel");
-    load_results_url(url, 0, "Loading channel videos...", summary,
+    load_results_url(url, MR_YOUTUBE_SEARCH_ALL,
+                     "Loading channel videos...", summary,
                      list, play_button, status, window, nodes, results);
 }
 
 int main(int argc, char **argv)
 {
     Object *winobj = NULL, *layout = NULL, *search_row = NULL;
-    Object *query = NULL, *live_checkbox = NULL, *results_list = NULL;
+    Object *query = NULL, *type_chooser = NULL, *results_list = NULL;
     Object *status = NULL, *playback_summary = NULL;
     Object *transport_buttons = NULL, *option_buttons = NULL;
     Object *search_button = NULL, *play_button = NULL;
@@ -454,6 +480,7 @@ int main(int argc, char **argv)
     Object *stop_button = NULL, *close_button = NULL, *query_label = NULL;
     struct Window *window = NULL;
     struct List result_nodes;
+    struct List search_types;
     mr_youtube_search_results results;
     mr_play_options play_options;
     ULONG sigmask, signals, result;
@@ -466,6 +493,9 @@ int main(int argc, char **argv)
     result_nodes.lh_Head = (struct Node *)&result_nodes.lh_Tail;
     result_nodes.lh_Tail = NULL;
     result_nodes.lh_TailPred = (struct Node *)&result_nodes.lh_Head;
+    search_types.lh_Head = (struct Node *)&search_types.lh_Tail;
+    search_types.lh_Tail = NULL;
+    search_types.lh_TailPred = (struct Node *)&search_types.lh_Head;
     mr_youtube_search_results_init(&results);
     mr_play_options_default(&play_options);
     if (!mr_play_options_parse(&play_options, argc, argv, option_error,
@@ -484,17 +514,23 @@ int main(int argc, char **argv)
     query = (Object *)NewObject(STRING_GetClass(), NULL, GA_ID, G_QUERY,
                                 GA_RelVerify, TRUE, STRINGA_MaxChars, 200,
                                 TAG_DONE);
-    live_checkbox = (Object *)NewObject(
-        CHECKBOX_GetClass(), NULL, GA_ID, G_LIVE_ONLY,
-        GA_Text, (ULONG)"Live only", CHECKBOX_Checked, TRUE,
-        GA_RelVerify, TRUE, TAG_DONE);
+    if (!add_search_type(&search_types, "All") ||
+        !add_search_type(&search_types, "Videos") ||
+        !add_search_type(&search_types, "Live") ||
+        !add_search_type(&search_types, "Shorts"))
+        goto cleanup;
+    type_chooser = (Object *)NewObject(
+        CHOOSER_GetClass(), NULL, GA_ID, G_SEARCH_TYPE, GA_RelVerify, TRUE,
+        CHOOSER_Labels, (ULONG)&search_types,
+        CHOOSER_Selected, MR_YOUTUBE_SEARCH_LIVE, TAG_DONE);
     search_button = (Object *)NewObject(
         BUTTON_GetClass(), NULL, GA_ID, G_SEARCH, GA_Text, (ULONG)"Search",
         GA_RelVerify, TRUE, TAG_DONE);
     results_list = (Object *)NewObject(
         LISTBROWSER_GetClass(), NULL, GA_ID, G_RESULTS, GA_RelVerify, TRUE,
         LISTBROWSER_Labels, (ULONG)&result_nodes, LISTBROWSER_AutoFit, TRUE,
-        LISTBROWSER_ShowSelected, TRUE, TAG_DONE);
+        LISTBROWSER_ShowSelected, TRUE, LISTBROWSER_MinVisible, 15,
+        TAG_DONE);
     play_button = (Object *)NewObject(
         BUTTON_GetClass(), NULL, GA_ID, G_PLAY, GA_Text, (ULONG)"Play",
         GA_RelVerify, TRUE, GA_Disabled, TRUE, TAG_DONE);
@@ -534,7 +570,7 @@ int main(int argc, char **argv)
         (ULONG)playback_text, STRINGA_MaxChars, sizeof(playback_text), TAG_DONE);
     query_label = (Object *)NewObject(LABEL_GetClass(), NULL, LABEL_Text,
                                       (ULONG)"YouTube", TAG_DONE);
-    if (!query || !live_checkbox || !search_button || !results_list ||
+    if (!query || !type_chooser || !search_button || !results_list ||
         !play_button || !quality_button || !pause_button || !fast_button ||
         !fullscreen_button || !volume_down_button || !volume_up_button ||
         !channel_button || !stop_button || !close_button ||
@@ -544,7 +580,7 @@ int main(int argc, char **argv)
     search_row = (Object *)NewObject(
         LAYOUT_GetClass(), NULL, LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
         LAYOUT_AddChild, (ULONG)query, CHILD_Label, (ULONG)query_label,
-        LAYOUT_AddChild, (ULONG)live_checkbox,
+        LAYOUT_AddChild, (ULONG)type_chooser,
         LAYOUT_AddChild, (ULONG)search_button, TAG_DONE);
     transport_buttons = (Object *)NewObject(
         LAYOUT_GetClass(), NULL, LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
@@ -616,7 +652,7 @@ int main(int argc, char **argv)
             if (gadget == G_CLOSE)
                 goto done;
             if (gadget == G_SEARCH || gadget == G_QUERY) {
-                run_search(query, live_checkbox, results_list, play_button,
+                run_search(query, type_chooser, results_list, play_button,
                            status, window, &result_nodes, &results);
             } else if (gadget == G_STOP) {
                 int stopped = stop_player();
@@ -673,15 +709,24 @@ int main(int argc, char **argv)
                 player_status_seq = 0;
                 if (!video)
                     set_status(status, window, "Select a video first.");
-                else if (!start_video(video, &play_options))
-                    set_status(status, window,
-                               "Could not start mrplay (or old player is busy).");
-                else
-                    set_status(status, window, video->live
-                               ? "Resolving YouTube Live..."
-                               : (quality_index >= 3
-                                  ? "Resolving YouTube 720p (360p fallback)..."
-                                  : "Resolving YouTube 360p video..."));
+                else {
+                    if (mr_master_options_apply(&play_options)) {
+                        mr_play_options_summary(&play_options, playback_text,
+                                                sizeof(playback_text));
+                        SetGadgetAttrs((struct Gadget *)playback_summary,
+                                       window, NULL, STRINGA_TextVal,
+                                       (ULONG)playback_text, TAG_DONE);
+                    }
+                    if (!start_video(video, &play_options))
+                        set_status(status, window,
+                                   "Could not start mrplay (or old player is busy).");
+                    else
+                        set_status(status, window, video->live
+                                   ? "Resolving YouTube Live..."
+                                   : (quality_index >= 3
+                                      ? "Resolving YouTube 720p (360p fallback)..."
+                                      : "Resolving YouTube 360p video..."));
+                }
             }
         }
     }
@@ -701,7 +746,7 @@ cleanup:
             DisposeObject(search_row);
         else {
             if (query) DisposeObject(query);
-            if (live_checkbox) DisposeObject(live_checkbox);
+            if (type_chooser) DisposeObject(type_chooser);
             if (search_button) DisposeObject(search_button);
             if (query_label) DisposeObject(query_label);
         }
@@ -728,6 +773,7 @@ cleanup:
         if (status) DisposeObject(status);
     }
     free_nodes(&result_nodes);
+    free_search_types(&search_types);
     mr_youtube_search_results_free(&results);
     mr_http_net_shutdown();
     close_classes();

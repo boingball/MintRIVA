@@ -43,8 +43,9 @@ static int append_char(char *out, size_t cap, size_t *used, char c)
     return 1;
 }
 
-int mr_youtube_search_build_url(char *out, size_t cap,
-                                const char *query, int live_only)
+int mr_youtube_search_build_url_mode(char *out, size_t cap,
+                                     const char *query,
+                                     mr_youtube_search_mode mode)
 {
     static const char prefix[] =
         "https://www.youtube.com/results?search_query=";
@@ -75,13 +76,28 @@ int mr_youtube_search_build_url(char *out, size_t cap,
             out[used] = 0;
         }
     }
-    if (live_only) {
-        /* YouTube's search-page link carries the already-escaped protobuf
-         * token as a query value, hence the deliberate second escaping. */
-        static const char filter[] = "&sp=EgJAAQ%253D%253D";
-        if (used + sizeof(filter) > cap)
+    if (mode != MR_YOUTUBE_SEARCH_ALL) {
+        /* YouTube's current public Type filters. Live is technically a
+         * Feature filter, but combines cleanly with the same search page.
+         * Values are already escaped for use as the sp query value. */
+        static const char *const filters[] = {
+            NULL,
+            "&sp=EgIQAQ%253D%253D", /* Videos: excludes Shorts */
+            "&sp=EgJAAQ%253D%253D", /* Live now */
+            "&sp=EgIQCQ%253D%253D"  /* Shorts */
+        };
+        const char *filter;
+        size_t filter_size;
+        if (mode < MR_YOUTUBE_SEARCH_VIDEOS ||
+            mode > MR_YOUTUBE_SEARCH_SHORTS) {
+            set_error("Invalid YouTube search type.");
+            return 0;
+        }
+        filter = filters[mode];
+        filter_size = strlen(filter) + 1;
+        if (used + filter_size > cap)
             goto too_long;
-        memcpy(out + used, filter, sizeof(filter));
+        memcpy(out + used, filter, filter_size);
     }
     set_error("");
     return 1;
@@ -89,6 +105,14 @@ int mr_youtube_search_build_url(char *out, size_t cap,
 too_long:
     set_error("Search text is too long.");
     return 0;
+}
+
+int mr_youtube_search_build_url(char *out, size_t cap,
+                                const char *query, int live_only)
+{
+    return mr_youtube_search_build_url_mode(
+        out, cap, query,
+        live_only ? MR_YOUTUBE_SEARCH_LIVE : MR_YOUTUBE_SEARCH_ALL);
 }
 
 static const char *find_bounded(const char *start, const char *end,
@@ -215,8 +239,9 @@ static int nested_text(const char *start, const char *end, const char *object,
         return 0;
     if (field_string(object_open, object_end, "\"text\":", out, cap))
         return 1;
-    return field_string(object_open, object_end, "\"simpleText\":", out,
-                        cap);
+    if (field_string(object_open, object_end, "\"simpleText\":", out, cap))
+        return 1;
+    return field_string(object_open, object_end, "\"content\":", out, cap);
 }
 
 static int already_present(const mr_youtube_search_results *results,
@@ -241,9 +266,40 @@ static int channel_id_valid(const char *id)
     return 1;
 }
 
-int mr_youtube_search_parse(mr_youtube_search_results *results,
-                            const char *document, size_t document_size,
-                            int live_only)
+static int parse_shorts(mr_youtube_search_results *results,
+                        const char *document, const char *end)
+{
+    static const char marker[] = "\"shortsLockupViewModel\":{";
+    const char *p = document;
+
+    while (results->count < MR_YOUTUBE_SEARCH_MAX_RESULTS) {
+        const char *shorts = find_bounded(p, end, marker);
+        const char *open, *close;
+        mr_youtube_search_result item;
+        if (!shorts)
+            break;
+        open = shorts + sizeof(marker) - 2;
+        close = json_object_end(open, end);
+        if (!close)
+            break;
+        memset(&item, 0, sizeof(item));
+        if (field_string(open, close, "\"videoId\":", item.video_id,
+                         sizeof(item.video_id)) &&
+            strlen(item.video_id) == 11 &&
+            !already_present(results, item.video_id) &&
+            nested_text(open, close, "\"primaryText\":", item.title,
+                        sizeof(item.title))) {
+            snprintf(item.row, sizeof(item.row), "[SHORT] %s", item.title);
+            results->items[results->count++] = item;
+        }
+        p = close;
+    }
+    return 1;
+}
+
+int mr_youtube_search_parse_mode(mr_youtube_search_results *results,
+                                 const char *document, size_t document_size,
+                                 mr_youtube_search_mode mode)
 {
     static const char marker[] = "\"videoRenderer\":{";
     static const char grid_marker[] = "\"gridVideoRenderer\":{";
@@ -263,6 +319,14 @@ int mr_youtube_search_parse(mr_youtube_search_results *results,
     }
     results->items = items;
     end = document + document_size;
+    if (mode == MR_YOUTUBE_SEARCH_SHORTS) {
+        parse_shorts(results, document, end);
+        if (!results->count)
+            set_error("No YouTube Shorts found.");
+        else
+            set_error("");
+        return 1;
+    }
     p = document;
     while (results->count < MR_YOUTUBE_SEARCH_MAX_RESULTS) {
         const char *video = find_bounded(p, end, marker);
@@ -288,7 +352,7 @@ int mr_youtube_search_parse(mr_youtube_search_results *results,
                find_bounded(open, close, "\"style\":\"LIVE\"") != NULL ||
                find_bounded(open, close, "\"isLive\":true") != NULL ||
                find_bounded(open, close, "\"label\":\"LIVE NOW\"") != NULL;
-        if ((!live_only || live) &&
+        if ((mode != MR_YOUTUBE_SEARCH_LIVE || live) &&
             field_string(open, close, "\"videoId\":", item.video_id,
                          sizeof(item.video_id)) &&
             strlen(item.video_id) == 11 &&
@@ -311,13 +375,26 @@ int mr_youtube_search_parse(mr_youtube_search_results *results,
         }
         p = close;
     }
+    if (mode == MR_YOUTUBE_SEARCH_ALL &&
+        results->count < MR_YOUTUBE_SEARCH_MAX_RESULTS)
+        parse_shorts(results, document, end);
     if (!results->count) {
-        set_error(live_only ? "No live YouTube results found."
-                            : "No YouTube video results found.");
+        set_error(mode == MR_YOUTUBE_SEARCH_LIVE
+                      ? "No live YouTube results found."
+                      : "No YouTube video results found.");
         return 1;
     }
     set_error("");
     return 1;
+}
+
+int mr_youtube_search_parse(mr_youtube_search_results *results,
+                            const char *document, size_t document_size,
+                            int live_only)
+{
+    return mr_youtube_search_parse_mode(
+        results, document, document_size,
+        live_only ? MR_YOUTUBE_SEARCH_LIVE : MR_YOUTUBE_SEARCH_ALL);
 }
 
 int mr_youtube_channel_videos_url(char *out, size_t cap,

@@ -168,13 +168,13 @@ $(KALMS_OBJ): $(KALMS_SRC) Makefile.amiga | check-kalms
 
 # As in MintAMP, mrgui opens the ReAction classes explicitly at runtime.
 # No libauto archive is required by the cross-toolchain.
-mrgui: check-cc $(GUI)
+mrgui: check-cc $(GUI) amiga/mr_master_options.h
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
-iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h
+iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h amiga/mr_master_options.h
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(IPTVGUI) $(LDFLAGS)
 
-ytgui: check-cc $(YTGUI) youtube/mr_youtube_search.h
+ytgui: check-cc $(YTGUI) youtube/mr_youtube_search.h amiga/mr_master_options.h
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(YTGUI) $(LDFLAGS)
 
 check-mintamp:
