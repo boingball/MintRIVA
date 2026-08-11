@@ -12,6 +12,7 @@
 #include "../youtube/mr_youtube_search.h"
 
 #include <classes/window.h>
+#include <devices/timer.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <exec/libraries.h>
@@ -167,6 +168,105 @@ static void set_status(Object *status, struct Window *window, const char *text)
 {
     SetGadgetAttrs((struct Gadget *)status, window, NULL,
                    STRINGA_TextVal, (ULONG)(text ? text : ""), TAG_DONE);
+}
+
+/* mrplay runs as a separate process. Wake the ReAction loop periodically and
+ * mirror its shared codec/status block so silent audio is explained in ytgui,
+ * rather than only in the player's Shell output. */
+#define STATUS_POLL_MICROS 200000UL
+
+static struct MsgPort *timer_port;
+static struct timerequest *timer_io;
+static int timer_device_open;
+static int timer_running;
+
+static int poll_timer_open(void)
+{
+    timer_port = CreateMsgPort();
+    if (!timer_port)
+        return 0;
+    timer_io = (struct timerequest *)CreateIORequest(timer_port,
+                                                     sizeof(*timer_io));
+    if (!timer_io)
+        return 0;
+    if (OpenDevice((CONST_STRPTR)"timer.device", UNIT_VBLANK,
+                   (struct IORequest *)timer_io, 0) != 0)
+        return 0;
+    timer_device_open = 1;
+    return 1;
+}
+
+static void poll_timer_start(void)
+{
+    if (!timer_io)
+        return;
+    timer_io->tr_node.io_Command = TR_ADDREQUEST;
+    timer_io->tr_time.tv_secs = 0;
+    timer_io->tr_time.tv_micro = STATUS_POLL_MICROS;
+    SendIO((struct IORequest *)timer_io);
+    timer_running = 1;
+}
+
+static void poll_timer_close(void)
+{
+    if (timer_io) {
+        if (timer_running && !CheckIO((struct IORequest *)timer_io))
+            AbortIO((struct IORequest *)timer_io);
+        if (timer_running)
+            WaitIO((struct IORequest *)timer_io);
+        timer_running = 0;
+        if (timer_device_open) {
+            CloseDevice((struct IORequest *)timer_io);
+            timer_device_open = 0;
+        }
+        DeleteIORequest((struct IORequest *)timer_io);
+        timer_io = NULL;
+    }
+    if (timer_port) {
+        DeleteMsgPort(timer_port);
+        timer_port = NULL;
+    }
+}
+
+static void poll_player_status(Object *status, struct Window *window,
+                               ULONG *seq, char *out, size_t out_size)
+{
+    mr_player_status ps;
+    if (!mr_player_status_read(&ps)) {
+        *seq = 0;
+        return;
+    }
+    if (ps.seq == *seq)
+        return;
+    *seq = ps.seq;
+    switch (ps.state) {
+    case MR_PLAYER_STATE_STARTING:
+    case MR_PLAYER_STATE_OPENING:
+        snprintf(out, out_size, "%s", ps.text[0] ? ps.text : "Connecting...");
+        break;
+    case MR_PLAYER_STATE_PLAYING:
+        if (ps.codec[0] && ps.text[0])
+            snprintf(out, out_size, "Playing (%s): %s", ps.codec, ps.text);
+        else if (ps.codec[0])
+            snprintf(out, out_size, "Playing: %s", ps.codec);
+        else
+            snprintf(out, out_size, "Playing");
+        break;
+    case MR_PLAYER_STATE_UNSUPPORTED:
+        snprintf(out, out_size, "Not supported: %s",
+                 ps.text[0] ? ps.text : "codec not implemented");
+        break;
+    case MR_PLAYER_STATE_ERROR:
+        snprintf(out, out_size, "Stream error: %s",
+                 ps.text[0] ? ps.text : "playback failed");
+        break;
+    case MR_PLAYER_STATE_ENDED:
+        snprintf(out, out_size, "Video ended");
+        break;
+    default:
+        return;
+    }
+    set_status(status, window, out);
 }
 
 static int player_is_running(void)
@@ -357,8 +457,9 @@ int main(int argc, char **argv)
     mr_youtube_search_results results;
     mr_play_options play_options;
     ULONG sigmask, signals, result;
+    ULONG player_status_seq = 0, timermask = 0;
     UWORD code;
-    char option_error[160], playback_text[160];
+    char option_error[160], playback_text[160], player_status_text[256];
     int rc = RETURN_FAIL;
     unsigned quality_index;
 
@@ -487,11 +588,24 @@ int main(int argc, char **argv)
     if (!window)
         goto cleanup;
     GetAttr(WINDOW_SigMask, winobj, &sigmask);
+    if (poll_timer_open()) {
+        timermask = 1UL << timer_port->mp_SigBit;
+        poll_timer_start();
+    }
 
     for (;;) {
-        signals = Wait(sigmask | SIGBREAKF_CTRL_C);
+        signals = Wait(sigmask | timermask | SIGBREAKF_CTRL_C);
         if (signals & SIGBREAKF_CTRL_C)
             break;
+        if (timermask && (signals & timermask)) {
+            while (GetMsg(timer_port))
+                ;
+            timer_running = 0;
+            poll_player_status(status, window, &player_status_seq,
+                               player_status_text,
+                               sizeof(player_status_text));
+            poll_timer_start();
+        }
         while ((result = RA_HandleInput(winobj, &code)) != WMHI_LASTMSG) {
             ULONG gadget;
             if ((result & WMHI_CLASSMASK) == WMHI_CLOSEWINDOW)
@@ -556,6 +670,7 @@ int main(int argc, char **argv)
                 if (node)
                     GetListBrowserNodeAttrs(node, LBNA_UserData,
                                             (ULONG)&video, TAG_DONE);
+                player_status_seq = 0;
                 if (!video)
                     set_status(status, window, "Select a video first.");
                 else if (!start_video(video, &play_options))
@@ -574,6 +689,7 @@ int main(int argc, char **argv)
 done:
     rc = RETURN_OK;
 cleanup:
+    poll_timer_close();
     if (winobj) {
         if (window)
             RA_CloseWindow(winobj);

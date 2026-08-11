@@ -36,6 +36,7 @@ struct mr_audio_decoder {
     unsigned source_rate;
     unsigned output_rate;
     unsigned channels;
+    int he_aac;
     mr_audio_info pcm_info;
     unsigned stride;
     unsigned char *pending;
@@ -140,14 +141,15 @@ static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
 
 static int parse_aac_asc(const mr_audio_info *info,
                          unsigned *object_type, unsigned *sample_rate,
-                         unsigned *channels)
+                         unsigned *output_rate, unsigned *channels,
+                         int *he_aac)
 {
     static const unsigned rates[13] = {
         96000, 88200, 64000, 48000, 44100, 32000, 24000,
         22050, 16000, 12000, 11025, 8000, 7350
     };
     uint32_t bits;
-    unsigned sf_index;
+    unsigned sf_index, extension_sf_index, extension_object_type;
     if (info->config_len < 2) return 0;
     bits = ((uint32_t)info->config[0] << 16) |
            ((uint32_t)info->config[1] << 8) |
@@ -166,6 +168,25 @@ static int parse_aac_asc(const mr_audio_info *info,
     if (*channels == 0) *channels = info->channels;
     if (sf_index >= 13 || *channels < 1 || *channels > 2) return 0;
     *sample_rate = rates[sf_index];
+    *output_rate = *sample_rate;
+    *he_aac = 0;
+
+    /* Explicit HE-AAC v1 signals SBR as audioObjectType 5. Its first sample
+     * rate is the AAC-LC core rate; the following extension rate is the actual
+     * PCM rate, followed by the underlying LC object type. For example this
+     * YouTube ASC, 2b 92 08, is 22.05 kHz LC + SBR -> 44.1 kHz stereo. */
+    if (*object_type == 5) {
+        extension_sf_index = (bits >> 7) & 0x0f;
+        extension_object_type = (bits >> 2) & 0x1f;
+        if (extension_sf_index >= 13 || extension_object_type != 2)
+            return 0;
+        *object_type = extension_object_type;
+        /* Paula cannot reproduce the 44.1/48 kHz SBR output directly. Decode
+         * the embedded LC core at its native rate instead of spending 68k time
+         * synthesising high frequencies only to decimate them afterwards. */
+        *output_rate = *sample_rate;
+        *he_aac = 1;
+    }
     return 1;
 }
 
@@ -205,9 +226,11 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
         if (!d->aac) goto fail;
         if (info->config_len) {
             AACFrameInfo fi;
-            unsigned object_type, rate, channels;
+            unsigned object_type, rate, output_rate, channels;
+            int he_aac;
             memset(&fi, 0, sizeof fi);
-            if (!parse_aac_asc(info, &object_type, &rate, &channels) ||
+            if (!parse_aac_asc(info, &object_type, &rate, &output_rate,
+                               &channels, &he_aac) ||
                 object_type != 2)             /* AAC-LC */
                 goto fail;
             fi.nChans = (int)channels;
@@ -215,10 +238,11 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
             fi.profile = (int)object_type - 1;
             if (AACSetRawBlockParams(d->aac, 0, &fi) != 0) goto fail;
             d->kind = AUDIO_KIND_AAC_RAW;
-            d->source_rate = rate;
+            d->he_aac = he_aac;
+            d->source_rate = output_rate;
             d->channels = channels;
-            d->stride = rate > PAULA_RATE_MAX ? 2 : 1;
-            d->output_rate = rate / d->stride;
+            d->stride = output_rate > PAULA_RATE_MAX ? 2 : 1;
+            d->output_rate = output_rate / d->stride;
         } else {
             d->kind = AUDIO_KIND_AAC_ADTS;
         }
@@ -423,7 +447,8 @@ const char *mr_audio_decoder_name(const mr_audio_decoder *d)
                 d->pcm_info.bits_per_sample == 24 ? "PCM S24LE" : "PCM S32LE")
          : d->kind == AUDIO_KIND_MP3 ? "MP3"
          : d->kind == AUDIO_KIND_MP2 ? "MP2"
-         : d->kind == AUDIO_KIND_AAC_RAW ? "AAC-LC/mp4a"
+         : d->kind == AUDIO_KIND_AAC_RAW
+             ? (d->he_aac ? "HE-AAC/mp4a" : "AAC-LC/mp4a")
          : "AAC-LC/ADTS";
 }
 

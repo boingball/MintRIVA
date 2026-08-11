@@ -1241,6 +1241,7 @@ int main(int argc, char **argv)
                            * reconnect a live stream that drops out            */
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
+    const char *audio_failure = NULL;
     int h264_speed = -1; /* automatic: Quality <=480p, Balanced above 480p    */
     const char *media_path = NULL;
     const char *user_agent = NULL;
@@ -1599,6 +1600,8 @@ int main(int argc, char **argv)
                 printf("audio: unsupported PCM layout or Paula open failed, "
                        "playing silent\n");
                 audio_unavailable = 1;
+                audio_failure = !audio_dec ? "decoder rejected stream setup"
+                                           : "Paula/audio.device open failed";
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);
                     audio_dec = NULL;
@@ -1623,6 +1626,8 @@ int main(int argc, char **argv)
                        ai->format_tag == MR_AUDIO_FORMAT_MP2 ? "MP2" :
                        ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" : "AAC");
                 audio_unavailable = 1;
+                audio_failure = !audio_dec ? "decoder rejected stream setup"
+                                           : "Paula/audio.device open failed";
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);
                     audio_dec = NULL;
@@ -1632,12 +1637,20 @@ int main(int argc, char **argv)
             printf("audio: %s is not supported; playing silent\n",
                    audio_description);
             audio_unavailable = 1;
+            audio_failure = "codec unsupported";
         }
     }
-    if (audio_unavailable) {
+    {
         size_t used = strlen(playing_detail);
-        snprintf(playing_detail + used, sizeof playing_detail - used,
-                 "; audio %s unavailable (silent)", audio_description);
+        if (audio_unavailable)
+            snprintf(playing_detail + used, sizeof playing_detail - used,
+                     "; audio %s unavailable: %s (silent)", audio_description,
+                     audio_failure ? audio_failure : "initialisation failed");
+        else
+            snprintf(playing_detail + used, sizeof playing_detail - used,
+                     "; audio %s",
+                     strcmp(audio_description, "none detected")
+                         ? audio_description : "none detected (silent)");
         player_prepare_playing_status(codec->name, playing_detail);
     }
     control_audio = audio;

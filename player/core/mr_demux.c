@@ -429,7 +429,10 @@ void mr_demux_describe_audio_codec(const mr_demux *d, char *out, size_t cap)
         if (ai->format_tag == MR_AUDIO_FORMAT_PCM) name = "PCM";
         else if (ai->format_tag == MR_AUDIO_FORMAT_MP2) name = "MPEG Layer II";
         else if (ai->format_tag == MR_AUDIO_FORMAT_MP3) name = "MP3";
-        else if (ai->format_tag == MR_AUDIO_FORMAT_AAC) name = "AAC-LC";
+        else if (ai->format_tag == MR_AUDIO_FORMAT_AAC)
+            name = ai->config_len &&
+                   ((ai->config[0] >> 3) == 5 || (ai->config[0] >> 3) == 29)
+                 ? "HE-AAC" : "AAC-LC";
         if (name) { snprintf(out, cap, "%s", name); return; }
         if (ai->codec_tag > 0xffffU) {
             fourcc_text(ai->codec_tag, tag);
