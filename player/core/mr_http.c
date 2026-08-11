@@ -13,7 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
+#if (defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)) || \
+    defined(__amigaos__) || defined(__AMIGA__)
 #define MR_HTTP_AMIGA 1
 #include <exec/types.h>
 #include <exec/libraries.h>

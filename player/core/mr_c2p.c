@@ -61,7 +61,7 @@ static void transpose32(const uint8_t *in, uint32_t out[8])
 
 static void store_plane_word(uint8_t *dst, uint32_t value)
 {
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
     /* Callers guarantee alignment; m68k's big-endian store writes four plane
      * bytes with one longword Chip RAM transaction. */
     *(uint32_t *)dst = value;

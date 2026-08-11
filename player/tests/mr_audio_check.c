@@ -32,17 +32,23 @@ int main(int argc, char **argv)
     mr_packet pkt;
     struct pcm_stats stats = { 0, 0 };
     unsigned long packets = 0;
+    unsigned decoded_rate;
 
     if (argc != 3) {
-        fprintf(stderr, "usage: mr_audio_check <avi-or-mp4> <mp3|aac>\n");
+        fprintf(stderr,
+                "usage: mr_audio_check <media> <mp3|aac|latm|ac3>\n");
         return 2;
     }
     dx = mr_demux_open_file(argv[1]);
     if (!dx) return 2;
     ai = mr_demux_audio(dx);
     if ((!strcmp(argv[2], "mp3") && ai->format_tag != MR_AUDIO_FORMAT_MP3) ||
-        (!strcmp(argv[2], "aac") &&
-         ai->format_tag != MR_AUDIO_FORMAT_AAC)) {
+        ((!strcmp(argv[2], "aac") || !strcmp(argv[2], "latm")) &&
+         ai->format_tag != MR_AUDIO_FORMAT_AAC) ||
+        (!strcmp(argv[2], "latm") &&
+         ai->codec_tag != MR_FOURCC('L','A','T','M')) ||
+        (!strcmp(argv[2], "ac3") &&
+         ai->format_tag != MR_AUDIO_FORMAT_AC3)) {
         fprintf(stderr, "wrong demuxed audio setup: tag=0x%04x config=%u\n",
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
         mr_demux_close(dx); return 1;
@@ -76,15 +82,18 @@ int main(int argc, char **argv)
             packets++;
         }
     }
+    decoded_rate = mr_audio_decoder_rate(dec);
     printf("%s: %lu packets, %lu PCM frames at %u Hz, %lu nonzero samples\n",
            mr_audio_decoder_name(dec), packets, stats.frames,
-           mr_audio_decoder_rate(dec), stats.nonzero);
+           decoded_rate, stats.nonzero);
     mr_audio_decoder_close(dec);
     mr_demux_close(dx);
     /* MP4 exposes one AAC access unit per packet; TS coalesces several ADTS
      * frames into each PES packet, so packet count is not a quality signal. */
-    if (packets < 1 || stats.frames < 40000 || stats.frames > 50000 ||
-        stats.nonzero < 40000)
+    if (packets < 1 || !decoded_rate ||
+        stats.frames < (unsigned long)decoded_rate * 17 / 10 ||
+        stats.frames > (unsigned long)decoded_rate * 23 / 10 ||
+        stats.nonzero < stats.frames / 2)
         return 1;
     return 0;
 }

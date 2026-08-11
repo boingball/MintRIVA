@@ -1452,7 +1452,8 @@ int main(int argc, char **argv)
             int unsupported = why && (strstr(why, "not supported") ||
                                       strstr(why, "unsupported") ||
                                       strstr(why, "no decoder"));
-            printf("cannot open stream: %s\n", why);
+            printf("cannot open stream: %s\n",
+                   why ? why : "connection failed");
             if (unsupported) {
                 snprintf(reason, sizeof reason, "%s", why);
                 player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
@@ -1480,10 +1481,10 @@ int main(int argc, char **argv)
         }
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {
-            printf("unsupported container (need AVI, MOV/MP4, MPEG-TS/PS, "
-                   "raw MJPEG/M4V or MPEG-1)\n");
+            printf("unsupported container (need AVI, MOV/MP4, MKV, "
+                   "MPEG-TS/PS, raw MJPEG/M4V or MPEG-1)\n");
             player_status(MR_PLAYER_STATE_UNSUPPORTED, "",
-                          "unsupported container (not AVI/MOV/MP4/TS/PS/"
+                          "unsupported container (not AVI/MOV/MP4/MKV/TS/PS/"
                           "MJPEG/M4V/MPEG-1)");
             status_hold();
             free(buf);
@@ -1616,7 +1617,8 @@ int main(int argc, char **argv)
         } else if (ai->valid &&
                    (ai->format_tag == MR_AUDIO_FORMAT_MP2 ||
                     ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
-                    ai->format_tag == MR_AUDIO_FORMAT_AAC)) {
+                    ai->format_tag == MR_AUDIO_FORMAT_AAC ||
+                    ai->format_tag == MR_AUDIO_FORMAT_AC3)) {
             audio_dec = mr_audio_decoder_open(ai);
             if (audio_dec)
                 audio = audio_open(mr_audio_decoder_rate(audio_dec),
@@ -1630,7 +1632,8 @@ int main(int argc, char **argv)
                 printf("audio: unsupported %s setup or Paula open failed, "
                        "playing silent\n",
                        ai->format_tag == MR_AUDIO_FORMAT_MP2 ? "MP2" :
-                       ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" : "AAC");
+                       ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" :
+                       ai->format_tag == MR_AUDIO_FORMAT_AC3 ? "AC-3" : "AAC");
                 audio_unavailable = 1;
                 audio_failure = !audio_dec ? "decoder rejected stream setup"
                                            : "Paula/audio.device open failed";

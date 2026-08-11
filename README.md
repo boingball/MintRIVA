@@ -19,7 +19,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 |-----------|-------|
 | Decoder plugin interface + registry | ✅ |
 | Container-agnostic demux (auto-detect) | ✅ |
-| AVI, QuickTime MOV/MP4 and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
+| AVI, QuickTime MOV/MP4, Matroska/MKV and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
 | Public YouTube URLs | ✅ live HLS plus experimental muxed 360p/720p H.264/AAC playback for compatible uploads |
 | ReAction YouTube search | ✅ no-key search browser with live-only filter and native playback handoff |
@@ -31,12 +31,13 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
 | MPEG-2 Main Profile video | ✅ libmpeg2; TS + B-frames ffmpeg-validated |
 | H.264 High Profile (`avc1`, CABAC, B-frames) | ✅ libavc; ffmpeg-validated |
-| MPEG-TS/M2TS MPEG-1/2 or H.264 + ADTS AAC | ✅ 188/192-byte packets; ffmpeg-validated |
+| MPEG-TS/M2TS MPEG-1/2 or H.264 + AAC/MP2/AC-3 | ✅ ADTS or LATM AAC; 188/192-byte packets; ffmpeg-validated |
+| Matroska/MKV | ✅ H.264/MPEG-4/MPEG-2/MJPEG video; AAC/MP3/MP2/AC-3/PCM audio; common lacing supported |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
 | Separate ReAction controller (`mrgui`) | ✅ file picker, mode/options and transport controls |
 | IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
-| PCM / MP2 / MP3 / AAC-LC audio to Paula | ✅ host-validated; hardware test pending for MP3/AAC |
+| PCM / MP2 / MP3 / AAC-LC / AC-3 audio to Paula | ✅ host-validated; AC-3 uses fixed-point stereo downmix |
 
 ## Building & testing the portable core (dev host)
 
@@ -74,19 +75,19 @@ git submodule update --init --recursive
 cd player
 make            # builds ./mr_decode
 make check      # decodes a Cinepak clip and diffs against ffmpeg (needs ffmpeg)
-make check-audio # decodes MP3-in-AVI and AAC-LC-in-MP4 through MintAMP/Helix
+make check-audio # MP3, AAC ADTS/LATM and fixed-point AC-3 decoder checks
 make check-http # local HTTP range/redirect integration tests
 make check-https # the same tests over TLS (needs OpenSSL development files)
 ```
 
-Inspect or dump any AVI/MOV/MP4/TS/M2TS:
+Inspect or dump any AVI/MOV/MP4/MKV/TS/M2TS:
 
 ```sh
 ./mr_decode file.avi                 # stream info + frame count
 ./mr_decode file.avi --ppm outdir    # write decoded frames as PPM
 ```
 
-`mrplay` streams AVI, MOV/MP4 and MPEG-TS/M2TS packets from disk or a direct
+`mrplay` streams AVI, MOV/MP4, Matroska/MKV and MPEG-TS/M2TS packets from disk or a direct
 `http://`/`https://` file URL. Its RAM use is therefore set by container
 metadata, the largest compressed packet, a 256 KiB network rewind cache, and
 the active decoder/display buffers rather than by the media file size. HTTP
@@ -213,8 +214,8 @@ ranges when the container seeks. MPEG-TS also accepts a forward-only chunked
 response, while HLS playlists use the dedicated live/VOD source. Fragmented MP4
 is not supported yet.
 
-TS currently supports MPEG-1/2 or AVC/H.264 video with ADTS AAC audio; AC3 is
-not decoded. Raw MJPEG/M4V and MPEG-1 program streams still use the original
+TS currently supports MPEG-1/2 or AVC/H.264 video with MP2, ADTS/LATM AAC or
+AC-3 audio. Raw MJPEG/M4V and MPEG-1 program streams still use the original
 whole-file input path and therefore do not accept URLs.
 
 ### IPTV browser
@@ -279,7 +280,7 @@ src/                 RiVA 0.54 assembly (reference)
 RiVA.guide           RiVA manual (reference)
 DESIGN.md            architecture & roadmap
 player/core/         portable C core: demux + video decoders
-player/audio/        packet adapter for MintAMP's MP3/AAC Helix decoders
+player/audio/        packet adapter for MP2, MintAMP MP3/AAC and fixed AC-3
 player/amiga/        RTG/AGA display, Paula output and player frontend
 player/tests/        host test harness + fixtures
 player/vendor/       pinned/vendored build dependencies
@@ -289,7 +290,8 @@ player/vendor/       pinned/vendored build dependencies
 
 RiVA is GPL-2.0 (`src/gpl-2.0.txt`); its AGA/CGX renderers are dual GPL/MIT. New
 MintRIVA code inherits GPL-2.0 to stay compatible with the RiVA reference it
-draws on. The vendored VideoLAN libmpeg2 core is GPL-2.0-or-later. MintAMP/Helix
+draws on. The vendored VideoLAN libmpeg2 core and fixed-point Rockbox/a52dec
+AC-3 core are GPL-2.0-or-later. MintAMP/Helix
 and Apache-2.0 Ittiam libavc remain separately licensed in their pinned
 submodules; retain their notices when distributing source or binaries.
 

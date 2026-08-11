@@ -4,7 +4,8 @@
 #ifndef MR_HTTP_H
 #define MR_HTTP_H
 
-#if (defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)) && \
+#if (((defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)) || \
+      defined(__amigaos__) || defined(__AMIGA__))) && \
     defined(__GNUC__)
 /*
  * The classic Amiga SDK inline stubs use unsigned-char CONST_STRPTR names and

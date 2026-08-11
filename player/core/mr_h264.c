@@ -33,7 +33,7 @@ typedef struct {
     int      has_pts;
 } h264_pts_entry;
 
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
 #include <dos/dos.h>
 #include <exec/memory.h>
 #include <exec/tasks.h>
@@ -98,7 +98,7 @@ static unsigned long h264_elapsed_us(clock_t begin)
     return (unsigned long)((clock() - begin) * 1000000UL / CLOCKS_PER_SEC);
 }
 
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
 /* Peek at the GUI/shell stop signals without consuming them.  The outer player
  * still owns normal event handling and therefore still performs clean teardown
  * after h264_decode() returns. */
@@ -225,7 +225,7 @@ static void *h264_aligned_alloc(void *context, WORD32 alignment, WORD32 size)
     if (total < (size_t)size) return NULL;
     raw = malloc(total);
     if (!raw) {
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
         h264_diag_allocfail(s, alignment, size);
 #else
         (void)s;
@@ -412,7 +412,7 @@ static mr_status emit_rgb(mr_decoder *dec,
     const uint8_t *vp = (const uint8_t *)f->pv_v_buf;
     int width = dec->width, height = dec->height;
     if (!yp || !up || !vp) return MR_ERR;
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
     if (!s->pipeline_rgb_done) h264_pipeline_checkpoint(s, "rgb-enter");
 #endif
 
@@ -428,7 +428,7 @@ static mr_status emit_rgb(mr_decoder *dec,
         rgb_bytes = (size_t)dec->width * (size_t)dec->height * 3u;
         s->rgb = (uint8_t *)malloc(rgb_bytes);
         if (!s->rgb) {
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
             h264_diag_allocfail(s, (WORD32)sizeof(void *), (WORD32)rgb_bytes);
 #endif
             return MR_ENOMEM;
@@ -450,7 +450,7 @@ static mr_status emit_rgb(mr_decoder *dec,
     dec->frame.data = s->rgb;
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = dec->height;
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
     if (!s->pipeline_rgb_done) {
         h264_pipeline_checkpoint(s, "rgb-complete");
         s->pipeline_rgb_done = 1;
@@ -479,7 +479,7 @@ static mr_status h264_open(mr_decoder *dec)
     if (!s) return MR_ENOMEM;
     dec->priv = s;
 
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
     /* The GUI stops mrplay with Ctrl-F (and later escalates to Ctrl-C).  Peek
      * those bits between synchronous libavc sub-calls by default so high-res
      * streams do not begin another expensive call after Stop was requested. */
@@ -626,7 +626,7 @@ static mr_status h264_decode(mr_decoder *dec,
             if (s->quit_fn && s->quit_fn(s->quit_opaque))
                 break;
 
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
             h264_diag_checkpoint(s, "sub-pre", au_ts, off,
                                  annexb_len - off, h264_elapsed_us(au_mark),
                                  NULL, IV_SUCCESS);
@@ -638,7 +638,7 @@ static mr_status h264_decode(mr_decoder *dec,
             s->timing.core_us += h264_elapsed_us(call_mark);
             used = sub_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
 
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
             h264_diag_checkpoint(s, "sub-post", au_ts, off,
                                  annexb_len - off, h264_elapsed_us(au_mark),
                                  &sub_out, r);

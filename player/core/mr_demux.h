@@ -30,6 +30,7 @@ typedef struct {
 #define MR_AUDIO_FORMAT_MP3 0x0055
 #define MR_AUDIO_FORMAT_MP2 0x0050
 #define MR_AUDIO_FORMAT_AAC 0x00ff
+#define MR_AUDIO_FORMAT_AC3 0x2000
 
 typedef struct {
     uint16_t format_tag;  /* WAVE tag (AVI) or mapped from MOV codec        */
@@ -67,7 +68,8 @@ typedef enum {
     MR_CONTAINER_TS,
     MR_CONTAINER_PS,
     MR_CONTAINER_RAW_MJPEG,
-    MR_CONTAINER_RAW_MPEG4
+    MR_CONTAINER_RAW_MPEG4,
+    MR_CONTAINER_MKV
 } mr_container;
 
 typedef struct mr_demux mr_demux;

@@ -10,8 +10,11 @@
 
 #include "mp3dec.h"
 #include "aacdec.h"
+#include "config-a52.h"
+#include "a52.h"
 #include <stdio.h> /* FILE declaration used by pl_mpeg's public header */
 #include "../core/pl_mpeg.h"
+#include "../core/mr_latm.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +27,9 @@ enum audio_kind {
     AUDIO_KIND_MP3,
     AUDIO_KIND_MP2,
     AUDIO_KIND_AAC_RAW,
-    AUDIO_KIND_AAC_ADTS
+    AUDIO_KIND_AAC_ADTS,
+    AUDIO_KIND_AC3,
+    AUDIO_KIND_AAC_LATM
 };
 
 struct mr_audio_decoder {
@@ -33,6 +38,8 @@ struct mr_audio_decoder {
     HAACDecoder aac;
     plm_buffer_t *mp2_buffer;
     plm_audio_t *mp2;
+    a52_state_t *ac3;
+    mr_latm_config latm;
     unsigned source_rate;
     unsigned output_rate;
     unsigned channels;
@@ -42,6 +49,8 @@ struct mr_audio_decoder {
     unsigned char *pending;
     size_t pending_len;
     size_t pending_cap;
+    unsigned char *latm_au;
+    size_t latm_au_cap;
     short pcm[PCM_SHORTS_MAX];
 };
 
@@ -197,7 +206,8 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
     if (info->format_tag != MR_AUDIO_FORMAT_PCM &&
         info->format_tag != MR_AUDIO_FORMAT_MP3 &&
         info->format_tag != MR_AUDIO_FORMAT_MP2 &&
-        info->format_tag != MR_AUDIO_FORMAT_AAC)
+        info->format_tag != MR_AUDIO_FORMAT_AAC &&
+        info->format_tag != MR_AUDIO_FORMAT_AC3)
         return NULL;
 
     d = (mr_audio_decoder *)calloc(1, sizeof *d);
@@ -221,6 +231,11 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
         d->kind = AUDIO_KIND_MP3;
         d->mp3 = MP3InitDecoder();
         if (!d->mp3) goto fail;
+    } else if (info->format_tag == MR_AUDIO_FORMAT_AC3) {
+        d->kind = AUDIO_KIND_AC3;
+        d->ac3 = a52_init(0);
+        if (!d->ac3) goto fail;
+        d->channels = 2;             /* all layouts are downmixed to stereo */
     } else {
         d->aac = AACInitDecoder();
         if (!d->aac) goto fail;
@@ -237,7 +252,16 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
             fi.sampRateCore = (int)rate;
             fi.profile = (int)object_type - 1;
             if (AACSetRawBlockParams(d->aac, 0, &fi) != 0) goto fail;
-            d->kind = AUDIO_KIND_AAC_RAW;
+            d->kind = info->codec_tag == MR_FOURCC('L','A','T','M')
+                    ? AUDIO_KIND_AAC_LATM : AUDIO_KIND_AAC_RAW;
+            if (d->kind == AUDIO_KIND_AAC_LATM) {
+                d->latm.object_type = object_type;
+                d->latm.sample_rate = rate;
+                d->latm.channels = channels;
+                d->latm.asc_len = info->config_len;
+                memcpy(d->latm.asc, info->config, info->config_len);
+                d->latm.valid = 1;
+            }
             d->he_aac = he_aac;
             d->source_rate = output_rate;
             d->channels = channels;
@@ -368,6 +392,112 @@ static long feed_aac_adts(mr_audio_decoder *d, const uint8_t *data, uint32_t len
     return produced;
 }
 
+static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
+                     mr_audio_pcm_sink sink, void *user)
+{
+    long produced = 0;
+    if (!reserve_pending(d, len)) return -1;
+    memcpy(d->pending + d->pending_len, data, len);
+    d->pending_len += len;
+
+    while (d->pending_len >= 7) {
+        size_t off = 0;
+        int flags, rate, bitrate, frame_len, block;
+        level_t level;
+        sample_t bias = 0;
+        while (off + 1 < d->pending_len &&
+               (d->pending[off] != 0x0b || d->pending[off + 1] != 0x77))
+            off++;
+        if (off) consume_pending(d, off);
+        if (d->pending_len < 7) break;
+        frame_len = a52_syncinfo(d->pending, &flags, &rate, &bitrate);
+        if (frame_len <= 0) { consume_pending(d, 1); continue; }
+        if ((size_t)frame_len > d->pending_len) break;
+
+        level = 1 << 24; /* fixed liba52 stereo output at 28-bit precision */
+        flags = A52_STEREO | A52_ADJUST_LEVEL;
+        if (a52_frame(d->ac3, d->pending, &flags, &level, bias)) {
+            consume_pending(d, (size_t)frame_len);
+            continue;
+        }
+        a52_dynrng(d->ac3, NULL, NULL);
+        d->source_rate = (unsigned)rate;
+        d->stride = rate > (int)PAULA_RATE_MAX ? 2 : 1;
+        d->output_rate = (unsigned)rate / d->stride;
+        for (block = 0; block < 6; block++) {
+            sample_t *samples;
+            unsigned i, out = 0;
+            long got;
+            if (a52_block(d->ac3)) break;
+            samples = a52_samples(d->ac3);
+            for (i = 0; i < 256; i++) {
+                int32_t l = samples[i] >> 12;
+                int32_t r = samples[256 + i] >> 12;
+                if (l < -32768) l = -32768; else if (l > 32767) l = 32767;
+                if (r < -32768) r = -32768; else if (r > 32767) r = 32767;
+                d->pcm[out++] = (short)l;
+                d->pcm[out++] = (short)r;
+            }
+            got = emit_pcm(d, out, (unsigned)rate, 2, sink, user);
+            if (got < 0) return -1;
+            produced += got;
+        }
+        consume_pending(d, (size_t)frame_len);
+    }
+    return produced;
+}
+
+static int reserve_latm_au(mr_audio_decoder *d, size_t need)
+{
+    unsigned char *p;
+    size_t cap = d->latm_au_cap ? d->latm_au_cap : 2048;
+    if (need <= d->latm_au_cap) return 1;
+    while (cap < need) {
+        if (cap > 1024U * 1024U) return 0;
+        cap *= 2;
+    }
+    p = (unsigned char *)realloc(d->latm_au, cap);
+    if (!p) return 0;
+    d->latm_au = p;
+    d->latm_au_cap = cap;
+    return 1;
+}
+
+static long feed_aac_latm(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
+                          mr_audio_pcm_sink sink, void *user)
+{
+    long produced = 0;
+    if (!reserve_pending(d, len)) return -1;
+    memcpy(d->pending + d->pending_len, data, len);
+    d->pending_len += len;
+    while (d->pending_len >= 3) {
+        size_t off = 0, mux_len, frame_len, payload_bit, payload_len;
+        long got;
+        while (off + 1 < d->pending_len &&
+               (d->pending[off] != 0x56 ||
+                (d->pending[off + 1] & 0xe0) != 0xe0)) off++;
+        if (off) consume_pending(d, off);
+        if (d->pending_len < 3) break;
+        mux_len = ((size_t)(d->pending[1] & 0x1f) << 8) | d->pending[2];
+        frame_len = mux_len + 3;
+        if (d->pending_len < frame_len) break;
+        if (!mr_latm_payload(d->pending + 3, mux_len, &d->latm,
+                             &payload_bit, &payload_len)) {
+            consume_pending(d, frame_len);
+            continue;
+        }
+        if (!reserve_latm_au(d, payload_len) ||
+            !mr_latm_copy_payload(d->pending + 3, mux_len, payload_bit,
+                                  d->latm_au, payload_len))
+            return -1;
+        got = feed_aac_raw(d, d->latm_au, (uint32_t)payload_len, sink, user);
+        consume_pending(d, frame_len);
+        if (got < 0) return -1;
+        produced += got;
+    }
+    return produced;
+}
+
 long mr_audio_decoder_feed(mr_audio_decoder *d,
                            const uint8_t *data, uint32_t len,
                            mr_audio_pcm_sink sink, void *sink_user)
@@ -403,6 +533,10 @@ long mr_audio_decoder_feed(mr_audio_decoder *d,
         return feed_mp2(d, data, len, sink, sink_user);
     if (d->kind == AUDIO_KIND_AAC_RAW)
         return feed_aac_raw(d, data, len, sink, sink_user);
+    if (d->kind == AUDIO_KIND_AAC_LATM)
+        return feed_aac_latm(d, data, len, sink, sink_user);
+    if (d->kind == AUDIO_KIND_AC3)
+        return feed_ac3(d, data, len, sink, sink_user);
     return feed_aac_adts(d, data, len, sink, sink_user);
 }
 
@@ -422,6 +556,11 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
         d->mp2 = d->mp2_buffer
                ? plm_audio_create_with_buffer(d->mp2_buffer, 1) : NULL;
         return d->mp2 != NULL;
+    }
+    if (d->kind == AUDIO_KIND_AC3) {
+        a52_free(d->ac3);
+        d->ac3 = a52_init(0);
+        return d->ac3 != NULL;
     }
     return AACFlushCodec(d->aac) == 0;
 }
@@ -447,8 +586,10 @@ const char *mr_audio_decoder_name(const mr_audio_decoder *d)
                 d->pcm_info.bits_per_sample == 24 ? "PCM S24LE" : "PCM S32LE")
          : d->kind == AUDIO_KIND_MP3 ? "MP3"
          : d->kind == AUDIO_KIND_MP2 ? "MP2"
+         : d->kind == AUDIO_KIND_AC3 ? "AC-3"
          : d->kind == AUDIO_KIND_AAC_RAW
              ? (d->he_aac ? "HE-AAC/mp4a" : "AAC-LC/mp4a")
+         : d->kind == AUDIO_KIND_AAC_LATM ? "AAC-LC/LATM"
          : "AAC-LC/ADTS";
 }
 
@@ -459,6 +600,8 @@ void mr_audio_decoder_close(mr_audio_decoder *d)
     if (d->aac) AACFreeDecoder(d->aac);
     if (d->mp2) plm_audio_destroy(d->mp2);
     else if (d->mp2_buffer) plm_buffer_destroy(d->mp2_buffer);
+    if (d->ac3) a52_free(d->ac3);
     free(d->pending);
+    free(d->latm_au);
     free(d);
 }

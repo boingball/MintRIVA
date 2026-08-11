@@ -12,6 +12,7 @@
 #include "mr_source.h"
 #include "mr_raw_mjpeg.h"
 #include "mr_raw_mpeg4.h"
+#include "mr_mkv.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +46,7 @@ struct mr_demux {
         mr_ps ps;
         mr_raw_mjpeg raw_mjpeg;
         mr_raw_mpeg4 raw_mpeg4;
+        mr_mkv mkv;
     } u;
     mr_source *owned_source;
 };
@@ -55,6 +57,9 @@ struct mr_demux {
  * raw MJPEG begins directly with a JPEG SOI marker. */
 static mr_container sniff(const uint8_t *b, size_t len)
 {
+    if (len >= 4 && b[0] == 0x1a && b[1] == 0x45 &&
+        b[2] == 0xdf && b[3] == 0xa3)
+        return MR_CONTAINER_MKV;
     if (len >= 12 &&
         mr_rl32(b) == MR_FOURCC('R','I','F','F') &&
         mr_rl32(b + 8) == MR_FOURCC('A','V','I',' '))
@@ -107,6 +112,8 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
         st = mr_ps_open(&d->u.ps, buf, len);
     else if (kind == MR_CONTAINER_RAW_MJPEG)
         st = mr_raw_mjpeg_open(&d->u.raw_mjpeg, buf, len);
+    else if (kind == MR_CONTAINER_MKV)
+        st = mr_mkv_open(&d->u.mkv, buf, len);
     else
         st = mr_raw_mpeg4_open(&d->u.raw_mpeg4, buf, len);
     if (st != MR_OK) {
@@ -115,6 +122,7 @@ mr_demux *mr_demux_open(const uint8_t *buf, size_t len)
         else if (kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
         else if (kind == MR_CONTAINER_TS) mr_ts_close(&d->u.ts);
         else if (kind == MR_CONTAINER_PS) mr_ps_close(&d->u.ps);
+        else if (kind == MR_CONTAINER_MKV) mr_mkv_close(&d->u.mkv);
         free(d);
         return NULL;
     }
@@ -144,9 +152,9 @@ mr_demux *mr_demux_open_file_ex(const char *path,
     }
     kind = sniff(head, got);
     if (kind != MR_CONTAINER_AVI && kind != MR_CONTAINER_MOV &&
-        kind != MR_CONTAINER_TS) {
+        kind != MR_CONTAINER_TS && kind != MR_CONTAINER_MKV) {
         mr_source_set_error(
-            "network/file source is not a supported AVI, MOV/MP4 or MPEG-TS");
+            "source is not a supported AVI, MOV/MP4, MKV or MPEG-TS");
         mr_source_close(source);
         return NULL;
     }
@@ -154,7 +162,7 @@ mr_demux *mr_demux_open_file_ex(const char *path,
      * MPEG-TS plays forward from a length-less stream. */
     if (mr_source_is_streaming(source) && kind != MR_CONTAINER_TS) {
         mr_source_set_error(
-            "streamed AVI/MOV needs a seekable server (Content-Length)");
+            "streamed AVI/MOV/MKV needs a seekable server (Content-Length)");
         mr_source_close(source);
         return NULL;
     }
@@ -172,6 +180,8 @@ mr_demux *mr_demux_open_file_ex(const char *path,
         st = mr_avi_open_source(&d->u.avi, source, end);
     else if (kind == MR_CONTAINER_MOV)
         st = mr_mov_open_source(&d->u.mov, source, end);
+    else if (kind == MR_CONTAINER_MKV)
+        st = mr_mkv_open_source(&d->u.mkv, source, end);
     else
         st = mr_ts_open_source(&d->u.ts, source, end);
     if (st != MR_OK) {
@@ -181,6 +191,7 @@ mr_demux *mr_demux_open_file_ex(const char *path,
             mr_source_set_error("unsupported or malformed streamed container");
         if (kind == MR_CONTAINER_AVI) mr_avi_close(&d->u.avi);
         else if (kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
+        else if (kind == MR_CONTAINER_MKV) mr_mkv_close(&d->u.mkv);
         else mr_ts_close(&d->u.ts);
         mr_source_close(source);
         free(d);
@@ -210,7 +221,7 @@ int mr_demux_is_file_backed_container(const char *path)
     mr_source_close(source);
     kind = sniff(head, got);
     return kind == MR_CONTAINER_AVI || kind == MR_CONTAINER_MOV ||
-           kind == MR_CONTAINER_TS;
+           kind == MR_CONTAINER_TS || kind == MR_CONTAINER_MKV;
 }
 
 const char *mr_demux_last_open_error(void)
@@ -229,6 +240,7 @@ mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
     else if (d->kind == MR_CONTAINER_MOV) status = mr_mov_next_packet(&d->u.mov, pkt);
     else if (d->kind == MR_CONTAINER_TS) status = mr_ts_next_packet(&d->u.ts, pkt);
     else if (d->kind == MR_CONTAINER_PS) status = mr_ps_next_packet(&d->u.ps, pkt);
+    else if (d->kind == MR_CONTAINER_MKV) status = mr_mkv_next_packet(&d->u.mkv, pkt);
     else if (d->kind == MR_CONTAINER_RAW_MJPEG)
         status = mr_raw_mjpeg_next_packet(&d->u.raw_mjpeg, pkt);
     else status = mr_raw_mpeg4_next_packet(&d->u.raw_mpeg4, pkt);
@@ -274,6 +286,7 @@ void mr_demux_rewind(mr_demux *d)
     else if (d->kind == MR_CONTAINER_MOV) mr_mov_rewind(&d->u.mov);
     else if (d->kind == MR_CONTAINER_TS) mr_ts_rewind(&d->u.ts);
     else if (d->kind == MR_CONTAINER_PS) mr_ps_rewind(&d->u.ps);
+    else if (d->kind == MR_CONTAINER_MKV) mr_mkv_rewind(&d->u.mkv);
     else if (d->kind == MR_CONTAINER_RAW_MJPEG)
         mr_raw_mjpeg_rewind(&d->u.raw_mjpeg);
     else mr_raw_mpeg4_rewind(&d->u.raw_mpeg4);
@@ -286,6 +299,7 @@ void mr_demux_close(mr_demux *d)
     else if (d->kind == MR_CONTAINER_MOV) mr_mov_close(&d->u.mov);
     else if (d->kind == MR_CONTAINER_TS) mr_ts_close(&d->u.ts);
     else if (d->kind == MR_CONTAINER_PS) mr_ps_close(&d->u.ps);
+    else if (d->kind == MR_CONTAINER_MKV) mr_mkv_close(&d->u.mkv);
     if (d->owned_source) mr_source_close(d->owned_source);
     free(d);
 }
@@ -296,6 +310,7 @@ const mr_video_info *mr_demux_video(const mr_demux *d)
     if (d->kind == MR_CONTAINER_MOV) return &d->u.mov.video;
     if (d->kind == MR_CONTAINER_TS) return &d->u.ts.video;
     if (d->kind == MR_CONTAINER_PS) return &d->u.ps.video;
+    if (d->kind == MR_CONTAINER_MKV) return &d->u.mkv.video;
     if (d->kind == MR_CONTAINER_RAW_MJPEG) return &d->u.raw_mjpeg.video;
     return &d->u.raw_mpeg4.video;
 }
@@ -306,6 +321,7 @@ const mr_audio_info *mr_demux_audio(const mr_demux *d)
     if (d->kind == MR_CONTAINER_MOV) return &d->u.mov.audio;
     if (d->kind == MR_CONTAINER_TS) return &d->u.ts.audio;
     if (d->kind == MR_CONTAINER_PS) return &d->u.ps.audio;
+    if (d->kind == MR_CONTAINER_MKV) return &d->u.mkv.audio;
     if (d->kind == MR_CONTAINER_RAW_MJPEG) return &d->u.raw_mjpeg.audio;
     return &d->u.raw_mpeg4.audio;
 }
@@ -316,6 +332,7 @@ const char *mr_demux_container_name(const mr_demux *d)
          : d->kind == MR_CONTAINER_MOV ? "MOV"
          : d->kind == MR_CONTAINER_TS ? "MPEG-TS"
          : d->kind == MR_CONTAINER_PS ? "MPEG-PS"
+         : d->kind == MR_CONTAINER_MKV ? "Matroska/MKV"
          : d->kind == MR_CONTAINER_RAW_MJPEG ? "raw MJPEG"
          : d->kind == MR_CONTAINER_RAW_MPEG4 ? "raw M4V" : "?";
 }
@@ -433,6 +450,7 @@ void mr_demux_describe_audio_codec(const mr_demux *d, char *out, size_t cap)
             name = ai->config_len &&
                    ((ai->config[0] >> 3) == 5 || (ai->config[0] >> 3) == 29)
                  ? "HE-AAC" : "AAC-LC";
+        else if (ai->format_tag == MR_AUDIO_FORMAT_AC3) name = "AC-3";
         if (name) { snprintf(out, cap, "%s", name); return; }
         if (ai->codec_tag > 0xffffU) {
             fourcc_text(ai->codec_tag, tag);

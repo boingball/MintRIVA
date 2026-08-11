@@ -136,8 +136,8 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       apply. (Cinepak/MJPEG path stays integer.)
 - [x] MPEG-2 program streams (`.mpg`/`.mpeg`, including DVD-style files) are
       demuxed in-tree and decoded by the existing integer libmpeg2 adapter; no
-      additional video decoder dependency is required. Audio support depends
-      on the elementary audio codec (DVD AC-3 is not currently decoded).
+      additional video decoder dependency is required. AC-3 audio is decoded
+      by the vendored fixed-point Rockbox/a52dec core and downmixed to stereo.
 - [x] Microsoft MPEG-4 v2 (`MP42`/`DIV2`) in AVI: separate H.263-derived decoder
       plugin with I/P pictures, slice/DC/AC prediction, skip macroblocks and
       half-pel motion compensation. Host-validated against ffmpeg on the full
@@ -151,9 +151,10 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 - [~] RTG fullscreen toggle is implemented with a borderless screen-sized CGX
       window; direct RGB565 and porting `RendererCGXInit.i` remain future work
 - [~] Paula audio backend + audio-master A/V sync (`audio_paula.c`) - PCM,
-      MP2, MP3-in-AVI and AAC-LC-in-MP4. MP3/AAC use the pinned MintAMP/Helix
-      sources through `player/audio/mr_audio_decode.c`; host regression tests
-      pass, pending on-hardware verification.
+      MP2, MP3, AAC-LC (raw/ADTS/LATM) and fixed-point AC-3 stereo downmix.
+      MP3/AAC use the pinned MintAMP/Helix sources through
+      `player/audio/mr_audio_decode.c`; host regression tests pass, pending
+      on-hardware verification of AC-3 and LATM.
 - [ ] AGA C2P + dither output (port from `RendererAGAC2P.i`)
 - [ ] MJPEG decoder reusing RiVA's 68k IDCT
 - [ ] seek/loop

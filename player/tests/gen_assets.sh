@@ -49,6 +49,16 @@ ffmpeg -v error -i test_h264_high.mp4 -c copy \
     -f mpegts test_h264_aac.ts -y
 ffmpeg -v error -i test_h264_high.mp4 -c copy -mpegts_m2ts_mode 1 \
     -f mpegts test_h264_aac.m2ts -y
+# Re-encode only the small audio track to exercise the common broadcast AAC
+# LATM/LOAS path and the fixed-point AC-3 decoder.  Matroska also validates the
+# new seekable-file demuxer without making the fixtures appreciably larger.
+ffmpeg -v error -i test_h264_high.mp4 -c:v copy -c:a aac -b:a 64k \
+    -mpegts_flags +latm -f mpegts test_h264_latm.ts -y
+ffmpeg -v error -i test_h264_high.mp4 -c:v copy -c:a ac3 -b:a 96k \
+    test_h264_ac3.mkv -y
+ffmpeg -v error -i test_h264_high.mp4 -c:v copy -c:a ac3 -b:a 96k \
+    -f mpegts test_h264_ac3.ts -y
+ffmpeg -v error -i test_h264_high.mp4 -c copy test_h264_aac.mkv -y
 # MPEG-2 Main Profile with B-frame reordering in a transport stream. This also
 # verifies that the decoder drains both delayed reference pictures at EOF.
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \

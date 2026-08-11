@@ -2,6 +2,7 @@
  * MintRIVA - MPEG-TS/M2TS demuxer.
  */
 #include "mr_ts.h"
+#include "mr_latm.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,7 @@
 #define TS_PID_NONE         0x1fff
 #define TS_PROBE_LIMIT      (8UL * 1024 * 1024)
 #define TS_PROBE_VIDEO_MAX  (1024UL * 1024)
+#define TS_PROBE_AUDIO_MAX  (64UL * 1024)
 /* How many PTS to sample before deriving the frame period, and the sample
  * ceiling. One delta is not enough: with B-frames the decode-order timestamps
  * are reordered, so the period only emerges from the minimum gap across a run
@@ -159,6 +161,22 @@ const char *mr_ts_audio_type_name(unsigned stream_type)
     }
 }
 
+static int descriptors_identify_ac3(const uint8_t *p, size_t len)
+{
+    size_t pos = 0;
+    while (pos + 2 <= len) {
+        unsigned tag = p[pos], n = p[pos + 1];
+        if (pos + 2 + n > len) break;
+        if (tag == 0x6a ||
+            (tag == 0x05 && n >= 4 &&
+             p[pos + 2] == 'A' && p[pos + 3] == 'C' &&
+             p[pos + 4] == '-' && p[pos + 5] == '3'))
+            return 1;
+        pos += 2 + n;
+    }
+    return 0;
+}
+
 static void parse_pmt(mr_ts *t, const uint8_t *p, size_t len, int pusi)
 {
     size_t section_len, end, pos, program_info_len, skip;
@@ -184,11 +202,16 @@ static void parse_pmt(mr_ts *t, const uint8_t *p, size_t len, int pusi)
             t->video_pid == TS_PID_NONE) {
             t->video_pid = pid;                  /* MPEG-1/2 or AVC/H.264    */
             t->video_type = type;
-        } else if ((type == 0x03 || type == 0x04 ||
-                    type == 0x0f || type == 0x06) &&
+        } else if ((type == 0x03 || type == 0x04 || type == 0x06 ||
+                    type == 0x0f || type == 0x11 || type == 0x81) &&
                    t->audio_pid == TS_PID_NONE) {
-            t->audio_pid = pid;                  /* MPEG audio or ADTS AAC   */
-            t->audio_type = type;
+            t->audio_pid = pid;
+            /* Blu-ray M2TS commonly labels ADTS AAC as private PES 0x06.
+             * AC-3 on the same stream type is distinguished by its AC-3 or
+             * registration descriptor; both are then confirmed by syncword
+             * probing before the track becomes valid. */
+            t->audio_type = type == 0x06 && descriptors_identify_ac3(
+                                p + pos + 5, es_info_len) ? 0x81 : type;
         } else if (!t->audio_type && mr_ts_audio_type_name(type)) {
             /* Remember an unsupported audio track for diagnostics. Do not
              * select its PID: the packet path must not feed it to an AAC
@@ -491,6 +514,32 @@ static void parse_adts_info(mr_ts *t, const uint8_t *p, size_t len)
     }
 }
 
+static void parse_latm_info(mr_ts *t, const uint8_t *p, size_t len)
+{
+    size_t i;
+    mr_latm_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    if (t->audio.valid) return;
+    for (i = 0; i + 3 <= len; i++) {
+        size_t mux_len, payload_bit, payload_len;
+        if (p[i] != 0x56 || (p[i + 1] & 0xe0) != 0xe0) continue;
+        mux_len = ((size_t)(p[i + 1] & 0x1f) << 8) | p[i + 2];
+        if (i + 3 + mux_len > len) return;
+        if (!mr_latm_payload(p + i + 3, mux_len, &cfg,
+                             &payload_bit, &payload_len))
+            continue;
+        t->audio.format_tag = MR_AUDIO_FORMAT_AAC;
+        t->audio.codec_tag = MR_FOURCC('L','A','T','M');
+        t->audio.sample_rate = cfg.sample_rate;
+        t->audio.channels = (uint16_t)cfg.channels;
+        t->audio.bits_per_sample = 16;
+        t->audio.config_len = cfg.asc_len;
+        memcpy(t->audio.config, cfg.asc, cfg.asc_len);
+        t->audio.valid = 1;
+        return;
+    }
+}
+
 /* PMT stream types 0x03/0x04 identify an MPEG audio elementary stream, but
  * the actual layer and clock live in each frame header. MintRIVA's existing
  * pl_mpeg audio path decodes Layer II, so accept that layer only and leave
@@ -520,11 +569,35 @@ static void parse_mp2_info(mr_ts *t, const uint8_t *p, size_t len)
     }
 }
 
+static void parse_ac3_info(mr_ts *t, const uint8_t *p, size_t len)
+{
+    static const uint32_t rates[3] = { 48000, 44100, 32000 };
+    size_t i;
+    if (t->audio.valid) return;
+    for (i = 0; i + 7 <= len; i++) {
+        unsigned fscod, bsid, half;
+        if (p[i] != 0x0b || p[i + 1] != 0x77) continue;
+        fscod = p[i + 4] >> 6;
+        bsid = p[i + 5] >> 3;
+        if (fscod == 3 || bsid > 10) continue;
+        half = bsid > 8 ? bsid - 8 : 0;
+        t->audio.format_tag = MR_AUDIO_FORMAT_AC3;
+        t->audio.codec_tag = MR_FOURCC('a','c','-','3');
+        t->audio.sample_rate = rates[fscod] >> half;
+        t->audio.channels = 2;          /* fixed decoder downmix target */
+        t->audio.bits_per_sample = 16;
+        t->audio.valid = 1;
+        return;
+    }
+}
+
 static mr_status probe_stream(mr_ts *t)
 {
     uint8_t packet[192];
     uint8_t *video_probe = NULL;
+    uint8_t *audio_probe = NULL;
     size_t video_len = 0, video_cap = 0;
+    size_t audio_len = 0, audio_cap = 0;
     size_t pos, limit = t->len < TS_PROBE_LIMIT ? t->len : TS_PROBE_LIMIT;
     uint32_t pts_step = 0;
     uint64_t pts_samples[TS_PTS_SAMPLE_MAX];
@@ -564,7 +637,7 @@ static mr_status probe_stream(mr_ts *t)
                     add = TS_PROBE_VIDEO_MAX - video_len;
                 if (!reserve(&video_probe, &video_cap, video_len + add,
                              TS_PROBE_VIDEO_MAX)) {
-                    free(video_probe);
+                    free(video_probe); free(audio_probe);
                     return MR_ENOMEM;
                 }
                 memcpy(video_probe + video_len, es, add);
@@ -576,10 +649,26 @@ static mr_status probe_stream(mr_ts *t)
                 es = pes_payload(p, &es_len, &pts, &has_pts, &expected);
                 if (!es) continue;
             }
+            if (audio_len < TS_PROBE_AUDIO_MAX) {
+                size_t add = es_len;
+                if (add > TS_PROBE_AUDIO_MAX - audio_len)
+                    add = TS_PROBE_AUDIO_MAX - audio_len;
+                if (!reserve(&audio_probe, &audio_cap, audio_len + add,
+                             TS_PROBE_AUDIO_MAX)) {
+                    free(video_probe); free(audio_probe);
+                    return MR_ENOMEM;
+                }
+                memcpy(audio_probe + audio_len, es, add);
+                audio_len += add;
+            }
             if (t->audio_type == 0x03 || t->audio_type == 0x04)
-                parse_mp2_info(t, es, es_len);
+                parse_mp2_info(t, audio_probe, audio_len);
+            else if (t->audio_type == 0x81)
+                parse_ac3_info(t, audio_probe, audio_len);
+            else if (t->audio_type == 0x11)
+                parse_latm_info(t, audio_probe, audio_len);
             else
-                parse_adts_info(t, es, es_len);
+                parse_adts_info(t, audio_probe, audio_len);
         }
         if (t->video_pid != TS_PID_NONE && video_len) {
             int video_ready =
@@ -598,6 +687,7 @@ static mr_status probe_stream(mr_ts *t)
     else if ((t->video_type == 0x01 || t->video_type == 0x02) && video_len)
         parse_mpeg_video_sequence(t, video_probe, video_len);
     free(video_probe);
+    free(audio_probe);
 
     /* Frame period = the smallest gap between any two sampled PTS. Presentation
      * timestamps are spaced one period apart in display order; decode-order

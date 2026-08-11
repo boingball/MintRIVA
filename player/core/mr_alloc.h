@@ -11,7 +11,7 @@
 
 #include <stddef.h>
 
-#if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
+#if defined(__amigaos__) || defined(__AMIGA__)
 
 #include <exec/memory.h>
 #include <proto/exec.h>

@@ -61,7 +61,7 @@ LIBMPEG2_SRC = $(LIBMPEG2_ROOT)/libmpeg2/alloc.c \
                $(LIBMPEG2_ROOT)/libmpeg2/slice.c
 CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_youtube.c \
-        core/mr_demux.c core/mr_avi.c core/mr_mov.c \
+        core/mr_demux.c core/mr_latm.c core/mr_mkv.c core/mr_avi.c core/mr_mov.c \
         core/mr_ts.c core/mr_ps.c \
         core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
         core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
@@ -91,6 +91,13 @@ MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
                 -I$(MINTAMP_ROOT)/decoders/aac \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
+LIBA52_ROOT = vendor/liba52
+LIBA52_FLAGS = -I$(LIBA52_ROOT)
+LIBA52_SRC = $(LIBA52_ROOT)/bit_allocate.c $(LIBA52_ROOT)/bitstream.c \
+             $(LIBA52_ROOT)/downmix.c $(LIBA52_ROOT)/imdct.c \
+             $(LIBA52_ROOT)/parse.c \
+             $(MINTAMP_ROOT)/decoders/wma/fft-ffmpeg.c \
+             $(MINTAMP_ROOT)/decoders/wma/mdct_lookup.c
 
 # Prefer whatever m68k-amigaos-gcc is on PATH (your chosen default); only if
 # none is on PATH, fall back to Bebbo's usual install prefixes.
@@ -151,8 +158,8 @@ check-cc:
 	@echo "using CC = $(CC)"
 
 mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) | check-libavc
-	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(KALMS_OBJ) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
+	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(KALMS_OBJ) $(LDFLAGS)
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
