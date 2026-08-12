@@ -38,8 +38,10 @@ jobs:
 
       - name: Confirm the programs were produced
         run: |
-          ls -la player/mrplay player/mrgui player/iptvgui player/ytgui player/mr_decode
-          file player/mrplay player/mrgui player/iptvgui player/ytgui player/mr_decode || true
+          ls -la player/mrplay player/mrgui player/iptvgui player/ytgui \
+            player/mrgui-GT player/iptvgui-GT player/ytgui-GT player/mr_decode
+          file player/mrplay player/mrgui player/iptvgui player/ytgui \
+            player/mrgui-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
 
       - name: Upload compiled programs
         uses: actions/upload-artifact@v4
@@ -50,5 +52,8 @@ jobs:
             player/mrgui
             player/iptvgui
             player/ytgui
+            player/mrgui-GT
+            player/iptvgui-GT
+            player/ytgui-GT
             player/mr_decode
           if-no-files-found: error

@@ -10,6 +10,7 @@
 #include "../iptv/mr_iptv.h"
 #include "mr_player_status.h"
 #include "mr_master_options.h"
+#include "mr_gui_menu.h"
 #include "../youtube/mr_youtube_search.h"
 
 #include <classes/window.h>
@@ -263,7 +264,8 @@ static void poll_player_status(Object *status, struct Window *window,
         break;
     case MR_PLAYER_STATE_PLAYING:
         if (ps.codec[0] && ps.text[0])
-            snprintf(out, out_size, "Playing (%s): %s", ps.codec, ps.text);
+            snprintf(out, out_size, "Playing (%.47s): %.190s", ps.codec,
+                     ps.text);
         else if (ps.codec[0])
             snprintf(out, out_size, "Playing: %s", ps.codec);
         else
@@ -479,6 +481,7 @@ int main(int argc, char **argv)
     Object *volume_up_button = NULL, *channel_button = NULL;
     Object *stop_button = NULL, *close_button = NULL, *query_label = NULL;
     struct Window *window = NULL;
+    mr_gui_menu app_menu;
     struct List result_nodes;
     struct List search_types;
     mr_youtube_search_results results;
@@ -490,6 +493,7 @@ int main(int argc, char **argv)
     int rc = RETURN_FAIL;
     unsigned quality_index;
 
+    memset(&app_menu, 0, sizeof(app_menu));
     result_nodes.lh_Head = (struct Node *)&result_nodes.lh_Tail;
     result_nodes.lh_Tail = NULL;
     result_nodes.lh_TailPred = (struct Node *)&result_nodes.lh_Head;
@@ -615,7 +619,8 @@ int main(int argc, char **argv)
         WINDOW_GetClass(), NULL, WA_Title, (ULONG)"MintRIVA YouTube",
         WA_Activate, TRUE, WA_DepthGadget, TRUE, WA_DragBar, TRUE,
         WA_CloseGadget, TRUE, WA_SizeGadget, TRUE, WA_IDCMP,
-        IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_IDCMPUPDATE,
+        IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_MENUPICK |
+            IDCMP_IDCMPUPDATE,
         WINDOW_Position, WPOS_CENTERSCREEN,
         WINDOW_ParentGroup, (ULONG)layout, TAG_DONE);
     if (!winobj)
@@ -623,6 +628,7 @@ int main(int argc, char **argv)
     window = (struct Window *)RA_OpenWindow(winobj);
     if (!window)
         goto cleanup;
+    mr_gui_menu_open(&app_menu, window);
     GetAttr(WINDOW_SigMask, winobj, &sigmask);
     if (poll_timer_open()) {
         timermask = 1UL << timer_port->mp_SigBit;
@@ -646,6 +652,14 @@ int main(int argc, char **argv)
             ULONG gadget;
             if ((result & WMHI_CLASSMASK) == WMHI_CLOSEWINDOW)
                 goto done;
+            if ((result & WMHI_CLASSMASK) == WMHI_MENUPICK) {
+                int action = mr_gui_menu_action(&app_menu, code);
+                if (action == MR_GUI_MENU_ABOUT)
+                    mr_gui_show_about(window, "YouTube ReAction edition");
+                else if (action == MR_GUI_MENU_QUIT)
+                    goto done;
+                continue;
+            }
             if ((result & WMHI_CLASSMASK) != WMHI_GADGETUP)
                 continue;
             gadget = result & WMHI_GADGETMASK;
@@ -735,6 +749,7 @@ done:
     rc = RETURN_OK;
 cleanup:
     poll_timer_close();
+    mr_gui_menu_close(&app_menu, window);
     if (winobj) {
         if (window)
             RA_CloseWindow(winobj);

@@ -42,6 +42,7 @@
 #include <string.h>
 #include "../core/mr_play_options.h"
 #include "mr_master_options.h"
+#include "mr_gui_menu.h"
 
 #ifndef MRGUI_CLASS_VERSION
 #define MRGUI_CLASS_VERSION 44
@@ -542,6 +543,7 @@ int main(void)
     Object *youtube_button;
     struct Window *window;
     mr_master_options_port *master_options;
+    mr_gui_menu app_menu;
     struct List modes;
     struct List c2p_modes;
     struct List h264_modes;
@@ -576,6 +578,7 @@ int main(void)
     youtube_button = NULL;
     window = NULL;
     master_options = NULL;
+    memset(&app_menu, 0, sizeof(app_menu));
     status = RETURN_FAIL;
     have_rtg = 0;
     default_mode = 0;
@@ -764,6 +767,7 @@ int main(void)
                                          WA_IDCMP,
                                          IDCMP_GADGETUP |
                                          IDCMP_CLOSEWINDOW |
+                                         IDCMP_MENUPICK |
                                          IDCMP_IDCMPUPDATE |
                                          IDCMP_REFRESHWINDOW,
                                          WINDOW_Position, WPOS_CENTERSCREEN,
@@ -775,6 +779,7 @@ int main(void)
     window = (struct Window *)RA_OpenWindow(window_object);
     if (!window)
         goto cleanup;
+    mr_gui_menu_open(&app_menu, window);
 
     update_mode_controls(mode, c2p, lace, twox, window);
     master_options = mr_master_options_open();
@@ -791,6 +796,15 @@ int main(void)
             switch (result & WMHI_CLASSMASK) {
             case WMHI_CLOSEWINDOW:
                 goto done;
+
+            case WMHI_MENUPICK: {
+                int action = mr_gui_menu_action(&app_menu, code);
+                if (action == MR_GUI_MENU_ABOUT)
+                    mr_gui_show_about(window, "ReAction edition");
+                else if (action == MR_GUI_MENU_QUIT)
+                    goto done;
+                break;
+            }
 
             case WMHI_GADGETUP:
                 switch (result & WMHI_GADGETMASK) {
@@ -861,6 +875,7 @@ done:
 
 cleanup:
     mr_master_options_close(&master_options);
+    mr_gui_menu_close(&app_menu, window);
     /* Dispose only the highest successfully-created owner.  The window owns
      * the root layout; layouts own their child layouts and gadgets. */
     if (window_object) {

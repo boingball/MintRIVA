@@ -22,7 +22,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | AVI, QuickTime MOV/MP4, Matroska/MKV and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
 | Public YouTube URLs | ✅ live HLS plus experimental muxed 360p/720p H.264/AAC playback for compatible uploads |
-| ReAction YouTube search | ✅ no-key search browser with live-only filter and native playback handoff |
+| YouTube search | ✅ no-key ReAction and OS 3.1 GadTools browsers; All/Videos/Live/Shorts filters and native playback handoff |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
 | Microsoft RLE8 — palettised AVI | ✅ native palette and delta-frame decoder (RLE4 deferred) |
@@ -35,7 +35,7 @@ as reference material — see `src/`, the original `README`, and `RiVA.guide`.
 | Matroska/MKV | ✅ H.264/MPEG-4/MPEG-2/MJPEG video; AAC/MP3/MP2/AC-3/PCM audio; common lacing supported |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
-| Separate ReAction controller (`mrgui`) | ✅ file picker, mode/options and transport controls |
+| ReAction + GadTools controllers | ✅ matching file, IPTV and YouTube frontends for modern and OS 3.1 systems |
 | IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
 | PCM / MP2 / MP3 / AAC-LC / AC-3 audio to Paula | ✅ host-validated; AC-3 uses fixed-point stereo downmix |
 
@@ -65,8 +65,8 @@ make -f Makefile.amiga release SSL=1   # release/MintRIVA030, 040 and 060
 Use the `.040` build for a PiStorm configured as a 68040 and `.060` only on a
 68060-compatible CPU. `release/MintRIVA030`, `release/MintRIVA040` and
 `release/MintRIVA060` are ready-to-run sets with ordinary unsuffixed program
-names. Each contains `mrplay`, `mrgui`, `iptvgui` and `ytgui`, so the GUI can
-launch its companion programs without any renaming, plus the command-line
+names. Each contains `mrplay`, the ReAction `mrgui`/`iptvgui`/`ytgui` set, the
+GadTools `mrgui-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line
 `mr_decode` codec probe/test harness. The release target finishes by restoring
 the working binaries to the universal 030 build.
 
@@ -172,9 +172,9 @@ shows the title and channel, and starts the selected result through the same
 native resolver. The **Quality** button cycles through Low, 360p, 480p, 720p,
 1080p, and unrestricted Best. For recorded videos, 720p/1080p/Best try the
 compatible muxed 720p format and fall back to 360p; the other choices use 360p.
-**Live only** is enabled by default; untick it to search and play ordinary
-uploads. Build
-with `SSL=1` and keep `ytgui` beside `mrgui` and `mrplay`. As with watch-page
+The search-type selector defaults to **Live** and also offers **All**,
+**Videos**, and **Shorts**. Build with `SSL=1` and keep `ytgui` beside `mrgui`
+and `mrplay`. As with watch-page
 resolution, this deliberately small parser may need maintenance if YouTube
 changes its private page schema.
 
@@ -184,11 +184,18 @@ transport row controls the separate player process: Play first cleanly replaces
 the current video, Pause and Fast toggle their modes, Vol -/+ adjusts Paula in
 steps, Fullscreen toggles the RTG window, and Stop exits the player.
 
-## ReAction controller
+## GUI editions
 
-The Amiga build also creates `mrgui`, a separate Workbench-friendly controller
-in the style of MintAMP's ReAction interface. Keep `mrgui` and `mrplay` in the
-same directory (or put `mrplay` on the command path), run `mrgui`, choose a
+The Amiga build creates two Workbench-friendly GUI sets over the same player,
+parsers, playback settings, and status/control protocol:
+
+- `mrgui`, `iptvgui`, `ytgui` use ReAction V44.
+- `mrgui-GT`, `iptvgui-GT`, `ytgui-GT` use only GadTools/Intuition V37 and are
+  intended for a standard AmigaOS 3.1 installation. Start `mrgui-GT`; it opens
+  the matching `-GT` browsers automatically.
+
+Keep one complete GUI set beside `mrplay` (or put `mrplay` on the command
+path), run the controller, choose a
 movie and select **AGA**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
 apply to the three chipset modes; CGX playback opens a size-gadget window and
 scales the video as that window is resized. The **C2P** chooser selects the
@@ -202,6 +209,9 @@ restore the previous window geometry. AGA display modes remain hotkey-driven
 and ignore the RTG-only fullscreen command. True timeline seeking is not yet
 implemented; it needs a demux keyframe/sample seek API rather than pretending
 that fast decode is a seek operation.
+
+Every GUI has a **MintRIVA > About MintRIVA...** menu containing the project
+credits and support link. **MintRIVA > Quit** closes that frontend cleanly.
 
 The controller's file gadget identifies the selected file. On launch, `mrplay`
 also reports the container type, video codec/FourCC, dimensions, frame rate and
@@ -220,10 +230,10 @@ whole-file input path and therefore do not accept URLs.
 
 ### IPTV browser
 
-The ReAction controller includes an **IPTV...** launcher for the separate
-`iptvgui` directory window. Build it together with the controller using
+Both controllers include an **IPTV...** launcher for their matching directory
+window. Build all editions together using
 `make -f Makefile.amiga all SSL=1 SSLCERTS=1`; keep `mrgui`, `iptvgui`,
-`ytgui`, and `mrplay` together. `SSL=1` enables AmiSSL for YouTube searches and
+`ytgui`, the three `-GT` programs, and `mrplay` together. `SSL=1` enables AmiSSL for YouTube searches and
 the iptv-org directory download; `SSLCERTS=1` enables certificate verification.
 A browser built
 without HTTPS support remains usable for cached data and manual URLs, but a
@@ -285,6 +295,14 @@ player/amiga/        RTG/AGA display, Paula output and player frontend
 player/tests/        host test harness + fixtures
 player/vendor/       pinned/vendored build dependencies
 ```
+
+## Support MintRIVA
+
+MintRIVA is made by Darren “boingball” Banfi, with a frankly unreasonable
+number of classic-Amiga test runs and LLM-assisted development sessions. If the
+player is useful—or if YouTube on an Amiga made you laugh—you can help keep the
+hardware experiments and token fund moving at
+[buymeacoffee.com/boingball](https://buymeacoffee.com/boingball).
 
 ## Licensing
 
