@@ -9,6 +9,7 @@
 #include "amiga_display.h"
 #include "display_backend.h"
 #include "mr_aspect.h"
+#include "../core/mr_scale.h"
 
 #include <stddef.h>
 #include <exec/types.h>
@@ -461,29 +462,21 @@ static int ensure_scaled(cgx_state *s, int w)
     return 1;
 }
 
-/* Integer nearest-neighbour RGB24 scaler, one strip at a time. Geometry
- * increments are calculated once per strip (and never per pixel); dst_y0 is
- * the absolute destination row the strip starts at, so the fixed-point
- * source-row accumulator stays correct across strip boundaries. */
+/* Integer nearest-neighbour RGB24 scaler, one strip at a time: shares the
+ * exact DDA (no per-pixel multiply/divide, just add-and-occasionally-carry)
+ * that core/mr_scale.c's full-image resize uses, via the _strip() entry
+ * point that fast-forwards its row state to dst_y0 instead of starting at
+ * row 0. The previous version here re-derived a 16.16 fixed-point x/y step
+ * and paid a size_t multiply per output pixel to turn it back into a byte
+ * offset (`(sx >> 16) * 3`) - real cost at 1024x576, all of it on top of the
+ * WritePixelArray blit already following each strip. */
 static void scale_rgb24_strip(cgx_state *s, const unsigned char *src, int sw,
                               int sh, int src_stride, int dst_y0, int rows,
                               mr_display_service_fn service, void *opaque)
 {
-    unsigned long xstep = ((unsigned long)sw << 16) / (unsigned long)s->dw;
-    unsigned long ystep = ((unsigned long)sh << 16) / (unsigned long)s->dh;
-    unsigned long syfp = (unsigned long)dst_y0 * ystep;
-    int y;
-    for (y = 0; y < rows; y++, syfp += ystep) {
-        const unsigned char *sp = src + (size_t)(syfp >> 16) * src_stride;
-        unsigned char *dp = s->scaled + (size_t)y * s->scaled_stride;
-        unsigned long sx = 0;
-        int x;
-        for (x = 0; x < s->dw; x++, sx += xstep) {
-            const unsigned char *p = sp + (size_t)(sx >> 16) * 3;
-            *dp++ = p[0]; *dp++ = p[1]; *dp++ = p[2];
-        }
-        if (service && (y & 15) == 15) service(opaque);
-    }
+    mr_scale_resize_rgb24_strip(src, sw, sh, src_stride, s->scaled, s->dw,
+                                s->dh, s->scaled_stride, dst_y0, rows);
+    if (service) service(opaque);
 }
 
 static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,

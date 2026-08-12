@@ -87,21 +87,26 @@ void mr_scale_fit_rect(int w, int h, int max_w, int max_h,
     if (dst_h) *dst_h = dh;
 }
 
-void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
-                           uint8_t *dst, int dst_w, int dst_h, int dst_stride)
+void mr_scale_resize_rgb24_strip(const uint8_t *src, int w, int h,
+                                 int src_stride, uint8_t *dst, int dst_w,
+                                 int dst_h, int dst_stride, int y0, int rows)
 {
     int y, sy, yq, yr, yerr;
     int xq, xr, sx0, xerr0;
+    int i;
 
-    if (!src || !dst || w <= 0 || h <= 0 || dst_w <= 0 || dst_h <= 0)
+    if (!src || !dst || w <= 0 || h <= 0 || dst_w <= 0 || dst_h <= 0 ||
+        y0 < 0 || y0 >= dst_h || rows <= 0)
         return;
+    if (rows > dst_h - y0) rows = dst_h - y0;
 
     /*
      * Sample at destination pixel centres:
      *   source = floor(((2 * destination + 1) * source_size) /
      *                  (2 * destination_size))
      * Quotient/remainder stepping turns that into additions and an occasional
-     * carry in the hot loop.
+     * carry in the hot loop - the same DDA a full-image resize uses, just
+     * fast-forwarded to start at row y0 instead of row 0.
      */
     xq = w / dst_w;
     xr = w % dst_w;
@@ -112,7 +117,20 @@ void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
     sy = (h / 2) / dst_h;
     yerr = (h / 2) % dst_h;
 
-    for (y = 0; y < dst_h; y++) {
+    /* Advancing the row DDA here is at most dst_h integer steps, once per
+     * strip - negligible next to the O(dst_w) pixel work every row does
+     * regardless, and it keeps the per-row state below self-contained rather
+     * than threaded through a caller-owned struct across strip calls. */
+    for (i = 0; i < y0; i++) {
+        sy += yq;
+        yerr += yr;
+        if (yerr >= dst_h) {
+            yerr -= dst_h;
+            sy++;
+        }
+    }
+
+    for (y = 0; y < rows; y++) {
         const uint8_t *sr = src + (size_t)sy * src_stride;
         uint8_t *dr = dst + (size_t)y * dst_stride;
         int x, sx = sx0, xerr = xerr0;
@@ -137,4 +155,11 @@ void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
             sy++;
         }
     }
+}
+
+void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
+                           uint8_t *dst, int dst_w, int dst_h, int dst_stride)
+{
+    mr_scale_resize_rgb24_strip(src, w, h, src_stride, dst, dst_w, dst_h,
+                                dst_stride, 0, dst_h);
 }

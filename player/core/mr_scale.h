@@ -36,4 +36,15 @@ void mr_scale_fit_rect(int w, int h, int max_w, int max_h,
 void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
                            uint8_t *dst, int dst_w, int dst_h, int dst_stride);
 
+/* Same resize, restricted to destination rows [y0, y0+rows). `dst` is the
+ * strip buffer itself (row-relative: its own row 0 is destination row y0),
+ * not the full-size destination. Produces byte-identical rows to what
+ * mr_scale_resize_rgb24() would write at [y0, y0+rows) of the full image -
+ * for a caller (e.g. a bounded-height RTG blit strip) that scales and
+ * transfers a downscaled/upscaled frame a few rows at a time instead of
+ * holding a second full-size frame buffer. */
+void mr_scale_resize_rgb24_strip(const uint8_t *src, int w, int h,
+                                 int src_stride, uint8_t *dst, int dst_w,
+                                 int dst_h, int dst_stride, int y0, int rows);
+
 #endif /* MR_SCALE_H */
