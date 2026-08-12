@@ -273,6 +273,19 @@ check-https: mr_decode_ssl
 	    || sh tests/gen_assets.sh
 	sh tests/run_http_check.sh ./mr_decode_ssl https
 
+# Re-runs the H.264/Cinepak/MPEG-4/MP42 conformance checks and the m68k leaf-
+# primitive/YUV checks built for a real m68k target (big-endian, 68030 strict-
+# alignment rules) and executed under qemu-m68k, instead of this host's own
+# x86-64 CPU. Not the AmigaOS toolchain this project doesn't have on the dev
+# host (see CLAUDE.md) - m68k-linux-gnu targets Linux/m68k, so it can't build
+# mrplay.c - but it exercises the same CORE + libavc C on real m68k
+# instructions, which the plain host build cannot: an endianness or alignment
+# bug in a demuxer or in vendor/libavc_port/ih264_m68k_optim.c can pass every
+# host check and still be wrong on the hardware this all ships to.
+# Requires: apt-get install gcc-m68k-linux-gnu binutils-m68k-linux-gnu qemu-user
+check-m68k:
+	sh tests/run_m68k_check.sh
+
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
 	      mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check
@@ -284,4 +297,4 @@ clean:
 	rm -f mr_h264_m68k_check
 	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
 
-.PHONY: all check check-audio check-http check-https check-libavc clean
+.PHONY: all check check-audio check-http check-https check-libavc check-m68k clean
