@@ -24,6 +24,7 @@
 
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
+#define MRPLAY_LOG_FILE "RAM:MintRIVA.log"
 #define WIN_W 640
 #define WIN_H 356
 
@@ -36,7 +37,8 @@ extern struct Library *GadToolsBase;
 
 enum {
     G_QUERY = 1, G_TYPE, G_SEARCH, G_RESULTS, G_PLAY, G_PAUSE, G_FAST,
-    G_VOLDOWN, G_VOLUP, G_FULLSCREEN, G_STOP, G_QUALITY, G_CHANNEL, G_CLOSE,
+    G_VOLDOWN, G_VOLUP, G_FULLSCREEN, G_STOP, G_QUALITY, G_CHANNEL, G_LOG,
+    G_CLOSE,
     G_SUMMARY, G_STATUS
 };
 
@@ -44,7 +46,7 @@ typedef struct ytgt {
     struct Screen *screen;
     struct Window *window;
     APTR visual;
-    struct Gadget *gadgets, *query, *type, *results, *play, *quality;
+    struct Gadget *gadgets, *query, *type, *results, *play, *quality, *log;
     struct Gadget *summary, *status;
     struct List labels;
     mr_youtube_search_results found;
@@ -54,7 +56,7 @@ typedef struct ytgt {
     mr_gui_menu menu;
     struct MsgPort *timer_port;
     struct timerequest *timer_io;
-    int timer_open, timer_running;
+    int timer_open, timer_running, debug_log, log_session_open;
     LONG selected_index;
 } ytgt;
 
@@ -177,22 +179,64 @@ static int stop_player(void)
 static int start_video(ytgt *app, const mr_youtube_search_result *video)
 {
     char url[96], args[640];
-    BPTR seglist;
+    BPTR seglist, log = 0, nil = 0;
     struct Process *process;
     if (!video || !mr_youtube_search_watch_url(url, sizeof(url), video) ||
         !mr_build_player_arguments(args, sizeof(args), &app->options, url,
                                    NULL, NULL))
         return 0;
+    if (app->debug_log) {
+        size_t length = strlen(args);
+        if (length && args[length - 1] == '\n')
+            length--;
+        if (length + 8 < sizeof(args))
+            memcpy(args + length, " --time\n", 9);
+    }
     stop_player();
     if (player_running()) return 0;
     seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
     if (!seglist) seglist = LoadSeg((CONST_STRPTR)"mrplay");
     if (!seglist) return 0;
-    process = CreateNewProcTags(NP_Seglist, seglist, NP_FreeSeglist, TRUE,
-        NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
-        NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
-        NP_Name, (ULONG)"MintRIVA player", TAG_END);
-    if (!process) UnLoadSeg(seglist);
+    if (app->debug_log) {
+        if (!app->log_session_open) {
+            log = Open((CONST_STRPTR)MRPLAY_LOG_FILE, MODE_NEWFILE);
+            if (log)
+                app->log_session_open = 1;
+        } else {
+            log = Open((CONST_STRPTR)MRPLAY_LOG_FILE, MODE_READWRITE);
+            if (log) {
+                static const char separator[] =
+                    "\n\n===== new YouTube video =====\n";
+                Seek(log, 0, OFFSET_END);
+                Write(log, (APTR)separator, (LONG)(sizeof(separator) - 1));
+            }
+        }
+        nil = Open((CONST_STRPTR)"NIL:", MODE_NEWFILE);
+        if (!log || !nil) {
+            if (log) Close(log);
+            if (nil) Close(nil);
+            log = nil = 0;
+        }
+    }
+    if (log && nil)
+        process = CreateNewProcTags(
+            NP_Seglist, seglist, NP_FreeSeglist, TRUE,
+            NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
+            NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
+            NP_Name, (ULONG)"MintRIVA player",
+            NP_Input, (ULONG)nil, NP_CloseInput, TRUE,
+            NP_Output, (ULONG)log, NP_CloseOutput, TRUE, TAG_END);
+    else
+        process = CreateNewProcTags(
+            NP_Seglist, seglist, NP_FreeSeglist, TRUE,
+            NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
+            NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
+            NP_Name, (ULONG)"MintRIVA player", TAG_END);
+    if (!process) {
+        if (log) Close(log);
+        if (nil) Close(nil);
+        UnLoadSeg(seglist);
+    }
     return process != NULL;
 }
 
@@ -360,10 +404,12 @@ static int window_open(ytgt *app)
     g = add(app,g,BUTTON_KIND,G_VOLUP,352,243,82,17,"Vol +",TAG_IGNORE,0);
     g = add(app,g,BUTTON_KIND,G_FULLSCREEN,438,243,100,17,"Fullscreen",TAG_IGNORE,0);
     g = add(app,g,BUTTON_KIND,G_STOP,542,243,86,17,"Stop",TAG_IGNORE,0);
-    app->quality = g = add(app,g,BUTTON_KIND,G_QUALITY,8,266,170,17,
+    app->quality = g = add(app,g,BUTTON_KIND,G_QUALITY,8,266,150,17,
         quality_labels[app->quality_index],TAG_IGNORE,0);
-    g = add(app,g,BUTTON_KIND,G_CHANNEL,182,266,290,17,"Channel videos",TAG_IGNORE,0);
-    g = add(app,g,BUTTON_KIND,G_CLOSE,476,266,152,17,"Close",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_CHANNEL,162,266,220,17,"Channel videos",TAG_IGNORE,0);
+    app->log = g = add(app,g,BUTTON_KIND,G_LOG,386,266,110,17,
+                       "Log: Off",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_CLOSE,500,266,128,17,"Close",TAG_IGNORE,0);
     app->summary = g = add(app,g,TEXT_KIND,G_SUMMARY,8,290,620,15,"",
                            GTTX_Text,(ULONG)"Playback options");
     app->status = g = add(app,g,TEXT_KIND,G_STATUS,8,311,620,15,"",
@@ -456,6 +502,14 @@ int main(int argc, char **argv)
                 else if (id==G_SEARCH || id==G_QUERY) search(&app);
                 else if (id==G_CHANNEL) channel(&app);
                 else if (id==G_STOP) set_text(&app,app.status,stop_player()?"Playback stopped.":"No video is playing.");
+                else if (id==G_LOG) {
+                    app.debug_log=!app.debug_log;
+                    set_button_text(&app,app.log,
+                                    app.debug_log?"Log: On":"Log: Off");
+                    set_text(&app,app.status,app.debug_log
+                        ?"Timing log ON: next Play writes RAM:MintRIVA.log"
+                        :"Timing log off.");
+                }
                 else if (id==G_PAUSE) mr_player_control_send(MR_PLAYER_COMMAND_PAUSE);
                 else if (id==G_FAST) mr_player_control_send(MR_PLAYER_COMMAND_FAST);
                 else if (id==G_FULLSCREEN) mr_player_control_send(MR_PLAYER_COMMAND_FULLSCREEN);
