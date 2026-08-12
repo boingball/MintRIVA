@@ -84,6 +84,12 @@ void __chkabort(void) { }
  * runtime sizing in main). */
 #define VIDEO_QUEUE_MEM_FLOOR (8UL * 1024 * 1024)
 #define STATS_INTERVAL_US 3000000ULL
+/* clock-trace fires on every clock-source flip/large-delta/multi-drop frame,
+ * which during a genuine overload can mean every single frame. On real Amiga
+ * hardware each printf is a DOS Write() that competes with the same 33 ms
+ * budget it is trying to diagnose, so cap it to a few lines/second - still
+ * enough to see the trend without adding load while --time is capturing it. */
+#define CLOCK_TRACE_MIN_INTERVAL_US 200000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
 #define AUDIO_RESCUE_ENTRY_MS 100UL
@@ -563,6 +569,7 @@ typedef struct scheduler_trace {
     const char *phase, *previous_phase;
     uint64_t phase_started_us, previous_duration_us, last_service_us;
     uint64_t sleep_requested_us, sleep_actual_us;
+    uint64_t last_clock_trace_us;
     unsigned long delay_ticks;
     int enabled;
     video_presenter *presenter;        /* NULL until the scheduler wires it up   */
@@ -665,7 +672,12 @@ static void service_audio_for_display(void *opaque)
 {
     scheduler_trace *trace = (scheduler_trace *)opaque;
     uint64_t now = monotonic_us();
-    if (trace->enabled && trace->last_service_us &&
+    /* monotonic_us() can land one tick's worth of rounding behind its own
+     * previous reading (EClock ticks converted with integer division). Guard
+     * the subtraction so that never-quite-monotonic hair does not underflow
+     * into an "impossible" multi-day gap - as seen in the field as
+     * audio-gap=1271310319 ms, i.e. (uint64_t)-1us truncated to 32 bits. */
+    if (trace->enabled && trace->last_service_us && now > trace->last_service_us &&
         now - trace->last_service_us > 40000ULL) {
         printf("audio-gap=%lu ms phase=%s phase-duration=%lu ms previous-phase=%s "
                "previous-duration=%lu ms sleep-request=%lu ms "
@@ -1265,7 +1277,12 @@ int main(int argc, char **argv)
     int64_t container_pts_adjust_us = 0;
     uint64_t last_container_pts_us = 0;
     int have_container_pts = 0;
-    clock_t t_dec = 0, t_show = 0;
+    /* Lifetime totals for the final "timing/N frames" summary. These are
+     * separate from stats.video_decode_us/display_us, which report_stats()
+     * resets every STATS_INTERVAL_US: without an independent accumulator the
+     * final summary only ever saw whatever the periodic reset last left
+     * behind, printing decode=0 ms/display=0 ms when a report just fired. */
+    uint64_t total_decode_us = 0, total_display_us = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
     int qhead = 0, qcount = 0, input_eof = 0;
     int oom_warned = 0; /* set after first queue_copy OOM is logged */
@@ -2087,7 +2104,10 @@ int main(int argc, char **argv)
                     ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
                 int big_delta = abs_delta_us > period_us;
                 int multi_drop = stats.dropped_in_pass > 1;
-                if (want_time && (source_changed || big_delta || multi_drop)) {
+                if (want_time && (source_changed || big_delta || multi_drop) &&
+                    now - trace.last_clock_trace_us >=
+                        CLOCK_TRACE_MIN_INTERVAL_US) {
+                    trace.last_clock_trace_us = now;
                     printf("clock-trace src=%c->%c starved=%d "
                            "audio-elapsed=%lu offset=%ld "
                            "audio-clock=%lu mono-clock=%lu delta=%ld "
@@ -2160,6 +2180,7 @@ int main(int argc, char **argv)
                 display_aga_frame_timing(&enc_ms, &blit_ms);
                 stats.convert_us += (uint64_t)enc_ms * 1000;
                 stats.display_us += show_us;
+                total_display_us += show_us;
                 if (show_us > stats.display_max_us) stats.display_max_us = show_us;
             }
             stats.latency_us += monotonic_us() - front->decoded_at_us;
@@ -2183,7 +2204,9 @@ int main(int argc, char **argv)
             uint64_t abs_delta_us = delta_clocks_us < 0
                 ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
             int big_delta = abs_delta_us > period_us;
-            if (want_time && (source_changed || big_delta)) {
+            if (want_time && (source_changed || big_delta) &&
+                now - trace.last_clock_trace_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
+                trace.last_clock_trace_us = now;
                 printf("clock-trace src=%c->%c starved=%d "
                        "audio-elapsed=%lu offset=%ld "
                        "audio-clock=%lu mono-clock=%lu delta=%ld "
@@ -2458,6 +2481,7 @@ int main(int argc, char **argv)
                             have_container_pts = 1;
                         }
                         stats.video_decode_us += decode_us; stats.decoded++;
+                        total_decode_us += decode_us;
                         if (decode_us > stats.video_decode_max_us)
                             stats.video_decode_max_us = decode_us;
                         {
@@ -2609,9 +2633,9 @@ int main(int argc, char **argv)
      * Drain it through the same pacing and display path so the player does not
      * silently finish one frame short (e.g. 129/130 on legacy OpenDivX). */
     while (!quit) {
-        clock_t a = clock();
+        uint64_t a = monotonic_us();
         mr_status ds = mr_decoder_flush(&dec);
-        t_dec += clock() - a;
+        total_decode_us += monotonic_us() - a;
         if (ds != MR_OK) break;
 
         if (audio) {
@@ -2634,12 +2658,12 @@ int main(int argc, char **argv)
         }
         if (quit) break;
 
-        a = clock();
+        a = monotonic_us();
         display_show_rgb(disp, dec.frame.data, dec.frame.width,
                          dec.frame.height, dec.frame.stride,
                          dec.frame.dirty_y0, dec.frame.dirty_y1);
         player_first_frame_presented();
-        t_show += clock() - a;
+        total_display_us += monotonic_us() - a;
         frames++;
     }
     }
@@ -2648,8 +2672,8 @@ int main(int argc, char **argv)
         display_aga_timing(&enc_ms, &blit_ms);
         printf("timing/%d frames: decode=%lu ms, display=%lu ms"
                " (encode=%lu ms, blit=%lu ms)\n", frames,
-               (unsigned long)(t_dec  * 1000 / CLOCKS_PER_SEC),
-               (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC),
+               (unsigned long)(total_decode_us  / 1000),
+               (unsigned long)(total_display_us / 1000),
                enc_ms, blit_ms);
         if (display_aga_kalms_timing(&blit_ms))
             printf("Kalms conversion: %lu ms\n", blit_ms);

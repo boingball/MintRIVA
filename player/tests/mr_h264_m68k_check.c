@@ -1,0 +1,235 @@
+/*
+ * Bit-exactness check for the m68k leaf primitives in
+ * vendor/libavc_port/ih264_m68k_optim.c.
+ *
+ * H.264 inter/intra prediction is bit-exact by spec: any rounding or
+ * addressing slip in these routines does not fail loudly, it drifts the
+ * reconstructed picture a little further from the reference on every
+ * following inter-predicted frame until the next IDR resets it - the same
+ * failure shape called out for Cinepak in CLAUDE.md. Since there is no m68k
+ * toolchain on the dev host (see CLAUDE.md), this check instead runs the
+ * m68k versions against independent scalar reference loops that implement
+ * the same H.264 semantics (8.3.3.1/8.3.3.2 intra 16x16 vertical/horizontal,
+ * 8.4.2.3.1 default weighted sample prediction) directly from the spec
+ * description, so a bug shared between "the port" and "the original" is not
+ * masked by comparing the port against itself.
+ */
+#include "ih264_m68k_optim.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int g_failures = 0;
+
+static uint32_t xrand(uint32_t *state)
+{
+    *state = *state * 1103515245u + 12345u;
+    return (*state >> 16) & 0x7fffu;
+}
+
+static void fill_random(uint8_t *buf, size_t n, uint32_t *state)
+{
+    size_t i;
+    for (i = 0; i < n; i++) buf[i] = (uint8_t)(xrand(state) & 0xff);
+}
+
+static void report(const char *test, int row, int col, int expected, int got)
+{
+    if (g_failures < 20)
+        fprintf(stderr, "FAIL %s: row=%d col=%d expected=%d got=%d\n",
+                test, row, col, expected, got);
+    g_failures++;
+}
+
+/* ---- inter_pred_luma_copy (plain block copy) --------------------------- */
+static void ref_luma_copy(const uint8_t *src, uint8_t *dst,
+                          int src_strd, int dst_strd, int ht, int wd)
+{
+    int row, col;
+    for (row = 0; row < ht; row++)
+        for (col = 0; col < wd; col++)
+            dst[row * dst_strd + col] = src[row * src_strd + col];
+}
+
+static void check_luma_copy(void)
+{
+    static const int widths[] = { 4, 8, 12, 16 };
+    uint32_t seed = 1;
+    unsigned wi;
+    for (wi = 0; wi < sizeof widths / sizeof widths[0]; wi++) {
+        int wd = widths[wi], ht = 16;
+        int src_strd = wd + 5, dst_strd = wd + 7;
+        uint8_t src[16 * 32], dst_m68k[16 * 32], dst_ref[16 * 32];
+        int row, col;
+        fill_random(src, sizeof src, &seed);
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_inter_pred_luma_copy_m68k(src, dst_m68k, src_strd, dst_strd,
+                                           ht, wd, NULL, 0);
+        ref_luma_copy(src, dst_ref, src_strd, dst_strd, ht, wd);
+        for (row = 0; row < ht; row++)
+            for (col = 0; col < dst_strd; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("luma_copy", row, col, dst_ref[idx], dst_m68k[idx]);
+            }
+    }
+}
+
+/* ---- default_weighted_pred_luma / chroma (rounded average) ------------- */
+static void ref_weighted_avg(const uint8_t *s1, const uint8_t *s2, uint8_t *dst,
+                             int strd1, int strd2, int dst_strd, int ht, int wd)
+{
+    int row, col;
+    for (row = 0; row < ht; row++)
+        for (col = 0; col < wd; col++)
+            dst[row * dst_strd + col] =
+                (uint8_t)(((unsigned)s1[row * strd1 + col] +
+                           s2[row * strd2 + col] + 1u) >> 1);
+}
+
+static void check_weighted_pred_luma(void)
+{
+    static const int wds[] = { 4, 8, 16, 8, 16 };
+    static const int hts[] = { 4, 4, 8, 16, 16 };
+    uint32_t seed = 2;
+    unsigned i;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        int wd = wds[i], ht = hts[i];
+        int strd1 = wd + 3, strd2 = wd + 5, dst_strd = wd + 7;
+        uint8_t s1[16 * 24], s2[16 * 24], dst_m68k[16 * 24], dst_ref[16 * 24];
+        int row, col;
+        fill_random(s1, sizeof s1, &seed);
+        fill_random(s2, sizeof s2, &seed);
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_default_weighted_pred_luma_m68k(s1, s2, dst_m68k, strd1,
+                                                  strd2, dst_strd, ht, wd);
+        ref_weighted_avg(s1, s2, dst_ref, strd1, strd2, dst_strd, ht, wd);
+        for (row = 0; row < ht; row++)
+            for (col = 0; col < wd; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("weighted_pred_luma", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+    }
+    /* All-0 / all-255 extremes: rounding must match exactly. */
+    {
+        uint8_t s1[16], s2[16], dst_m68k[16], dst_ref[16];
+        memset(s1, 0, sizeof s1);
+        memset(s2, 255, sizeof s2);
+        mr_ih264_default_weighted_pred_luma_m68k(s1, s2, dst_m68k, 4, 4, 4, 4, 4);
+        ref_weighted_avg(s1, s2, dst_ref, 4, 4, 4, 4, 4);
+        if (memcmp(dst_m68k, dst_ref, sizeof dst_m68k) != 0)
+            report("weighted_pred_luma_extreme", 0, 0, dst_ref[0], dst_m68k[0]);
+    }
+}
+
+static void check_weighted_pred_chroma(void)
+{
+    /* wd here is the chroma pair-count (as in the H.264 spec / Ittiam API):
+     * mr_ih264_default_weighted_pred_chroma_m68k doubles it internally to
+     * cover interleaved U/V bytes, same as the reference below. */
+    static const int wds[] = { 2, 4, 4, 8 };
+    static const int hts[] = { 2, 4, 8, 8 };
+    uint32_t seed = 3;
+    unsigned i;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        int wd = wds[i], ht = hts[i];
+        int wd2 = wd * 2;
+        int strd1 = wd2 + 4, strd2 = wd2 + 6, dst_strd = wd2 + 8;
+        uint8_t s1[16 * 24], s2[16 * 24], dst_m68k[16 * 24], dst_ref[16 * 24];
+        int row, col;
+        fill_random(s1, sizeof s1, &seed);
+        fill_random(s2, sizeof s2, &seed);
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_default_weighted_pred_chroma_m68k(s1, s2, dst_m68k, strd1,
+                                                    strd2, dst_strd, ht, wd);
+        ref_weighted_avg(s1, s2, dst_ref, strd1, strd2, dst_strd, ht, wd2);
+        for (row = 0; row < ht; row++)
+            for (col = 0; col < wd2; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("weighted_pred_chroma", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+    }
+}
+
+/* ---- intra 16x16 vertical / horizontal (8.3.3.1 / 8.3.3.2) ------------- */
+/* Matches the neighbour-buffer layout ih264_m68k_optim.c assumes: left
+ * column at src[0..15], corner at src[16], top row at src[17..32]. */
+static void ref_intra16_vert(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    const uint8_t *top = src + 17;
+    int row, col;
+    for (row = 0; row < 16; row++)
+        for (col = 0; col < 16; col++)
+            dst[row * dst_strd + col] = top[col];
+}
+
+static void ref_intra16_horz(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    int row, col;
+    for (row = 0; row < 16; row++) {
+        uint8_t left = src[15 - row];
+        for (col = 0; col < 16; col++)
+            dst[row * dst_strd + col] = left;
+    }
+}
+
+static void check_intra16(void)
+{
+    uint32_t seed = 4;
+    int trial;
+    for (trial = 0; trial < 8; trial++) {
+        uint8_t nbr[40];
+        uint8_t dst_m68k[16 * 20], dst_ref[16 * 20];
+        int dst_strd = 20, row, col;
+
+        fill_random(nbr, sizeof nbr, &seed);
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_16x16_vert_m68k(nbr, dst_m68k, 0, dst_strd, 0);
+        ref_intra16_vert(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 16; row++)
+            for (col = 0; col < 16; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra16_vert", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_16x16_horz_m68k(nbr, dst_m68k, 0, dst_strd, 0);
+        ref_intra16_horz(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 16; row++)
+            for (col = 0; col < 16; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra16_horz", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+    }
+}
+
+int main(void)
+{
+    check_luma_copy();
+    check_weighted_pred_luma();
+    check_weighted_pred_chroma();
+    check_intra16();
+
+    if (g_failures) {
+        fprintf(stderr, "mr_h264_m68k_check: %d mismatches\n", g_failures);
+        return 1;
+    }
+    printf("mr_h264_m68k_check: OK\n");
+    return 0;
+}
