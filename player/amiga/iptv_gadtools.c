@@ -269,7 +269,7 @@ static int start_stream(iptvgt *app, const mr_iptv_stream *stream)
     mr_play_options options=app->options;
     mr_http_options http;
     char args[3200]; BPTR seglist,log=0,nil=0; struct Process *process;
-    if(!stream||!mr_iptv_valid_url(stream->url)||
+    if(!stream||!mr_iptv_supported_url(stream->url)||
        !mr_http_options_init(&http,stream->user_agent,stream->http_referrer))return 0;
     mr_master_options_apply(&options);
     if(!mr_build_player_arguments(args,sizeof(args),&options,stream->url,

@@ -53,7 +53,11 @@ static void write_streaming_fixture(const char *channels_path,
   fputc('[', file);
   for (i = 0; i < 30000; i++) {
     const char *prefix = i ? "," : "";
-    if (i < 500)
+    if (i == 0)
+      fprintf(file,
+              "%s{\"channel\":\"C0\",\"url\":\"https://example.test/direct\","
+              "\"http_referrer\":null,\"user_agent\":null}", prefix);
+    else if (i < 500)
       fprintf(file,
               "%s{\"channel\":\"C%d\",\"url\":\"https://example.test/%d.m3u8\","
               "\"http_referrer\":null,\"user_agent\":null}",
@@ -107,7 +111,8 @@ int main(void) {
       "[{\"channel\":\"BBCNews.uk\",\"url\":\"https://one.test/"
       "live.m3u8\",\"status\":\"online\"},{\"channel\":\"BBCNews.uk\",\"url\":"
       "\"http://two.test/live\",\"http_referrer\":\"https://ref.test/"
-      "\"},{\"channel\":\"Fun.uk@East\",\"url\":\"https://fun.test/"
+      "\"},{\"channel\":\"BBCNews.uk\",\"url\":\"https://one.test/"
+      "live.mpd?token=1\"},{\"channel\":\"Fun.uk@East\",\"url\":\"https://fun.test/"
       "a.ts\"},{\"channel\":\"US.us\",\"url\":\"not a "
       "url\"},{\"channel\":\"Adult.uk\",\"url\":\"http://adult.test/"
       "a\"},{\"channel\":\"Closed.uk\",\"url\":\"http://closed.test/a\"}]";
@@ -125,12 +130,23 @@ int main(void) {
       "\"http_referrer\":null,\"user_agent\":null,\"extra\":null},"
       "{\"channel\":\"Example.uk\",\"url\":\"https://example.com/live.m3u8\","
       "\"http_referrer\":null,\"user_agent\":null}]\t";
+  assert(mr_path_is_audio_only("Music:track.MP3"));
+  assert(mr_path_is_audio_only("song.flac?download=1"));
+  assert(!mr_path_is_audio_only("video.mp4"));
+  assert(!mr_path_is_audio_only("drawer.with.dot/video"));
+  assert(mr_iptv_valid_url("https://example.test/live.mpd?token=1"));
+  assert(!mr_iptv_supported_url("https://example.test/live.mpd?token=1"));
+  assert(!mr_iptv_supported_url("https://example.test/LIVE.MPD"));
+  assert(mr_iptv_supported_url("https://example.test/live.m3u8?token=1"));
+  assert(mr_iptv_supported_url("https://example.test/extensionless"));
   mr_iptv_init(&d);
   assert(mr_iptv_parse_channels(&d, c, strlen(c)));
   assert(d.channel_count == 4);
   assert(mr_iptv_join_streams(&d, s, strlen(s)));
   assert(d.channel_count == 2);
   assert(d.channels[0].stream_count == 2);
+  assert(!strstr(d.channels[0].streams[0].url, ".mpd"));
+  assert(!strstr(d.channels[0].streams[1].url, ".mpd"));
   assert(d.channels[1].stream_count == 1);
   assert(!strcmp(d.channels[1].name, "Fun ?"));
   f.country = "UK";
@@ -240,6 +256,7 @@ int main(void) {
   assert(d.channel_count == 300);
   assert(d.channel_table_realloc_count < 10);
   assert(d.stream_storage_allocation_count == d.channel_count);
+  assert(strstr(d.channels[0].streams[0].url, ".m3u8"));
   assert(directory_bytes(&d) < 4 * 1024 * 1024);
   assert(directory_bytes(&d) + 3 * 16384 + 65536 < 8 * 1024 * 1024);
   for (channel_index = 0; channel_index < (int)d.channel_count; channel_index++)

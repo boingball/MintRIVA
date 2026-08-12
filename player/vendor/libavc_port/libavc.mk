@@ -9,6 +9,7 @@ LIBAVC_COMMON = $(filter-out $(LIBAVC_ROOT)/common/ithread.c \
                   $(wildcard $(LIBAVC_ROOT)/common/*.c))
 LIBAVC_DECODER = $(wildcard $(LIBAVC_ROOT)/decoder/*.c)
 LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
+                 $(LIBAVC_PORT)/ih264_m68k_optim.c \
                  $(LIBAVC_PORT)/ithread_port.c $(LIBAVC_PORT)/compat.c
 LIBAVC_SRC = $(LIBAVC_COMMON) $(LIBAVC_DECODER) $(LIBAVC_PORTSRC)
 LIBAVC_FLAGS = -I$(LIBAVC_PORT) -I$(LIBAVC_ROOT)/common \

@@ -1,8 +1,40 @@
 #include "mr_play_options.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+int mr_path_is_audio_only(const char *path)
+{
+    static const char *const audio_extensions[] = {
+        "mp3", "mp2", "aac", "m4a", "flac", "ogg", "oga", "opus",
+        "wav", "wma", "8svx", "svx", "aif", "aiff", "ac3", "mka"
+    };
+    const char *extension = NULL, *end, *p;
+    size_t extension_length, i, j;
+
+    if (!path || !*path) return 0;
+    end = path + strlen(path);
+    for (p = path; p < end && *p != '?' && *p != '#'; p++) {
+        if (*p == '/' || *p == ':' || *p == '\\')
+            extension = NULL;
+        else if (*p == '.')
+            extension = p + 1;
+    }
+    end = p;
+    if (!extension || extension >= end) return 0;
+    extension_length = (size_t)(end - extension);
+    for (i = 0; i < sizeof(audio_extensions) / sizeof(audio_extensions[0]); i++) {
+        if (strlen(audio_extensions[i]) != extension_length) continue;
+        for (j = 0; j < extension_length; j++)
+            if (tolower((unsigned char)extension[j]) !=
+                tolower((unsigned char)audio_extensions[i][j]))
+                break;
+        if (j == extension_length) return 1;
+    }
+    return 0;
+}
 
 void mr_play_options_default(mr_play_options *o)
 {

@@ -499,7 +499,7 @@ static int start_stream(const mr_iptv_stream *stream,
   mr_http_options options;
   BPTR seglist, log = 0, nil = 0;
   int started;
-  if (!stream || !mr_iptv_valid_url(stream->url) ||
+  if (!stream || !mr_iptv_supported_url(stream->url) ||
       !mr_http_options_init(&options, stream->user_agent,
                             stream->http_referrer))
     return 0;

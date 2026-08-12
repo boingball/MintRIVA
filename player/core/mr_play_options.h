@@ -3,6 +3,12 @@
 
 #include <stddef.h>
 
+/* AmigaDOS requester pattern for the local containers MintRIVA can probe.
+ * Playback still sniffs the container; this is only to keep audio-only files
+ * out of the video picker. */
+#define MR_VIDEO_FILE_PATTERN \
+    "#?.(avi|divx|mov|mp4|m4v|mkv|mpg|mpeg|mpe|vob|ts|m2ts|mts|m3u8)"
+
 typedef enum {
     MR_DISPLAY_AGA = 0,
     MR_DISPLAY_HAM6,
@@ -48,5 +54,6 @@ int mr_build_iptv_arguments(char *output, size_t output_size,
                             const mr_play_options *options);
 void mr_play_options_summary(const mr_play_options *options, char *output,
                              size_t output_size);
+int mr_path_is_audio_only(const char *path);
 
 #endif

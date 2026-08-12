@@ -118,13 +118,30 @@ static int keep_stream(mr_iptv_directory *d, mr_iptv_channel *c,
       d->stream_storage_allocation_count++;
     }
     c->streams[c->stream_count++] = *s;
+    /* Keep the most Amiga-friendly alternative first. The GUIs play index 0,
+     * so source-file order must not make an MPD/header-heavy stream win over a
+     * plain HLS rendition. */
+    for (i = c->stream_count - 1;
+         i && stream_score(&c->streams[i]) > stream_score(&c->streams[i - 1]);
+         i--) {
+      mr_iptv_stream swap = c->streams[i - 1];
+      c->streams[i - 1] = c->streams[i];
+      c->streams[i] = swap;
+    }
     return 1;
   }
   for (i = 1; i < c->stream_count; i++)
     if (stream_score(&c->streams[i]) < stream_score(&c->streams[worst]))
       worst = i;
-  if (stream_score(s) > stream_score(&c->streams[worst]))
+  if (stream_score(s) > stream_score(&c->streams[worst])) {
     c->streams[worst] = *s;
+    for (i = worst; i && stream_score(&c->streams[i]) >
+                            stream_score(&c->streams[i - 1]); i--) {
+      mr_iptv_stream swap = c->streams[i - 1];
+      c->streams[i - 1] = c->streams[i];
+      c->streams[i] = swap;
+    }
+  }
   return 1;
 }
 
@@ -280,10 +297,10 @@ int mr_iptv_load_country_files(mr_iptv_directory *out,
       mr_iptv_set_error(parse_error);
       goto fail;
     }
-    if (match >= 0 && mr_iptv_valid_url(parsed_stream.url) &&
+    if (match >= 0 && mr_iptv_supported_url(parsed_stream.url) &&
         !keep_stream(&d, &d.channels[match], &parsed_stream))
       goto fail;
-    if (match >= 0 && mr_iptv_valid_url(parsed_stream.url))
+    if (match >= 0 && mr_iptv_supported_url(parsed_stream.url))
       d.matched_stream_count++;
   }
   fclose(sr.file);

@@ -475,6 +475,11 @@ static void start_player(Object *file, Object *mode, Object *c2p,
         return;
     }
 
+    if (mr_path_is_audio_only((const char *)full_file)) {
+        set_info(info, window, "Audio-only file: use MintAMP instead.");
+        return;
+    }
+
     if (find_player()) {
         set_info(info, window,
                  "A MintRIVA player is already running; stop it first.");
@@ -626,6 +631,8 @@ int main(void)
                                GA_ID, G_FILE,
                                GA_RelVerify, TRUE,
                                GETFILE_TitleText, (ULONG)"Choose a video",
+                               GETFILE_Pattern, (ULONG)MR_VIDEO_FILE_PATTERN,
+                               GETFILE_DoPatterns, TRUE,
                                GETFILE_ReadOnly, TRUE,
                                GETFILE_DrawersOnly, FALSE,
                                TAG_DONE);

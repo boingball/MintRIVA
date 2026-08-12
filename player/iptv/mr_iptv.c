@@ -78,6 +78,39 @@ int mr_iptv_valid_url(const char *u) {
   return *p && !strchr(p, ' ') && !strchr(p, '\r') && !strchr(p, '\n');
 }
 
+static int url_has_extension(const char *url, const char *extension) {
+  const char *end, *dot = NULL, *p;
+  size_t length, i;
+  if (!url || !extension)
+    return 0;
+  end = url + strlen(url);
+  for (p = url; p < end && *p != '?' && *p != '#'; p++) {
+    if (*p == '/')
+      dot = NULL;
+    else if (*p == '.')
+      dot = p;
+  }
+  end = p;
+  if (!dot)
+    return 0;
+  length = strlen(extension);
+  if ((size_t)(end - dot) != length)
+    return 0;
+  for (i = 0; i < length; i++)
+    if (tolower((unsigned char)dot[i]) !=
+        tolower((unsigned char)extension[i]))
+      return 0;
+  return 1;
+}
+
+int mr_iptv_supported_url(const char *url) {
+  /* MintRIVA supports HLS and direct HTTP media, but not MPEG-DASH. Keeping a
+   * known .mpd entry makes the browser advertise a channel which can only fail
+   * later as an unsupported container. Unknown extensions remain eligible so
+   * server-generated and extensionless HLS URLs continue to work. */
+  return mr_iptv_valid_url(url) && !url_has_extension(url, ".mpd");
+}
+
 int mr_iptv_build_mrplay_args(const mr_iptv_stream *stream, char *out,
                               size_t out_size) {
   mr_play_options options;
@@ -85,7 +118,7 @@ int mr_iptv_build_mrplay_args(const mr_iptv_stream *stream, char *out,
       !memchr(stream->url, 0, sizeof(stream->url)) ||
       !memchr(stream->user_agent, 0, sizeof(stream->user_agent)) ||
       !memchr(stream->http_referrer, 0, sizeof(stream->http_referrer)) ||
-      !mr_iptv_valid_url(stream->url))
+      !mr_iptv_supported_url(stream->url))
     return 0;
   mr_play_options_default(&options);
   return mr_build_player_arguments(out, out_size, &options, stream->url,

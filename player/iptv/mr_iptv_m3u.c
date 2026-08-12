@@ -84,7 +84,7 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
     } else if (have && e > p && *p != '#') {
       char url[MR_IPTV_URL_MAX];
       copy(url, sizeof(url), p, (size_t)(e - p));
-      if (mr_iptv_valid_url(url)) {
+      if (mr_iptv_supported_url(url)) {
         if (!pending.id[0])
           copy(pending.id, sizeof(pending.id), pending.name,
                strlen(pending.name));

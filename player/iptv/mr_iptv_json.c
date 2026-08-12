@@ -739,7 +739,7 @@ int mr_iptv_join_streams(mr_iptv_directory *d, const char *data, size_t len) {
       goto fail;
     }
     j.p++;
-    if (x.channel[0] && mr_iptv_valid_url(x.stream.url)) {
+    if (x.channel[0] && mr_iptv_supported_url(x.stream.url)) {
       if (n == IPTV_MAX_STREAMS) {
         snprintf(last_error, sizeof(last_error),
                  "streams.json: stream limit reached at %lu entries",

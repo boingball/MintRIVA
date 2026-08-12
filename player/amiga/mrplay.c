@@ -933,18 +933,20 @@ static void decoded_audio_sink(void *user, const int16_t *pcm,
 static mr_h264_speed_mode effective_h264_speed(int requested, int width,
                                                 int height)
 {
+    uint64_t pixels;
     if (requested == MR_H264_SPEED_QUALITY ||
         requested == MR_H264_SPEED_BALANCED ||
         requested == MR_H264_SPEED_FAST)
         return (mr_h264_speed_mode)requested;
-    /* At 1080p the decoder is already far beyond a 68k frame budget. Balanced
-     * only degrades non-reference pictures, so it can do effectively nothing
-     * on IPTV encodes whose every P-picture is a reference. Fast also disables
-     * deblocking on non-key pictures. Keep 720p and below on the less damaging
-     * Balanced/Quality policy; make >720p throughput-first automatically. */
-    if ((uint64_t)width * (uint64_t)height > 1280ULL * 720ULL)
+    pixels = (uint64_t)width * (uint64_t)height;
+    /* A classic 68k/PiStorm has no SIMD and 360p is already close to its H.264
+     * budget.  Auto must favour uninterrupted audio over full deblocking:
+     * Fast keeps I pictures intact but disables deblocking on P/B pictures and
+     * simplifies interpolation where libavc can safely do so.  Tiny clips keep
+     * the pristine path, while an explicit Quality choice remains available. */
+    if (pixels >= 640ULL * 352ULL)
         return MR_H264_SPEED_FAST;
-    return (uint64_t)width * (uint64_t)height > 854ULL * 480ULL
+    return pixels >= 480ULL * 270ULL
          ? MR_H264_SPEED_BALANCED : MR_H264_SPEED_QUALITY;
 }
 

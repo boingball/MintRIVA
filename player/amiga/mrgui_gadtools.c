@@ -197,6 +197,10 @@ static void play_file(gt_app *app)
         set_info(app, "Choose a video first.");
         return;
     }
+    if (mr_path_is_audio_only(app->path)) {
+        set_info(app, "Audio-only file: use MintAMP instead.");
+        return;
+    }
     if (find_player()) {
         set_info(app, "A MintRIVA player is already running; stop it first.");
         return;
@@ -215,7 +219,8 @@ static void browse(gt_app *app)
     if (!app->requester)
         app->requester = AllocAslRequestTags(ASL_FileRequest,
             ASLFR_TitleText, (ULONG)"Choose a video", ASLFR_DoSaveMode, FALSE,
-            ASLFR_RejectIcons, TRUE, TAG_DONE);
+            ASLFR_RejectIcons, TRUE, ASLFR_DoPatterns, TRUE,
+            ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN, TAG_DONE);
     if (!app->requester ||
         !AslRequestTags(app->requester, ASLFR_Window, (ULONG)app->window,
                         TAG_DONE))
