@@ -942,24 +942,28 @@ static void decoded_audio_sink(void *user, const int16_t *pcm,
                     (int)channels);
 }
 
-static mr_h264_speed_mode effective_h264_speed(int requested, int width,
-                                                int height)
+static mr_h264_speed_mode effective_h264_speed(int requested)
 {
-    uint64_t pixels;
     if (requested == MR_H264_SPEED_QUALITY ||
         requested == MR_H264_SPEED_BALANCED ||
         requested == MR_H264_SPEED_FAST)
         return (mr_h264_speed_mode)requested;
-    pixels = (uint64_t)width * (uint64_t)height;
-    /* A classic 68k/PiStorm has no SIMD and 360p is already close to its H.264
-     * budget.  Auto must favour uninterrupted audio over full deblocking:
-     * Fast keeps I pictures intact but disables deblocking on P/B pictures and
-     * simplifies interpolation where libavc can safely do so.  Tiny clips keep
-     * the pristine path, while an explicit Quality choice remains available. */
-    if (pixels >= 640ULL * 352ULL)
-        return MR_H264_SPEED_FAST;
-    return pixels >= 480ULL * 270ULL
-         ? MR_H264_SPEED_BALANCED : MR_H264_SPEED_QUALITY;
+    /* Auto used to scale the degrade level with resolution, on the
+     * assumption that a small picture is proportionally cheap enough to
+     * decode losslessly. A WinUAE pass deliberately throttled to Pistorm
+     * speed disproved that for a 256x144 live HLS stream: Quality mode (no
+     * degrade at all) measured ~180 ms/frame of libavc-core alone, over
+     * budget even at that stream's own 15 fps. Balanced doesn't reliably
+     * help either - its deblocking-disable and MC-degrade bits both only
+     * apply to non-reference pictures (see ih264d_parse_slice.c), and a
+     * typical encode with no B-frames marks nearly every picture as a
+     * reference, so on most real streams Balanced silently behaves like
+     * Quality. Only Fast's "all non-key frames" degrade_pics policy is
+     * unconditional on reference status and reliably buys something. A
+     * classic 68k/PiStorm has no SIMD and no resolution is definitively
+     * cheap enough to gamble on, so auto is Fast everywhere now; Quality
+     * and Balanced remain available as explicit, deliberate choices. */
+    return MR_H264_SPEED_FAST;
 }
 
 static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
@@ -967,7 +971,7 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     mr_h264_speed_mode mode;
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
-    mode = effective_h264_speed(requested, dec->width, dec->height);
+    mode = effective_h264_speed(requested);
     name = mode == MR_H264_SPEED_FAST ? "Fast" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
     if (!mr_h264_set_speed_mode(dec, mode)) return 0;
@@ -1262,7 +1266,7 @@ int main(int argc, char **argv)
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
-    int h264_speed = -1; /* automatic: Quality <=480p, Balanced above 480p    */
+    int h264_speed = -1; /* automatic: always Fast - see effective_h264_speed() */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
