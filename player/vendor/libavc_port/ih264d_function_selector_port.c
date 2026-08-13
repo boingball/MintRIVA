@@ -13,15 +13,22 @@
 void ih264d_init_function_ptr(dec_struct_t *codec)
 {
     ih264d_init_function_ptr_generic(codec);
-    /* __mc68000__ is GCC's own predefine for "compiling for the m68k ISA" -
-     * true both for AMIGA_M68K (bebbo's m68k-amigaos-gcc, the real target)
-     * and for a m68k-linux-gnu test build (no AmigaOS dependency in this
-     * file or in ih264_m68k_optim.c/the asm below - just the ISA), which
-     * lets `make check-m68k` exercise these through the real decode
-     * pipeline under qemu-m68k instead of only in unit-test isolation.
-     * Deliberately narrower than AMIGA_M68K: it says nothing about dos.h/
-     * exec.h being available, unlike mr_h264.c's diagnostic hooks. */
-#if defined(__mc68000__)
+    /* MR_M68K_ASM is an explicit build flag (set by Makefile.amiga and
+     * tests/run_m68k_check.sh), not GCC's own __mc68000__ predefine: a real
+     * m68k-amigaos-gcc build hit an undefined-reference link error against
+     * ih264_m68k_interp.S's functions even though this file's __mc68000__
+     * guard clearly *did* activate (the call sites below were compiled in) -
+     * meaning that predefine did not reach the .S file identically on that
+     * toolchain, for reasons not reproducible on the m68k-linux-gnu test
+     * toolchain here. An explicit, build-system-controlled flag removes the
+     * dependency on that predefine matching across every GCC fork/version
+     * this project might be built with, on both a real AmigaOS target and
+     * the m68k-linux-gnu test build `make check-m68k` uses to exercise this
+     * through the real decode pipeline under qemu-m68k instead of only in
+     * unit-test isolation. Deliberately narrower than AMIGA_M68K: it says
+     * nothing about dos.h/exec.h being available, unlike mr_h264.c's
+     * diagnostic hooks. */
+#if defined(MR_M68K_ASM)
     /* Replace only bit-exact leaf primitives.  Keeping selection here, rather
      * than modifying the imported libavc tree, makes the port auditable and
      * leaves every non-m68k build on Ittiam's reference C implementation. */

@@ -141,7 +141,7 @@ CORE   += core/mr_h264.c $(LIBAVC_SRC)
 CC      = $(AMIGA_GCC)
 # MPEG-1 (pl_mpeg in mr_mpeg1.c) is fixed-point. MR_HAVE_MPEG1 enables .mpg.
 CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
-          -DAMIGA_M68K -DMR_HAVE_MPEG1 -DMR_HAVE_H264 \
+          -DAMIGA_M68K -DMR_HAVE_MPEG1 -DMR_HAVE_H264 -DMR_M68K_ASM=1 \
           $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
           $(LIBMPEG2_FLAGS) \
           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \

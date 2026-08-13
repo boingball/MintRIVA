@@ -58,7 +58,7 @@
  * Both functions here save %d2-%d6/%a2-%a5 (9 registers, 36 bytes), so
  * those stack offsets become +36 for the duration of the function body.
  */
-#if defined(__mc68000__)
+#if defined(MR_M68K_ASM)
 	.text
 	.even
 	.globl	mr_ih264_inter_pred_luma_horz_m68k
@@ -233,7 +233,7 @@ mr_ih264_inter_pred_luma_vert_m68k:
 	movem.l	(%sp)+,%d2-%d6/%a2-%a5
 	rts
 
-#endif /* __mc68000__ */
+#endif /* MR_M68K_ASM */
 
 #if defined(__ELF__)
 	.section .note.GNU-stack,"",@progbits

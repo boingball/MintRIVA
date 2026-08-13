@@ -222,11 +222,11 @@ static void check_intra16(void)
 /* ---- inter_pred_luma_horz / vert (H.264 8.4.2.2.1, 6-tap half-pel) ----- */
 /* mr_ih264_inter_pred_luma_horz_m68k/vert_m68k (ih264_m68k_interp.S) only
  * exist on an m68k build (see ih264_m68k_optim.h) - the hand-written .S is
- * guarded on __mc68000__ so it preprocesses to an empty translation unit
+ * guarded on MR_M68K_ASM so it preprocesses to an empty translation unit
  * everywhere else. This is the only pair of checks in this file that can't
  * run on the host build; `make check-m68k` (real m68k, big-endian, under
  * qemu-m68k) is what exercises it. */
-#if defined(__mc68000__)
+#if defined(MR_M68K_ASM)
 static void ref_interp_horz(const uint8_t *src, uint8_t *dst, int src_strd,
                             int dst_strd, int ht, int wd)
 {
@@ -312,7 +312,7 @@ static void check_interp(void)
         }
     }
 }
-#endif /* __mc68000__ */
+#endif /* MR_M68K_ASM */
 
 int main(void)
 {
@@ -320,7 +320,7 @@ int main(void)
     check_weighted_pred_luma();
     check_weighted_pred_chroma();
     check_intra16();
-#if defined(__mc68000__)
+#if defined(MR_M68K_ASM)
     check_interp();
 #endif
 

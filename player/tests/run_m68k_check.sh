@@ -26,7 +26,7 @@ QEMU_M68K=${QEMU_M68K:-qemu-m68k}
 LIBAVC_FLAGS="-Ivendor/libavc_port -Ivendor/libavc/common -Ivendor/libavc/decoder -include vendor/libavc_port/compat.h -fno-strict-aliasing -fwrapv"
 LIBMPEG2_FLAGS="-Ivendor/libmpeg2 -Ivendor/libmpeg2/include -Ivendor/libmpeg2/libmpeg2"
 WARN_SILENCE="-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-sign-compare -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits"
-CC="$M68K_CC -O2 -std=c99 -m68030 -static -g -DMR_HAVE_H264 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
+CC="$M68K_CC -O2 -std=c99 -m68030 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
 
 if ! command -v "$M68K_CC" >/dev/null 2>&1; then
     echo "ERROR: $M68K_CC not found. On Debian/Ubuntu:"
