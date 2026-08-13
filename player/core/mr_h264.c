@@ -644,6 +644,7 @@ static mr_status h264_decode(mr_decoder *dec,
                 s->timing.mc_us += stage.mc_us;
                 s->timing.deblock_us += stage.deblock_us;
                 s->timing.recon_us += stage.recon_us;
+                s->timing.intra_us += stage.intra_us;
             }
             used = sub_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
 

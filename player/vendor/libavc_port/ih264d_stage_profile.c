@@ -10,6 +10,7 @@
 #include "ih264_typedefs.h"
 #include "ih264_deblk_edge_filters.h"
 #include "ih264_inter_pred_filters.h"
+#include "ih264_intra_pred_filters.h"
 #include "ih264_trans_quant_itrans_iquant.h"
 #include "iv.h"
 #include "ivd.h"
@@ -21,6 +22,7 @@
 static unsigned long g_mc_us;
 static unsigned long g_deblock_us;
 static unsigned long g_recon_us;
+static unsigned long g_intra_us;
 
 static unsigned long stage_elapsed_us(clock_t begin)
 {
@@ -149,6 +151,101 @@ MR_RECON_CHROMA_WRAP(recon_chroma_4x4)
 MR_RECON_CHROMA_WRAP(recon_chroma_4x4_dc)
 #undef MR_RECON_CHROMA_WRAP
 
+/* ---- intra prediction: luma 16x16/8x8/4x4 modes + chroma + 8x8 ref-sample
+ * filtering. apf_intra_pred_luma_16x16[0]/[1] (vert/horz) may already be
+ * m68k asm by the time this installs (ih264d_function_selector_port.c runs
+ * first) - captured into g_intra_luma16x16_orig[] like every other slot, so
+ * whichever implementation is live gets measured. */
+static ih264_intra_pred_luma_ft *g_intra_luma16x16_orig[4];
+#define MR_INTRA16_WRAP(N) \
+static void intra_luma16x16_wrap_##N(UWORD8 *pu1_src, UWORD8 *pu1_dst, \
+                                     WORD32 src_strd, WORD32 dst_strd, \
+                                     WORD32 ngbr_avail) \
+{ \
+    clock_t t0 = clock(); \
+    g_intra_luma16x16_orig[N](pu1_src, pu1_dst, src_strd, dst_strd, \
+                              ngbr_avail); \
+    g_intra_us += stage_elapsed_us(t0); \
+}
+MR_INTRA16_WRAP(0) MR_INTRA16_WRAP(1) MR_INTRA16_WRAP(2) MR_INTRA16_WRAP(3)
+#undef MR_INTRA16_WRAP
+static ih264_intra_pred_luma_ft * const g_intra_luma16x16_wrap[4] = {
+    intra_luma16x16_wrap_0, intra_luma16x16_wrap_1,
+    intra_luma16x16_wrap_2, intra_luma16x16_wrap_3
+};
+
+static ih264_intra_pred_luma_ft *g_intra_luma8x8_orig[9];
+#define MR_INTRA8_WRAP(N) \
+static void intra_luma8x8_wrap_##N(UWORD8 *pu1_src, UWORD8 *pu1_dst, \
+                                   WORD32 src_strd, WORD32 dst_strd, \
+                                   WORD32 ngbr_avail) \
+{ \
+    clock_t t0 = clock(); \
+    g_intra_luma8x8_orig[N](pu1_src, pu1_dst, src_strd, dst_strd, \
+                            ngbr_avail); \
+    g_intra_us += stage_elapsed_us(t0); \
+}
+MR_INTRA8_WRAP(0) MR_INTRA8_WRAP(1) MR_INTRA8_WRAP(2)
+MR_INTRA8_WRAP(3) MR_INTRA8_WRAP(4) MR_INTRA8_WRAP(5)
+MR_INTRA8_WRAP(6) MR_INTRA8_WRAP(7) MR_INTRA8_WRAP(8)
+#undef MR_INTRA8_WRAP
+static ih264_intra_pred_luma_ft * const g_intra_luma8x8_wrap[9] = {
+    intra_luma8x8_wrap_0, intra_luma8x8_wrap_1, intra_luma8x8_wrap_2,
+    intra_luma8x8_wrap_3, intra_luma8x8_wrap_4, intra_luma8x8_wrap_5,
+    intra_luma8x8_wrap_6, intra_luma8x8_wrap_7, intra_luma8x8_wrap_8
+};
+
+static ih264_intra_pred_luma_ft *g_intra_luma4x4_orig[9];
+#define MR_INTRA4_WRAP(N) \
+static void intra_luma4x4_wrap_##N(UWORD8 *pu1_src, UWORD8 *pu1_dst, \
+                                   WORD32 src_strd, WORD32 dst_strd, \
+                                   WORD32 ngbr_avail) \
+{ \
+    clock_t t0 = clock(); \
+    g_intra_luma4x4_orig[N](pu1_src, pu1_dst, src_strd, dst_strd, \
+                            ngbr_avail); \
+    g_intra_us += stage_elapsed_us(t0); \
+}
+MR_INTRA4_WRAP(0) MR_INTRA4_WRAP(1) MR_INTRA4_WRAP(2)
+MR_INTRA4_WRAP(3) MR_INTRA4_WRAP(4) MR_INTRA4_WRAP(5)
+MR_INTRA4_WRAP(6) MR_INTRA4_WRAP(7) MR_INTRA4_WRAP(8)
+#undef MR_INTRA4_WRAP
+static ih264_intra_pred_luma_ft * const g_intra_luma4x4_wrap[9] = {
+    intra_luma4x4_wrap_0, intra_luma4x4_wrap_1, intra_luma4x4_wrap_2,
+    intra_luma4x4_wrap_3, intra_luma4x4_wrap_4, intra_luma4x4_wrap_5,
+    intra_luma4x4_wrap_6, intra_luma4x4_wrap_7, intra_luma4x4_wrap_8
+};
+
+static ih264_intra_pred_chroma_ft *g_intra_chroma_orig[4];
+#define MR_INTRA_CHROMA_WRAP(N) \
+static void intra_chroma_wrap_##N(UWORD8 *pu1_src, UWORD8 *pu1_dst, \
+                                  WORD32 src_strd, WORD32 dst_strd, \
+                                  WORD32 ngbr_avail) \
+{ \
+    clock_t t0 = clock(); \
+    g_intra_chroma_orig[N](pu1_src, pu1_dst, src_strd, dst_strd, \
+                           ngbr_avail); \
+    g_intra_us += stage_elapsed_us(t0); \
+}
+MR_INTRA_CHROMA_WRAP(0) MR_INTRA_CHROMA_WRAP(1)
+MR_INTRA_CHROMA_WRAP(2) MR_INTRA_CHROMA_WRAP(3)
+#undef MR_INTRA_CHROMA_WRAP
+static ih264_intra_pred_chroma_ft * const g_intra_chroma_wrap[4] = {
+    intra_chroma_wrap_0, intra_chroma_wrap_1,
+    intra_chroma_wrap_2, intra_chroma_wrap_3
+};
+
+static ih264_intra_pred_ref_filtering_ft *g_intra_ref_filt_orig;
+static void intra_ref_filt_wrap(UWORD8 *pu1_left, UWORD8 *pu1_topleft,
+                                UWORD8 *pu1_top, UWORD8 *pu1_dst,
+                                WORD32 left_strd, WORD32 ngbr_avail)
+{
+    clock_t t0 = clock();
+    g_intra_ref_filt_orig(pu1_left, pu1_topleft, pu1_top, pu1_dst, left_strd,
+                          ngbr_avail);
+    g_intra_us += stage_elapsed_us(t0);
+}
+
 void mr_h264_stage_profile_install(void *codec_v)
 {
     dec_struct_t *codec = (dec_struct_t *)codec_v;
@@ -187,6 +284,25 @@ void mr_h264_stage_profile_install(void *codec_v)
     codec->pf_iquant_itrans_recon_chroma_4x4 = recon_chroma_4x4_wrap;
     g_recon_chroma_4x4_dc_orig = codec->pf_iquant_itrans_recon_chroma_4x4_dc;
     codec->pf_iquant_itrans_recon_chroma_4x4_dc = recon_chroma_4x4_dc_wrap;
+
+    for (i = 0; i < 4; i++) {
+        g_intra_luma16x16_orig[i] = codec->apf_intra_pred_luma_16x16[i];
+        codec->apf_intra_pred_luma_16x16[i] = g_intra_luma16x16_wrap[i];
+    }
+    for (i = 0; i < 9; i++) {
+        g_intra_luma8x8_orig[i] = codec->apf_intra_pred_luma_8x8[i];
+        codec->apf_intra_pred_luma_8x8[i] = g_intra_luma8x8_wrap[i];
+    }
+    for (i = 0; i < 9; i++) {
+        g_intra_luma4x4_orig[i] = codec->apf_intra_pred_luma_4x4[i];
+        codec->apf_intra_pred_luma_4x4[i] = g_intra_luma4x4_wrap[i];
+    }
+    for (i = 0; i < 4; i++) {
+        g_intra_chroma_orig[i] = codec->apf_intra_pred_chroma[i];
+        codec->apf_intra_pred_chroma[i] = g_intra_chroma_wrap[i];
+    }
+    g_intra_ref_filt_orig = codec->pf_intra_pred_ref_filtering;
+    codec->pf_intra_pred_ref_filtering = intra_ref_filt_wrap;
 }
 
 void mr_h264_stage_profile_reset(void)
@@ -194,6 +310,7 @@ void mr_h264_stage_profile_reset(void)
     g_mc_us = 0;
     g_deblock_us = 0;
     g_recon_us = 0;
+    g_intra_us = 0;
 }
 
 void mr_h264_stage_profile_get(mr_h264_stage_us *out)
@@ -201,4 +318,5 @@ void mr_h264_stage_profile_get(mr_h264_stage_us *out)
     out->mc_us = g_mc_us;
     out->deblock_us = g_deblock_us;
     out->recon_us = g_recon_us;
+    out->intra_us = g_intra_us;
 }

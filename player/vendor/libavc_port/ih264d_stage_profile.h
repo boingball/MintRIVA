@@ -4,22 +4,23 @@
 /*
  * Diagnostic-only timing breakdown of libavc decode, added to find out
  * where a real-hardware Pistorm frame's ~150-300ms libavc-core cost
- * actually goes: motion compensation, deblocking, and IDCT/reconstruction
- * each sit behind their own function-pointer table in dec_struct_t, so each
- * can be wrapped with a clock()-based timer without touching a single line
- * of the vendored libavc source - the same pattern this port already uses
- * to swap in m68k asm (ih264d_function_selector_port.c), just measuring
- * instead of replacing.
+ * actually goes: motion compensation, deblocking, IDCT/reconstruction, and
+ * intra prediction each sit behind their own function-pointer table in
+ * dec_struct_t, so each can be wrapped with a clock()-based timer without
+ * touching a single line of the vendored libavc source - the same pattern
+ * this port already uses to swap in m68k asm
+ * (ih264d_function_selector_port.c), just measuring instead of replacing.
  *
- * There is no function pointer for bitstream/CABAC/CAVLC parsing, MV
- * prediction, or intra prediction, so those are not broken out here; treat
- * core_us minus (mc_us+deblock_us+recon_us) as that combined remainder.
+ * There is no function pointer for bitstream/CABAC/CAVLC parsing or MV
+ * prediction, so those are not broken out here; treat core_us minus
+ * (mc_us+deblock_us+recon_us+intra_us) as that combined remainder.
  */
 
 typedef struct mr_h264_stage_us {
     unsigned long mc_us;
     unsigned long deblock_us;
     unsigned long recon_us;
+    unsigned long intra_us;
 } mr_h264_stage_us;
 
 /* Wrap this codec instance's apf_inter_pred_luma[]/deblock/recon function

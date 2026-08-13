@@ -523,8 +523,9 @@ typedef struct playback_stats {
     unsigned long rtg_prepare_max_us, rtg_blit_max_us;
     uint64_t h264_input_us, h264_core_us, h264_output_us;
     unsigned long h264_input_max_us, h264_core_max_us, h264_output_max_us;
-    uint64_t h264_mc_us, h264_deblock_us, h264_recon_us;
+    uint64_t h264_mc_us, h264_deblock_us, h264_recon_us, h264_intra_us;
     unsigned long h264_mc_max_us, h264_deblock_max_us, h264_recon_max_us;
+    unsigned long h264_intra_max_us;
     uint64_t rescue_us;
     unsigned rescue_entries, rescue_packets, rescue_audio_packets;
     unsigned rescue_video_decoded, rescue_video_queued, rescue_video_skipped;
@@ -863,7 +864,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     if (st->decoded) {
         printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
                "rgb-output=%lu/%lu us mc=%lu/%lu us deblock=%lu/%lu us "
-               "recon=%lu/%lu us\n",
+               "recon=%lu/%lu us intra=%lu/%lu us\n",
                (unsigned long)(st->h264_input_us / st->decoded),
                st->h264_input_max_us,
                (unsigned long)(st->h264_core_us / st->decoded),
@@ -875,7 +876,9 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                (unsigned long)(st->h264_deblock_us / st->decoded),
                st->h264_deblock_max_us,
                (unsigned long)(st->h264_recon_us / st->decoded),
-               st->h264_recon_max_us);
+               st->h264_recon_max_us,
+               (unsigned long)(st->h264_intra_us / st->decoded),
+               st->h264_intra_max_us);
         if (audio) service_audio_for_display(trace);
     }
     if (st->rescue_entries) {
@@ -2484,12 +2487,15 @@ int main(int argc, char **argv)
                         stats.h264_mc_us += ht.mc_us;
                         stats.h264_deblock_us += ht.deblock_us;
                         stats.h264_recon_us += ht.recon_us;
+                        stats.h264_intra_us += ht.intra_us;
                         if (ht.mc_us > stats.h264_mc_max_us)
                             stats.h264_mc_max_us = ht.mc_us;
                         if (ht.deblock_us > stats.h264_deblock_max_us)
                             stats.h264_deblock_max_us = ht.deblock_us;
                         if (ht.recon_us > stats.h264_recon_max_us)
                             stats.h264_recon_max_us = ht.recon_us;
+                        if (ht.intra_us > stats.h264_intra_max_us)
+                            stats.h264_intra_max_us = ht.intra_us;
                     }
                     if (decode_status == MR_ENOMEM) {
                         printf("h264-decode-oom: packet %lu len=%lu - "
