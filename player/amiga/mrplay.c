@@ -2041,7 +2041,30 @@ int main(int argc, char **argv)
             continue;
         }
 
-        if (!rescue_active && have_deadline &&
+        /* Presentation used to be gated on !rescue_active, blacking out the
+         * screen for the entire duration of every audio-rescue episode. That
+         * made sense if rescue reliably fixed the underrun quickly, but on a
+         * bandwidth-starved network source it does not: a WinUAE log showed
+         * 96% of episodes (393/408) exiting via the AUDIO_RESCUE_MAX_US/
+         * AUDIO_RESCUE_MAX_PACKETS timeout ("limit"), not because audio
+         * recovered, each one still blanking the screen for up to its ~100ms
+         * budget (longer still when it overruns via a blocking demux read -
+         * observed rescue durations past 500ms). Because the deadline-drop
+         * loop below - the only place that prunes stale queued frames - lived
+         * inside this same gated block, the backlog was never trimmed while
+         * rescue ran either: post-late (the front frame's lateness after
+         * rescue's own catch-up attempt) grew every reporting interval,
+         * 7.6ms up to 7.87s over one session, and presented fps collapsed
+         * to a fraction of decoded fps even during stretches with negligible
+         * network blocking. Letting presentation run unconditionally lets
+         * the drop loop keep the queue near-live every iteration regardless
+         * of whether a rescue is concurrently in flight, and RTG/CGX blits
+         * do not contend with Paula's audio DMA the way a custom-chip
+         * blitter would, so there is no hardware reason to hold it back.
+         * service_audio_for_display() calls remain wrapped around the blit
+         * below either way, exactly as they already were for the non-rescue
+         * path. */
+        if (have_deadline &&
             late_us >= -(int64_t)PRESENTATION_GUARD_US) {
             int ev;
             trace_phase(&trace, "event-processing");
