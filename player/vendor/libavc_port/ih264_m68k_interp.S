@@ -65,6 +65,7 @@
 	.globl	mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k
 	.globl	mr_ih264_inter_pred_luma_horz_qpel_m68k
 	.globl	mr_ih264_inter_pred_luma_vert_qpel_m68k
+	.globl	mr_ih264_inter_pred_luma_horz_hpel_vert_hpel_m68k
 
 /* ---------------------------------------------------------------------- */
 /* Horizontal: a4/a5 are the column cursors into the current row; taps sit */
@@ -626,6 +627,191 @@ mr_ih264_inter_pred_luma_vert_qpel_m68k:
 
 .Lvqp_done:
 	movem.l	(%sp)+,%d2-%d6/%a2-%a6
+	rts
+
+/* ---------------------------------------------------------------------- */
+/* horz_hpel_vert_hpel (dydx == 10): the true diagonal half-pel position - */
+/* the one 2D filter in this table that is a genuine two-stage separable   */
+/* 6-tap (Ittiam's ih264_inter_pred_luma_horz_hpel_vert_hpel in            */
+/* ih264_inter_pred_filters.c), not a single 6-tap averaged against an     */
+/* offset predictor like every function above. Stage 1 runs the vertical   */
+/* 6-tap (same {1,-5,20} coefficients, byte taps) at every column from -2  */
+/* to wd+2 inclusive (wd+5 columns) into a WORD16 scratch buffer (pu1_tmp, */
+/* row pitch (wd+5) elements) as a *raw* sum with no shift/round/clip -    */
+/* fits a signed 16-bit word for the same reason the leaf horz_m68k/       */
+/* vert_m68k filters above do (range [-2550,10726], byte inputs). Stage 2  */
+/* runs the horizontal 6-tap over *those* 16-bit intermediates: six taps   */
+/* each up to +-10726 with coefficients up to 20 can reach roughly         */
+/* +-560000, well past a 16-bit word, so - unlike every filter above -     */
+/* stage 2's accumulation is done in .l (32-bit), sign-extending each      */
+/* 16-bit tap via ext.l before combining, only narrowing back down after   */
+/* the final (+512)>>10 combined-shift and CLIP_U8.                        */
+/*                                                                          */
+/* void mr_ih264_inter_pred_luma_horz_hpel_vert_hpel_m68k(UWORD8 *pu1_src, */
+/*     UWORD8 *pu1_dst, WORD32 src_strd, WORD32 dst_strd, WORD32 ht,       */
+/*     WORD32 wd, UWORD8 *pu1_tmp, WORD32 dydx);                          */
+/*                                                                          */
+/* dydx is unused (like horz_m68k/vert_m68k - this is the one fixed        */
+/* diagonal position, no sub-pel routing needed). Saves %d2-%d7/%a2-%a6    */
+/* (11 registers, 44 bytes): stack offsets below are +44 (pu1_src at       */
+/* 48(%sp) = 4+44). a0/a1 are scratch, no save needed.                     */
+/*                                                                          */
+/* Register plan, stage 1: a2 = pu1_src row base, a3 = temp row base,      */
+/* a4 = src column cursor (starts at column -2), a5 = temp column cursor,  */
+/* a0 = tap-address scratch (as in vert_m68k above), d2 = src_strd,        */
+/* d3 = row pitch in bytes ((wd+5)*2, needed by both stages so computed    */
+/* once up front), d4 = column counter, d5 = ht, d6 = wd, a6 = the         */
+/* original pu1_tmp pointer, kept untouched so stage 2 can rederive its    */
+/* row base from it. Stage 2 reuses a2 (now pu1_dst row base), a3 (now     */
+/* pred1 row base = pu1_tmp + 2 WORD16 elements, matching Ittiam's         */
+/* pi2_pred1_temp += 2), a4 (pred1 column cursor), a5 (dst column cursor); */
+/* d0/d1/d7 are the .l tap-computation scratch (d2 and d6 are free again   */
+/* by then, but d7 avoids clobbering wd mid-row for no reason).            */
+/* ---------------------------------------------------------------------- */
+mr_ih264_inter_pred_luma_horz_hpel_vert_hpel_m68k:
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	64(%sp),%d5		/* ht        (20+44) */
+	tst.l	%d5
+	ble	.Lhh_done
+	move.l	68(%sp),%d6		/* wd        (24+44) */
+	tst.l	%d6
+	ble	.Lhh_done
+
+	move.l	72(%sp),%a6		/* pu1_tmp   (28+44) */
+	move.l	%d6,%d3
+	addq.l	#5,%d3
+	lsl.l	#1,%d3			/* d3 = row pitch bytes = (wd+5)*2 */
+
+	/* ---- stage 1: vertical raw 6-tap sums -> WORD16 temp buffer ---- */
+	move.l	48(%sp),%a2		/* pu1_src   (4+44)  */
+	movea.l	%a6,%a3			/* temp row base */
+	move.l	56(%sp),%d2		/* src_strd  (12+44) */
+
+.Lhh_s1_row:
+	movea.l	%a2,%a4
+	suba.l	#2,%a4			/* a4 = row base - 2 (column -2) */
+	movea.l	%a3,%a5			/* temp column cursor */
+	move.l	%d6,%d4
+	addq.l	#5,%d4			/* column counter = wd+5 */
+
+.Lhh_s1_col:
+	movea.l	%a4,%a0
+	suba.l	%d2,%a0
+	suba.l	%d2,%a0			/* a0 = p0 addr (a4 - 2*strd) */
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p0 */
+
+	movea.l	%a4,%a0
+	adda.l	%d2,%a0
+	adda.l	%d2,%a0
+	adda.l	%d2,%a0			/* a0 = p5 addr (a4 + 3*strd) */
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p5 */
+	add.w	%d1,%d0			/* d0 = p0+p5 */
+
+	movea.l	%a4,%a0
+	suba.l	%d2,%a0			/* a0 = p1 addr (a4 - strd) */
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p1 */
+
+	movea.l	%a4,%a0
+	adda.l	%d2,%a0
+	adda.l	%d2,%a0			/* a0 = p4 addr (a4 + 2*strd) */
+	clr.l	%d7
+	move.b	(%a0),%d7		/* p4 */
+	add.w	%d7,%d1			/* d1 = p1+p4 */
+	move.w	%d1,%d7
+	lsl.w	#2,%d7
+	add.w	%d1,%d7			/* d7 = 5*(p1+p4) */
+	sub.w	%d7,%d0			/* d0 = (p0+p5) - 5*(p1+p4) */
+
+	clr.l	%d1
+	move.b	(%a4),%d1		/* p2 */
+
+	movea.l	%a4,%a0
+	adda.l	%d2,%a0			/* a0 = p3 addr (a4 + strd) */
+	clr.l	%d7
+	move.b	(%a0),%d7		/* p3 */
+	add.w	%d7,%d1			/* d1 = p2+p3 */
+	move.w	%d1,%d7
+	lsl.w	#2,%d7
+	add.w	%d1,%d7
+	lsl.w	#2,%d7			/* d7 = 20*(p2+p3) */
+	add.w	%d7,%d0			/* d0 = raw vertical 6-tap sum */
+
+	move.w	%d0,(%a5)+
+	addq.l	#1,%a4
+	subq.l	#1,%d4
+	bne	.Lhh_s1_col
+
+	adda.l	%d2,%a2
+	adda.l	%d3,%a3
+	subq.l	#1,%d5
+	bne	.Lhh_s1_row
+
+	/* ---- stage 2: horizontal 6-tap over the WORD16 intermediates ---- */
+	move.l	64(%sp),%d5		/* ht (reload - stage 1 counted it down) */
+	move.l	52(%sp),%a2		/* pu1_dst   (8+44)  */
+	movea.l	%a6,%a3
+	adda.l	#4,%a3			/* pred1 row base = pu1_tmp + 2 WORD16s */
+
+.Lhh_s2_row:
+	movea.l	%a2,%a5			/* dst column cursor   */
+	movea.l	%a3,%a4			/* pred1 column cursor */
+	move.l	%d6,%d4			/* column counter = wd */
+
+.Lhh_s2_col:
+	move.w	-4(%a4),%d0
+	ext.l	%d0
+	move.w	6(%a4),%d1
+	ext.l	%d1
+	add.l	%d1,%d0			/* d0 = pred1[col-2]+pred1[col+3] */
+
+	move.w	-2(%a4),%d1
+	ext.l	%d1
+	move.w	4(%a4),%d7
+	ext.l	%d7
+	add.l	%d7,%d1			/* d1 = pred1[col-1]+pred1[col+2] */
+	move.l	%d1,%d7
+	asl.l	#2,%d7
+	add.l	%d1,%d7			/* d7 = 5*(...) */
+	sub.l	%d7,%d0			/* d0 -= 5*(...) */
+
+	move.w	(%a4),%d1
+	ext.l	%d1
+	move.w	2(%a4),%d7
+	ext.l	%d7
+	add.l	%d7,%d1			/* d1 = pred1[col]+pred1[col+1] */
+	move.l	%d1,%d7
+	asl.l	#2,%d7
+	add.l	%d1,%d7
+	asl.l	#2,%d7			/* d7 = 20*(...) */
+	add.l	%d7,%d0			/* d0 = total (.l) */
+
+	add.l	#512,%d0
+	moveq	#10,%d1			/* m68k ASR immediate counts only go 1-8; */
+	asr.l	%d1,%d0			/* combined 1/32 * 1/32 shift, with rounding */
+	bmi.s	.Lhh_clip_lo
+	cmp.l	#255,%d0
+	ble.s	.Lhh_store
+	move.l	#255,%d0
+	bra.s	.Lhh_store
+.Lhh_clip_lo:
+	moveq	#0,%d0
+.Lhh_store:
+	move.b	%d0,(%a5)+
+	adda.l	#2,%a4
+	subq.l	#1,%d4
+	bne	.Lhh_s2_col
+
+	move.l	60(%sp),%d0		/* dst_strd (16+44) */
+	adda.l	%d0,%a2
+	adda.l	%d3,%a3
+	subq.l	#1,%d5
+	bne	.Lhh_s2_row
+
+.Lhh_done:
+	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
 
 #endif /* MR_M68K_ASM */
