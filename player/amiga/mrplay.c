@@ -341,6 +341,8 @@ typedef struct {
     uint64_t holdover_media_us;        /* media time captured on starvation   */
     uint64_t holdover_started_mono_us; /* monotonic time at holdover entry    */
     int64_t  audio_to_media_offset_us; /* media = audio_raw + this (signed)   */
+    uint64_t last_stall_print_us;      /* throttle for the per-iteration       */
+                                        /* "remaining in holdover" trace below  */
     unsigned healthy_audio_samples;    /* non-starved iters since holdover     */
     int      holdover_active;
     int      source;                   /* MCLOCK_MONO / AUDIO / HOLDOVER       */
@@ -450,11 +452,21 @@ static uint64_t current_media_clock_us(media_clock *mc, int have_audio,
              * candidate behind last_output_us, causing the monotonic clamp
              * to freeze the clock until audio catches up.
              */
-            if (want_time)
+            /* Fires on every iteration audio stays behind the holdover
+             * position - unthrottled, that's once per scheduler pass for as
+             * long as audio is starved, which on a constrained machine can
+             * be the entire session (observed 963 of these in one ~67 s
+             * WinUAE run). Rate-limit like clock-trace below so --time
+             * logging doesn't itself become a source of scheduler latency
+             * competing with the audio service calls it's trying to trace. */
+            if (want_time &&
+                now - mc->last_stall_print_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
+                mc->last_stall_print_us = now;
                 printf("clock-holdover audio-raw=%lu us < resume-at=%lu us, "
                        "remaining in holdover\n",
                        (unsigned long)audio_raw,
                        (unsigned long)mc->last_output_us);
+            }
             mc->source = MCLOCK_HOLDOVER;
             candidate = mc->holdover_media_us +
                         (now - mc->holdover_started_mono_us);
@@ -570,6 +582,7 @@ typedef struct scheduler_trace {
     uint64_t phase_started_us, previous_duration_us, last_service_us;
     uint64_t sleep_requested_us, sleep_actual_us;
     uint64_t last_clock_trace_us;
+    uint64_t last_rescue_print_us;
     unsigned long delay_ticks;
     int enabled;
     video_presenter *presenter;        /* NULL until the scheduler wires it up   */
@@ -1944,7 +1957,16 @@ int main(int argc, char **argv)
                     stats.rescue_post_lateness_us = post_late;
                 }
                 front = qcount ? &vq[qhead] : NULL;
-                if (want_time)
+                /* One rescue episode is ~100ms by design (AUDIO_RESCUE_MAX_US),
+                 * so a machine where rescue keeps failing back-to-back can
+                 * produce one of these lines roughly every scheduler pass -
+                 * 910 of them in one ~67 s constrained-hardware run. Rate-limit
+                 * like clock-trace: still enough samples to see the pattern,
+                 * without --time logging adding print overhead on nearly every
+                 * iteration of an already CPU-starved playback loop. */
+                if (want_time &&
+                    now - trace.last_rescue_print_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
+                    trace.last_rescue_print_us = now;
                     printf("audio-rescue reason=%s urgency=%s packets=%u audio=%u "
                            "video=%u retained=%u replaced=%u reference-only=%u "
                            "newest-pts=%lu post-late=%ld us duration=%lu us "
@@ -1962,6 +1984,7 @@ int main(int argc, char **argv)
                            (unsigned long)(rescue_elapsed / 1000),
                            rescue_entry_threshold, margin_ms,
                            rd.hardware_starvations - rescue_hw_before);
+                }
                 if (audio) service_audio_for_display(&trace);
             }
         }
