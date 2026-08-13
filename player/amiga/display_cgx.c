@@ -471,12 +471,10 @@ static int ensure_scaled(cgx_state *s, int w)
  * offset (`(sx >> 16) * 3`) - real cost at 1024x576, all of it on top of the
  * WritePixelArray blit already following each strip. */
 static void scale_rgb24_strip(cgx_state *s, const unsigned char *src, int sw,
-                              int sh, int src_stride, int dst_y0, int rows,
-                              mr_display_service_fn service, void *opaque)
+                              int sh, int src_stride, int dst_y0, int rows)
 {
     mr_scale_resize_rgb24_strip(src, sw, sh, src_stride, s->scaled, s->dw,
                                 s->dh, s->scaled_stride, dst_y0, rows);
-    if (service) service(opaque);
 }
 
 static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
@@ -552,28 +550,40 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         s->timing.prepare_us = elapsed_us(total);
         if (service) service(service_opaque);
 
-        mark = clock();
+        /* Time the CPU-side resample and the WritePixelArray blit separately
+         * (previously one clock() span covered both strip loop iterations,
+         * so scale_us and blit_us were always identical - unable to tell
+         * whether the CPU resample or the RTG driver blit call was the
+         * actual cost). service() runs between the two, outside of both. */
+        s->timing.scale_us = 0;
+        s->timing.blit_us = 0;
         for (y = 0; y < s->dh; y += MR_CGX_STRIP_ROWS) {
             int rows = s->dh - y < MR_CGX_STRIP_ROWS ? s->dh - y
                                                       : MR_CGX_STRIP_ROWS;
-            scale_rgb24_strip(s, rgb, w, hh, stride, y, rows,
-                              service, service_opaque);
+            clock_t step;
+
+            step = clock();
+            scale_rgb24_strip(s, rgb, w, hh, stride, y, rows);
+            s->timing.scale_us += elapsed_us(step);
+
+            step = clock();
             WritePixelArray((APTR)s->scaled, 0, 0, (UWORD)s->scaled_stride,
                             s->win->RPort, (UWORD)(s->bl + s->dx),
                             (UWORD)(s->bt + s->dy + y),
                             (UWORD)s->dw, (UWORD)rows, RECTFMT_RGB);
+            s->timing.blit_us += elapsed_us(step);
+
             if (service) service(service_opaque);
         }
-        s->timing.scale_us = elapsed_us(mark);
-        report_slow("software-scale+blit", s->timing.scale_us,
+        report_slow("software-scale", s->timing.scale_us,
                     service, service_opaque);
+        report_slow("cgx-blit", s->timing.blit_us, service, service_opaque);
         s->timing.pixels = (unsigned long)s->dw * (unsigned long)s->dh;
         s->timing.bytes = (unsigned long)s->scaled_size *
                           (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
                                           MR_CGX_STRIP_ROWS);
         s->timing.copies = (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
                                            MR_CGX_STRIP_ROWS);
-        s->timing.blit_us = s->timing.scale_us;
         if (service) service(service_opaque);
         s->timing.total_us = elapsed_us(total);
         return;
