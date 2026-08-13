@@ -78,6 +78,18 @@ void mr_ih264_deblk_chroma_horz_bslt4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
                                            WORD32, WORD32, UWORD32,
                                            const UWORD8 *, const UWORD8 *)
     __asm__("mr_ih264_deblk_chroma_horz_bslt4_m68k");
+
+/* ih264_m68k_cabac.S - regular-mode CABAC bin decode (spec 9.3.3.2.2),
+ * ported from ih264d_decode_bin() in ih264d_cabac.c. Struct layouts are
+ * opaque here deliberately (this header must stay includable from a
+ * portable-C test harness without pulling in libavc's decoder headers),
+ * so the four pointer-ish parameters are passed as void pointer or UWORD8
+ * pointer and cast on the caller side, matching the real bin_ctxt_model_t
+ * (1 byte),
+ * dec_bit_stream_t, and decoding_envirnoment_t layouts exactly. */
+UWORD32 mr_ih264d_decode_bin_m68k(UWORD32 u4_ctx_inc, UWORD8 *ps_src_bin_ctxt,
+                                  void *ps_bitstrm, void *ps_cab_env)
+    __asm__("mr_ih264d_decode_bin_m68k");
 #endif
 
 #endif

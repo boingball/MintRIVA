@@ -1117,6 +1117,145 @@ static void check_deblk_chroma_bslt4(void)
         }
     }
 }
+
+/* ---- CABAC regular-bin decode (ih264_m68k_cabac.S) ---------------------
+ * Mirrors dec_bit_stream_t's layout (offset 0 = u4_ofst, offset 4 =
+ * pu4_buffer) and decoding_envirnoment_t's (offset 0 = range, offset 4 =
+ * val_ofst, offset 8 = cabac_table) without including libavc's decoder
+ * headers - this test harness stays portable C, same as every other check
+ * here. */
+typedef struct {
+    uint32_t u4_ofst;
+    uint32_t *pu4_buffer;
+} test_bitstrm_t;
+
+typedef struct {
+    uint32_t u4_code_int_range;
+    uint32_t u4_code_int_val_ofst;
+    const uint32_t *cabac_table;
+} test_cabac_env_t;
+
+/* Independent reference, transcribed directly from ih264d_decode_bin()'s C
+ * (DECODE_ONE_BIN_MACRO in ih264d_cabac.h), not from the asm. */
+static uint32_t ref_decode_bin_cabac(uint32_t ctx_inc, uint8_t *ctx_array,
+                                     test_bitstrm_t *bs, test_cabac_env_t *env)
+{
+    uint8_t *p_ctx = ctx_array + ctx_inc;
+    uint32_t range = env->u4_code_int_range;
+    uint32_t val_ofst = env->u4_code_int_val_ofst;
+    uint32_t mps_state = *p_ctx;
+    uint32_t clz = range ? (uint32_t)__builtin_clz(range) : 31u;
+    uint32_t qnt = (uint32_t)(((uint64_t)range << clz) >> 29) & 3u;
+    uint32_t table_lookup = env->cabac_table[(mps_state << 2) + qnt];
+    uint32_t range_lps = table_lookup & 0xffu;
+    uint32_t symbol;
+
+    range_lps <<= (23 - clz);
+    range -= range_lps;
+    symbol = (mps_state >> 6) & 1u;
+    mps_state = (table_lookup >> 8) & 0x7Fu;
+
+    if (val_ofst >= range) {
+        symbol = 1 - symbol;
+        val_ofst -= range;
+        range = range_lps;
+        mps_state = (table_lookup >> 15) & 0x7Fu;
+    }
+
+    if (range < 256u) {
+        uint32_t offset = bs->u4_ofst;
+        uint32_t clz2 = range ? (uint32_t)__builtin_clz(range) : 31u;
+        uint32_t bitpos = offset + 23u;
+        uint32_t word_off = bitpos >> 5;
+        uint32_t bit_off = bitpos & 0x1Fu;
+        uint32_t word = bs->pu4_buffer[word_off] << bit_off;
+        uint32_t read_bits;
+
+        if (bit_off)
+            word |= bs->pu4_buffer[word_off + 1] >> (32u - bit_off);
+        read_bits = word >> (32u - clz2);
+
+        offset += clz2;
+        range <<= clz2;
+        val_ofst = (val_ofst << clz2) | read_bits;
+        bs->u4_ofst = offset;
+    }
+
+    env->u4_code_int_range = range;
+    env->u4_code_int_val_ofst = val_ofst;
+    *p_ctx = (uint8_t)mps_state;
+    return symbol;
+}
+
+static void check_decode_bin_cabac(void)
+{
+    enum { N_CTX = 4, N_TABLE = 512, N_BUF = 16, N_ITER = 20000 };
+    uint32_t seed = 99;
+    int iter;
+
+    for (iter = 0; iter < N_ITER; iter++) {
+        uint32_t table[N_TABLE];
+        uint32_t buf_ref[N_BUF], buf_asm[N_BUF];
+        uint8_t ctx_ref[N_CTX], ctx_asm[N_CTX];
+        test_bitstrm_t bs_ref, bs_asm;
+        test_cabac_env_t env_ref, env_asm;
+        uint32_t ctx_inc, start_range, start_val_ofst, start_offset;
+        uint32_t sym_ref, sym_asm;
+        int i;
+
+        for (i = 0; i < N_TABLE; i++)
+            table[i] = xrand(&seed) | (xrand(&seed) << 15) |
+                       (xrand(&seed) << 30);
+        for (i = 0; i < N_BUF; i++)
+            buf_ref[i] = buf_asm[i] = xrand(&seed) | (xrand(&seed) << 15) |
+                                      (xrand(&seed) << 30);
+        for (i = 0; i < N_CTX; i++)
+            ctx_ref[i] = ctx_asm[i] = (uint8_t)(xrand(&seed) & 0x7f);
+
+        ctx_inc = xrand(&seed) % N_CTX;
+        /* range must land in the same [256,510] band every real caller
+         * already guarantees (the post-renormalisation invariant) - outside
+         * that band the reference's (23-clz) shift is undefined behaviour
+         * in C, a precondition violation rather than something either
+         * implementation needs to tolerate. */
+        start_range = 256u + (xrand(&seed) % 255u);
+        /* Deliberately up to 2x range so both the MPS and LPS branches of
+         * CHECK_IF_LPS get exercised often. */
+        start_val_ofst = xrand(&seed) % 1024u;
+        start_offset = xrand(&seed) % 200u;
+
+        env_ref.u4_code_int_range = env_asm.u4_code_int_range = start_range;
+        env_ref.u4_code_int_val_ofst = env_asm.u4_code_int_val_ofst =
+            start_val_ofst;
+        env_ref.cabac_table = env_asm.cabac_table = table;
+        bs_ref.u4_ofst = bs_asm.u4_ofst = start_offset;
+        bs_ref.pu4_buffer = buf_ref;
+        bs_asm.pu4_buffer = buf_asm;
+
+        sym_ref = ref_decode_bin_cabac(ctx_inc, ctx_ref, &bs_ref, &env_ref);
+        sym_asm = mr_ih264d_decode_bin_m68k(ctx_inc, ctx_asm, &bs_asm,
+                                            &env_asm);
+
+        if (sym_ref != sym_asm)
+            report("decode_bin_cabac(symbol)", iter, 0, (int)sym_ref,
+                   (int)sym_asm);
+        if (env_ref.u4_code_int_range != env_asm.u4_code_int_range)
+            report("decode_bin_cabac(range)", iter, 0,
+                   (int)env_ref.u4_code_int_range,
+                   (int)env_asm.u4_code_int_range);
+        if (env_ref.u4_code_int_val_ofst != env_asm.u4_code_int_val_ofst)
+            report("decode_bin_cabac(val_ofst)", iter, 0,
+                   (int)env_ref.u4_code_int_val_ofst,
+                   (int)env_asm.u4_code_int_val_ofst);
+        if (bs_ref.u4_ofst != bs_asm.u4_ofst)
+            report("decode_bin_cabac(bitstrm_ofst)", iter, 0,
+                   (int)bs_ref.u4_ofst, (int)bs_asm.u4_ofst);
+        for (i = 0; i < N_CTX; i++)
+            if (ctx_ref[i] != ctx_asm[i])
+                report("decode_bin_cabac(ctx)", iter, i, ctx_ref[i],
+                       ctx_asm[i]);
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -1134,6 +1273,7 @@ int main(void)
     check_deblk_bslt4();
     check_deblk_chroma_bs4();
     check_deblk_chroma_bslt4();
+    check_decode_bin_cabac();
 #endif
 
     if (g_failures) {

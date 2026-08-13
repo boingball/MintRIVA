@@ -148,7 +148,16 @@ CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra 
           -Wno-unused-but-set-variable -Wno-sign-compare \
           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra
-LDFLAGS = -noixemul -lgcc
+# LIBAVC_M68K_LDFLAGS (libavc.mk): redirects ih264d_decode_bin to the m68k
+# asm via vendor/libavc_port/ih264d_cabac_wrap.c, without editing the
+# vendored ih264d_cabac.c inside the libavc submodule. Harmless on targets
+# that don't link the H.264 decoder at all (GNU ld's --wrap only errors if
+# something references the original symbol with no wrapper present - not
+# verified on this specific m68k-amigaos-gcc/binutils install, no AmigaOS
+# toolchain on this dev host, but Bebbo's toolchain is a full binutils/ld
+# port and --wrap is standard GNU ld, confirmed working the same way on the
+# m68k-linux-gnu test toolchain in tests/run_m68k_check.sh).
+LDFLAGS = -noixemul -lgcc $(LIBAVC_M68K_LDFLAGS)
 
 all: mrplay mrgui iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT mr_decode
 
