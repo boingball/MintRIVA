@@ -62,6 +62,7 @@
 	.even
 	.globl	mr_ih264_inter_pred_luma_horz_m68k
 	.globl	mr_ih264_inter_pred_luma_vert_m68k
+	.globl	mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k
 
 /* ---------------------------------------------------------------------- */
 /* Horizontal: a4/a5 are the column cursors into the current row; taps sit */
@@ -230,6 +231,191 @@ mr_ih264_inter_pred_luma_vert_m68k:
 
 .Lv_done:
 	movem.l	(%sp)+,%d2-%d6/%a2-%a5
+	rts
+
+/* ---------------------------------------------------------------------- */
+/* Quarter-pel diagonal: dydx 5/7/13/15 in apf_inter_pred_luma[] all route */
+/* here (ih264d_function_selector_generic.c). Ittiam's reference           */
+/* (ih264_inter_pred_luma_horz_qpel_vert_qpel in                           */
+/* ih264_inter_pred_filters.c) runs the *same* 6-tap filter as horz/vert   */
+/* above twice - once vertically from a predictor based at                */
+/* pu1_src + (x_offset>>1) columns, once horizontally from a predictor     */
+/* based at pu1_src + (y_offset>>1) rows - then averages the two clipped   */
+/* 6-tap results with (+1)>>1 rounding. x_offset = dydx&3, y_offset =      */
+/* (dydx>>2)&3, so x_offset>>1 and y_offset>>1 are each always exactly 0   */
+/* or 1 (never anything else, since offset is a 2-bit field): reducing to  */
+/* bit tests on dydx directly (confirmed by exhaustive check over dydx     */
+/* 0..15) rather than reproducing the shift/mask C does:                  */
+/*   x_offset>>1 == bit 1 of dydx  (dydx=5:0 7:1 13:0 15:1)                */
+/*   y_offset>>1 == bit 3 of dydx  (dydx=5:0 7:0 13:1 15:1)                */
+/* This is the only one of the three predictors here that reads dydx -    */
+/* horz/vert above ignore it because their tap window never depends on    */
+/* the sub-pel position within the family they cover.                     */
+/*                                                                          */
+/* void mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k(UWORD8 *pu1_src, */
+/*     UWORD8 *pu1_dst, WORD32 src_strd, WORD32 dst_strd, WORD32 ht,       */
+/*     WORD32 wd, UWORD8 *pu1_tmp, WORD32 dydx);                          */
+/*                                                                          */
+/* Saves %d2-%d7/%a2-%a6 (11 registers, 44 bytes), so stack offsets below  */
+/* are +44 (e.g. pu1_src at 48(%sp) = 4+44). a0/a1/d0/d1 are used as       */
+/* scratch without saving (caller-saved by the same convention the        */
+/* horz/vert functions above rely on for their tap scratch).               */
+/*                                                                          */
+/* Register plan: a2/a3 are the pred_vert/pred_horz row bases (each        */
+/* pu1_src plus its conditional offset, advanced by src_strd per row);     */
+/* a5/a6 are the per-row column cursors for those two predictors (each     */
+/* advanced +1 per column); a4/a1 are the dst row base / column cursor;    */
+/* a0 is the tap-address scratch used by the vertical 6-tap sub-block,     */
+/* exactly as in mr_ih264_inter_pred_luma_vert_m68k above. d3 = src_strd   */
+/* (read-only after setup). d7 holds the clipped vertical result while     */
+/* d0-d2 are reused for the horizontal 6-tap sub-block's scratch, since    */
+/* both sub-filters are needed at once to average.                        */
+/* ---------------------------------------------------------------------- */
+mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k:
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	64(%sp),%d5		/* ht        (20+44) */
+	tst.l	%d5
+	ble	.Lhq_done
+	move.l	68(%sp),%d6		/* wd        (24+44) */
+	tst.l	%d6
+	ble	.Lhq_done
+
+	move.l	56(%sp),%d3		/* src_strd  (12+44) */
+	move.l	48(%sp),%a2		/* pred_vert row base = pu1_src (4+44) */
+	move.l	48(%sp),%a3		/* pred_horz row base = pu1_src */
+	move.l	76(%sp),%d0		/* dydx      (32+44) */
+	btst	#1,%d0			/* bit 1 = x_offset>>1 */
+	beq.s	.Lhq_no_xoff
+	addq.l	#1,%a2
+.Lhq_no_xoff:
+	btst	#3,%d0			/* bit 3 = y_offset>>1 */
+	beq.s	.Lhq_no_yoff
+	adda.l	%d3,%a3
+.Lhq_no_yoff:
+	move.l	52(%sp),%a4		/* pu1_dst row base (8+44) */
+
+.Lhq_row:
+	movea.l	%a2,%a5			/* pred_vert column cursor */
+	movea.l	%a3,%a6			/* pred_horz column cursor */
+	movea.l	%a4,%a1			/* dst column cursor */
+	move.l	%d6,%d4			/* column counter = wd */
+
+.Lhq_col:
+	/* ---- vertical 6-tap on pred_vert (a5), tap addresses via a0 ---- */
+	movea.l	%a5,%a0
+	suba.l	%d3,%a0
+	suba.l	%d3,%a0			/* a0 = p0 addr (a5 - 2*strd) */
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p0 */
+
+	movea.l	%a5,%a0
+	adda.l	%d3,%a0
+	adda.l	%d3,%a0
+	adda.l	%d3,%a0			/* a0 = p5 addr (a5 + 3*strd) */
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p5 */
+	add.w	%d1,%d0			/* d0 = p0+p5 */
+
+	movea.l	%a5,%a0
+	suba.l	%d3,%a0			/* a0 = p1 addr (a5 - strd) */
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p1 */
+
+	movea.l	%a5,%a0
+	adda.l	%d3,%a0
+	adda.l	%d3,%a0			/* a0 = p4 addr (a5 + 2*strd) */
+	clr.l	%d2
+	move.b	(%a0),%d2		/* p4 */
+	add.w	%d2,%d1			/* d1 = p1+p4 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2			/* d2 = 5*(p1+p4) */
+	sub.w	%d2,%d0			/* d0 = (p0+p5) - 5*(p1+p4) */
+
+	clr.l	%d1
+	move.b	(%a5),%d1		/* p2 */
+
+	movea.l	%a5,%a0
+	adda.l	%d3,%a0			/* a0 = p3 addr (a5 + strd) */
+	clr.l	%d2
+	move.b	(%a0),%d2		/* p3 */
+	add.w	%d2,%d1			/* d1 = p2+p3 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2
+	lsl.w	#2,%d2			/* d2 = 20*(p2+p3) */
+	add.w	%d2,%d0			/* d0 = total */
+
+	add.w	#16,%d0
+	asr.w	#5,%d0
+	bmi.s	.Lhq_vclip_lo
+	cmp.w	#255,%d0
+	ble.s	.Lhq_vstore
+	move.w	#255,%d0
+	bra.s	.Lhq_vstore
+.Lhq_vclip_lo:
+	moveq	#0,%d0
+.Lhq_vstore:
+	move.w	%d0,%d7			/* stash clipped vertical result */
+
+	/* ---- horizontal 6-tap on pred_horz (a6), constant displacements --- */
+	clr.l	%d0
+	move.b	-2(%a6),%d0		/* p0 */
+	clr.l	%d1
+	move.b	3(%a6),%d1		/* p5 */
+	add.w	%d1,%d0			/* d0 = p0+p5 */
+
+	clr.l	%d1
+	move.b	-1(%a6),%d1		/* p1 */
+	clr.l	%d2
+	move.b	2(%a6),%d2		/* p4 */
+	add.w	%d2,%d1			/* d1 = p1+p4 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2			/* d2 = 5*(p1+p4) */
+	sub.w	%d2,%d0			/* d0 = (p0+p5) - 5*(p1+p4) */
+
+	clr.l	%d1
+	move.b	(%a6),%d1		/* p2 */
+	clr.l	%d2
+	move.b	1(%a6),%d2		/* p3 */
+	add.w	%d2,%d1			/* d1 = p2+p3 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2
+	lsl.w	#2,%d2			/* d2 = 20*(p2+p3) */
+	add.w	%d2,%d0			/* d0 = total */
+
+	add.w	#16,%d0
+	asr.w	#5,%d0
+	bmi.s	.Lhq_hclip_lo
+	cmp.w	#255,%d0
+	ble.s	.Lhq_hstore
+	move.w	#255,%d0
+	bra.s	.Lhq_hstore
+.Lhq_hclip_lo:
+	moveq	#0,%d0
+.Lhq_hstore:
+	/* d0 = clipped horizontal result, d7 = clipped vertical result */
+	add.w	%d7,%d0
+	addq.w	#1,%d0
+	asr.w	#1,%d0
+	move.b	%d0,(%a1)+
+
+	addq.l	#1,%a5
+	addq.l	#1,%a6
+	subq.l	#1,%d4
+	bne	.Lhq_col
+
+	adda.l	%d3,%a2
+	adda.l	%d3,%a3
+	move.l	60(%sp),%d0		/* dst_strd (16+44) */
+	adda.l	%d0,%a4
+	subq.l	#1,%d5
+	bne	.Lhq_row
+
+.Lhq_done:
+	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
 
 #endif /* MR_M68K_ASM */

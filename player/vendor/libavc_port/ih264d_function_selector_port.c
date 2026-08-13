@@ -35,6 +35,14 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->apf_inter_pred_luma[0] = mr_ih264_inter_pred_luma_copy_m68k;
     codec->apf_inter_pred_luma[2] = mr_ih264_inter_pred_luma_horz_m68k;
     codec->apf_inter_pred_luma[8] = mr_ih264_inter_pred_luma_vert_m68k;
+    codec->apf_inter_pred_luma[5] =
+        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
+    codec->apf_inter_pred_luma[7] =
+        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
+    codec->apf_inter_pred_luma[13] =
+        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
+    codec->apf_inter_pred_luma[15] =
+        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
     codec->pf_default_weighted_pred_luma =
         mr_ih264_default_weighted_pred_luma_m68k;
     codec->pf_default_weighted_pred_chroma =

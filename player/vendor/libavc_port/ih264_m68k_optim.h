@@ -30,6 +30,10 @@ void mr_ih264_inter_pred_luma_horz_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
 void mr_ih264_inter_pred_luma_vert_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
                                         WORD32, WORD32, UWORD8 *, WORD32)
     __asm__("mr_ih264_inter_pred_luma_vert_m68k");
+void mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k(UWORD8 *, UWORD8 *,
+                                        WORD32, WORD32, WORD32, WORD32,
+                                        UWORD8 *, WORD32)
+    __asm__("mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k");
 #endif
 
 #endif

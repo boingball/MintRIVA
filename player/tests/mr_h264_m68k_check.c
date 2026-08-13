@@ -312,6 +312,88 @@ static void check_interp(void)
         }
     }
 }
+/* ---- inter_pred_luma_horz_qpel_vert_qpel (dydx 5/7/13/15) -------------- */
+/* Independent re-derivation of ih264_inter_pred_luma_horz_qpel_vert_qpel
+ * (ih264_inter_pred_filters.c): run the same 6-tap filter as ref_interp_horz
+ * /ref_interp_vert above once vertically from a predictor offset by
+ * (dydx&3)>>1 columns and once horizontally from a predictor offset by
+ * ((dydx>>2)&3)>>1 rows, then average the two clipped results with +1
+ * rounding - written straight from the spec/reference-C formula, not
+ * derived from the asm under test. */
+static void ref_interp_horz_qpel_vert_qpel(const uint8_t *src, uint8_t *dst,
+                                           int src_strd, int dst_strd,
+                                           int ht, int wd, int dydx)
+{
+    int xoff_half = (dydx & 3) >> 1;
+    int yoff_half = ((dydx >> 2) & 3) >> 1;
+    const uint8_t *pred_vert0 = src + xoff_half;
+    const uint8_t *pred_horz0 = src + yoff_half * src_strd;
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        const uint8_t *pv = pred_vert0 + (size_t)row * src_strd;
+        const uint8_t *ph = pred_horz0 + (size_t)row * src_strd;
+        for (col = 0; col < wd; col++) {
+            int16_t tv = (int16_t)(
+                1 * (pv[col - 2 * src_strd] + pv[col + 3 * src_strd])
+                - 5 * (pv[col - src_strd] + pv[col + 2 * src_strd])
+                + 20 * (pv[col] + pv[col + src_strd]));
+            int vv = (int)((tv + 16) >> 5);
+            vv = vv < 0 ? 0 : vv > 255 ? 255 : vv;
+
+            int16_t th = (int16_t)(1 * (ph[col - 2] + ph[col + 3])
+                                   - 5 * (ph[col - 1] + ph[col + 2])
+                                   + 20 * (ph[col] + ph[col + 1]));
+            int vh = (int)((th + 16) >> 5);
+            vh = vh < 0 ? 0 : vh > 255 ? 255 : vh;
+
+            dst[col] = (uint8_t)((vv + vh + 1) >> 1);
+        }
+        dst += dst_strd;
+    }
+}
+
+static void check_interp_qpel_qpel(void)
+{
+    static const int wds[] = { 4, 4, 8, 8, 16, 16 };
+    static const int hts[] = { 4, 8, 4, 16, 8, 16 };
+    static const int dydxs[] = { 5, 7, 13, 15 };
+    uint32_t seed = 6;
+    unsigned i, di;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        for (di = 0; di < sizeof dydxs / sizeof dydxs[0]; di++) {
+            int extreme;
+            for (extreme = 0; extreme < 2; extreme++) {
+                int wd = wds[i], ht = hts[i], dydx = dydxs[di];
+                /* Padding of 4 covers the widest tap offset (col-2, col+3,
+                 * the vertical equivalents at +-2/+3 rows) plus the extra
+                 * +1 column/row the predictor base can carry for dydx with
+                 * xoff_half/yoff_half set. */
+                int pad = 4, src_strd = wd + 2 * pad, dst_strd = wd + 5;
+                uint8_t src[24 * 24], dst_m68k[16 * 21], dst_ref[16 * 21];
+                const uint8_t *src0 = src + pad * src_strd + pad;
+                int row, col, j;
+                for (j = 0; j < src_strd * (ht + 2 * pad); j++)
+                    src[j] = extreme ? (uint8_t)((xrand(&seed) & 1) ? 255 : 0)
+                                     : (uint8_t)(xrand(&seed) & 0xff);
+
+                memset(dst_m68k, 0xAA, sizeof dst_m68k);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k(
+                    (uint8_t *)src0, dst_m68k, src_strd, dst_strd, ht, wd,
+                    NULL, dydx);
+                ref_interp_horz_qpel_vert_qpel(src0, dst_ref, src_strd,
+                                               dst_strd, ht, wd, dydx);
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < wd; col++) {
+                        int idx = row * dst_strd + col;
+                        if (dst_m68k[idx] != dst_ref[idx])
+                            report("interp_horz_qpel_vert_qpel", row, col,
+                                   dst_ref[idx], dst_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -322,6 +404,7 @@ int main(void)
     check_intra16();
 #if defined(MR_M68K_ASM)
     check_interp();
+    check_interp_qpel_qpel();
 #endif
 
     if (g_failures) {
