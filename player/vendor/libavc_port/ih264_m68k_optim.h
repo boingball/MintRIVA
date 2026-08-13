@@ -46,6 +46,12 @@ void mr_ih264_inter_pred_luma_horz_hpel_vert_hpel_m68k(UWORD8 *, UWORD8 *,
                                         WORD32, WORD32, WORD32, WORD32,
                                         UWORD8 *, WORD32)
     __asm__("mr_ih264_inter_pred_luma_horz_hpel_vert_hpel_m68k");
+
+/* ih264_m68k_deblk.S - bS==4 luma deblocking edge filters. */
+void mr_ih264_deblk_luma_vert_bs4_m68k(UWORD8 *, WORD32, WORD32, WORD32)
+    __asm__("mr_ih264_deblk_luma_vert_bs4_m68k");
+void mr_ih264_deblk_luma_horz_bs4_m68k(UWORD8 *, WORD32, WORD32, WORD32)
+    __asm__("mr_ih264_deblk_luma_horz_bs4_m68k");
 #endif
 
 #endif

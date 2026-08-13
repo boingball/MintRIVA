@@ -65,6 +65,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264d_stage_profile.c \
     vendor/libavc_port/ih264_m68k_optim.c \
     vendor/libavc_port/ih264_m68k_interp.S \
+    vendor/libavc_port/ih264_m68k_deblk.S \
     vendor/libavc_port/ithread_port.c \
     vendor/libavc_port/compat.c"
 
@@ -74,7 +75,8 @@ $CC -DMR_HAVE_MPEG1 -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_S
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_optim.c \
-    vendor/libavc_port/ih264_m68k_interp.S
+    vendor/libavc_port/ih264_m68k_interp.S \
+    vendor/libavc_port/ih264_m68k_deblk.S
 
 echo "== building mr_yuv_check.m68k =="
 $CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c

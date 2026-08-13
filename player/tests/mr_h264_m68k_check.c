@@ -567,6 +567,133 @@ static void check_interp_hpel_hpel(void)
         }
     }
 }
+/* ---- deblk_luma_vert_bs4 / horz_bs4 (H.264 8.7.2.4, bS==4) -------------- */
+/* Independent re-derivation of ih264_deblk_luma_vert_bs4/horz_bs4 straight
+ * from the filtering-decision + strong/weak formulas in the spec section
+ * title, not from this asm. Filters one 8-sample window (p3..p0,q0..q3);
+ * out[] starts as a copy of the input so untouched samples (the "skip"
+ * case, or the p side / q side when only the other strengthens) come back
+ * unchanged, matching the reference C which simply never assigns them. */
+static void ref_deblk_bs4_sample(uint8_t p3, uint8_t p2, uint8_t p1,
+                                 uint8_t p0, uint8_t q0, uint8_t q1,
+                                 uint8_t q2, uint8_t q3, int alpha, int beta,
+                                 uint8_t out[8])
+{
+    out[0] = p3; out[1] = p2; out[2] = p1; out[3] = p0;
+    out[4] = q0; out[5] = q1; out[6] = q2; out[7] = q3;
+    if (abs((int)p0 - (int)q0) >= alpha || abs((int)q1 - (int)q0) >= beta ||
+        abs((int)p1 - (int)p0) >= beta)
+        return;
+    if (abs((int)p0 - (int)q0) < (alpha >> 2) + 2) {
+        int a_p = abs((int)p2 - (int)p0);
+        int a_q = abs((int)q2 - (int)q0);
+        if (a_p < beta) {
+            out[3] = (uint8_t)((p2 + 2*p1 + 2*p0 + 2*q0 + q1 + 4) >> 3);
+            out[2] = (uint8_t)((p2 + p1 + p0 + q0 + 2) >> 2);
+            out[1] = (uint8_t)((2*p3 + 3*p2 + p1 + p0 + q0 + 4) >> 3);
+        } else {
+            out[3] = (uint8_t)((2*p1 + p0 + q1 + 2) >> 2);
+        }
+        if (a_q < beta) {
+            out[4] = (uint8_t)((p1 + 2*p0 + 2*q0 + 2*q1 + q2 + 4) >> 3);
+            out[5] = (uint8_t)((p0 + q0 + q1 + q2 + 2) >> 2);
+            out[6] = (uint8_t)((2*q3 + 3*q2 + q1 + q0 + p0 + 4) >> 3);
+        } else {
+            out[4] = (uint8_t)((2*q1 + q0 + p1 + 2) >> 2);
+        }
+    } else {
+        out[3] = (uint8_t)((2*p1 + p0 + q1 + 2) >> 2);
+        out[4] = (uint8_t)((2*q1 + q0 + p1 + 2) >> 2);
+    }
+}
+
+static void deblk_bs4_fill_sample(uint32_t *seed, int row, uint8_t s[8])
+{
+    int k;
+    if ((row & 3) == 0) {
+        /* Bias every 4th sample toward the skip/strong/weak decision
+         * boundaries instead of leaving them purely to chance - p0/q0 and
+         * p1/q1 close together (near the skip threshold), p2/p3/q2/q3
+         * fully random (near the strong-vs-weak a_p/a_q threshold once
+         * beta is factored in across the alpha/beta sweep below). */
+        int p0 = 80 + (int)(xrand(seed) % 40);
+        s[3] = (uint8_t)p0;
+        s[4] = (uint8_t)(p0 + (int)(xrand(seed) % 9) - 4);
+        s[2] = (uint8_t)(p0 + (int)(xrand(seed) % 7) - 3);
+        s[5] = (uint8_t)(p0 + (int)(xrand(seed) % 7) - 3);
+        s[1] = (uint8_t)(xrand(seed) & 0xff);
+        s[0] = (uint8_t)(xrand(seed) & 0xff);
+        s[6] = (uint8_t)(xrand(seed) & 0xff);
+        s[7] = (uint8_t)(xrand(seed) & 0xff);
+    } else {
+        for (k = 0; k < 8; k++) s[k] = (uint8_t)(xrand(seed) & 0xff);
+    }
+}
+
+static void check_deblk_bs4(void)
+{
+    static const int alphas[] = { 0, 4, 12, 30, 60, 130, 255 };
+    static const int betas[]  = { 0, 2, 5, 9, 14, 18 };
+    uint32_t seed = 9;
+    unsigned ai, bi;
+    for (ai = 0; ai < sizeof alphas / sizeof alphas[0]; ai++) {
+        for (bi = 0; bi < sizeof betas / sizeof betas[0]; bi++) {
+            int alpha = alphas[ai], beta = betas[bi];
+            int row, k;
+
+            /* vertical: 16 rows, 8 columns per row (p3..q3), edge/pu1_src
+             * at column 4 (q0) of row 0; src_strd = 8. */
+            {
+                int src_strd = 8;
+                uint8_t buf_m68k[16 * 8], buf_ref[16 * 8], s[8], out[8];
+                for (row = 0; row < 16; row++) {
+                    deblk_bs4_fill_sample(&seed, row, s);
+                    for (k = 0; k < 8; k++)
+                        buf_m68k[row * src_strd + k] = s[k];
+                    ref_deblk_bs4_sample(s[0], s[1], s[2], s[3], s[4], s[5],
+                                        s[6], s[7], alpha, beta, out);
+                    for (k = 0; k < 8; k++)
+                        buf_ref[row * src_strd + k] = out[k];
+                }
+                mr_ih264_deblk_luma_vert_bs4_m68k(buf_m68k + 4, src_strd,
+                                                  alpha, beta);
+                for (row = 0; row < 16; row++)
+                    for (k = 0; k < 8; k++) {
+                        int idx = row * src_strd + k;
+                        if (buf_m68k[idx] != buf_ref[idx])
+                            report("deblk_vert_bs4", row, k, buf_ref[idx],
+                                   buf_m68k[idx]);
+                    }
+            }
+
+            /* horizontal: 8 rows, 16 columns; edge/pu1_src at row 4, each
+             * column an independent sample sharing the same alpha/beta. */
+            {
+                int src_strd = 16;
+                uint8_t buf_m68k[8 * 16], buf_ref[8 * 16], s[8], out[8];
+                int col;
+                for (col = 0; col < 16; col++) {
+                    deblk_bs4_fill_sample(&seed, col, s);
+                    for (k = 0; k < 8; k++)
+                        buf_m68k[k * src_strd + col] = s[k];
+                    ref_deblk_bs4_sample(s[0], s[1], s[2], s[3], s[4], s[5],
+                                        s[6], s[7], alpha, beta, out);
+                    for (k = 0; k < 8; k++)
+                        buf_ref[k * src_strd + col] = out[k];
+                }
+                mr_ih264_deblk_luma_horz_bs4_m68k(buf_m68k + 4 * src_strd,
+                                                  src_strd, alpha, beta);
+                for (k = 0; k < 8; k++)
+                    for (col = 0; col < 16; col++) {
+                        int idx = k * src_strd + col;
+                        if (buf_m68k[idx] != buf_ref[idx])
+                            report("deblk_horz_bs4", k, col, buf_ref[idx],
+                                   buf_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -580,6 +707,7 @@ int main(void)
     check_interp_qpel_qpel();
     check_interp_qpel();
     check_interp_hpel_hpel();
+    check_deblk_bs4();
 #endif
 
     if (g_failures) {
