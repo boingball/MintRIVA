@@ -137,7 +137,7 @@ KALMS_ASM_INCLUDE ?= $(firstword \
 KALMS_ASM_INCLUDE := $(patsubst %/lvo/exec_lib.i,%,$(KALMS_ASM_INCLUDE))
 
 ifeq ($(TOOLCHAIN),gcc)
-CORE   += core/mr_h264.c $(LIBAVC_SRC) $(LIBAVC_PORTASM)
+CORE   += core/mr_h264.c $(LIBAVC_SRC)
 CC      = $(AMIGA_GCC)
 # MPEG-1 (pl_mpeg in mr_mpeg1.c) is fixed-point. MR_HAVE_MPEG1 enables .mpg.
 CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \

@@ -21,10 +21,15 @@ void mr_ih264_intra_pred_luma_16x16_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
  * only declared here under the same guard so a host build never tries to
  * reference a symbol that does not exist there. */
 #if defined(MR_M68K_ASM)
+/* Bind the C declarations to the exact undecorated names exported by the
+ * GNU assembly.  m68k-amigaos-gcc otherwise applies its target C symbol
+ * decoration, leaving the bare .globl names unresolved at link time. */
 void mr_ih264_inter_pred_luma_horz_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
-                                        WORD32, WORD32, UWORD8 *, WORD32);
+                                        WORD32, WORD32, UWORD8 *, WORD32)
+    __asm__("mr_ih264_inter_pred_luma_horz_m68k");
 void mr_ih264_inter_pred_luma_vert_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
-                                        WORD32, WORD32, UWORD8 *, WORD32);
+                                        WORD32, WORD32, UWORD8 *, WORD32)
+    __asm__("mr_ih264_inter_pred_luma_vert_m68k");
 #endif
 
 #endif

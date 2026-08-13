@@ -8,20 +8,14 @@ LIBAVC_COMMON = $(filter-out $(LIBAVC_ROOT)/common/ithread.c \
                   $(LIBAVC_ROOT)/common/ih264_trans_data.c, \
                   $(wildcard $(LIBAVC_ROOT)/common/*.c))
 LIBAVC_DECODER = $(wildcard $(LIBAVC_ROOT)/decoder/*.c)
+# The assembly body is guarded by MR_M68K_ASM, so host builds preprocess it
+# to an empty translation unit while m68k builds get the real implementation.
+# Keeping it in the shared source list avoids a second m68k-only variable.
 LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_optim.c \
+                 $(LIBAVC_PORT)/ih264_m68k_interp.S \
                  $(LIBAVC_PORT)/ithread_port.c $(LIBAVC_PORT)/compat.c
 LIBAVC_SRC = $(LIBAVC_COMMON) $(LIBAVC_DECODER) $(LIBAVC_PORTSRC)
-# ih264_m68k_interp.S carries no C-preprocessor guard (see the file's own
-# header comment for why: a real m68k-amigaos-gcc build did not honour an
-# #if/#endif guard around its body consistently with the plain-C guards in
-# ih264d_function_selector_port.c that reference it). Safety instead comes
-# from never adding it to a source list at all except where the target is
-# actually m68k - callers that need it (Makefile.amiga, and
-# tests/run_m68k_check.sh's m68k-linux-gnu test build) add
-# $(LIBAVC_PORTASM) themselves; it is deliberately NOT part of LIBAVC_SRC,
-# so a host (x86) build never sees it.
-LIBAVC_PORTASM = $(LIBAVC_PORT)/ih264_m68k_interp.S
 LIBAVC_FLAGS = -I$(LIBAVC_PORT) -I$(LIBAVC_ROOT)/common \
                -I$(LIBAVC_ROOT)/decoder -include $(LIBAVC_PORT)/compat.h
 LIBAVC_GCC_FLAGS = -fno-strict-aliasing -fwrapv

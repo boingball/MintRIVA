@@ -29,26 +29,11 @@
  * fewer address computations, plus a tighter three-branch clip than the
  * bitfield-extract sequence GCC emits.
  *
- * With the same GNU AS syntax and stack-argument-passing convention
- * MintAMP's own amiga_m68k_polyphase.S already uses on this project -
- * m68k-amigaos-gcc and the m68k-linux-gnu test toolchain (see
- * player/tests/run_m68k_check.sh) are the same GCC/binutils m68k backend,
- * so both assemble and call this identically; only the runtime/OS differs,
- * and this file touches neither.
- *
- * This file carries no C preprocessor guard and is unconditional: a real
- * m68k-amigaos-gcc build linked clean with `#if defined(__mc68000__)`
- * around this whole file, then failed with an undefined reference to the
- * two functions below when that guard was replaced with an explicit
- * `MR_M68K_ASM` build flag - in both cases the equivalent guard in the
- * plain-C ih264d_function_selector_port.c (which references these symbols)
- * evaluated true, but whatever preprocessed this .S file did not carry the
- * same macro state into it, on a toolchain this could not be reproduced or
- * root-caused against here. Since guarding *inside* the file could not be
- * trusted, this file is instead only ever added to a source list at all
- * (Makefile.amiga's CORE, tests/run_m68k_check.sh's LIBAVC_SRC) when
- * building for a real m68k target - never for the host build, which is
- * what makes it safe for the two functions here to be unconditional.
+ * Assembled only when MR_M68K_ASM is enabled, using the same GNU AS syntax
+ * and stack-argument-passing convention as MintAMP's
+ * amiga_m68k_polyphase.S.  Host builds preprocess this file to an empty
+ * translation unit; m68k-amigaos-gcc and the m68k-linux-gnu test toolchain
+ * both assemble the real implementation.
  *
  * void mr_ih264_inter_pred_luma_horz_m68k(UWORD8 *pu1_src, UWORD8 *pu1_dst,
  *     WORD32 src_strd, WORD32 dst_strd, WORD32 ht, WORD32 wd,
@@ -72,6 +57,7 @@
  * Both functions here save %d2-%d6/%a2-%a5 (9 registers, 36 bytes), so
  * those stack offsets become +36 for the duration of the function body.
  */
+#if defined(MR_M68K_ASM)
 	.text
 	.even
 	.globl	mr_ih264_inter_pred_luma_horz_m68k
@@ -245,3 +231,9 @@ mr_ih264_inter_pred_luma_vert_m68k:
 .Lv_done:
 	movem.l	(%sp)+,%d2-%d6/%a2-%a5
 	rts
+
+#endif /* MR_M68K_ASM */
+
+#if defined(__ELF__)
+	.section .note.GNU-stack,"",@progbits
+#endif
