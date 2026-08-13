@@ -60,6 +60,8 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_intra_pred_luma_16x16_horz_m68k;
     codec->pf_deblk_luma_vert_bs4 = mr_ih264_deblk_luma_vert_bs4_m68k;
     codec->pf_deblk_luma_horz_bs4 = mr_ih264_deblk_luma_horz_bs4_m68k;
+    codec->pf_deblk_luma_vert_bslt4 = mr_ih264_deblk_luma_vert_bslt4_m68k;
+    codec->pf_deblk_luma_horz_bslt4 = mr_ih264_deblk_luma_horz_bslt4_m68k;
 #endif
     /* Diagnostic-only: wraps whatever is now sitting in the MC/deblock/
      * recon function-pointer slots above (m68k asm or Ittiam's generic C)

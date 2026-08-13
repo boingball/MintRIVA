@@ -694,6 +694,148 @@ static void check_deblk_bs4(void)
         }
     }
 }
+
+/* ---- deblk_luma_vert_bslt4 / horz_bslt4 (H.264 8.7.2.3, bS<4) ---------- */
+/* Independent re-derivation straight from the spec-section formulas, not
+ * from this asm. Unlike bS==4, p1'/q1' here are written via C's
+ * `pu1_src_temp[pos] += CLIP3(...)` - an unsigned-byte add with implicit
+ * truncation, no explicit 0..255 clamp - so out[1]/out[4] below are cast
+ * straight to uint8_t (truncating), matching that exactly; only p0'/q0'
+ * get a real CLIP_U8. */
+static void ref_deblk_bslt4_sample(uint8_t p2, uint8_t p1, uint8_t p0,
+                                   uint8_t q0, uint8_t q1, uint8_t q2,
+                                   int alpha, int beta, int tc0,
+                                   uint8_t out[6] /* p2,p1,p0,q0,q1,q2 */)
+{
+    out[0] = p2; out[1] = p1; out[2] = p0;
+    out[3] = q0; out[4] = q1; out[5] = q2;
+    if (abs((int)p0 - (int)q0) >= alpha || abs((int)q1 - (int)q0) >= beta ||
+        abs((int)p1 - (int)p0) >= beta)
+        return;
+    {
+        int a_p = abs((int)p2 - (int)p0);
+        int a_q = abs((int)q2 - (int)q0);
+        int tc = tc0 + (a_p < beta ? 1 : 0) + (a_q < beta ? 1 : 0);
+        int val = (((int)q0 - (int)p0) * 4 + ((int)p1 - (int)q1) + 4) >> 3;
+        int delta = val < -tc ? -tc : (val > tc ? tc : val);
+        int p0n = (int)p0 + delta;
+        int q0n = (int)q0 - delta;
+        p0n = p0n < 0 ? 0 : (p0n > 255 ? 255 : p0n);
+        q0n = q0n < 0 ? 0 : (q0n > 255 ? 255 : q0n);
+        if (a_p < beta) {
+            int v = ((int)p2 + (((int)p0 + (int)q0 + 1) >> 1) -
+                    2 * (int)p1) >> 1;
+            int c = v < -tc0 ? -tc0 : (v > tc0 ? tc0 : v);
+            out[1] = (uint8_t)((int)p1 + c);
+        }
+        if (a_q < beta) {
+            int v = ((int)q2 + (((int)p0 + (int)q0 + 1) >> 1) -
+                    2 * (int)q1) >> 1;
+            int c = v < -tc0 ? -tc0 : (v > tc0 ? tc0 : v);
+            out[4] = (uint8_t)((int)q1 + c);
+        }
+        out[2] = (uint8_t)p0n;
+        out[3] = (uint8_t)q0n;
+    }
+}
+
+static void deblk_bslt4_fill_sample(uint32_t *seed, int row, uint8_t s[6])
+{
+    int k;
+    if ((row & 3) == 0) {
+        int p0 = 80 + (int)(xrand(seed) % 40);
+        s[2] = (uint8_t)p0;
+        s[3] = (uint8_t)(p0 + (int)(xrand(seed) % 9) - 4);
+        s[1] = (uint8_t)(p0 + (int)(xrand(seed) % 7) - 3);
+        s[4] = (uint8_t)(p0 + (int)(xrand(seed) % 7) - 3);
+        s[0] = (uint8_t)(xrand(seed) & 0xff);
+        s[5] = (uint8_t)(xrand(seed) & 0xff);
+    } else {
+        for (k = 0; k < 6; k++) s[k] = (uint8_t)(xrand(seed) & 0xff);
+    }
+}
+
+static void check_deblk_bslt4(void)
+{
+    static const int alphas[] = { 4, 12, 30, 60, 130, 255 };
+    static const int betas[]  = { 2, 5, 9, 14, 18 };
+    static const uint8_t cliptab[4] = { 0, 1, 3, 9 };
+    uint32_t seed = 11;
+    unsigned ai, bi;
+    for (ai = 0; ai < sizeof alphas / sizeof alphas[0]; ai++) {
+        for (bi = 0; bi < sizeof betas / sizeof betas[0]; bi++) {
+            int alpha = alphas[ai], beta = betas[bi];
+            /* Groups 0..3 get bS 1,2,3,0 - the last exercises the
+             * skip-the-whole-group path (bS==0), the other three sweep
+             * the rest of the cliptab. */
+            uint32_t u4_bs = ((uint32_t)1 << 24) | ((uint32_t)2 << 16) |
+                             ((uint32_t)3 << 8) | (uint32_t)0;
+            int row, k;
+
+            /* vertical: 16 rows, 6 columns per row (p2..q2); pu1_src at
+             * column 3 (q0); src_strd = 6. */
+            {
+                int src_strd = 6;
+                uint8_t buf_m68k[16 * 6], buf_ref[16 * 6], s[6], out[6];
+                for (row = 0; row < 16; row++) {
+                    int group = row / 4;
+                    int bs = (int)((u4_bs >> ((3 - group) * 8)) & 0xff);
+                    deblk_bslt4_fill_sample(&seed, row, s);
+                    for (k = 0; k < 6; k++) buf_m68k[row * src_strd + k] = s[k];
+                    if (bs == 0) {
+                        for (k = 0; k < 6; k++) out[k] = s[k];
+                    } else {
+                        ref_deblk_bslt4_sample(s[0], s[1], s[2], s[3], s[4],
+                                              s[5], alpha, beta, cliptab[bs],
+                                              out);
+                    }
+                    for (k = 0; k < 6; k++) buf_ref[row * src_strd + k] = out[k];
+                }
+                mr_ih264_deblk_luma_vert_bslt4_m68k(buf_m68k + 3, src_strd,
+                                                    alpha, beta, u4_bs,
+                                                    cliptab);
+                for (row = 0; row < 16; row++)
+                    for (k = 0; k < 6; k++) {
+                        int idx = row * src_strd + k;
+                        if (buf_m68k[idx] != buf_ref[idx])
+                            report("deblk_vert_bslt4", row, k, buf_ref[idx],
+                                   buf_m68k[idx]);
+                    }
+            }
+
+            /* horizontal: 6 rows, 16 columns; pu1_src at row 3. */
+            {
+                int src_strd = 16;
+                uint8_t buf_m68k[6 * 16], buf_ref[6 * 16], s[6], out[6];
+                int col;
+                for (col = 0; col < 16; col++) {
+                    int group = col / 4;
+                    int bs = (int)((u4_bs >> ((3 - group) * 8)) & 0xff);
+                    deblk_bslt4_fill_sample(&seed, col, s);
+                    for (k = 0; k < 6; k++) buf_m68k[k * src_strd + col] = s[k];
+                    if (bs == 0) {
+                        for (k = 0; k < 6; k++) out[k] = s[k];
+                    } else {
+                        ref_deblk_bslt4_sample(s[0], s[1], s[2], s[3], s[4],
+                                              s[5], alpha, beta, cliptab[bs],
+                                              out);
+                    }
+                    for (k = 0; k < 6; k++) buf_ref[k * src_strd + col] = out[k];
+                }
+                mr_ih264_deblk_luma_horz_bslt4_m68k(buf_m68k + 3 * src_strd,
+                                                    src_strd, alpha, beta,
+                                                    u4_bs, cliptab);
+                for (k = 0; k < 6; k++)
+                    for (col = 0; col < 16; col++) {
+                        int idx = k * src_strd + col;
+                        if (buf_m68k[idx] != buf_ref[idx])
+                            report("deblk_horz_bslt4", k, col, buf_ref[idx],
+                                   buf_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -708,6 +850,7 @@ int main(void)
     check_interp_qpel();
     check_interp_hpel_hpel();
     check_deblk_bs4();
+    check_deblk_bslt4();
 #endif
 
     if (g_failures) {
