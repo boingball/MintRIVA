@@ -9,6 +9,7 @@
 #include "ih264d_structs.h"
 #include "ih264d_function_selector.h"
 #include "ih264_m68k_optim.h"
+#include "ih264d_stage_profile.h"
 
 void ih264d_init_function_ptr(dec_struct_t *codec)
 {
@@ -58,6 +59,11 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->apf_intra_pred_luma_16x16[1] =
         mr_ih264_intra_pred_luma_16x16_horz_m68k;
 #endif
+    /* Diagnostic-only: wraps whatever is now sitting in the MC/deblock/
+     * recon function-pointer slots above (m68k asm or Ittiam's generic C)
+     * with clock()-based timing, reported via mrplay.c's "h264 stages:"
+     * line. See ih264d_stage_profile.h. */
+    mr_h264_stage_profile_install(codec);
 }
 
 void ih264d_init_arch(dec_struct_t *codec)

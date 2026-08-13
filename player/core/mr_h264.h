@@ -16,6 +16,13 @@ typedef void (*mr_h264_service_fn)(void *opaque);
 typedef int  (*mr_h264_quit_fn)(void *opaque);
 typedef struct mr_h264_timing {
     unsigned long input_us, core_us, output_us;
+    /* Sub-stages of core_us, broken out via wrapped libavc function pointers
+     * (vendor/libavc_port/ih264d_stage_profile.c): motion compensation,
+     * deblocking, and IDCT/reconstruction. core_us minus these three is
+     * everything else - bitstream/CABAC/CAVLC parsing, intra prediction,
+     * MV prediction, and per-MB bookkeeping - which has no single function
+     * pointer to wrap so is not broken out further. */
+    unsigned long mc_us, deblock_us, recon_us;
 } mr_h264_timing;
 typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_QUALITY = 0,

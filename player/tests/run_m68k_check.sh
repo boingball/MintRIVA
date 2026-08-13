@@ -62,6 +62,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     | grep -v -e ithread.c -e ih264_resi_trans_quant.c -e ih264_trans_data.c) \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
     vendor/libavc_port/ih264d_function_selector_port.c \
+    vendor/libavc_port/ih264d_stage_profile.c \
     vendor/libavc_port/ih264_m68k_optim.c \
     vendor/libavc_port/ih264_m68k_interp.S \
     vendor/libavc_port/ithread_port.c \
