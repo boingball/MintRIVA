@@ -62,15 +62,18 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     | grep -v -e ithread.c -e ih264_resi_trans_quant.c -e ih264_trans_data.c) \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
     vendor/libavc_port/ih264d_function_selector_port.c \
-    vendor/libavc_port/ih264_m68k_optim.c vendor/libavc_port/ithread_port.c \
+    vendor/libavc_port/ih264_m68k_optim.c \
+    vendor/libavc_port/ih264_m68k_interp.S \
+    vendor/libavc_port/ithread_port.c \
     vendor/libavc_port/compat.c"
 
-echo "== building mr_decode.m68k =="
+echo "== building mr_decode.m68k (m68k-optimised leaf functions + hand asm active) =="
 $CC -DMR_HAVE_MPEG1 -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_SRC
 
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
-    vendor/libavc_port/ih264_m68k_optim.c
+    vendor/libavc_port/ih264_m68k_optim.c \
+    vendor/libavc_port/ih264_m68k_interp.S
 
 echo "== building mr_yuv_check.m68k =="
 $CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c

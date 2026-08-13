@@ -219,12 +219,110 @@ static void check_intra16(void)
     }
 }
 
+/* ---- inter_pred_luma_horz / vert (H.264 8.4.2.2.1, 6-tap half-pel) ----- */
+/* mr_ih264_inter_pred_luma_horz_m68k/vert_m68k (ih264_m68k_interp.S) only
+ * exist on an m68k build (see ih264_m68k_optim.h) - the hand-written .S is
+ * guarded on __mc68000__ so it preprocesses to an empty translation unit
+ * everywhere else. This is the only pair of checks in this file that can't
+ * run on the host build; `make check-m68k` (real m68k, big-endian, under
+ * qemu-m68k) is what exercises it. */
+#if defined(__mc68000__)
+static void ref_interp_horz(const uint8_t *src, uint8_t *dst, int src_strd,
+                            int dst_strd, int ht, int wd)
+{
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        for (col = 0; col < wd; col++) {
+            int16_t t = (int16_t)(1 * (src[col - 2] + src[col + 3])
+                                  - 5 * (src[col - 1] + src[col + 2])
+                                  + 20 * (src[col] + src[col + 1]));
+            int v = (int)((t + 16) >> 5);
+            dst[col] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+        }
+        src += src_strd;
+        dst += dst_strd;
+    }
+}
+
+static void ref_interp_vert(const uint8_t *src, uint8_t *dst, int src_strd,
+                            int dst_strd, int ht, int wd)
+{
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        for (col = 0; col < wd; col++) {
+            int16_t t = (int16_t)(
+                1 * (src[col - 2 * src_strd] + src[col + 3 * src_strd])
+                - 5 * (src[col - 1 * src_strd] + src[col + 2 * src_strd])
+                + 20 * (src[col] + src[col + 1 * src_strd]));
+            int v = (int)((t + 16) >> 5);
+            dst[col] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+        }
+        src += src_strd;
+        dst += dst_strd;
+    }
+}
+
+static void check_interp(void)
+{
+    static const int wds[] = { 4, 4, 8, 8, 16, 16 };
+    static const int hts[] = { 4, 8, 4, 16, 8, 16 };
+    uint32_t seed = 5;
+    unsigned i;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        int extreme;
+        for (extreme = 0; extreme < 2; extreme++) {
+            int wd = wds[i], ht = hts[i];
+            /* Padding of 3 on every side covers the widest tap offset
+             * (col-2, col+3, and the vertical equivalents at +-2/+3 rows). */
+            int pad = 3, src_strd = wd + 2 * pad, dst_strd = wd + 5;
+            uint8_t src[22 * 22], dst_m68k[16 * 21], dst_ref[16 * 21];
+            const uint8_t *src0 = src + pad * src_strd + pad;
+            int row, col, j;
+            for (j = 0; j < src_strd * (ht + 2 * pad); j++)
+                src[j] = extreme ? (uint8_t)((xrand(&seed) & 1) ? 255 : 0)
+                                 : (uint8_t)(xrand(&seed) & 0xff);
+
+            memset(dst_m68k, 0xAA, sizeof dst_m68k);
+            memset(dst_ref, 0xAA, sizeof dst_ref);
+            mr_ih264_inter_pred_luma_horz_m68k((uint8_t *)src0, dst_m68k,
+                                               src_strd, dst_strd, ht, wd,
+                                               NULL, 0);
+            ref_interp_horz(src0, dst_ref, src_strd, dst_strd, ht, wd);
+            for (row = 0; row < ht; row++)
+                for (col = 0; col < wd; col++) {
+                    int idx = row * dst_strd + col;
+                    if (dst_m68k[idx] != dst_ref[idx])
+                        report("interp_horz", row, col, dst_ref[idx],
+                               dst_m68k[idx]);
+                }
+
+            memset(dst_m68k, 0xAA, sizeof dst_m68k);
+            memset(dst_ref, 0xAA, sizeof dst_ref);
+            mr_ih264_inter_pred_luma_vert_m68k((uint8_t *)src0, dst_m68k,
+                                               src_strd, dst_strd, ht, wd,
+                                               NULL, 0);
+            ref_interp_vert(src0, dst_ref, src_strd, dst_strd, ht, wd);
+            for (row = 0; row < ht; row++)
+                for (col = 0; col < wd; col++) {
+                    int idx = row * dst_strd + col;
+                    if (dst_m68k[idx] != dst_ref[idx])
+                        report("interp_vert", row, col, dst_ref[idx],
+                               dst_m68k[idx]);
+                }
+        }
+    }
+}
+#endif /* __mc68000__ */
+
 int main(void)
 {
     check_luma_copy();
     check_weighted_pred_luma();
     check_weighted_pred_chroma();
     check_intra16();
+#if defined(__mc68000__)
+    check_interp();
+#endif
 
     if (g_failures) {
         fprintf(stderr, "mr_h264_m68k_check: %d mismatches\n", g_failures);
