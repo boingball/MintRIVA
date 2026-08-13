@@ -836,6 +836,287 @@ static void check_deblk_bslt4(void)
         }
     }
 }
+
+/* ---- deblk_chroma_vert/horz_bs4 / bslt4 (H.264 8.7.2.4/8.7.2.3, chroma) */
+/* Independent re-derivation of ih264_deblk_chroma_vert_bs4/horz_bs4/
+ * vert_bslt4/horz_bslt4 (ih264_deblk_edge_filters.c) - the *_cb/_cr
+ * functions actually wired into the codec's function-pointer table, not
+ * the single-alpha/beta "_bp" variants also present in that file. cb and
+ * cr parameters are deliberately different in every check below so a
+ * U/V or cb/cr mixup in the asm would show up as a mismatch. */
+static void ref_deblk_chroma_bs4_pixel(uint8_t p1, uint8_t p0, uint8_t q0,
+                                       uint8_t q1, int alpha, int beta,
+                                       uint8_t out[4] /* p1,p0,q0,q1 */)
+{
+    out[0] = p1; out[1] = p0; out[2] = q0; out[3] = q1;
+    if (abs((int)p0 - (int)q0) < alpha && abs((int)q1 - (int)q0) < beta &&
+        abs((int)p1 - (int)p0) < beta) {
+        out[1] = (uint8_t)((2 * (int)p1 + (int)p0 + (int)q1 + 2) >> 2);
+        out[2] = (uint8_t)((2 * (int)q1 + (int)q0 + (int)p1 + 2) >> 2);
+    }
+}
+
+static void deblk_chroma_fill_sample(uint32_t *seed, int row, uint8_t s[4])
+{
+    int k;
+    if ((row & 1) == 0) {
+        int p0 = 80 + (int)(xrand(seed) % 40);
+        s[1] = (uint8_t)p0;
+        s[2] = (uint8_t)(p0 + (int)(xrand(seed) % 9) - 4);
+        s[0] = (uint8_t)(p0 + (int)(xrand(seed) % 7) - 3);
+        s[3] = (uint8_t)(p0 + (int)(xrand(seed) % 7) - 3);
+    } else {
+        for (k = 0; k < 4; k++) s[k] = (uint8_t)(xrand(seed) & 0xff);
+    }
+}
+
+static void check_deblk_chroma_bs4(void)
+{
+    static const int cb_alpha[] = { 4, 30, 130 };
+    static const int cb_beta[]  = { 2, 9, 18 };
+    static const int cr_alpha[] = { 12, 60, 255 };
+    static const int cr_beta[]  = { 5, 14, 18 };
+    uint32_t seed = 13;
+    unsigned i;
+    for (i = 0; i < sizeof cb_alpha / sizeof cb_alpha[0]; i++) {
+        int alpha_cb = cb_alpha[i], beta_cb = cb_beta[i];
+        int alpha_cr = cr_alpha[i], beta_cr = cr_beta[i];
+        int row, k;
+
+        /* vertical: 8 rows, 4 columns per row (p1_u,p0_u|... no - U/V
+         * interleaved: byte layout per row is p1_u,p1_v,p0_u,p0_v,q0_u,
+         * q0_v,q1_u,q1_v; pu1_src at column 4 (q0_u); src_strd = 8. */
+        {
+            int src_strd = 8;
+            uint8_t buf_m68k[8 * 8], buf_ref[8 * 8], su[4], sv[4], out[4];
+            for (row = 0; row < 8; row++) {
+                deblk_chroma_fill_sample(&seed, row, su);
+                deblk_chroma_fill_sample(&seed, row + 1, sv);
+                buf_m68k[row * src_strd + 0] = su[0]; /* p1_u */
+                buf_m68k[row * src_strd + 1] = sv[0]; /* p1_v */
+                buf_m68k[row * src_strd + 2] = su[1]; /* p0_u */
+                buf_m68k[row * src_strd + 3] = sv[1]; /* p0_v */
+                buf_m68k[row * src_strd + 4] = su[2]; /* q0_u */
+                buf_m68k[row * src_strd + 5] = sv[2]; /* q0_v */
+                buf_m68k[row * src_strd + 6] = su[3]; /* q1_u */
+                buf_m68k[row * src_strd + 7] = sv[3]; /* q1_v */
+
+                ref_deblk_chroma_bs4_pixel(su[0], su[1], su[2], su[3],
+                                           alpha_cb, beta_cb, out);
+                buf_ref[row * src_strd + 0] = out[0];
+                buf_ref[row * src_strd + 2] = out[1];
+                buf_ref[row * src_strd + 4] = out[2];
+                buf_ref[row * src_strd + 6] = out[3];
+                ref_deblk_chroma_bs4_pixel(sv[0], sv[1], sv[2], sv[3],
+                                           alpha_cr, beta_cr, out);
+                buf_ref[row * src_strd + 1] = out[0];
+                buf_ref[row * src_strd + 3] = out[1];
+                buf_ref[row * src_strd + 5] = out[2];
+                buf_ref[row * src_strd + 7] = out[3];
+            }
+            mr_ih264_deblk_chroma_vert_bs4_m68k(buf_m68k + 4, src_strd,
+                                                alpha_cb, beta_cb, alpha_cr,
+                                                beta_cr);
+            for (row = 0; row < 8; row++)
+                for (k = 0; k < 8; k++) {
+                    int idx = row * src_strd + k;
+                    if (buf_m68k[idx] != buf_ref[idx])
+                        report("deblk_chroma_vert_bs4", row, k,
+                               buf_ref[idx], buf_m68k[idx]);
+                }
+        }
+
+        /* horizontal: 4 rows, 16 columns; pu1_src at row 2. */
+        {
+            int src_strd = 16;
+            uint8_t buf_m68k[4 * 16], buf_ref[4 * 16], su[4], sv[4], out[4];
+            int col;
+            /* Horizontal chroma still interleaves U/V within each row by
+             * column parity (pu1_src / pu1_src+1), same convention as the
+             * vertical case's +1-byte-per-row interleave. */
+            for (col = 0; col < 16; col += 2) {
+                deblk_chroma_fill_sample(&seed, col, su);
+                deblk_chroma_fill_sample(&seed, col + 1, sv);
+                buf_m68k[0 * src_strd + col] = su[0];     /* p1_u */
+                buf_m68k[0 * src_strd + col + 1] = sv[0]; /* p1_v */
+                buf_m68k[1 * src_strd + col] = su[1];     /* p0_u */
+                buf_m68k[1 * src_strd + col + 1] = sv[1]; /* p0_v */
+                buf_m68k[2 * src_strd + col] = su[2];     /* q0_u */
+                buf_m68k[2 * src_strd + col + 1] = sv[2]; /* q0_v */
+                buf_m68k[3 * src_strd + col] = su[3];     /* q1_u */
+                buf_m68k[3 * src_strd + col + 1] = sv[3]; /* q1_v */
+
+                ref_deblk_chroma_bs4_pixel(su[0], su[1], su[2], su[3],
+                                           alpha_cb, beta_cb, out);
+                buf_ref[0 * src_strd + col] = out[0];
+                buf_ref[1 * src_strd + col] = out[1];
+                buf_ref[2 * src_strd + col] = out[2];
+                buf_ref[3 * src_strd + col] = out[3];
+                ref_deblk_chroma_bs4_pixel(sv[0], sv[1], sv[2], sv[3],
+                                           alpha_cr, beta_cr, out);
+                buf_ref[0 * src_strd + col + 1] = out[0];
+                buf_ref[1 * src_strd + col + 1] = out[1];
+                buf_ref[2 * src_strd + col + 1] = out[2];
+                buf_ref[3 * src_strd + col + 1] = out[3];
+            }
+            mr_ih264_deblk_chroma_horz_bs4_m68k(buf_m68k + 2 * src_strd,
+                                                src_strd, alpha_cb, beta_cb,
+                                                alpha_cr, beta_cr);
+            for (k = 0; k < 4; k++)
+                for (col = 0; col < 16; col++) {
+                    int idx = k * src_strd + col;
+                    if (buf_m68k[idx] != buf_ref[idx])
+                        report("deblk_chroma_horz_bs4", k, col,
+                               buf_ref[idx], buf_m68k[idx]);
+                }
+        }
+    }
+}
+
+static void ref_deblk_chroma_bslt4_pixel(uint8_t p1, uint8_t p0, uint8_t q0,
+                                         uint8_t q1, int alpha, int beta,
+                                         int tc0, uint8_t out[4])
+{
+    out[0] = p1; out[1] = p0; out[2] = q0; out[3] = q1;
+    if (abs((int)p0 - (int)q0) < alpha && abs((int)q1 - (int)q0) < beta &&
+        abs((int)p1 - (int)p0) < beta) {
+        int tc = tc0 + 1;
+        int val = (((int)q0 - (int)p0) * 4 + ((int)p1 - (int)q1) + 4) >> 3;
+        int delta = val < -tc ? -tc : (val > tc ? tc : val);
+        int p0n = (int)p0 + delta, q0n = (int)q0 - delta;
+        p0n = p0n < 0 ? 0 : (p0n > 255 ? 255 : p0n);
+        q0n = q0n < 0 ? 0 : (q0n > 255 ? 255 : q0n);
+        out[1] = (uint8_t)p0n;
+        out[2] = (uint8_t)q0n;
+    }
+}
+
+static void check_deblk_chroma_bslt4(void)
+{
+    static const int cb_alpha[] = { 12, 60, 130 };
+    static const int cb_beta[]  = { 5, 9, 14 };
+    static const int cr_alpha[] = { 30, 130, 255 };
+    static const int cr_beta[]  = { 2, 14, 18 };
+    static const uint8_t cliptab_cb[4] = { 0, 1, 3, 9 };
+    static const uint8_t cliptab_cr[4] = { 0, 2, 5, 11 };
+    uint32_t seed = 17;
+    unsigned i;
+    for (i = 0; i < sizeof cb_alpha / sizeof cb_alpha[0]; i++) {
+        int alpha_cb = cb_alpha[i], beta_cb = cb_beta[i];
+        int alpha_cr = cr_alpha[i], beta_cr = cr_beta[i];
+        /* Groups 0..3 get bS 1,2,3,0 - group 3 exercises the
+         * skip-the-whole-group path. */
+        uint32_t u4_bs = ((uint32_t)1 << 24) | ((uint32_t)2 << 16) |
+                         ((uint32_t)3 << 8) | (uint32_t)0;
+        int row, k;
+
+        /* vertical: 8 rows, 8 columns (U/V interleaved p1,p0,q0,q1). */
+        {
+            int src_strd = 8;
+            uint8_t buf_m68k[8 * 8], buf_ref[8 * 8], su[4], sv[4], out[4];
+            for (row = 0; row < 8; row++) {
+                int group = row / 2;
+                int bs = (int)((u4_bs >> ((3 - group) * 8)) & 0xff);
+                deblk_chroma_fill_sample(&seed, row, su);
+                deblk_chroma_fill_sample(&seed, row + 1, sv);
+                buf_m68k[row * src_strd + 0] = su[0];
+                buf_m68k[row * src_strd + 1] = sv[0];
+                buf_m68k[row * src_strd + 2] = su[1];
+                buf_m68k[row * src_strd + 3] = sv[1];
+                buf_m68k[row * src_strd + 4] = su[2];
+                buf_m68k[row * src_strd + 5] = sv[2];
+                buf_m68k[row * src_strd + 6] = su[3];
+                buf_m68k[row * src_strd + 7] = sv[3];
+
+                if (bs == 0) {
+                    for (k = 0; k < 8; k++)
+                        buf_ref[row * src_strd + k] = buf_m68k[row * src_strd + k];
+                } else {
+                    ref_deblk_chroma_bslt4_pixel(su[0], su[1], su[2], su[3],
+                                                 alpha_cb, beta_cb,
+                                                 cliptab_cb[bs], out);
+                    buf_ref[row * src_strd + 0] = out[0];
+                    buf_ref[row * src_strd + 2] = out[1];
+                    buf_ref[row * src_strd + 4] = out[2];
+                    buf_ref[row * src_strd + 6] = out[3];
+                    ref_deblk_chroma_bslt4_pixel(sv[0], sv[1], sv[2], sv[3],
+                                                 alpha_cr, beta_cr,
+                                                 cliptab_cr[bs], out);
+                    buf_ref[row * src_strd + 1] = out[0];
+                    buf_ref[row * src_strd + 3] = out[1];
+                    buf_ref[row * src_strd + 5] = out[2];
+                    buf_ref[row * src_strd + 7] = out[3];
+                }
+            }
+            mr_ih264_deblk_chroma_vert_bslt4_m68k(buf_m68k + 4, src_strd,
+                                                  alpha_cb, beta_cb,
+                                                  alpha_cr, beta_cr, u4_bs,
+                                                  cliptab_cb, cliptab_cr);
+            for (row = 0; row < 8; row++)
+                for (k = 0; k < 8; k++) {
+                    int idx = row * src_strd + k;
+                    if (buf_m68k[idx] != buf_ref[idx])
+                        report("deblk_chroma_vert_bslt4", row, k,
+                               buf_ref[idx], buf_m68k[idx]);
+                }
+        }
+
+        /* horizontal: 4 rows, 16 columns (U/V interleaved by column). */
+        {
+            int src_strd = 16;
+            uint8_t buf_m68k[4 * 16], buf_ref[4 * 16], su[4], sv[4], out[4];
+            int col;
+            for (col = 0; col < 16; col += 2) {
+                int group = (col / 2) / 2;
+                int bs = (int)((u4_bs >> ((3 - group) * 8)) & 0xff);
+                deblk_chroma_fill_sample(&seed, col, su);
+                deblk_chroma_fill_sample(&seed, col + 1, sv);
+                buf_m68k[0 * src_strd + col] = su[0];
+                buf_m68k[0 * src_strd + col + 1] = sv[0];
+                buf_m68k[1 * src_strd + col] = su[1];
+                buf_m68k[1 * src_strd + col + 1] = sv[1];
+                buf_m68k[2 * src_strd + col] = su[2];
+                buf_m68k[2 * src_strd + col + 1] = sv[2];
+                buf_m68k[3 * src_strd + col] = su[3];
+                buf_m68k[3 * src_strd + col + 1] = sv[3];
+
+                if (bs == 0) {
+                    for (k = 0; k < 4; k++) {
+                        buf_ref[k * src_strd + col] = buf_m68k[k * src_strd + col];
+                        buf_ref[k * src_strd + col + 1] =
+                            buf_m68k[k * src_strd + col + 1];
+                    }
+                } else {
+                    ref_deblk_chroma_bslt4_pixel(su[0], su[1], su[2], su[3],
+                                                 alpha_cb, beta_cb,
+                                                 cliptab_cb[bs], out);
+                    buf_ref[0 * src_strd + col] = out[0];
+                    buf_ref[1 * src_strd + col] = out[1];
+                    buf_ref[2 * src_strd + col] = out[2];
+                    buf_ref[3 * src_strd + col] = out[3];
+                    ref_deblk_chroma_bslt4_pixel(sv[0], sv[1], sv[2], sv[3],
+                                                 alpha_cr, beta_cr,
+                                                 cliptab_cr[bs], out);
+                    buf_ref[0 * src_strd + col + 1] = out[0];
+                    buf_ref[1 * src_strd + col + 1] = out[1];
+                    buf_ref[2 * src_strd + col + 1] = out[2];
+                    buf_ref[3 * src_strd + col + 1] = out[3];
+                }
+            }
+            mr_ih264_deblk_chroma_horz_bslt4_m68k(buf_m68k + 2 * src_strd,
+                                                  src_strd, alpha_cb, beta_cb,
+                                                  alpha_cr, beta_cr, u4_bs,
+                                                  cliptab_cb, cliptab_cr);
+            for (k = 0; k < 4; k++)
+                for (col = 0; col < 16; col++) {
+                    int idx = k * src_strd + col;
+                    if (buf_m68k[idx] != buf_ref[idx])
+                        report("deblk_chroma_horz_bslt4", k, col,
+                               buf_ref[idx], buf_m68k[idx]);
+                }
+        }
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -851,6 +1132,8 @@ int main(void)
     check_interp_hpel_hpel();
     check_deblk_bs4();
     check_deblk_bslt4();
+    check_deblk_chroma_bs4();
+    check_deblk_chroma_bslt4();
 #endif
 
     if (g_failures) {

@@ -58,6 +58,26 @@ void mr_ih264_deblk_luma_vert_bslt4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
 void mr_ih264_deblk_luma_horz_bslt4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
                                          UWORD32, const UWORD8 *)
     __asm__("mr_ih264_deblk_luma_horz_bslt4_m68k");
+/* Chroma bs4/bslt4 take separate alpha/beta (and, for bslt4, separate clip
+ * tables) per plane - alpha_cb/beta_cb for U, alpha_cr/beta_cr for V -
+ * matching ih264_deblk_chroma_edge_bs4_ft/bslt4_ft in
+ * ih264_deblk_edge_filters.h exactly (not the single-alpha/beta "_bp"
+ * variants also present in that vendored file, which are a different,
+ * unused entry point). */
+void mr_ih264_deblk_chroma_vert_bs4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
+                                         WORD32, WORD32)
+    __asm__("mr_ih264_deblk_chroma_vert_bs4_m68k");
+void mr_ih264_deblk_chroma_horz_bs4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
+                                         WORD32, WORD32)
+    __asm__("mr_ih264_deblk_chroma_horz_bs4_m68k");
+void mr_ih264_deblk_chroma_vert_bslt4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
+                                           WORD32, WORD32, UWORD32,
+                                           const UWORD8 *, const UWORD8 *)
+    __asm__("mr_ih264_deblk_chroma_vert_bslt4_m68k");
+void mr_ih264_deblk_chroma_horz_bslt4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
+                                           WORD32, WORD32, UWORD32,
+                                           const UWORD8 *, const UWORD8 *)
+    __asm__("mr_ih264_deblk_chroma_horz_bslt4_m68k");
 #endif
 
 #endif

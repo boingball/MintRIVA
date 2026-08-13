@@ -1155,8 +1155,924 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	movem.l	(%sp)+,%d2-%d7/%a3-%a5
 	rts
 
+/*
+ * ------------------------------------------------------------------------
+ * Chroma deblocking edge filters (H.264 8.7.2.4 / 8.7.2.3, chroma case).
+ * Simpler than luma in three ways that shape every function below:
+ *
+ * - U and V are interleaved in memory (UVUVUV...), so every luma "column"
+ *   is two bytes here, and each iteration filters a U sample and a V
+ *   sample as a fully independent pair (own filtering decision, own
+ *   read/write, own alpha/beta/tc0 - U uses the _cb parameters, V the
+ *   _cr ones; nothing is shared between planes except src_strd/u4_bs).
+ * - Chroma has no p2/q2 taps at all - just p1/p0/q0/q1 - so there is no
+ *   a_p/a_q strong-vs-weak split anywhere, not even for bS==4: chroma at
+ *   bS==4 uses the exact same 1-tap p0'/q0' formula as luma's bS==4 weak
+ *   region, and chroma bS<4 always has tc = tc0 + 1 (fixed, no per-sample
+ *   a_p/a_q adjustment) and only ever writes p0'/q0' - no p1'/q1' update
+ *   exists for chroma at all.
+ * - The block is 8 samples along the edge (4:2:0 chroma height/width),
+ *   not 16, and bS<4's boundary-strength grouping is 4 edges of 2 samples
+ *   instead of luma's 4 edges of 4.
+ *
+ * IMPORTANT: unlike every luma function above, the real libavc function
+ * pointer types here (ih264_deblk_chroma_edge_bs4_ft/bslt4_ft,
+ * ih264_deblk_edge_filters.h) take *separate* alpha/beta (and, for bslt4,
+ * separate clip tables) per plane - alpha_cb/beta_cb for U, alpha_cr/
+ * beta_cr for V - not one shared pair. ih264_deblk_edge_filters.c does
+ * define single-alpha/beta "_bp" variants (ih264_deblk_chroma_vert_bs4_bp
+ * etc.) that look tempting to port from, but they are a different,
+ * unused-by-this-selector entry point - ih264d_function_selector_generic.c
+ * wires pf_deblk_chroma_vert_bs4 to the *_cb/_cr function, not the _bp
+ * one. Matching the wrong signature here would silently misread the
+ * stack (fewer/wrong arguments) rather than fail to link, so the
+ * argument list below was re-checked against the actual typedef in
+ * ih264_deblk_edge_filters.h before writing a single instruction.
+ *
+ * void mr_ih264_deblk_chroma_vert_bs4_m68k(UWORD8 *pu1_src, WORD32 src_strd,
+ *     WORD32 alpha_cb, WORD32 beta_cb, WORD32 alpha_cr, WORD32 beta_cr);
+ * void mr_ih264_deblk_chroma_horz_bs4_m68k(... same signature ...);
+ * void mr_ih264_deblk_chroma_vert_bslt4_m68k(UWORD8 *pu1_src,
+ *     WORD32 src_strd, WORD32 alpha_cb, WORD32 beta_cb, WORD32 alpha_cr,
+ *     WORD32 beta_cr, UWORD32 u4_bs, const UWORD8 *pu1_cliptab_cb,
+ *     const UWORD8 *pu1_cliptab_cr);
+ * void mr_ih264_deblk_chroma_horz_bslt4_m68k(... same signature ...);
+ *
+ * bs4: 6 stack arguments; saves %d2-%d3/%d5/%a3-%a4 (5 registers, 20
+ * bytes), so stack offsets below are +20 (pu1_src at 24(%sp) = 4+20).
+ * Flattens the "4 edges of 2 samples" loop into 8 uniform iterations,
+ * exactly like luma bS==4 - chroma bS==4 has no per-edge state (no bS
+ * array, no tc0) to force a nested loop.
+ *
+ * bslt4: 9 stack arguments; saves %d2-%d7/%a2-%a5 (10 registers, 40
+ * bytes), so stack offsets below are +40 (pu1_src at 44(%sp) = 4+40).
+ * Keeps the nested "4 groups of 2 samples" loop (tc differs per group).
+ * Two clip tables means two independent tc values live across a group's
+ * 2 samples: %d4 = tcb (=cliptab_cb[bS]+1), %d7 = tcr (=cliptab_cr[bS]+1)
+ * - both fixed, unlike luma's tc which needs a per-sample a_p/a_q
+ * adjustment on top of tc0. %a5 = pu1_cliptab_cb, %a2 = pu1_cliptab_cr.
+ * ------------------------------------------------------------------------
+ */
+	.globl	mr_ih264_deblk_chroma_vert_bs4_m68k
+	.globl	mr_ih264_deblk_chroma_horz_bs4_m68k
+	.globl	mr_ih264_deblk_chroma_vert_bslt4_m68k
+	.globl	mr_ih264_deblk_chroma_horz_bslt4_m68k
+
+/* ---------------------------------------------------------------------- */
+/* Chroma vertical, bS==4: constant byte displacements from the cursor;   */
+/* U at base 0 (p1=-4,p0=-2,q0=0,q1=2) uses alpha_cb/beta_cb, V at base   */
+/* +1 (p1=-3,p0=-1,q0=1,q1=3) uses alpha_cr/beta_cr.                      */
+/* ---------------------------------------------------------------------- */
+mr_ih264_deblk_chroma_vert_bs4_m68k:
+	movem.l	%d2-%d3/%d5/%a3-%a4,-(%sp)
+	movea.l	24(%sp),%a3		/* pu1_src   (4+20)  */
+	move.l	28(%sp),%d0		/* src_strd  (8+20)  */
+	movea.l	%d0,%a4
+	moveq	#8,%d5			/* 4 edges * 2 rows, flattened */
+
+.Lcv4_row:
+	/* ---- U plane (alpha_cb/beta_cb) ---- */
+	clr.l	%d0
+	move.b	-2(%a3),%d0		/* p0_u */
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcv4_uabs1
+	neg.l	%d2
+.Lcv4_uabs1:
+	move.l	32(%sp),%d3		/* alpha_cb (12+20) */
+	cmp.l	%d3,%d2
+	bge	.Lcv4_u_skip
+
+	clr.l	%d0
+	move.b	2(%a3),%d0		/* q1_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcv4_uabs2
+	neg.l	%d2
+.Lcv4_uabs2:
+	move.l	36(%sp),%d3		/* beta_cb  (16+20) */
+	cmp.l	%d3,%d2
+	bge	.Lcv4_u_skip
+
+	clr.l	%d0
+	move.b	-4(%a3),%d0		/* p1_u */
+	clr.l	%d1
+	move.b	-2(%a3),%d1		/* p0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcv4_uabs3
+	neg.l	%d2
+.Lcv4_uabs3:
+	cmp.l	%d3,%d2
+	bge	.Lcv4_u_skip
+
+	clr.l	%d0
+	move.b	-4(%a3),%d0		/* p1_u */
+	clr.l	%d1
+	move.b	-2(%a3),%d1		/* p0_u */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	clr.l	%d1
+	move.b	2(%a3),%d1		/* q1_u */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	move.b	%d2,-2(%a3)		/* p0_u' */
+
+	clr.l	%d0
+	move.b	2(%a3),%d0		/* q1_u */
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	clr.l	%d1
+	move.b	-4(%a3),%d1		/* p1_u */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	move.b	%d2,(%a3)		/* q0_u' */
+.Lcv4_u_skip:
+
+	/* ---- V plane (alpha_cr/beta_cr) ---- */
+	clr.l	%d0
+	move.b	-1(%a3),%d0		/* p0_v */
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcv4_vabs1
+	neg.l	%d2
+.Lcv4_vabs1:
+	move.l	40(%sp),%d3		/* alpha_cr (20+20) */
+	cmp.l	%d3,%d2
+	bge	.Lcv4_v_skip
+
+	clr.l	%d0
+	move.b	3(%a3),%d0		/* q1_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcv4_vabs2
+	neg.l	%d2
+.Lcv4_vabs2:
+	move.l	44(%sp),%d3		/* beta_cr  (24+20) */
+	cmp.l	%d3,%d2
+	bge	.Lcv4_v_skip
+
+	clr.l	%d0
+	move.b	-3(%a3),%d0		/* p1_v */
+	clr.l	%d1
+	move.b	-1(%a3),%d1		/* p0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcv4_vabs3
+	neg.l	%d2
+.Lcv4_vabs3:
+	cmp.l	%d3,%d2
+	bge	.Lcv4_v_skip
+
+	clr.l	%d0
+	move.b	-3(%a3),%d0		/* p1_v */
+	clr.l	%d1
+	move.b	-1(%a3),%d1		/* p0_v */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	clr.l	%d1
+	move.b	3(%a3),%d1		/* q1_v */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	move.b	%d2,-1(%a3)		/* p0_v' */
+
+	clr.l	%d0
+	move.b	3(%a3),%d0		/* q1_v */
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	clr.l	%d1
+	move.b	-3(%a3),%d1		/* p1_v */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	move.b	%d2,1(%a3)		/* q0_v' */
+.Lcv4_v_skip:
+
+	adda.l	%a4,%a3
+	subq.l	#1,%d5
+	bne	.Lcv4_row
+
+	movem.l	(%sp)+,%d2-%d3/%d5/%a3-%a4
+	rts
+
+/* ---------------------------------------------------------------------- */
+/* Chroma horizontal, bS==4: samples are src_strd apart; each tap address */
+/* is recomputed fresh via %a0, matching every horz function above. U at  */
+/* base 0 (alpha_cb/beta_cb), V at base +1 (alpha_cr/beta_cr).            */
+/* ---------------------------------------------------------------------- */
+mr_ih264_deblk_chroma_horz_bs4_m68k:
+	movem.l	%d2-%d3/%d5/%a3-%a4,-(%sp)
+	movea.l	24(%sp),%a3		/* pu1_src   (4+20)  */
+	move.l	28(%sp),%d0		/* src_strd  (8+20)  */
+	movea.l	%d0,%a4
+	moveq	#8,%d5			/* 4 edges * 2 columns, flattened */
+
+.Lch4_col:
+	/* ---- U plane (alpha_cb/beta_cb) ---- */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p0_u */
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lch4_uabs1
+	neg.l	%d2
+.Lch4_uabs1:
+	move.l	32(%sp),%d3		/* alpha_cb */
+	cmp.l	%d3,%d2
+	bge	.Lch4_u_skip
+
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* q1_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lch4_uabs2
+	neg.l	%d2
+.Lch4_uabs2:
+	move.l	36(%sp),%d3		/* beta_cb */
+	cmp.l	%d3,%d2
+	bge	.Lch4_u_skip
+
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p1_u */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lch4_uabs3
+	neg.l	%d2
+.Lch4_uabs3:
+	cmp.l	%d3,%d2
+	bge	.Lch4_u_skip
+
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p1_u */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p0_u */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d1
+	move.b	(%a0),%d1		/* q1_u */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	move.b	%d2,(%a0)		/* p0_u' */
+
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* q1_u */
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p1_u */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	move.b	%d2,(%a3)		/* q0_u' */
+.Lch4_u_skip:
+
+	/* ---- V plane (alpha_cr/beta_cr) ---- */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* p0_v */
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lch4_vabs1
+	neg.l	%d2
+.Lch4_vabs1:
+	move.l	40(%sp),%d3		/* alpha_cr */
+	cmp.l	%d3,%d2
+	bge	.Lch4_v_skip
+
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* q1_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lch4_vabs2
+	neg.l	%d2
+.Lch4_vabs2:
+	move.l	44(%sp),%d3		/* beta_cr */
+	cmp.l	%d3,%d2
+	bge	.Lch4_v_skip
+
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* p1_v */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	1(%a0),%d1		/* p0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lch4_vabs3
+	neg.l	%d2
+.Lch4_vabs3:
+	cmp.l	%d3,%d2
+	bge	.Lch4_v_skip
+
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* p1_v */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	1(%a0),%d1		/* p0_v */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d1
+	move.b	1(%a0),%d1		/* q1_v */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	move.b	%d2,1(%a0)		/* p0_v' */
+
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* q1_v */
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	move.l	%d0,%d2
+	asl.l	#1,%d2
+	add.l	%d1,%d2
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	1(%a0),%d1		/* p1_v */
+	add.l	%d1,%d2
+	addq.l	#2,%d2
+	asr.l	#2,%d2
+	move.b	%d2,1(%a3)		/* q0_v' */
+.Lch4_v_skip:
+
+	addq.l	#2,%a3
+	subq.l	#1,%d5
+	bne	.Lch4_col
+
+	movem.l	(%sp)+,%d2-%d3/%d5/%a3-%a4
+	rts
+
+/* ---------------------------------------------------------------------- */
+/* Chroma vertical, bS<4: nested "4 groups of 2 samples" loop. %d4 = tcb  */
+/* (from pu1_cliptab_cb, used by U), %d7 = tcr (from pu1_cliptab_cr, used */
+/* by V) - both fixed as tc0+1 for the whole group (no a_p/a_q            */
+/* adjustment - chroma has no p2/q2 at all). No p1'/q1' update exists.    */
+/* ---------------------------------------------------------------------- */
+mr_ih264_deblk_chroma_vert_bslt4_m68k:
+	movem.l	%d2-%d7/%a2-%a5,-(%sp)
+	movea.l	44(%sp),%a3		/* pu1_src        (4+40)  */
+	move.l	48(%sp),%d0		/* src_strd       (8+40)  */
+	movea.l	%d0,%a4
+	movea.l	72(%sp),%a5		/* pu1_cliptab_cb (32+40) */
+	movea.l	76(%sp),%a2		/* pu1_cliptab_cr (36+40) */
+	moveq	#4,%d6			/* group counter */
+
+.Lcvw_edge:
+	move.l	%d6,%d0
+	subq.l	#1,%d0
+	lsl.l	#3,%d0
+	move.l	68(%sp),%d1		/* u4_bs (28+40) */
+	lsr.l	%d0,%d1
+	and.l	#0xff,%d1		/* bS */
+	tst.l	%d1
+	beq	.Lcvw_edge_skip
+
+	clr.l	%d4
+	move.b	0(%a5,%d1.l),%d4	/* tcb0 */
+	addq.l	#1,%d4			/* d4 = tcb = tcb0+1 */
+	clr.l	%d7
+	move.b	0(%a2,%d1.l),%d7	/* tcr0 */
+	addq.l	#1,%d7			/* d7 = tcr = tcr0+1 */
+	moveq	#2,%d5			/* 2 samples per group */
+
+.Lcvw_row:
+	/* ---- U plane (alpha_cb/beta_cb, tcb) ---- */
+	clr.l	%d0
+	move.b	-2(%a3),%d0		/* p0_u */
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcvw_uabs1
+	neg.l	%d2
+.Lcvw_uabs1:
+	move.l	52(%sp),%d3		/* alpha_cb (12+40) */
+	cmp.l	%d3,%d2
+	bge	.Lcvw_u_skip
+
+	clr.l	%d0
+	move.b	2(%a3),%d0		/* q1_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcvw_uabs2
+	neg.l	%d2
+.Lcvw_uabs2:
+	move.l	56(%sp),%d3		/* beta_cb  (16+40) */
+	cmp.l	%d3,%d2
+	bge	.Lcvw_u_skip
+
+	clr.l	%d0
+	move.b	-4(%a3),%d0		/* p1_u */
+	clr.l	%d1
+	move.b	-2(%a3),%d1		/* p0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcvw_uabs3
+	neg.l	%d2
+.Lcvw_uabs3:
+	cmp.l	%d3,%d2
+	bge	.Lcvw_u_skip
+
+	clr.l	%d0
+	move.b	(%a3),%d0		/* q0_u */
+	clr.l	%d1
+	move.b	-2(%a3),%d1		/* p0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	asl.l	#2,%d2
+	clr.l	%d0
+	move.b	-4(%a3),%d0		/* p1_u */
+	clr.l	%d1
+	move.b	2(%a3),%d1		/* q1_u */
+	sub.l	%d1,%d0
+	add.l	%d0,%d2
+	addq.l	#4,%d2
+	asr.l	#3,%d2			/* d2 = val */
+
+	move.l	%d4,%d0			/* tcb */
+	neg.l	%d0
+	cmp.l	%d0,%d2
+	bge.s	.Lcvw_udlo_ok
+	move.l	%d0,%d2
+.Lcvw_udlo_ok:
+	cmp.l	%d4,%d2
+	ble.s	.Lcvw_udhi_ok
+	move.l	%d4,%d2
+.Lcvw_udhi_ok:				/* d2 = delta */
+
+	clr.l	%d0
+	move.b	-2(%a3),%d0		/* p0_u */
+	add.l	%d2,%d0
+	bmi.s	.Lcvw_up0lo
+	cmp.l	#255,%d0
+	ble.s	.Lcvw_up0store
+	move.l	#255,%d0
+	bra.s	.Lcvw_up0store
+.Lcvw_up0lo:
+	moveq	#0,%d0
+.Lcvw_up0store:
+	move.b	%d0,-2(%a3)		/* p0_u' */
+
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	sub.l	%d2,%d1
+	bmi.s	.Lcvw_uq0lo
+	cmp.l	#255,%d1
+	ble.s	.Lcvw_uq0store
+	move.l	#255,%d1
+	bra.s	.Lcvw_uq0store
+.Lcvw_uq0lo:
+	moveq	#0,%d1
+.Lcvw_uq0store:
+	move.b	%d1,(%a3)		/* q0_u' */
+.Lcvw_u_skip:
+
+	/* ---- V plane (alpha_cr/beta_cr, tcr) ---- */
+	clr.l	%d0
+	move.b	-1(%a3),%d0		/* p0_v */
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcvw_vabs1
+	neg.l	%d2
+.Lcvw_vabs1:
+	move.l	60(%sp),%d3		/* alpha_cr (20+40) */
+	cmp.l	%d3,%d2
+	bge	.Lcvw_v_skip
+
+	clr.l	%d0
+	move.b	3(%a3),%d0		/* q1_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcvw_vabs2
+	neg.l	%d2
+.Lcvw_vabs2:
+	move.l	64(%sp),%d3		/* beta_cr  (24+40) */
+	cmp.l	%d3,%d2
+	bge	.Lcvw_v_skip
+
+	clr.l	%d0
+	move.b	-3(%a3),%d0		/* p1_v */
+	clr.l	%d1
+	move.b	-1(%a3),%d1		/* p0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lcvw_vabs3
+	neg.l	%d2
+.Lcvw_vabs3:
+	cmp.l	%d3,%d2
+	bge	.Lcvw_v_skip
+
+	clr.l	%d0
+	move.b	1(%a3),%d0		/* q0_v */
+	clr.l	%d1
+	move.b	-1(%a3),%d1		/* p0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	asl.l	#2,%d2
+	clr.l	%d0
+	move.b	-3(%a3),%d0		/* p1_v */
+	clr.l	%d1
+	move.b	3(%a3),%d1		/* q1_v */
+	sub.l	%d1,%d0
+	add.l	%d0,%d2
+	addq.l	#4,%d2
+	asr.l	#3,%d2
+
+	move.l	%d7,%d0			/* tcr */
+	neg.l	%d0
+	cmp.l	%d0,%d2
+	bge.s	.Lcvw_vdlo_ok
+	move.l	%d0,%d2
+.Lcvw_vdlo_ok:
+	cmp.l	%d7,%d2
+	ble.s	.Lcvw_vdhi_ok
+	move.l	%d7,%d2
+.Lcvw_vdhi_ok:
+
+	clr.l	%d0
+	move.b	-1(%a3),%d0		/* p0_v */
+	add.l	%d2,%d0
+	bmi.s	.Lcvw_vp0lo
+	cmp.l	#255,%d0
+	ble.s	.Lcvw_vp0store
+	move.l	#255,%d0
+	bra.s	.Lcvw_vp0store
+.Lcvw_vp0lo:
+	moveq	#0,%d0
+.Lcvw_vp0store:
+	move.b	%d0,-1(%a3)		/* p0_v' */
+
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	sub.l	%d2,%d1
+	bmi.s	.Lcvw_vq0lo
+	cmp.l	#255,%d1
+	ble.s	.Lcvw_vq0store
+	move.l	#255,%d1
+	bra.s	.Lcvw_vq0store
+.Lcvw_vq0lo:
+	moveq	#0,%d1
+.Lcvw_vq0store:
+	move.b	%d1,1(%a3)		/* q0_v' */
+.Lcvw_v_skip:
+
+	adda.l	%a4,%a3
+	subq.l	#1,%d5
+	bne	.Lcvw_row
+	bra	.Lcvw_edge_next
+
+.Lcvw_edge_skip:
+	adda.l	%a4,%a3
+	adda.l	%a4,%a3
+
+.Lcvw_edge_next:
+	subq.l	#1,%d6
+	bne	.Lcvw_edge
+
+	movem.l	(%sp)+,%d2-%d7/%a2-%a5
+	rts
+
+/* ---------------------------------------------------------------------- */
+/* Chroma horizontal, bS<4: samples are src_strd apart; every tap address */
+/* recomputed fresh via %a0. Column step is +2 (one U/V byte pair), and   */
+/* the group-skip path advances by 2 samples worth = 4 bytes.             */
+/* ---------------------------------------------------------------------- */
+mr_ih264_deblk_chroma_horz_bslt4_m68k:
+	movem.l	%d2-%d7/%a2-%a5,-(%sp)
+	movea.l	44(%sp),%a3		/* pu1_src        (4+40)  */
+	move.l	48(%sp),%d0		/* src_strd       (8+40)  */
+	movea.l	%d0,%a4
+	movea.l	72(%sp),%a5		/* pu1_cliptab_cb (32+40) */
+	movea.l	76(%sp),%a2		/* pu1_cliptab_cr (36+40) */
+	moveq	#4,%d6			/* group counter */
+
+.Lchw_edge:
+	move.l	%d6,%d0
+	subq.l	#1,%d0
+	lsl.l	#3,%d0
+	move.l	68(%sp),%d1		/* u4_bs (28+40) */
+	lsr.l	%d0,%d1
+	and.l	#0xff,%d1		/* bS */
+	tst.l	%d1
+	beq	.Lchw_edge_skip
+
+	clr.l	%d4
+	move.b	0(%a5,%d1.l),%d4	/* tcb0 */
+	addq.l	#1,%d4			/* d4 = tcb */
+	clr.l	%d7
+	move.b	0(%a2,%d1.l),%d7	/* tcr0 */
+	addq.l	#1,%d7			/* d7 = tcr */
+	moveq	#2,%d5
+
+.Lchw_col:
+	/* ---- U plane (alpha_cb/beta_cb, tcb) ---- */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p0_u */
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lchw_uabs1
+	neg.l	%d2
+.Lchw_uabs1:
+	move.l	52(%sp),%d3		/* alpha_cb */
+	cmp.l	%d3,%d2
+	bge	.Lchw_u_skip
+
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* q1_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lchw_uabs2
+	neg.l	%d2
+.Lchw_uabs2:
+	move.l	56(%sp),%d3		/* beta_cb */
+	cmp.l	%d3,%d2
+	bge	.Lchw_u_skip
+
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p1_u */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lchw_uabs3
+	neg.l	%d2
+.Lchw_uabs3:
+	cmp.l	%d3,%d2
+	bge	.Lchw_u_skip
+
+	clr.l	%d0
+	move.b	(%a3),%d0		/* q0_u */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p0_u */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	asl.l	#2,%d2
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p1_u */
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d1
+	move.b	(%a0),%d1		/* q1_u */
+	sub.l	%d1,%d0
+	add.l	%d0,%d2
+	addq.l	#4,%d2
+	asr.l	#3,%d2			/* d2 = val */
+
+	move.l	%d4,%d0			/* tcb */
+	neg.l	%d0
+	cmp.l	%d0,%d2
+	bge.s	.Lchw_udlo_ok
+	move.l	%d0,%d2
+.Lchw_udlo_ok:
+	cmp.l	%d4,%d2
+	ble.s	.Lchw_udhi_ok
+	move.l	%d4,%d2
+.Lchw_udhi_ok:
+
+	clr.l	%d0
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	move.b	(%a0),%d0		/* p0_u */
+	add.l	%d2,%d0
+	bmi.s	.Lchw_up0lo
+	cmp.l	#255,%d0
+	ble.s	.Lchw_up0store
+	move.l	#255,%d0
+	bra.s	.Lchw_up0store
+.Lchw_up0lo:
+	moveq	#0,%d0
+.Lchw_up0store:
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	move.b	%d0,(%a0)		/* p0_u' */
+
+	clr.l	%d1
+	move.b	(%a3),%d1		/* q0_u */
+	sub.l	%d2,%d1
+	bmi.s	.Lchw_uq0lo
+	cmp.l	#255,%d1
+	ble.s	.Lchw_uq0store
+	move.l	#255,%d1
+	bra.s	.Lchw_uq0store
+.Lchw_uq0lo:
+	moveq	#0,%d1
+.Lchw_uq0store:
+	move.b	%d1,(%a3)		/* q0_u' */
+.Lchw_u_skip:
+
+	/* ---- V plane (alpha_cr/beta_cr, tcr) ---- */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* p0_v */
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lchw_vabs1
+	neg.l	%d2
+.Lchw_vabs1:
+	move.l	60(%sp),%d3		/* alpha_cr */
+	cmp.l	%d3,%d2
+	bge	.Lchw_v_skip
+
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* q1_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lchw_vabs2
+	neg.l	%d2
+.Lchw_vabs2:
+	move.l	64(%sp),%d3		/* beta_cr */
+	cmp.l	%d3,%d2
+	bge	.Lchw_v_skip
+
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* p1_v */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	1(%a0),%d1		/* p0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	bpl.s	.Lchw_vabs3
+	neg.l	%d2
+.Lchw_vabs3:
+	cmp.l	%d3,%d2
+	bge	.Lchw_v_skip
+
+	clr.l	%d0
+	move.b	1(%a3),%d0		/* q0_v */
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	clr.l	%d1
+	move.b	1(%a0),%d1		/* p0_v */
+	move.l	%d0,%d2
+	sub.l	%d1,%d2
+	asl.l	#2,%d2
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	suba.l	%a4,%a0
+	clr.l	%d0
+	move.b	1(%a0),%d0		/* p1_v */
+	movea.l	%a3,%a0
+	adda.l	%a4,%a0
+	clr.l	%d1
+	move.b	1(%a0),%d1		/* q1_v */
+	sub.l	%d1,%d0
+	add.l	%d0,%d2
+	addq.l	#4,%d2
+	asr.l	#3,%d2
+
+	move.l	%d7,%d0			/* tcr */
+	neg.l	%d0
+	cmp.l	%d0,%d2
+	bge.s	.Lchw_vdlo_ok
+	move.l	%d0,%d2
+.Lchw_vdlo_ok:
+	cmp.l	%d7,%d2
+	ble.s	.Lchw_vdhi_ok
+	move.l	%d7,%d2
+.Lchw_vdhi_ok:
+
+	clr.l	%d0
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	move.b	1(%a0),%d0		/* p0_v */
+	add.l	%d2,%d0
+	bmi.s	.Lchw_vp0lo
+	cmp.l	#255,%d0
+	ble.s	.Lchw_vp0store
+	move.l	#255,%d0
+	bra.s	.Lchw_vp0store
+.Lchw_vp0lo:
+	moveq	#0,%d0
+.Lchw_vp0store:
+	movea.l	%a3,%a0
+	suba.l	%a4,%a0
+	move.b	%d0,1(%a0)		/* p0_v' */
+
+	clr.l	%d1
+	move.b	1(%a3),%d1		/* q0_v */
+	sub.l	%d2,%d1
+	bmi.s	.Lchw_vq0lo
+	cmp.l	#255,%d1
+	ble.s	.Lchw_vq0store
+	move.l	#255,%d1
+	bra.s	.Lchw_vq0store
+.Lchw_vq0lo:
+	moveq	#0,%d1
+.Lchw_vq0store:
+	move.b	%d1,1(%a3)		/* q0_v' */
+.Lchw_v_skip:
+
+	addq.l	#2,%a3
+	subq.l	#1,%d5
+	bne	.Lchw_col
+	bra	.Lchw_edge_next
+
+.Lchw_edge_skip:
+	addq.l	#4,%a3
+
+.Lchw_edge_next:
+	subq.l	#1,%d6
+	bne	.Lchw_edge
+
+	movem.l	(%sp)+,%d2-%d7/%a2-%a5
+	rts
+
 #endif /* MR_M68K_ASM */
 
 #if defined(__ELF__)
 	.section .note.GNU-stack,"",@progbits
 #endif
+
