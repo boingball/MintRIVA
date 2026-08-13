@@ -63,6 +63,8 @@
 	.globl	mr_ih264_inter_pred_luma_horz_m68k
 	.globl	mr_ih264_inter_pred_luma_vert_m68k
 	.globl	mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k
+	.globl	mr_ih264_inter_pred_luma_horz_qpel_m68k
+	.globl	mr_ih264_inter_pred_luma_vert_qpel_m68k
 
 /* ---------------------------------------------------------------------- */
 /* Horizontal: a4/a5 are the column cursors into the current row; taps sit */
@@ -416,6 +418,214 @@ mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k:
 
 .Lhq_done:
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
+	rts
+
+/* ---------------------------------------------------------------------- */
+/* horz_qpel (dydx 1,3) / vert_qpel (dydx 4,12): a single 6-tap pass       */
+/* averaged against a predictor offset by 0 or 1 columns/rows from        */
+/* pu1_src (Ittiam's ih264_inter_pred_luma_horz_qpel /                    */
+/* ..._vert_qpel in ih264_inter_pred_filters.c). Simpler than the         */
+/* diagonal case above: only one predictor, and because it advances in    */
+/* lockstep with pu1_src (same +1/+src_strd per column/row), its row base */
+/* is computed once at setup - a6 = pu1_src +/- the fixed offset - and    */
+/* then walked by src_strd every row exactly like pu1_src itself, rather  */
+/* than re-derived from dydx on every row the way the diagonal filter's   */
+/* pred_vert/pred_horz needed to be (there both offsets could differ from */
+/* each other; here there is only one, so the bit-test happens once).     */
+/*                                                                          */
+/* void mr_ih264_inter_pred_luma_horz_qpel_m68k(UWORD8 *pu1_src,           */
+/*     UWORD8 *pu1_dst, WORD32 src_strd, WORD32 dst_strd, WORD32 ht,       */
+/*     WORD32 wd, UWORD8 *pu1_tmp, WORD32 dydx);                          */
+/* void mr_ih264_inter_pred_luma_vert_qpel_m68k(... same signature ...);   */
+/*                                                                          */
+/* Both save %d2-%d6/%a2-%a6 (10 registers, 40 bytes): stack offsets below */
+/* are +40 (pu1_src at 44(%sp) = 4+40). a0/a1 are scratch, no save needed. */
+/* ---------------------------------------------------------------------- */
+mr_ih264_inter_pred_luma_horz_qpel_m68k:
+	movem.l	%d2-%d6/%a2-%a6,-(%sp)
+	move.l	60(%sp),%d5		/* ht        (20+40) */
+	tst.l	%d5
+	ble	.Lhqp_done
+	move.l	64(%sp),%d6		/* wd        (24+40) */
+	tst.l	%d6
+	ble	.Lhqp_done
+
+	move.l	44(%sp),%a2		/* pu1_src   (4+40)  */
+	move.l	48(%sp),%a3		/* pu1_dst   (8+40)  */
+	movea.l	%a2,%a6			/* pred1 row base = pu1_src + xoff_half */
+	move.l	72(%sp),%d0		/* dydx      (32+40) */
+	btst	#1,%d0			/* bit 1 = x_offset>>1 */
+	beq.s	.Lhqp_no_xoff
+	addq.l	#1,%a6
+.Lhqp_no_xoff:
+
+.Lhqp_row:
+	movea.l	%a2,%a4			/* src column cursor  */
+	movea.l	%a3,%a5			/* dst column cursor  */
+	movea.l	%a6,%a1			/* pred1 column cursor */
+	move.l	%d6,%d4			/* column counter = wd */
+
+.Lhqp_col:
+	clr.l	%d0
+	move.b	-2(%a4),%d0		/* p0 */
+	clr.l	%d1
+	move.b	3(%a4),%d1		/* p5 */
+	add.w	%d1,%d0			/* d0 = p0+p5 */
+
+	clr.l	%d1
+	move.b	-1(%a4),%d1		/* p1 */
+	clr.l	%d2
+	move.b	2(%a4),%d2		/* p4 */
+	add.w	%d2,%d1			/* d1 = p1+p4 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2			/* d2 = 5*(p1+p4) */
+	sub.w	%d2,%d0			/* d0 = (p0+p5) - 5*(p1+p4) */
+
+	clr.l	%d1
+	move.b	(%a4),%d1		/* p2 */
+	clr.l	%d2
+	move.b	1(%a4),%d2		/* p3 */
+	add.w	%d2,%d1			/* d1 = p2+p3 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2
+	lsl.w	#2,%d2			/* d2 = 20*(p2+p3) */
+	add.w	%d2,%d0			/* d0 = total */
+
+	add.w	#16,%d0
+	asr.w	#5,%d0
+	bmi.s	.Lhqp_clip_lo
+	cmp.w	#255,%d0
+	ble.s	.Lhqp_store
+	move.w	#255,%d0
+	bra.s	.Lhqp_store
+.Lhqp_clip_lo:
+	moveq	#0,%d0
+.Lhqp_store:
+	clr.l	%d1
+	move.b	(%a1),%d1		/* *pred1 */
+	add.w	%d1,%d0
+	addq.w	#1,%d0
+	asr.w	#1,%d0			/* (clipped + *pred1 + 1) >> 1 */
+	move.b	%d0,(%a5)+
+	addq.l	#1,%a4
+	addq.l	#1,%a1
+	subq.l	#1,%d4
+	bne	.Lhqp_col
+
+	move.l	52(%sp),%d0		/* src_strd (12+40) */
+	adda.l	%d0,%a2
+	adda.l	%d0,%a6
+	move.l	56(%sp),%d0		/* dst_strd (16+40) */
+	adda.l	%d0,%a3
+	subq.l	#1,%d5
+	bne	.Lhqp_row
+
+.Lhqp_done:
+	movem.l	(%sp)+,%d2-%d6/%a2-%a6
+	rts
+
+mr_ih264_inter_pred_luma_vert_qpel_m68k:
+	movem.l	%d2-%d6/%a2-%a6,-(%sp)
+	move.l	60(%sp),%d5		/* ht        (20+40) */
+	tst.l	%d5
+	ble	.Lvqp_done
+	move.l	64(%sp),%d6		/* wd        (24+40) */
+	tst.l	%d6
+	ble	.Lvqp_done
+
+	move.l	44(%sp),%a2		/* pu1_src   (4+40)  */
+	move.l	48(%sp),%a3		/* pu1_dst   (8+40)  */
+	move.l	52(%sp),%d3		/* src_strd  (12+40) */
+	movea.l	%a2,%a6			/* pred1 row base = pu1_src + yoff_half*strd */
+	move.l	72(%sp),%d0		/* dydx      (32+40) */
+	btst	#3,%d0			/* bit 3 = y_offset>>1 */
+	beq.s	.Lvqp_no_yoff
+	adda.l	%d3,%a6
+.Lvqp_no_yoff:
+
+.Lvqp_row:
+	movea.l	%a2,%a4			/* src column cursor  */
+	movea.l	%a3,%a5			/* dst column cursor  */
+	movea.l	%a6,%a1			/* pred1 column cursor */
+	move.l	%d6,%d4			/* column counter = wd */
+
+.Lvqp_col:
+	movea.l	%a4,%a0
+	suba.l	%d3,%a0
+	suba.l	%d3,%a0			/* a0 = p0 addr (a4 - 2*strd) */
+	clr.l	%d0
+	move.b	(%a0),%d0		/* p0 */
+
+	movea.l	%a4,%a0
+	adda.l	%d3,%a0
+	adda.l	%d3,%a0
+	adda.l	%d3,%a0			/* a0 = p5 addr (a4 + 3*strd) */
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p5 */
+	add.w	%d1,%d0			/* d0 = p0+p5 */
+
+	movea.l	%a4,%a0
+	suba.l	%d3,%a0			/* a0 = p1 addr (a4 - strd) */
+	clr.l	%d1
+	move.b	(%a0),%d1		/* p1 */
+
+	movea.l	%a4,%a0
+	adda.l	%d3,%a0
+	adda.l	%d3,%a0			/* a0 = p4 addr (a4 + 2*strd) */
+	clr.l	%d2
+	move.b	(%a0),%d2		/* p4 */
+	add.w	%d2,%d1			/* d1 = p1+p4 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2			/* d2 = 5*(p1+p4) */
+	sub.w	%d2,%d0			/* d0 = (p0+p5) - 5*(p1+p4) */
+
+	clr.l	%d1
+	move.b	(%a4),%d1		/* p2 */
+
+	movea.l	%a4,%a0
+	adda.l	%d3,%a0			/* a0 = p3 addr (a4 + strd) */
+	clr.l	%d2
+	move.b	(%a0),%d2		/* p3 */
+	add.w	%d2,%d1			/* d1 = p2+p3 */
+	move.w	%d1,%d2
+	lsl.w	#2,%d2
+	add.w	%d1,%d2
+	lsl.w	#2,%d2			/* d2 = 20*(p2+p3) */
+	add.w	%d2,%d0			/* d0 = total */
+
+	add.w	#16,%d0
+	asr.w	#5,%d0
+	bmi.s	.Lvqp_clip_lo
+	cmp.w	#255,%d0
+	ble.s	.Lvqp_store
+	move.w	#255,%d0
+	bra.s	.Lvqp_store
+.Lvqp_clip_lo:
+	moveq	#0,%d0
+.Lvqp_store:
+	clr.l	%d1
+	move.b	(%a1),%d1		/* *pred1 */
+	add.w	%d1,%d0
+	addq.w	#1,%d0
+	asr.w	#1,%d0			/* (clipped + *pred1 + 1) >> 1 */
+	move.b	%d0,(%a5)+
+	addq.l	#1,%a4
+	addq.l	#1,%a1
+	subq.l	#1,%d4
+	bne	.Lvqp_col
+
+	adda.l	%d3,%a2
+	adda.l	%d3,%a6
+	move.l	56(%sp),%d0		/* dst_strd (16+40) */
+	adda.l	%d0,%a3
+	subq.l	#1,%d5
+	bne	.Lvqp_row
+
+.Lvqp_done:
+	movem.l	(%sp)+,%d2-%d6/%a2-%a6
 	rts
 
 #endif /* MR_M68K_ASM */

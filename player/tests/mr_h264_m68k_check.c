@@ -394,6 +394,106 @@ static void check_interp_qpel_qpel(void)
         }
     }
 }
+/* ---- inter_pred_luma_horz_qpel (dydx 1/3) / vert_qpel (dydx 4/12) ------ */
+/* Independent re-derivation of ih264_inter_pred_luma_horz_qpel /
+ * ..._vert_qpel: one 6-tap pass (from pu1_src itself, not from an offset
+ * predictor) averaged with +1 rounding against a predictor offset by
+ * (dydx&3)>>1 columns (horz) or ((dydx>>2)&3)>>1 rows (vert) from pu1_src. */
+static void ref_interp_horz_qpel(const uint8_t *src, uint8_t *dst,
+                                 int src_strd, int dst_strd, int ht, int wd,
+                                 int dydx)
+{
+    int xoff_half = (dydx & 3) >> 1;
+    const uint8_t *pred0 = src + xoff_half;
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        for (col = 0; col < wd; col++) {
+            int16_t t = (int16_t)(1 * (src[col - 2] + src[col + 3])
+                                  - 5 * (src[col - 1] + src[col + 2])
+                                  + 20 * (src[col] + src[col + 1]));
+            int v = (int)((t + 16) >> 5);
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            dst[col] = (uint8_t)((v + pred0[col] + 1) >> 1);
+        }
+        src += src_strd; dst += dst_strd; pred0 += src_strd;
+    }
+}
+
+static void ref_interp_vert_qpel(const uint8_t *src, uint8_t *dst,
+                                 int src_strd, int dst_strd, int ht, int wd,
+                                 int dydx)
+{
+    int yoff_half = ((dydx >> 2) & 3) >> 1;
+    const uint8_t *pred0 = src + (size_t)yoff_half * src_strd;
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        for (col = 0; col < wd; col++) {
+            int16_t t = (int16_t)(
+                1 * (src[col - 2 * src_strd] + src[col + 3 * src_strd])
+                - 5 * (src[col - 1 * src_strd] + src[col + 2 * src_strd])
+                + 20 * (src[col] + src[col + 1 * src_strd]));
+            int v = (int)((t + 16) >> 5);
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            dst[col] = (uint8_t)((v + pred0[col] + 1) >> 1);
+        }
+        src += src_strd; dst += dst_strd; pred0 += src_strd;
+    }
+}
+
+static void check_interp_qpel(void)
+{
+    static const int wds[] = { 4, 4, 8, 8, 16, 16 };
+    static const int hts[] = { 4, 8, 4, 16, 8, 16 };
+    static const int horz_dydxs[] = { 1, 3 };
+    static const int vert_dydxs[] = { 4, 12 };
+    uint32_t seed = 7;
+    unsigned i, di;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        for (di = 0; di < 2; di++) {
+            int extreme;
+            for (extreme = 0; extreme < 2; extreme++) {
+                int wd = wds[i], ht = hts[i];
+                int pad = 4, src_strd = wd + 2 * pad, dst_strd = wd + 5;
+                uint8_t src[24 * 24], dst_m68k[16 * 21], dst_ref[16 * 21];
+                const uint8_t *src0 = src + pad * src_strd + pad;
+                int row, col, j;
+                for (j = 0; j < src_strd * (ht + 2 * pad); j++)
+                    src[j] = extreme ? (uint8_t)((xrand(&seed) & 1) ? 255 : 0)
+                                     : (uint8_t)(xrand(&seed) & 0xff);
+
+                memset(dst_m68k, 0xAA, sizeof dst_m68k);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                mr_ih264_inter_pred_luma_horz_qpel_m68k(
+                    (uint8_t *)src0, dst_m68k, src_strd, dst_strd, ht, wd,
+                    NULL, horz_dydxs[di]);
+                ref_interp_horz_qpel(src0, dst_ref, src_strd, dst_strd, ht,
+                                     wd, horz_dydxs[di]);
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < wd; col++) {
+                        int idx = row * dst_strd + col;
+                        if (dst_m68k[idx] != dst_ref[idx])
+                            report("interp_horz_qpel", row, col,
+                                   dst_ref[idx], dst_m68k[idx]);
+                    }
+
+                memset(dst_m68k, 0xAA, sizeof dst_m68k);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                mr_ih264_inter_pred_luma_vert_qpel_m68k(
+                    (uint8_t *)src0, dst_m68k, src_strd, dst_strd, ht, wd,
+                    NULL, vert_dydxs[di]);
+                ref_interp_vert_qpel(src0, dst_ref, src_strd, dst_strd, ht,
+                                     wd, vert_dydxs[di]);
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < wd; col++) {
+                        int idx = row * dst_strd + col;
+                        if (dst_m68k[idx] != dst_ref[idx])
+                            report("interp_vert_qpel", row, col,
+                                   dst_ref[idx], dst_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -405,6 +505,7 @@ int main(void)
 #if defined(MR_M68K_ASM)
     check_interp();
     check_interp_qpel_qpel();
+    check_interp_qpel();
 #endif
 
     if (g_failures) {
