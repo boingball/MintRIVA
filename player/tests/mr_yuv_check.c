@@ -5,6 +5,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(MR_M68K_ASM)
+/* mr_yuv420_to_rgb24_m68k is normally reached only through
+ * mr_yuv420_to_rgb24()'s dispatch (core/mr_yuv.c). An earlier version of
+ * it crashed real Pistorm hardware - d0/a0/a1 not preserved across the
+ * periodic service() callback, since an ordinary C callee is entitled to
+ * clobber m68k's caller-saved registers - fixed, and confirmed clean on
+ * the same real hardware with audio servicing active. Declared directly
+ * here (rather than relying on the public dispatch) so
+ * check_yuv_service_clobber() below keeps exercising exactly that bug
+ * class regardless of how the dispatch itself is wired. */
+void mr_yuv420_to_rgb24_m68k(uint8_t *dst, int dst_stride,
+                             const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height,
+                             mr_yuv_service_fn service, void *service_opaque,
+                             const int *luma_x298, const int *e_x409,
+                             const int *d_xm100, const int *e_xm208,
+                             const int *d_x516)
+    __asm__("mr_yuv420_to_rgb24_m68k");
+#endif
+
 static uint8_t reference_clip(int value)
 {
     if (value < 0) return 0;
@@ -75,6 +97,68 @@ static void count_service(void *opaque)
     (*(int *)opaque)++;
 }
 
+#if defined(MR_M68K_ASM)
+/* Deliberately smashes exactly the registers an ordinary m68k C callee is
+ * entitled to clobber (d0/d1/a0/a1 - caller-saved, never guaranteed
+ * preserved), with an obviously-wrong sentinel rather than relying on
+ * whatever a real service function's compiled code incidentally happens
+ * to touch. This is what should have caught the real bug: every other
+ * test in this project passed either NULL or a trivial one-line callback
+ * as the service function, so the buggy code path (use of d0/a0/a1 after
+ * the jsr, unprotected) was never actually exercised until real hardware
+ * ran it with real audio servicing. */
+static void clobbering_service(void *opaque)
+{
+    (*(int *)opaque)++;
+    __asm__ volatile(
+        "move.l #0xdeadbeef,%%d0\n\t"
+        "move.l #0xdeadbeef,%%d1\n\t"
+        "move.l #0xdeadbeef,%%a0\n\t"
+        "move.l #0xdeadbeef,%%a1\n\t"
+        : : : "d0", "d1", "a0", "a1");
+}
+
+static void check_yuv_service_clobber(void)
+{
+    enum { W = 40, H = 40 };
+    int luma_x298[256], e_x409[256], d_xm100[256], e_xm208[256], d_x516[256];
+    int ys = W + 3, cs = (W + 1) / 2 + 2, ds = W * 3 + 5;
+    uint8_t yp[40 * 43], up[20 * 21], vp[20 * 21];
+    uint8_t expected[40 * (40 * 3 + 5)], actual[40 * (40 * 3 + 5)];
+    unsigned seed = 0x59555643U;
+    int i, services = 0;
+
+    for (i = 0; i < 256; i++) {
+        int d = i - 128, e = i - 128;
+        luma_x298[i] = 298 * i;
+        e_x409[i] = 409 * e;
+        d_xm100[i] = -100 * d;
+        e_xm208[i] = -208 * e;
+        d_x516[i] = 516 * d;
+    }
+    for (i = 0; i < (int)sizeof yp; i++) yp[i] = (uint8_t)(next_value(&seed) >> 24);
+    for (i = 0; i < (int)sizeof up; i++) up[i] = (uint8_t)(next_value(&seed) >> 24);
+    for (i = 0; i < (int)sizeof vp; i++) vp[i] = (uint8_t)(next_value(&seed) >> 24);
+    memset(expected, 0xa5, sizeof expected);
+    memset(actual, 0xa5, sizeof actual);
+
+    reference_convert(expected, ds, yp, ys, up, cs, vp, cs, W, H);
+    mr_yuv420_to_rgb24_m68k(actual, ds, yp, ys, up, cs, vp, cs, W, H,
+                            clobbering_service, &services,
+                            luma_x298, e_x409, d_xm100, e_xm208, d_x516);
+
+    if (services != H / 16) {
+        fprintf(stderr, "service count %d, expected %d\n", services, H / 16);
+        exit(1);
+    }
+    if (memcmp(expected, actual, sizeof expected) != 0) {
+        fprintf(stderr, "mr_yuv420_to_rgb24_m68k mismatch with a "
+                        "register-clobbering service callback\n");
+        exit(1);
+    }
+}
+#endif
+
 int main(void)
 {
     static const int widths[] = { 1, 2, 3, 7, 16, 17, 31 };
@@ -93,6 +177,9 @@ int main(void)
         fprintf(stderr, "service count %d, expected 2\n", services);
         return 1;
     }
+#if defined(MR_M68K_ASM)
+    check_yuv_service_clobber();
+#endif
     puts("YUV420 paired-pixel conversion: byte-exact");
     return 0;
 }

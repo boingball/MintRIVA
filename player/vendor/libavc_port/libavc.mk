@@ -8,10 +8,25 @@ LIBAVC_COMMON = $(filter-out $(LIBAVC_ROOT)/common/ithread.c \
                   $(LIBAVC_ROOT)/common/ih264_trans_data.c, \
                   $(wildcard $(LIBAVC_ROOT)/common/*.c))
 LIBAVC_DECODER = $(wildcard $(LIBAVC_ROOT)/decoder/*.c)
+# The assembly body is guarded by MR_M68K_ASM, so host builds preprocess it
+# to an empty translation unit while m68k builds get the real implementation.
+# Keeping it in the shared source list avoids a second m68k-only variable.
 LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
+                 $(LIBAVC_PORT)/ih264d_stage_profile.c \
                  $(LIBAVC_PORT)/ih264_m68k_optim.c \
+                 $(LIBAVC_PORT)/ih264_m68k_interp.S \
+                 $(LIBAVC_PORT)/ih264_m68k_deblk.S \
+                 $(LIBAVC_PORT)/ih264_m68k_cabac.S \
+                 $(LIBAVC_PORT)/ih264d_cabac_wrap.c \
+                 $(LIBAVC_PORT)/ih264_m68k_chroma_mc.S \
                  $(LIBAVC_PORT)/ithread_port.c $(LIBAVC_PORT)/compat.c
 LIBAVC_SRC = $(LIBAVC_COMMON) $(LIBAVC_DECODER) $(LIBAVC_PORTSRC)
 LIBAVC_FLAGS = -I$(LIBAVC_PORT) -I$(LIBAVC_ROOT)/common \
                -I$(LIBAVC_ROOT)/decoder -include $(LIBAVC_PORT)/compat.h
 LIBAVC_GCC_FLAGS = -fno-strict-aliasing -fwrapv
+# ih264d_cabac_wrap.c's __wrap_ih264d_decode_bin only exists under
+# MR_M68K_ASM (see that file), so this flag must only be added to m68k
+# cross-build link commands, never the host build - GNU ld's --wrap hard-
+# errors with "undefined reference to __wrap_ih264d_decode_bin" if the
+# wrapper symbol it redirects to doesn't exist in the link.
+LIBAVC_M68K_LDFLAGS = -Wl,--wrap=ih264d_decode_bin

@@ -84,6 +84,12 @@ void __chkabort(void) { }
  * runtime sizing in main). */
 #define VIDEO_QUEUE_MEM_FLOOR (8UL * 1024 * 1024)
 #define STATS_INTERVAL_US 3000000ULL
+/* clock-trace fires on every clock-source flip/large-delta/multi-drop frame,
+ * which during a genuine overload can mean every single frame. On real Amiga
+ * hardware each printf is a DOS Write() that competes with the same 33 ms
+ * budget it is trying to diagnose, so cap it to a few lines/second - still
+ * enough to see the trend without adding load while --time is capturing it. */
+#define CLOCK_TRACE_MIN_INTERVAL_US 200000ULL
 #define PRESENTATION_GUARD_US 4000ULL
 #define AUDIO_REFILL_WARNING_MS 120UL
 #define AUDIO_RESCUE_ENTRY_MS 100UL
@@ -335,6 +341,8 @@ typedef struct {
     uint64_t holdover_media_us;        /* media time captured on starvation   */
     uint64_t holdover_started_mono_us; /* monotonic time at holdover entry    */
     int64_t  audio_to_media_offset_us; /* media = audio_raw + this (signed)   */
+    uint64_t last_stall_print_us;      /* throttle for the per-iteration       */
+                                        /* "remaining in holdover" trace below  */
     unsigned healthy_audio_samples;    /* non-starved iters since holdover     */
     int      holdover_active;
     int      source;                   /* MCLOCK_MONO / AUDIO / HOLDOVER       */
@@ -444,11 +452,21 @@ static uint64_t current_media_clock_us(media_clock *mc, int have_audio,
              * candidate behind last_output_us, causing the monotonic clamp
              * to freeze the clock until audio catches up.
              */
-            if (want_time)
+            /* Fires on every iteration audio stays behind the holdover
+             * position - unthrottled, that's once per scheduler pass for as
+             * long as audio is starved, which on a constrained machine can
+             * be the entire session (observed 963 of these in one ~67 s
+             * WinUAE run). Rate-limit like clock-trace below so --time
+             * logging doesn't itself become a source of scheduler latency
+             * competing with the audio service calls it's trying to trace. */
+            if (want_time &&
+                now - mc->last_stall_print_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
+                mc->last_stall_print_us = now;
                 printf("clock-holdover audio-raw=%lu us < resume-at=%lu us, "
                        "remaining in holdover\n",
                        (unsigned long)audio_raw,
                        (unsigned long)mc->last_output_us);
+            }
             mc->source = MCLOCK_HOLDOVER;
             candidate = mc->holdover_media_us +
                         (now - mc->holdover_started_mono_us);
@@ -505,6 +523,9 @@ typedef struct playback_stats {
     unsigned long rtg_prepare_max_us, rtg_blit_max_us;
     uint64_t h264_input_us, h264_core_us, h264_output_us;
     unsigned long h264_input_max_us, h264_core_max_us, h264_output_max_us;
+    uint64_t h264_mc_us, h264_deblock_us, h264_recon_us, h264_intra_us;
+    unsigned long h264_mc_max_us, h264_deblock_max_us, h264_recon_max_us;
+    unsigned long h264_intra_max_us;
     uint64_t rescue_us;
     unsigned rescue_entries, rescue_packets, rescue_audio_packets;
     unsigned rescue_video_decoded, rescue_video_queued, rescue_video_skipped;
@@ -563,6 +584,8 @@ typedef struct scheduler_trace {
     const char *phase, *previous_phase;
     uint64_t phase_started_us, previous_duration_us, last_service_us;
     uint64_t sleep_requested_us, sleep_actual_us;
+    uint64_t last_clock_trace_us;
+    uint64_t last_rescue_print_us;
     unsigned long delay_ticks;
     int enabled;
     video_presenter *presenter;        /* NULL until the scheduler wires it up   */
@@ -665,7 +688,12 @@ static void service_audio_for_display(void *opaque)
 {
     scheduler_trace *trace = (scheduler_trace *)opaque;
     uint64_t now = monotonic_us();
-    if (trace->enabled && trace->last_service_us &&
+    /* monotonic_us() can land one tick's worth of rounding behind its own
+     * previous reading (EClock ticks converted with integer division). Guard
+     * the subtraction so that never-quite-monotonic hair does not underflow
+     * into an "impossible" multi-day gap - as seen in the field as
+     * audio-gap=1271310319 ms, i.e. (uint64_t)-1us truncated to 32 bits. */
+    if (trace->enabled && trace->last_service_us && now > trace->last_service_us &&
         now - trace->last_service_us > 40000ULL) {
         printf("audio-gap=%lu ms phase=%s phase-duration=%lu ms previous-phase=%s "
                "previous-duration=%lu ms sleep-request=%lu ms "
@@ -834,14 +862,41 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            demux_timing.scanned_max, demux_timing.service_calls);
     if (audio) service_audio_for_display(trace);
     if (st->decoded) {
+#if defined(MR_H264_STAGE_PROFILE)
         printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
-               "rgb-output=%lu/%lu us\n",
+               "rgb-output=%lu/%lu us mc=%lu/%lu us deblock=%lu/%lu us "
+               "recon=%lu/%lu us intra=%lu/%lu us\n",
+               (unsigned long)(st->h264_input_us / st->decoded),
+               st->h264_input_max_us,
+               (unsigned long)(st->h264_core_us / st->decoded),
+               st->h264_core_max_us,
+               (unsigned long)(st->h264_output_us / st->decoded),
+               st->h264_output_max_us,
+               (unsigned long)(st->h264_mc_us / st->decoded),
+               st->h264_mc_max_us,
+               (unsigned long)(st->h264_deblock_us / st->decoded),
+               st->h264_deblock_max_us,
+               (unsigned long)(st->h264_recon_us / st->decoded),
+               st->h264_recon_max_us,
+               (unsigned long)(st->h264_intra_us / st->decoded),
+               st->h264_intra_max_us);
+#else
+        /* mc/deblock/recon/intra are only wrapped with per-call timing
+         * (ih264d_stage_profile.c) when built with -DMR_H264_STAGE_PROFILE
+         * - see ih264d_function_selector_port.c. That instrumentation adds
+         * real overhead on this target, so it is opt-in, not part of a
+         * normal playback build; without it these four stay at zero and
+         * are not worth printing. */
+        printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
+               "rgb-output=%lu/%lu us mc/deblock/recon/intra breakdown "
+               "disabled (build with -DMR_H264_STAGE_PROFILE=1)\n",
                (unsigned long)(st->h264_input_us / st->decoded),
                st->h264_input_max_us,
                (unsigned long)(st->h264_core_us / st->decoded),
                st->h264_core_max_us,
                (unsigned long)(st->h264_output_us / st->decoded),
                st->h264_output_max_us);
+#endif
         if (audio) service_audio_for_display(trace);
     }
     if (st->rescue_entries) {
@@ -930,24 +985,28 @@ static void decoded_audio_sink(void *user, const int16_t *pcm,
                     (int)channels);
 }
 
-static mr_h264_speed_mode effective_h264_speed(int requested, int width,
-                                                int height)
+static mr_h264_speed_mode effective_h264_speed(int requested)
 {
-    uint64_t pixels;
     if (requested == MR_H264_SPEED_QUALITY ||
         requested == MR_H264_SPEED_BALANCED ||
         requested == MR_H264_SPEED_FAST)
         return (mr_h264_speed_mode)requested;
-    pixels = (uint64_t)width * (uint64_t)height;
-    /* A classic 68k/PiStorm has no SIMD and 360p is already close to its H.264
-     * budget.  Auto must favour uninterrupted audio over full deblocking:
-     * Fast keeps I pictures intact but disables deblocking on P/B pictures and
-     * simplifies interpolation where libavc can safely do so.  Tiny clips keep
-     * the pristine path, while an explicit Quality choice remains available. */
-    if (pixels >= 640ULL * 352ULL)
-        return MR_H264_SPEED_FAST;
-    return pixels >= 480ULL * 270ULL
-         ? MR_H264_SPEED_BALANCED : MR_H264_SPEED_QUALITY;
+    /* Auto used to scale the degrade level with resolution, on the
+     * assumption that a small picture is proportionally cheap enough to
+     * decode losslessly. A WinUAE pass deliberately throttled to Pistorm
+     * speed disproved that for a 256x144 live HLS stream: Quality mode (no
+     * degrade at all) measured ~180 ms/frame of libavc-core alone, over
+     * budget even at that stream's own 15 fps. Balanced doesn't reliably
+     * help either - its deblocking-disable and MC-degrade bits both only
+     * apply to non-reference pictures (see ih264d_parse_slice.c), and a
+     * typical encode with no B-frames marks nearly every picture as a
+     * reference, so on most real streams Balanced silently behaves like
+     * Quality. Only Fast's "all non-key frames" degrade_pics policy is
+     * unconditional on reference status and reliably buys something. A
+     * classic 68k/PiStorm has no SIMD and no resolution is definitively
+     * cheap enough to gamble on, so auto is Fast everywhere now; Quality
+     * and Balanced remain available as explicit, deliberate choices. */
+    return MR_H264_SPEED_FAST;
 }
 
 static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
@@ -955,7 +1014,7 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     mr_h264_speed_mode mode;
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
-    mode = effective_h264_speed(requested, dec->width, dec->height);
+    mode = effective_h264_speed(requested);
     name = mode == MR_H264_SPEED_FAST ? "Fast" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
     if (!mr_h264_set_speed_mode(dec, mode)) return 0;
@@ -1250,7 +1309,7 @@ int main(int argc, char **argv)
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
-    int h264_speed = -1; /* automatic: Quality <=480p, Balanced above 480p    */
+    int h264_speed = -1; /* automatic: always Fast - see effective_h264_speed() */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -1265,7 +1324,12 @@ int main(int argc, char **argv)
     int64_t container_pts_adjust_us = 0;
     uint64_t last_container_pts_us = 0;
     int have_container_pts = 0;
-    clock_t t_dec = 0, t_show = 0;
+    /* Lifetime totals for the final "timing/N frames" summary. These are
+     * separate from stats.video_decode_us/display_us, which report_stats()
+     * resets every STATS_INTERVAL_US: without an independent accumulator the
+     * final summary only ever saw whatever the periodic reset last left
+     * behind, printing decode=0 ms/display=0 ms when a report just fired. */
+    uint64_t total_decode_us = 0, total_display_us = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
     int qhead = 0, qcount = 0, input_eof = 0;
     int oom_warned = 0; /* set after first queue_copy OOM is logged */
@@ -1923,7 +1987,16 @@ int main(int argc, char **argv)
                     stats.rescue_post_lateness_us = post_late;
                 }
                 front = qcount ? &vq[qhead] : NULL;
-                if (want_time)
+                /* One rescue episode is ~100ms by design (AUDIO_RESCUE_MAX_US),
+                 * so a machine where rescue keeps failing back-to-back can
+                 * produce one of these lines roughly every scheduler pass -
+                 * 910 of them in one ~67 s constrained-hardware run. Rate-limit
+                 * like clock-trace: still enough samples to see the pattern,
+                 * without --time logging adding print overhead on nearly every
+                 * iteration of an already CPU-starved playback loop. */
+                if (want_time &&
+                    now - trace.last_rescue_print_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
+                    trace.last_rescue_print_us = now;
                     printf("audio-rescue reason=%s urgency=%s packets=%u audio=%u "
                            "video=%u retained=%u replaced=%u reference-only=%u "
                            "newest-pts=%lu post-late=%ld us duration=%lu us "
@@ -1941,6 +2014,7 @@ int main(int argc, char **argv)
                            (unsigned long)(rescue_elapsed / 1000),
                            rescue_entry_threshold, margin_ms,
                            rd.hardware_starvations - rescue_hw_before);
+                }
                 if (audio) service_audio_for_display(&trace);
             }
         }
@@ -2020,7 +2094,30 @@ int main(int argc, char **argv)
             continue;
         }
 
-        if (!rescue_active && have_deadline &&
+        /* Presentation used to be gated on !rescue_active, blacking out the
+         * screen for the entire duration of every audio-rescue episode. That
+         * made sense if rescue reliably fixed the underrun quickly, but on a
+         * bandwidth-starved network source it does not: a WinUAE log showed
+         * 96% of episodes (393/408) exiting via the AUDIO_RESCUE_MAX_US/
+         * AUDIO_RESCUE_MAX_PACKETS timeout ("limit"), not because audio
+         * recovered, each one still blanking the screen for up to its ~100ms
+         * budget (longer still when it overruns via a blocking demux read -
+         * observed rescue durations past 500ms). Because the deadline-drop
+         * loop below - the only place that prunes stale queued frames - lived
+         * inside this same gated block, the backlog was never trimmed while
+         * rescue ran either: post-late (the front frame's lateness after
+         * rescue's own catch-up attempt) grew every reporting interval,
+         * 7.6ms up to 7.87s over one session, and presented fps collapsed
+         * to a fraction of decoded fps even during stretches with negligible
+         * network blocking. Letting presentation run unconditionally lets
+         * the drop loop keep the queue near-live every iteration regardless
+         * of whether a rescue is concurrently in flight, and RTG/CGX blits
+         * do not contend with Paula's audio DMA the way a custom-chip
+         * blitter would, so there is no hardware reason to hold it back.
+         * service_audio_for_display() calls remain wrapped around the blit
+         * below either way, exactly as they already were for the non-rescue
+         * path. */
+        if (have_deadline &&
             late_us >= -(int64_t)PRESENTATION_GUARD_US) {
             int ev;
             trace_phase(&trace, "event-processing");
@@ -2087,7 +2184,10 @@ int main(int argc, char **argv)
                     ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
                 int big_delta = abs_delta_us > period_us;
                 int multi_drop = stats.dropped_in_pass > 1;
-                if (want_time && (source_changed || big_delta || multi_drop)) {
+                if (want_time && (source_changed || big_delta || multi_drop) &&
+                    now - trace.last_clock_trace_us >=
+                        CLOCK_TRACE_MIN_INTERVAL_US) {
+                    trace.last_clock_trace_us = now;
                     printf("clock-trace src=%c->%c starved=%d "
                            "audio-elapsed=%lu offset=%ld "
                            "audio-clock=%lu mono-clock=%lu delta=%ld "
@@ -2160,6 +2260,7 @@ int main(int argc, char **argv)
                 display_aga_frame_timing(&enc_ms, &blit_ms);
                 stats.convert_us += (uint64_t)enc_ms * 1000;
                 stats.display_us += show_us;
+                total_display_us += show_us;
                 if (show_us > stats.display_max_us) stats.display_max_us = show_us;
             }
             stats.latency_us += monotonic_us() - front->decoded_at_us;
@@ -2183,7 +2284,9 @@ int main(int argc, char **argv)
             uint64_t abs_delta_us = delta_clocks_us < 0
                 ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
             int big_delta = abs_delta_us > period_us;
-            if (want_time && (source_changed || big_delta)) {
+            if (want_time && (source_changed || big_delta) &&
+                now - trace.last_clock_trace_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
+                trace.last_clock_trace_us = now;
                 printf("clock-trace src=%c->%c starved=%d "
                        "audio-elapsed=%lu offset=%ld "
                        "audio-clock=%lu mono-clock=%lu delta=%ld "
@@ -2399,6 +2502,18 @@ int main(int argc, char **argv)
                             stats.h264_core_max_us = ht.core_us;
                         if (ht.output_us > stats.h264_output_max_us)
                             stats.h264_output_max_us = ht.output_us;
+                        stats.h264_mc_us += ht.mc_us;
+                        stats.h264_deblock_us += ht.deblock_us;
+                        stats.h264_recon_us += ht.recon_us;
+                        stats.h264_intra_us += ht.intra_us;
+                        if (ht.mc_us > stats.h264_mc_max_us)
+                            stats.h264_mc_max_us = ht.mc_us;
+                        if (ht.deblock_us > stats.h264_deblock_max_us)
+                            stats.h264_deblock_max_us = ht.deblock_us;
+                        if (ht.recon_us > stats.h264_recon_max_us)
+                            stats.h264_recon_max_us = ht.recon_us;
+                        if (ht.intra_us > stats.h264_intra_max_us)
+                            stats.h264_intra_max_us = ht.intra_us;
                     }
                     if (decode_status == MR_ENOMEM) {
                         printf("h264-decode-oom: packet %lu len=%lu - "
@@ -2458,6 +2573,7 @@ int main(int argc, char **argv)
                             have_container_pts = 1;
                         }
                         stats.video_decode_us += decode_us; stats.decoded++;
+                        total_decode_us += decode_us;
                         if (decode_us > stats.video_decode_max_us)
                             stats.video_decode_max_us = decode_us;
                         {
@@ -2609,9 +2725,9 @@ int main(int argc, char **argv)
      * Drain it through the same pacing and display path so the player does not
      * silently finish one frame short (e.g. 129/130 on legacy OpenDivX). */
     while (!quit) {
-        clock_t a = clock();
+        uint64_t a = monotonic_us();
         mr_status ds = mr_decoder_flush(&dec);
-        t_dec += clock() - a;
+        total_decode_us += monotonic_us() - a;
         if (ds != MR_OK) break;
 
         if (audio) {
@@ -2634,12 +2750,12 @@ int main(int argc, char **argv)
         }
         if (quit) break;
 
-        a = clock();
+        a = monotonic_us();
         display_show_rgb(disp, dec.frame.data, dec.frame.width,
                          dec.frame.height, dec.frame.stride,
                          dec.frame.dirty_y0, dec.frame.dirty_y1);
         player_first_frame_presented();
-        t_show += clock() - a;
+        total_display_us += monotonic_us() - a;
         frames++;
     }
     }
@@ -2648,8 +2764,8 @@ int main(int argc, char **argv)
         display_aga_timing(&enc_ms, &blit_ms);
         printf("timing/%d frames: decode=%lu ms, display=%lu ms"
                " (encode=%lu ms, blit=%lu ms)\n", frames,
-               (unsigned long)(t_dec  * 1000 / CLOCKS_PER_SEC),
-               (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC),
+               (unsigned long)(total_decode_us  / 1000),
+               (unsigned long)(total_display_us / 1000),
                enc_ms, blit_ms);
         if (display_aga_kalms_timing(&blit_ms))
             printf("Kalms conversion: %lu ms\n", blit_ms);

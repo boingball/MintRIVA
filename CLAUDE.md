@@ -17,13 +17,33 @@ Read `DESIGN.md` before making structural decisions.
   will call MintAMP/libhelix. Audio is the master clock for A/V sync.
 
 ## Validate against ffmpeg — always
-There is no m68k toolchain on the dev host, so correctness is proven by
+There is no AmigaOS toolchain on the dev host, so correctness is proven by
 decoding on the host and diffing against ffmpeg frame-by-frame:
 ```sh
 cd player && make check      # Cinepak vs ffmpeg, expect worst MAE < ~0.2/255
 ```
 When adding a decoder, add an equivalent `make check` path with an
 ffmpeg-generated fixture (`player/tests/gen_assets.sh`). ffmpeg is the oracle.
+ffmpeg and the git submodules (`libavc`, `MintAMP`) are installed by
+`.claude/hooks/session-start.sh` on Claude Code web sessions; elsewhere run
+`apt-get install ffmpeg` and `git submodule update --init --recursive`
+yourself first.
+
+There is still no m68k-amigaos-gcc (hunk format, clib2/newlib, dos.h/exec.h)
+on the dev host, so `mrplay.c` and anything else under `player/amiga/` can
+only be reviewed, not compiled, here — that needs a real Amiga/WinUAE/Pistorm
+pass. But `player/core/` and the libavc/libavc_port pieces it links against
+*are* portable C with no AmigaOS dependency, and for those there is a real
+m68k target available: `gcc-m68k-linux-gnu` + `qemu-user` (Linux/m68k, ELF,
+glibc — not AmigaOS, but real big-endian m68k codegen and execution).
+```sh
+cd player && make check-m68k   # same conformance suite, run on real m68k/big-endian
+```
+This exists because the host build alone (x86-64, little-endian, relaxed
+alignment) cannot catch an endianness bug in a demuxer or an alignment bug in
+`vendor/libavc_port/ih264_m68k_optim.c`'s packed-word tricks — `make check`
+passing on the host is not proof those are safe on the actual target. See
+`player/tests/run_m68k_check.sh`.
 
 ## Cinepak notes (hard-won)
 Chunk-id flag bits live in the **high** byte: `0x0100`=selective/inter,
@@ -34,7 +54,12 @@ error that *accumulates* between keyframes, not as an immediate failure.
 
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
-- `cd player && make check` — Cinepak conformance
+- `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
+  Part 2, MSMPEG4v2, MPEG-1/2, MJPEG, ...) vs ffmpeg, on the host CPU
+- `cd player && make check-audio` — MP3/AAC/LATM/AC-3 decode checks
+- `cd player && make check-m68k` — the same conformance suite cross-built for
+  m68k-linux-gnu and run under qemu-m68k (real big-endian execution; see
+  above)
 - `./mr_decode <avi>` / `--ppm <dir>` / `--check <refdir>`
 
 ## Git

@@ -14,6 +14,7 @@
 #include "iv.h"
 #include "ivd.h"
 #include "ih264d.h"
+#include "ih264d_stage_profile.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -632,10 +633,19 @@ static mr_status h264_decode(mr_decoder *dec,
                                  NULL, IV_SUCCESS);
 #endif
 
+            mr_h264_stage_profile_reset();
             call_mark = clock();
             r = decode_annexb(s, au_ts, s->packet + off,
                               annexb_len - off, &sub_out);
             s->timing.core_us += h264_elapsed_us(call_mark);
+            {
+                mr_h264_stage_us stage;
+                mr_h264_stage_profile_get(&stage);
+                s->timing.mc_us += stage.mc_us;
+                s->timing.deblock_us += stage.deblock_us;
+                s->timing.recon_us += stage.recon_us;
+                s->timing.intra_us += stage.intra_us;
+            }
             used = sub_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
 
 #if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
