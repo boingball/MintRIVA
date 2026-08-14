@@ -228,6 +228,19 @@ static void *aga_open(int w, int h, const char *title)
      * 427x240 image produced by treating HIRES pixels as square.
      */
     hires = w * scale > 320;
+    /* ECS/OCS Denise+Agnus cannot fetch more than 4 bitplanes' worth of data
+     * per scanline at HIRES pixel rates - a genuine display DMA bandwidth
+     * limit, not something AGA needed since it redesigned the fetch path.
+     * This backend's non-AGA paths use depth 5 (dither5_rgb, the ECS/OCS
+     * 32-colour cube) or depth 6 (HAM6), both invalid HIRES bitplane counts
+     * on real ECS/OCS hardware - OpenScreenTags simply fails for that
+     * combination. Confirmed on real ECS hardware: a live stream narrow
+     * enough to stay LORES opened fine; two wider ones that crossed the 320
+     * threshold into HIRES both failed to open a display at all. Keep ECS/
+     * OCS in LORES unconditionally (this backend has no HIRES-capable <=4
+     * plane encoder) rather than requesting a mode the chipset cannot do -
+     * the picture is downscaled a bit more instead of not appearing. */
+    if (!chipset_has_aga()) hires = 0;
     lace = g_aga_lace && h * scale > 256;
     physical_w = w * scale;
     physical_h = h * scale;
