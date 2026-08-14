@@ -88,7 +88,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[5];
+static mr_display_mode mode_values[7];
 static unsigned mode_count;
 static int add_chooser_node(struct List *list, const char *text);
 
@@ -607,12 +607,17 @@ int main(void)
     }
 
     have_rtg = default_screen_is_rtg();
-    if (!add_mode_node(&modes,
-                       chipset_has_aga() ? "AGA (256 colours)" :
-                       chipset_has_ecs_denise() ? "ECS (32 colours)" :
-                                                  "OCS (32 colours)",
-                       MR_DISPLAY_AGA) ||
-        !add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
+    if (chipset_has_aga()) {
+        if (!add_mode_node(&modes, "AGA (256 colours)", MR_DISPLAY_AGA) ||
+            !add_mode_node(&modes, "ECS (32 colours)", MR_DISPLAY_AGA_ECS32) ||
+            !add_mode_node(&modes, "ECS (16 colours)", MR_DISPLAY_AGA_ECS16))
+            goto cleanup;
+    } else if (!add_mode_node(&modes,
+                              chipset_has_ecs_denise() ? "ECS (32 colours)" :
+                                                         "OCS (32 colours)",
+                              MR_DISPLAY_AGA))
+        goto cleanup;
+    if (!add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||

@@ -276,7 +276,10 @@ static void *aga_open(int w, int h, const char *title)
         printf("planar: HAM8 requires AGA; using HAM6\n");
         ham = 6;
     }
-    depth = ham == 6 ? 6 : (g_aga_ecs_fast ? 4 : (chipset_has_aga() ? 8 : 5));
+    depth = ham == 6 ? 6 :
+            g_aga_ecs_fast ? 4 :
+            g_aga_ecs32 ? 5 :
+            (chipset_has_aga() ? 8 : 5);
 
     /*
      * AGA raster pixels are not square: HIRES doubles horizontal resolution

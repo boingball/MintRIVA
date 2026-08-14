@@ -70,6 +70,13 @@ void display_set_akiko(int on);
  * backend, same as display_set_ham(). */
 void display_set_ecs_fast(int on);
 
+/* Force the 5-plane/32-colour ECS/OCS indexed encoder that non-AGA chipsets
+ * already fall back to automatically - but selectable explicitly, including
+ * on AGA, as a middle ground between display_set_ecs_fast() (16 colours) and
+ * the normal 256-colour AGA depth. Forces the native planar backend, same as
+ * display_set_ham(). */
+void display_set_ecs32(int on);
+
 /* Enable timing/diagnostic output for the RTG backend (mirrors --time).
  * Must be called before display_open() to capture init diagnostics. */
 void display_set_timing_mode(int on);

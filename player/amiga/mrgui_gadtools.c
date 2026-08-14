@@ -50,8 +50,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[5];
-    STRPTR mode_labels[6];
+    mr_display_mode modes[7];
+    STRPTR mode_labels[8];
     unsigned mode_count;
     char path[512];
 } gt_app;
@@ -289,9 +289,18 @@ static int build_window(gt_app *app)
     if (!app->visual || !CreateContext(&app->gadgets))
         return 0;
 
-    app->mode_labels[app->mode_count] = aga() ? (STRPTR)"Display: AGA" :
-        ecs() ? (STRPTR)"Display: ECS" : (STRPTR)"Display: OCS";
-    app->modes[app->mode_count++] = MR_DISPLAY_AGA;
+    if (aga()) {
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: AGA (256)";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: ECS (32)";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_ECS32;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: ECS (16)";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_ECS16;
+    } else {
+        app->mode_labels[app->mode_count] = ecs() ? (STRPTR)"Display: ECS" :
+                                                     (STRPTR)"Display: OCS";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA;
+    }
     app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM6";
     app->modes[app->mode_count++] = MR_DISPLAY_HAM6;
     if (aga()) {
