@@ -14,6 +14,15 @@
  * There is no function pointer for bitstream/CABAC/CAVLC parsing or MV
  * prediction, so those are not broken out here; treat core_us minus
  * (mc_us+deblock_us+recon_us+intra_us) as that combined remainder.
+ *
+ * mr_h264_stage_profile_install() below is only ever called when
+ * MR_H264_STAGE_PROFILE is defined (see ih264d_function_selector_port.c
+ * and Makefile.amiga's STAGE_PROFILE variable) - every wrapped slot costs
+ * two clock() calls per invocation, on leaf pixel filters called tens of
+ * thousands of times a frame, which is real overhead on the actual m68k
+ * target this instrumentation exists to help speed up. A normal playback
+ * build never installs these wrappers, so mc_us/deblock_us/recon_us/
+ * intra_us stay at zero and cost nothing.
  */
 
 typedef struct mr_h264_stage_us {

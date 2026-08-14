@@ -67,11 +67,23 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->pf_deblk_chroma_vert_bslt4 = mr_ih264_deblk_chroma_vert_bslt4_m68k;
     codec->pf_deblk_chroma_horz_bslt4 = mr_ih264_deblk_chroma_horz_bslt4_m68k;
 #endif
-    /* Diagnostic-only: wraps whatever is now sitting in the MC/deblock/
-     * recon function-pointer slots above (m68k asm or Ittiam's generic C)
-     * with clock()-based timing, reported via mrplay.c's "h264 stages:"
-     * line. See ih264d_stage_profile.h. */
+#if defined(MR_H264_STAGE_PROFILE)
+    /* Diagnostic-only, opt-in: wraps whatever is now sitting in the
+     * MC/deblock/recon/intra function-pointer slots above (m68k asm or
+     * Ittiam's generic C) with clock()-based timing, reported via
+     * mrplay.c's "h264 stages:" line. See ih264d_stage_profile.h.
+     *
+     * Deliberately NOT installed unless MR_H264_STAGE_PROFILE is defined:
+     * every wrapped slot costs two clock() calls per invocation, and these
+     * are leaf pixel filters called tens of thousands of times a frame -
+     * on the actual m68k target this instrumentation exists to help speed
+     * up, that overhead is not something a normal playback build should
+     * pay. Enable explicitly for a profiling build (Makefile.amiga
+     * STAGE_PROFILE=1; already on for tests/run_m68k_check.sh, which wants
+     * this code path exercised as real regression coverage even though the
+     * conformance suite itself doesn't consume the timing output). */
     mr_h264_stage_profile_install(codec);
+#endif
 }
 
 void ih264d_init_arch(dec_struct_t *codec)

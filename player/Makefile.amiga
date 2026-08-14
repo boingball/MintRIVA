@@ -140,8 +140,19 @@ ifeq ($(TOOLCHAIN),gcc)
 CORE   += core/mr_h264.c $(LIBAVC_SRC)
 CC      = $(AMIGA_GCC)
 # MPEG-1 (pl_mpeg in mr_mpeg1.c) is fixed-point. MR_HAVE_MPEG1 enables .mpg.
+# STAGE_PROFILE=1 opts into the per-leaf-call mc/deblock/recon/intra H.264
+# timing breakdown (mrplay.c's "h264 stages:" line) - off by default
+# because it wraps every MC/deblock/recon/intra leaf call (tens of
+# thousands per frame) with two clock() calls each, real overhead on this
+# target that a normal playback build should not pay. Use for a one-off
+# profiling build only: `make -f Makefile.amiga mrplay STAGE_PROFILE=1`.
+STAGE_PROFILE_FLAGS =
+ifeq ($(STAGE_PROFILE),1)
+STAGE_PROFILE_FLAGS = -DMR_H264_STAGE_PROFILE=1
+endif
 CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
           -DAMIGA_M68K -DMR_HAVE_MPEG1 -DMR_HAVE_H264 -DMR_M68K_ASM=1 \
+          $(STAGE_PROFILE_FLAGS) \
           $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
           $(LIBMPEG2_FLAGS) \
           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \

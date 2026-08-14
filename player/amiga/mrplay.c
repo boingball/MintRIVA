@@ -862,6 +862,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            demux_timing.scanned_max, demux_timing.service_calls);
     if (audio) service_audio_for_display(trace);
     if (st->decoded) {
+#if defined(MR_H264_STAGE_PROFILE)
         printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
                "rgb-output=%lu/%lu us mc=%lu/%lu us deblock=%lu/%lu us "
                "recon=%lu/%lu us intra=%lu/%lu us\n",
@@ -879,6 +880,23 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                st->h264_recon_max_us,
                (unsigned long)(st->h264_intra_us / st->decoded),
                st->h264_intra_max_us);
+#else
+        /* mc/deblock/recon/intra are only wrapped with per-call timing
+         * (ih264d_stage_profile.c) when built with -DMR_H264_STAGE_PROFILE
+         * - see ih264d_function_selector_port.c. That instrumentation adds
+         * real overhead on this target, so it is opt-in, not part of a
+         * normal playback build; without it these four stay at zero and
+         * are not worth printing. */
+        printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
+               "rgb-output=%lu/%lu us mc/deblock/recon/intra breakdown "
+               "disabled (build with -DMR_H264_STAGE_PROFILE=1)\n",
+               (unsigned long)(st->h264_input_us / st->decoded),
+               st->h264_input_max_us,
+               (unsigned long)(st->h264_core_us / st->decoded),
+               st->h264_core_max_us,
+               (unsigned long)(st->h264_output_us / st->decoded),
+               st->h264_output_max_us);
+#endif
         if (audio) service_audio_for_display(trace);
     }
     if (st->rescue_entries) {

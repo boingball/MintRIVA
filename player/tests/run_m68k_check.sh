@@ -26,7 +26,14 @@ QEMU_M68K=${QEMU_M68K:-qemu-m68k}
 LIBAVC_FLAGS="-Ivendor/libavc_port -Ivendor/libavc/common -Ivendor/libavc/decoder -include vendor/libavc_port/compat.h -fno-strict-aliasing -fwrapv"
 LIBMPEG2_FLAGS="-Ivendor/libmpeg2 -Ivendor/libmpeg2/include -Ivendor/libmpeg2/libmpeg2"
 WARN_SILENCE="-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-sign-compare -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits"
-CC="$M68K_CC -O2 -std=c99 -m68030 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
+# -DMR_H264_STAGE_PROFILE=1: the mc/deblock/recon/intra timing wrappers
+# (ih264d_stage_profile.c) are opt-in on a real playback build (real
+# per-call clock() overhead - see ih264d_function_selector_port.c and
+# Makefile.amiga's STAGE_PROFILE variable), but this conformance run turns
+# them on deliberately so that code path keeps getting exercised on real
+# m68k/big-endian hardware, even though the MAE/exec checks below don't
+# consume the timing output themselves.
+CC="$M68K_CC -O2 -std=c99 -m68030 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 -DMR_H264_STAGE_PROFILE=1 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
 
 if ! command -v "$M68K_CC" >/dev/null 2>&1; then
     echo "ERROR: $M68K_CC not found. On Debian/Ubuntu:"
