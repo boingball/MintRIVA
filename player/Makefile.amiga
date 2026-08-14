@@ -30,6 +30,20 @@
 # explicit performance builds; `release` creates all three without changing
 # which binary a normal `make` produces. The core is integer-only and does not
 # require an FPU.
+#
+# MintAMP's hand-asm (real/amiga_m68k_polyphase.S etc.) is linked in
+# automatically for CPU=68030/68040 - the same asm bundle MintAMP's own
+# Makefile.amiga uses by default for those CPUs. CPU=68060's raw asm is
+# actively harmful there (it traps into software emulation - see the
+# MINTAMP_CPU comment further down), so 68060 instead defaults to
+# ASM60_GROUPS="lowrate060 huffman midside planars8" - the trap-free,
+# real-hardware-confirmed combination (large speedup, no emulated
+# multiply). Override on the command line, e.g. a clean C baseline for
+# A/B comparison:
+#   make -f Makefile.amiga mrplay CPU=68060 ASM60_GROUPS=
+# `release` forwards ASM60_GROUPS to its CPU=68060 sub-build the same way it
+# already forwards SSL/SSLCERTS/RADIO (GNU Make auto-propagates command-line
+# variables to $(MAKE) recursion).
 
 TOOLCHAIN ?= gcc
 CPU ?= 68030
@@ -91,15 +105,113 @@ YTGUI_GT = amiga/youtube_gadtools.c youtube/mr_youtube_search.c \
            core/mr_source.c core/mr_http.c core/mr_hls.c core/mr_youtube.c \
            core/mr_play_options.c $(GUI_MENU)
 MINTAMP_ROOT ?= vendor/MintAMP
+
+# MintAMP's own hand-tuned m68k asm (real/amiga_m68k_polyphase.S,
+# amiga_m68k_planars8.S, and the AMIGA_M68K_ASM_* inline asm throughout
+# real/*.c) is a real win on 68030/68040 - both implement 32x32->64
+# MULS.L/MULU.L in hardware - but is actively harmful on 68060: that
+# register-pair form is NOT implemented in 68060 hardware and traps into
+# software emulation, dramatically slower than the plain C path (confirmed
+# by MintAMP's own hardware testing). So: 68030/68040 get the full asm
+# bundle unconditionally, matching MintAMP's own CPU=20/30/40 default;
+# 68060 starts from the clean, trap-free C baseline and only gets
+# individual asm features back via ASM60_GROUPS, exactly like a MintAMP
+# `CPU=60 ASM60_GROUPS="..."` build. This block mirrors
+# vendor/MintAMP/Makefile.amiga's own CPU_ASM_CPPFLAGS/CPU_ASM_SOURCES/
+# ASM60_GROUPS tables (that Makefile isn't `include`-able as a fragment -
+# it's a complete standalone build with its own conflicting target names -
+# so this is a deliberate, commented copy); keep the two in sync if that
+# file's tables change. `make -f Makefile.amiga mrplay CPU=68060
+# ASM60_GROUPS="lowrate060 huffman midside planars8"` selects the same
+# groups the MintAMP release build above was tested with.
+MINTAMP_CPU := $(patsubst 680%,%,$(CPU))
+
+MINTAMP_ASM_CPPFLAGS_FULL030 := \
+    -DAMIGA_M68K_ASM \
+    -DAMIGA_M68K_ASM_FDCT32 \
+    -DAMIGA_M68K_ASM_FDCT32_UNROLL \
+    -DAMIGA_FAST_POLYPHASE \
+    -DAMIGA_FAST_REDUCED_TAPS \
+    -DAMIGA_FAST_FDCT32_QUARTER \
+    -DAMIGA_M68K_IMDCT_THIN_OUTPUT \
+    -DAMIGA_FAST_SUBBAND_CAP \
+    -DAMIGA_M68K_ASM_POLYPHASE \
+    -DAMIGA_M68K_ASM_IMDCT \
+    -DAMIGA_M68K_ASM_ANTIALIAS \
+    -DAMIGA_M68K_ASM_MIDSIDE \
+    -DAMIGA_M68K_ASM_INTENSITY \
+    -DAMIGA_M68K_ASM_DEQUANT \
+    -DAMIGA_M68K_ASM_HUFFMAN \
+    -DAMIGA_M68K_ASM_JPEG_GREY \
+    -DAMIGA_M68K_ASM_PLANARS8
+MINTAMP_ASM_SOURCES_FULL030 := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S \
+                               $(MINTAMP_ROOT)/amiga_m68k_planars8.S
+
+# ASM60_GROUPS: space-separated feature groups for CPU=68060 only (ignored
+# otherwise). Default is "lowrate060 huffman midside planars8" -
+# real-hardware confirmed on 68060, a large audio-decode speedup with none
+# of the trapped register-pair multiply (lowrate060 uses the dedicated
+# 68060 polyphase kernel, not the emulated one - see
+# vendor/MintAMP/Makefile.amiga's own ASM60_GROUPS comment block for the
+# per-group hardware-testing notes this table was ported from). Override
+# on the command line (e.g. ASM60_GROUPS= for the clean C baseline, or a
+# different combination to A/B) same as any other `?=` variable.
+ASM60_GROUPS ?= lowrate060 huffman midside planars8
+ASM60_FLAGS_huffman             := -DAMIGA_M68K_ASM_HUFFMAN
+ASM60_FLAGS_dequant             := -DAMIGA_M68K_ASM_DEQUANT
+ASM60_FLAGS_imdct               := -DAMIGA_M68K_ASM_IMDCT
+ASM60_FLAGS_fdct32              := -DAMIGA_M68K_ASM_FDCT32 -DAMIGA_M68K_ASM_FDCT32_UNROLL
+ASM60_FLAGS_antialias           := -DAMIGA_M68K_ASM_ANTIALIAS
+ASM60_FLAGS_midside             := -DAMIGA_M68K_ASM_MIDSIDE
+ASM60_FLAGS_intensity           := -DAMIGA_M68K_ASM_INTENSITY
+ASM60_FLAGS_jpeg_grey           := -DAMIGA_M68K_ASM_JPEG_GREY
+ASM60_FLAGS_planars8            := -DAMIGA_M68K_ASM_PLANARS8
+ASM60_FLAGS_asm_core            := -DAMIGA_M68K_ASM
+ASM60_FLAGS_fast_polyphase      := -DAMIGA_FAST_POLYPHASE
+ASM60_FLAGS_fast_reduced_taps   := -DAMIGA_FAST_REDUCED_TAPS
+ASM60_FLAGS_fast_subband_cap    := -DAMIGA_FAST_SUBBAND_CAP
+ASM60_FLAGS_fast_fdct32_quarter := -DAMIGA_FAST_POLYPHASE -DAMIGA_FAST_FDCT32_QUARTER
+ASM60_FLAGS_imdct_thin_output   := -DAMIGA_FAST_POLYPHASE -DAMIGA_M68K_IMDCT_THIN_OUTPUT
+ASM60_FLAGS_asm_polyphase       := -DAMIGA_FAST_POLYPHASE -DAMIGA_M68K_ASM_POLYPHASE
+ASM60_FLAGS_poly060             := -DAMIGA_M68K_POLYPHASE_68060
+ASM60_FLAGS_lowrate060          := -DAMIGA_M68K_POLYPHASE_68060 -DAMIGA_FAST_POLYPHASE \
+    -DAMIGA_FAST_REDUCED_TAPS -DAMIGA_FAST_SUBBAND_CAP \
+    -DAMIGA_FAST_FDCT32_QUARTER -DAMIGA_M68K_IMDCT_THIN_OUTPUT
+ASM60_FLAGS_full030             := $(MINTAMP_ASM_CPPFLAGS_FULL030)
+
+ASM60_SRC_planars8      := $(MINTAMP_ROOT)/amiga_m68k_planars8.S
+ASM60_SRC_asm_polyphase := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S
+ASM60_SRC_full030       := $(MINTAMP_ASM_SOURCES_FULL030)
+
+ASM60_KNOWN := huffman dequant imdct fdct32 antialias midside intensity \
+    jpeg_grey planars8 asm_core fast_polyphase fast_reduced_taps \
+    fast_subband_cap fast_fdct32_quarter imdct_thin_output asm_polyphase \
+    poly060 lowrate060 full030
+
+ifeq ($(MINTAMP_CPU),60)
+ASM60_BAD := $(filter-out $(ASM60_KNOWN),$(ASM60_GROUPS))
+ifneq ($(ASM60_BAD),)
+$(error Unknown ASM60_GROUPS: $(ASM60_BAD) -- valid groups: $(ASM60_KNOWN))
+endif
+# $(sort ...) both de-duplicates (groups sharing a define/source) and
+# orders deterministically, so ASM60_GROUPS order never changes the flags.
+MINTAMP_ASM_CPPFLAGS := $(sort $(foreach g,$(ASM60_GROUPS),$(ASM60_FLAGS_$(g))))
+MINTAMP_ASM_SOURCES := $(sort $(foreach g,$(ASM60_GROUPS),$(ASM60_SRC_$(g))))
+else
+MINTAMP_ASM_CPPFLAGS := $(MINTAMP_ASM_CPPFLAGS_FULL030)
+MINTAMP_ASM_SOURCES := $(MINTAMP_ASM_SOURCES_FULL030)
+endif
+
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
-              $(wildcard $(MINTAMP_ROOT)/real/*.c)
+              $(wildcard $(MINTAMP_ROOT)/real/*.c) $(MINTAMP_ASM_SOURCES)
 MINTAMP_AAC_ALL = $(wildcard $(MINTAMP_ROOT)/decoders/aac/*.c)
 MINTAMP_AAC = $(filter-out $(wildcard $(MINTAMP_ROOT)/decoders/aac/sbr*.c), \
                            $(MINTAMP_AAC_ALL))
 MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
                 -I$(MINTAMP_ROOT)/decoders/aac \
-                -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
+                -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim \
+                $(MINTAMP_ASM_CPPFLAGS)
 LIBA52_ROOT = vendor/liba52
 LIBA52_FLAGS = -I$(LIBA52_ROOT)
 LIBA52_SRC = $(LIBA52_ROOT)/bit_allocate.c $(LIBA52_ROOT)/bitstream.c \
