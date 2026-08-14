@@ -18,6 +18,7 @@ LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_deblk.S \
                  $(LIBAVC_PORT)/ih264_m68k_cabac.S \
                  $(LIBAVC_PORT)/ih264d_cabac_wrap.c \
+                 $(LIBAVC_PORT)/ih264_m68k_chroma_mc.S \
                  $(LIBAVC_PORT)/ithread_port.c $(LIBAVC_PORT)/compat.c
 LIBAVC_SRC = $(LIBAVC_COMMON) $(LIBAVC_DECODER) $(LIBAVC_PORTSRC)
 LIBAVC_FLAGS = -I$(LIBAVC_PORT) -I$(LIBAVC_ROOT)/common \

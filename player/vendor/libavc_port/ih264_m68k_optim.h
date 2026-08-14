@@ -90,6 +90,11 @@ void mr_ih264_deblk_chroma_horz_bslt4_m68k(UWORD8 *, WORD32, WORD32, WORD32,
 UWORD32 mr_ih264d_decode_bin_m68k(UWORD32 u4_ctx_inc, UWORD8 *ps_src_bin_ctxt,
                                   void *ps_bitstrm, void *ps_cab_env)
     __asm__("mr_ih264d_decode_bin_m68k");
+
+/* ih264_m68k_chroma_mc.S - chroma sample interpolation (spec 8.4.2.2.2). */
+void mr_ih264_inter_pred_chroma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
+                                     WORD32, WORD32, WORD32, WORD32)
+    __asm__("mr_ih264_inter_pred_chroma_m68k");
 #endif
 
 #endif

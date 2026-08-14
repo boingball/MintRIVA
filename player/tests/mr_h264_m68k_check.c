@@ -1256,6 +1256,69 @@ static void check_decode_bin_cabac(void)
                        ctx_asm[i]);
     }
 }
+
+/* ---- chroma motion-compensation interpolation (ih264_m68k_chroma_mc.S) -
+ * Independent reference transcribed from H.264 spec 8.4.2.2.2, not from
+ * the asm (and not from Ittiam's C, beyond sharing the same spec formula
+ * any conformant implementation must use). */
+static void ref_inter_pred_chroma(const uint8_t *src, uint8_t *dst,
+                                  int src_strd, int dst_strd, int dx, int dy,
+                                  int ht, int wd)
+{
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        for (col = 0; col < 2 * wd; col++) {
+            int s00 = src[col];
+            int s10 = src[col + 2];
+            int s01 = src[src_strd + col];
+            int s11 = src[src_strd + col + 2];
+            int tmp = (8 - dx) * (8 - dy) * s00 + dx * (8 - dy) * s10 +
+                      (8 - dx) * dy * s01 + dx * dy * s11;
+            tmp = (tmp + 32) >> 6;
+            dst[col] = (uint8_t)tmp;
+        }
+        src += src_strd;
+        dst += dst_strd;
+    }
+}
+
+static void check_inter_pred_chroma(void)
+{
+    static const int wds[] = { 2, 4, 8 };
+    static const int hts[] = { 2, 4, 8 };
+    enum { SRC_STRD = 32, DST_STRD = 20, N_SRC_ROWS = 9 };
+    uint32_t seed = 7;
+    int wi, hi, iter;
+
+    for (wi = 0; wi < 3; wi++) {
+        for (hi = 0; hi < 3; hi++) {
+            int wd = wds[wi], ht = hts[hi];
+            for (iter = 0; iter < 20; iter++) {
+                uint8_t src[N_SRC_ROWS * SRC_STRD];
+                uint8_t dst_ref[8 * DST_STRD], dst_asm[8 * DST_STRD];
+                int dx = xrand(&seed) % 8, dy = xrand(&seed) % 8;
+                int row, col;
+
+                fill_random(src, sizeof src, &seed);
+                memset(dst_ref, 0, sizeof dst_ref);
+                memset(dst_asm, 0, sizeof dst_asm);
+
+                ref_inter_pred_chroma(src, dst_ref, SRC_STRD, DST_STRD, dx,
+                                      dy, ht, wd);
+                mr_ih264_inter_pred_chroma_m68k(src, dst_asm, SRC_STRD,
+                                                DST_STRD, dx, dy, ht, wd);
+
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < 2 * wd; col++) {
+                        int idx = row * DST_STRD + col;
+                        if (dst_ref[idx] != dst_asm[idx])
+                            report("inter_pred_chroma", row, col,
+                                   dst_ref[idx], dst_asm[idx]);
+                    }
+            }
+        }
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -1274,6 +1337,7 @@ int main(void)
     check_deblk_chroma_bs4();
     check_deblk_chroma_bslt4();
     check_decode_bin_cabac();
+    check_inter_pred_chroma();
 #endif
 
     if (g_failures) {
