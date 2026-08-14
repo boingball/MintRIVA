@@ -109,6 +109,18 @@ void mr_ih264d_get_motion_vector_predictor_m68k(UWORD8 *ps_result,
                                                  UWORD32 u1_B,
                                                  const UWORD8 *pu1_mv_pred_condition)
     __asm__("mr_ih264d_get_motion_vector_predictor_m68k");
+
+/* ih264_m68k_cabac_coeff.S - CABAC residual coefficient parsing, ported
+ * from ih264d_read_coeff4x4_cabac(). ps_bitstrm/ps_dec are opaque void*
+ * here (real struct layouts, not opaque single bytes like bin_ctxt_
+ * model_t - the asm indexes into them by fixed, verified offsets, see
+ * that file's header comment) so this declaration stays includable
+ * without pulling in libavc's decoder headers. */
+UWORD8 mr_ih264d_read_coeff4x4_cabac_m68k(void *ps_bitstrm, UWORD32 u4_ctxcat,
+                                          UWORD8 *ps_ctxt_sig_coeff,
+                                          void *ps_dec,
+                                          UWORD8 *ps_ctxt_coded)
+    __asm__("mr_ih264d_read_coeff4x4_cabac_m68k");
 #endif
 
 #endif

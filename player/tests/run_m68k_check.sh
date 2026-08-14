@@ -80,6 +80,8 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264_m68k_chroma_mc.S \
     vendor/libavc_port/ih264_m68k_mvpred.S \
     vendor/libavc_port/ih264d_mvpred_dispatch_port.c \
+    vendor/libavc_port/ih264_m68k_cabac_coeff.S \
+    vendor/libavc_port/ih264d_parse_cabac_coeff_port.c \
     vendor/libavc_port/ithread_port.c \
     vendor/libavc_port/compat.c"
 
@@ -92,10 +94,16 @@ echo "== building mr_decode.m68k (m68k-optimised leaf functions + hand asm activ
 # ih264d_mvpred_dispatch_port.c's reimplementations (which call the hand-
 # asm MV predictor primitive internally) - see that file for why the
 # primitive itself could not be wrapped directly.
+# --wrap=ih264d_parse_residual4x4_cabac/ih264d_read_coeff4x4_cabac: same
+# trick again, redirecting to ih264d_parse_cabac_coeff_port.c's
+# reimplementations (which call the hand-asm CABAC residual coefficient
+# primitive internally) - see that file for the two-symbol split.
 $CC -DMR_HAVE_MPEG1 -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_SRC \
     -Wl,--wrap=ih264d_decode_bin \
     -Wl,--wrap=ih264d_mvpred_nonmbaff \
-    -Wl,--wrap=ih264d_mvpred_nonmbaffB
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac
 
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
@@ -105,6 +113,9 @@ $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_cabac.S \
     vendor/libavc_port/ih264_m68k_chroma_mc.S \
     vendor/libavc_port/ih264_m68k_mvpred.S
+
+echo "== building mr_h264_cabac_coeff_check.m68k (real ih264d_read_coeff4x4_cabac vs asm) =="
+$CC -o "$BUILD/mr_h264_cabac_coeff_check.m68k" tests/mr_h264_cabac_coeff_check.c $LIBAVC_SRC
 
 echo "== building mr_yuv_check.m68k =="
 $CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c \
@@ -119,6 +130,7 @@ $CC -o "$BUILD/mr_ham_check.m68k" tests/mr_ham_check.c core/mr_ham.c
 run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 
 run "$BUILD/mr_h264_m68k_check.m68k"
+run "$BUILD/mr_h264_cabac_coeff_check.m68k"
 run "$BUILD/mr_yuv_check.m68k"
 run "$BUILD/mr_scale_check.m68k"
 run "$BUILD/mr_c2p_check.m68k"

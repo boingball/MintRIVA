@@ -21,19 +21,26 @@ LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_chroma_mc.S \
                  $(LIBAVC_PORT)/ih264_m68k_mvpred.S \
                  $(LIBAVC_PORT)/ih264d_mvpred_dispatch_port.c \
+                 $(LIBAVC_PORT)/ih264_m68k_cabac_coeff.S \
+                 $(LIBAVC_PORT)/ih264d_parse_cabac_coeff_port.c \
                  $(LIBAVC_PORT)/ithread_port.c $(LIBAVC_PORT)/compat.c
 LIBAVC_SRC = $(LIBAVC_COMMON) $(LIBAVC_DECODER) $(LIBAVC_PORTSRC)
 LIBAVC_FLAGS = -I$(LIBAVC_PORT) -I$(LIBAVC_ROOT)/common \
                -I$(LIBAVC_ROOT)/decoder -include $(LIBAVC_PORT)/compat.h
 LIBAVC_GCC_FLAGS = -fno-strict-aliasing -fwrapv
-# ih264d_cabac_wrap.c's __wrap_ih264d_decode_bin and
+# ih264d_cabac_wrap.c's __wrap_ih264d_decode_bin,
 # ih264d_mvpred_dispatch_port.c's __wrap_ih264d_mvpred_nonmbaff/
-# _nonmbaffB only exist under MR_M68K_ASM (see those files), so these
-# flags must only be added to m68k cross-build link commands, never the
-# host build - GNU ld's --wrap hard-errors with "undefined reference to
-# __wrap_..." if the wrapper symbol it redirects to doesn't exist in the
-# link. ih264d_mvpred_mbaff (MBAFF slices) is deliberately left unwrapped
-# - see ih264d_mvpred_dispatch_port.c's header comment for why.
+# _nonmbaffB, and ih264d_parse_cabac_coeff_port.c's __wrap_ih264d_parse_
+# residual4x4_cabac/__wrap_ih264d_read_coeff4x4_cabac only exist under
+# MR_M68K_ASM (see those files), so these flags must only be added to
+# m68k cross-build link commands, never the host build - GNU ld's --wrap
+# hard-errors with "undefined reference to __wrap_..." if the wrapper
+# symbol it redirects to doesn't exist in the link. ih264d_mvpred_mbaff
+# (MBAFF slices) and ih264d_read_coeff8x8_cabac (transform8x8/High
+# Profile) are deliberately left unwrapped - see ih264d_mvpred_dispatch_
+# port.c's and ih264d_parse_cabac_coeff_port.c's header comments for why.
 LIBAVC_M68K_LDFLAGS = -Wl,--wrap=ih264d_decode_bin \
                       -Wl,--wrap=ih264d_mvpred_nonmbaff \
-                      -Wl,--wrap=ih264d_mvpred_nonmbaffB
+                      -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+                      -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+                      -Wl,--wrap=ih264d_read_coeff4x4_cabac
