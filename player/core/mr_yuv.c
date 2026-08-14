@@ -83,18 +83,20 @@ void mr_yuv420_to_rgb24(uint8_t *dst, int dst_stride,
         return;
     if (!g_tables_ready) build_tables();
 
-#if defined(MR_M68K_ASM) && defined(MR_YUV_M68K_ASM_ENABLE)
-    /* Disabled by default: a real-Pistorm run crashed (illegal instruction,
-     * error 80000004, plus visible corruption of the mouse pointer and
-     * clock gadget - a wild write, not a clean fault) immediately after
-     * this dispatch was added, with every earlier asm addition in this
-     * port having already been confirmed working on the same real
-     * hardware beforehand. This isolates the bug to
-     * mr_yuv420_to_rgb24_m68k specifically (core/mr_yuv_m68k.S) rather
-     * than anything else in the port. Falling back to the portable C
-     * below until that asm is understood and fixed - do not re-enable
-     * this without a real-hardware pass, host/qemu testing already
-     * passed for the version that crashed. */
+#if defined(MR_M68K_ASM)
+    /* A real-Pistorm run of an earlier version of this dispatch crashed
+     * (illegal instruction, error 80000004, plus visible corruption of the
+     * mouse pointer and clock gadget - a wild write) the first time it ran
+     * with real audio servicing active: mr_yuv420_to_rgb24_m68k was
+     * clobbering d0/a0/a1 across the periodic service() callback, since
+     * those registers are only safe from *our own caller's* perspective,
+     * not across a call this function makes itself - see
+     * core/mr_yuv_m68k.S for the fix and tests/mr_yuv_check.c's
+     * check_yuv_service_clobber() for the regression test (which
+     * reproduces the crash against the unfixed asm before confirming the
+     * fix). Fixed and confirmed clean on real Pistorm hardware with audio
+     * servicing active (`make -f Makefile.amiga mrplay YUV_ASM=1`, since
+     * folded back into the default build here). */
     mr_yuv420_to_rgb24_m68k(dst, dst_stride, y_plane, y_stride, u_plane,
                             u_stride, v_plane, v_stride, width, height,
                             service, service_opaque, g_luma_x298, g_e_x409,

@@ -7,14 +7,14 @@
 
 #if defined(MR_M68K_ASM)
 /* mr_yuv420_to_rgb24_m68k is normally reached only through
- * mr_yuv420_to_rgb24()'s dispatch (core/mr_yuv.c), currently gated off by
- * default behind MR_YUV_M68K_ASM_ENABLE after a real-hardware crash - see
- * that file and core/mr_yuv_m68k.S for the root cause (d0/a0/a1 not
- * preserved across the periodic service() callback, since an ordinary C
- * callee is entitled to clobber m68k's caller-saved registers). Declared
- * directly here so check_yuv_service_clobber() below can call it whether
- * or not the public dispatch has re-enabled it, and keep exercising
- * exactly the bug that escaped every other test in this project so far. */
+ * mr_yuv420_to_rgb24()'s dispatch (core/mr_yuv.c). An earlier version of
+ * it crashed real Pistorm hardware - d0/a0/a1 not preserved across the
+ * periodic service() callback, since an ordinary C callee is entitled to
+ * clobber m68k's caller-saved registers - fixed, and confirmed clean on
+ * the same real hardware with audio servicing active. Declared directly
+ * here (rather than relying on the public dispatch) so
+ * check_yuv_service_clobber() below keeps exercising exactly that bug
+ * class regardless of how the dispatch itself is wired. */
 void mr_yuv420_to_rgb24_m68k(uint8_t *dst, int dst_stride,
                              const uint8_t *y_plane, int y_stride,
                              const uint8_t *u_plane, int u_stride,
