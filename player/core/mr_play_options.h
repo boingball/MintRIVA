@@ -14,7 +14,13 @@ typedef enum {
     MR_DISPLAY_HAM6,
     MR_DISPLAY_HAM8,
     MR_DISPLAY_CGX,
-    MR_DISPLAY_P96
+    MR_DISPLAY_P96,
+    /* Native planar at reduced depth: same encoder family as MR_DISPLAY_AGA
+     * (indexed dither, not HAM), but forced to 5 planes/32 colours or 4
+     * planes/16 colours instead of auto-selecting by chipset. Available on
+     * any chipset, including AGA, as an explicit speed/quality tradeoff. */
+    MR_DISPLAY_AGA_ECS32,
+    MR_DISPLAY_AGA_ECS16
 } mr_display_mode;
 
 typedef enum {

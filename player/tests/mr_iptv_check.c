@@ -386,6 +386,34 @@ int main(void) {
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "RTG (P96)"));
     }
+    {
+      char *inherited[] = {"iptvgui", "--display", "ecs32"};
+      char summary[160], args[4096], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 3, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_AGA_ECS32);
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "ECS (32)"));
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(args, "--aga --ecs32"));
+    }
+    {
+      char *inherited[] = {"iptvgui", "--display", "ecs16"};
+      char summary[160], args[4096], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 3, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_AGA_ECS16);
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "ECS (16)"));
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(args, "--aga --ecs-fast"));
+    }
   }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");

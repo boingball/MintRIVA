@@ -169,6 +169,62 @@ static void dither5_rgb(const uint8_t *rgb, int w, int h, int rgb_stride,
     }
 }
 
+/* Opt-in fast encoder (--ecs-fast): a 2x4x2 RGB cube, half the plane count of
+ * the normal AGA 256-colour path (4 planes vs 8). Available on any chipset,
+ * including AGA - it is a speed/quality tradeoff the user opts into, not an
+ * ECS/OCS capability fallback (that is dither5_rgb() above). Shares the same
+ * Bayer matrix and r*8+g*2+b index packing as dither5_rgb(). */
+static uint8_t dither4_r[16][256], dither4_g[16][256],
+               dither4_b[16][256];
+static int dither4_ready;
+
+static void dither4_palette(uint8_t *pal)
+{
+    int r, g, b, i = 0;
+    for (r = 0; r < 2; r++)
+        for (g = 0; g < 4; g++)
+            for (b = 0; b < 2; b++) {
+                pal[i * 3 + 0] = (uint8_t)(r * 255);
+                pal[i * 3 + 1] = (uint8_t)(g * 255 / 3);
+                pal[i * 3 + 2] = (uint8_t)(b * 255);
+                i++;
+            }
+}
+
+static void dither4_build(void)
+{
+    int t, v;
+    for (t = 0; t < 16; t++)
+        for (v = 0; v < 256; v++) {
+            int v4 = v + (t - 8) * 85 / 16;
+            int v2 = v + (t - 8) * 255 / 16;
+            if (v4 < 0) v4 = 0; else if (v4 > 255) v4 = 255;
+            if (v2 < 0) v2 = 0; else if (v2 > 255) v2 = 255;
+            dither4_r[t][v] = (uint8_t)(((v2 + 127) / 255) * 8);
+            dither4_g[t][v] = (uint8_t)(((v4 * 3 + 127) / 255) * 2);
+            dither4_b[t][v] = (uint8_t)((v2 + 127) / 255);
+        }
+    dither4_ready = 1;
+}
+
+static void dither4_rgb(const uint8_t *rgb, int w, int h, int rgb_stride,
+                        uint8_t *out, int out_stride, int y_base)
+{
+    int x, y;
+    if (!dither4_ready) dither4_build();
+    for (y = 0; y < h; y++) {
+        const uint8_t *src = rgb + (size_t)y * rgb_stride;
+        uint8_t *dst = out + (size_t)y * out_stride;
+        const uint8_t *threshold = dither5_bayer[(y_base + y) & 3];
+        for (x = 0; x < w; x++) {
+            int t = threshold[x & 3];
+            dst[x] = (uint8_t)(dither4_r[t][src[x * 3 + 0]] +
+                               dither4_g[t][src[x * 3 + 1]] +
+                               dither4_b[t][src[x * 3 + 2]]);
+        }
+    }
+}
+
 static void load_palette(struct Screen *scr, int ham, int depth)
 {
     ULONG tab[1 + 256 * 3 + 1];
@@ -178,6 +234,9 @@ static void load_palette(struct Screen *scr, int ham, int depth)
     else if (depth == 5) {
         n = 32;
         dither5_palette(pal);
+    } else if (depth == 4) {
+        n = 16;
+        dither4_palette(pal);
     } else {
         n = 256;
         mr_dither_palette(pal);
@@ -217,7 +276,10 @@ static void *aga_open(int w, int h, const char *title)
         printf("planar: HAM8 requires AGA; using HAM6\n");
         ham = 6;
     }
-    depth = ham == 6 ? 6 : (chipset_has_aga() ? 8 : 5);
+    depth = ham == 6 ? 6 :
+            g_aga_ecs_fast ? 4 :
+            g_aga_ecs32 ? 5 :
+            (chipset_has_aga() ? 8 : 5);
 
     /*
      * AGA raster pixels are not square: HIRES doubles horizontal resolution
@@ -231,16 +293,16 @@ static void *aga_open(int w, int h, const char *title)
     /* ECS/OCS Denise+Agnus cannot fetch more than 4 bitplanes' worth of data
      * per scanline at HIRES pixel rates - a genuine display DMA bandwidth
      * limit, not something AGA needed since it redesigned the fetch path.
-     * This backend's non-AGA paths use depth 5 (dither5_rgb, the ECS/OCS
-     * 32-colour cube) or depth 6 (HAM6), both invalid HIRES bitplane counts
-     * on real ECS/OCS hardware - OpenScreenTags simply fails for that
+     * This backend's non-AGA paths normally use depth 5 (dither5_rgb, the
+     * ECS/OCS 32-colour cube) or depth 6 (HAM6), both invalid HIRES bitplane
+     * counts on real ECS/OCS hardware - OpenScreenTags simply fails for that
      * combination. Confirmed on real ECS hardware: a live stream narrow
      * enough to stay LORES opened fine; two wider ones that crossed the 320
      * threshold into HIRES both failed to open a display at all. Keep ECS/
-     * OCS in LORES unconditionally (this backend has no HIRES-capable <=4
-     * plane encoder) rather than requesting a mode the chipset cannot do -
-     * the picture is downscaled a bit more instead of not appearing. */
-    if (!chipset_has_aga()) hires = 0;
+     * OCS in LORES (the picture is downscaled a bit more instead of not
+     * appearing) unless depth is already within the real 4-plane HIRES
+     * limit - --ecs-fast's 4-plane encoder qualifies on any chipset. */
+    if (!chipset_has_aga() && depth > 4) hires = 0;
     lace = g_aga_lace && h * scale > 256;
     physical_w = w * scale;
     physical_h = h * scale;
@@ -394,6 +456,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, encoded, pw, s->ham);
         else if (s->depth == 5)
             dither5_rgb(s->scaled, dw, s->dh, dw * 3, encoded, pw, 0);
+        else if (s->depth == 4)
+            dither4_rgb(s->scaled, dw, s->dh, dw * 3, encoded, pw, 0);
         else
             mr_dither_rgb8(s->scaled, dw, s->dh, dw * 3, encoded, pw, 0);
         ddy0 = 0; ddh = s->dh;
@@ -413,6 +477,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             if (s->ham) mr_ham_encode(src, w, rows, stride, s->enc, w, s->ham);
             else if (s->depth == 5)
                 dither5_rgb(src, w, rows, stride, s->enc, w, dy0);
+            else if (s->depth == 4)
+                dither4_rgb(src, w, rows, stride, s->enc, w, dy0);
             else
                 mr_dither_rgb8(src, w, rows, stride, s->enc, w, dy0);
             mr_scale2x_u8(s->enc, w, rows, w,
@@ -425,6 +491,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             if (s->ham) mr_ham_encode(src, w, rows, stride, dst, pw, s->ham);
             else if (s->depth == 5)
                 dither5_rgb(src, w, rows, stride, dst, pw, dy0);
+            else if (s->depth == 4)
+                dither4_rgb(src, w, rows, stride, dst, pw, dy0);
             else
                 mr_dither_rgb8(src, w, rows, stride, dst, pw, dy0);
             ddy0 = dy0; ddh = rows;
