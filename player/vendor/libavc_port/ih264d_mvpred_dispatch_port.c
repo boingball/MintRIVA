@@ -57,17 +57,21 @@
  * simply keeps using the original, unmodified, correct C path -
  * unoptimised for that specific case, never incorrect.
  *
- * Verification: check_mvpred_dispatch() in tests/mr_h264_m68k_check.c
- * fuzzes randomised mv_pred_t neighbour-bank buffers and dec_mb_info_t
- * availability masks and asserts this reimplementation is bit-exact
- * against the real vendored ih264d_mvpred_nonmbaff()/_nonmbaffB() (not a
- * from-spec reference this time - the real functions are directly
- * callable in the same test binary, so there is no need to re-derive
- * one), covering every u1_mb_mc_mode case (PRED_16x8, PRED_8x16,
- * B_DIRECT_SPATIAL, MB_SKIP, default) and both the "neighbour ref_idx
- * already matches" shortcut and the actual median-predictor path. Plus
- * the full make check-m68k H.264-vs-ffmpeg conformance suite (worst
- * per-frame MAE must stay unchanged), and a qemu -d exec address trace
+ * Verification: check_mvpred_dispatch() in
+ * tests/mr_h264_mvpred_dispatch_check.c (a separate test binary, not
+ * mr_h264_m68k_check.c - that file is deliberately kept free of libavc
+ * headers/linking so it stays a lightweight portable-C-only build; this
+ * one links the real vendored decoder, same pattern as mr_h264_cabac_
+ * coeff_check.c) fuzzes randomised mv_pred_t neighbour-bank buffers and
+ * dec_mb_info_t availability masks and asserts this reimplementation is
+ * bit-exact against the real vendored ih264d_mvpred_nonmbaff()/
+ * _nonmbaffB() (not a from-spec reference this time - the real functions
+ * are directly callable in the same test binary, so there is no need to
+ * re-derive one), covering every u1_mb_mc_mode case (PRED_16x8,
+ * PRED_8x16, B_DIRECT_SPATIAL, MB_SKIP, default) and both the "neighbour
+ * ref_idx already matches" shortcut and the actual median-predictor
+ * path. Plus the full make check-m68k H.264-vs-ffmpeg conformance suite
+ * (worst per-frame MAE must stay unchanged), and a qemu -d exec address trace
  * confirming the asm primitive's own address is what actually executes
  * during real decode.
  */
