@@ -95,6 +95,20 @@ UWORD32 mr_ih264d_decode_bin_m68k(UWORD32 u4_ctx_inc, UWORD8 *ps_src_bin_ctxt,
 void mr_ih264_inter_pred_chroma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
                                      WORD32, WORD32, WORD32, WORD32)
     __asm__("mr_ih264_inter_pred_chroma_m68k");
+
+/* ih264_m68k_mvpred.S - motion vector prediction (spec 8.4.1.2.1), ported
+ * from ih264d_get_motion_vector_predictor(). Struct layouts are opaque
+ * here deliberately (see ih264_m68k_cabac.S's declaration above for why),
+ * so ps_result/ps_mv_pred are passed as UWORD8 pointers and cast on the
+ * caller side, matching the real mv_pred_t layout exactly. Called from
+ * ih264d_mvpred_dispatch_port.c, not swapped in under the vendored
+ * primitive's own name - see that file's header comment for why. */
+void mr_ih264d_get_motion_vector_predictor_m68k(UWORD8 *ps_result,
+                                                 UWORD8 **ps_mv_pred,
+                                                 UWORD32 u1_ref_idx,
+                                                 UWORD32 u1_B,
+                                                 const UWORD8 *pu1_mv_pred_condition)
+    __asm__("mr_ih264d_get_motion_vector_predictor_m68k");
 #endif
 
 #endif

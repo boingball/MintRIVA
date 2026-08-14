@@ -1319,6 +1319,87 @@ static void check_inter_pred_chroma(void)
         }
     }
 }
+/* ---- motion vector prediction (ih264_m68k_mvpred.S) -------------------
+ * Independent reference, transcribed directly from
+ * ih264d_get_motion_vector_predictor()'s C (spec 8.4.1.2.1), not from the
+ * asm. test_mv_pred_t mirrors mv_pred_t's layout (ih264d_structs.h) byte
+ * for byte - i2_mv[4] at offset 0, i1_ref_frame[2] at offset 8 - since the
+ * asm indexes into it by those fixed offsets. */
+typedef struct {
+    int16_t i2_mv[4];
+    int8_t  i1_ref_frame[2];
+    uint8_t u1_col_ref_pic_idx;
+    uint8_t u1_pic_type;
+} test_mv_pred_t;
+
+static const int8_t g_mv_pred_condition[8] = { -1, 0, 1, -1, 2, -1, -1, -1 };
+
+static void ref_mv_predictor(test_mv_pred_t *result, test_mv_pred_t **mv_pred,
+                             uint8_t ref_idx, uint8_t b, const int8_t *cond)
+{
+    int8_t c_temp;
+    uint8_t b2 = (uint8_t)(b << 1);
+
+    c_temp = (int8_t)((mv_pred[0]->i1_ref_frame[b] == ref_idx) |
+                      ((mv_pred[1]->i1_ref_frame[b] == ref_idx) << 1) |
+                      ((mv_pred[2]->i1_ref_frame[b] == ref_idx) << 2));
+    c_temp = cond[c_temp];
+
+    if (c_temp != -1) {
+        result->i2_mv[b2 + 0] = mv_pred[c_temp]->i2_mv[b2 + 0];
+        result->i2_mv[b2 + 1] = mv_pred[c_temp]->i2_mv[b2 + 1];
+    } else {
+        int i, d0, d1;
+        for (i = 0; i < 2; i++) {
+            int a = mv_pred[0]->i2_mv[b2 + i];
+            int t = mv_pred[1]->i2_mv[b2 + i];
+            int tr = mv_pred[2]->i2_mv[b2 + i];
+            d0 = a < t ? a : t;
+            d1 = a > t ? a : t;
+            d1 = d1 < tr ? d1 : tr;
+            result->i2_mv[b2 + i] = (int16_t)(d0 > d1 ? d0 : d1);
+        }
+    }
+}
+
+static void check_mv_predictor(void)
+{
+    enum { N_ITER = 20000 };
+    uint32_t seed = 137;
+    int iter;
+
+    for (iter = 0; iter < N_ITER; iter++) {
+        test_mv_pred_t cand[3], result_ref, result_asm;
+        test_mv_pred_t *ptrs[3] = { &cand[0], &cand[1], &cand[2] };
+        uint8_t ref_idx, b;
+        int i, k;
+
+        for (i = 0; i < 3; i++) {
+            for (k = 0; k < 4; k++)
+                cand[i].i2_mv[k] = (int16_t)(xrand(&seed) % 8192) - 4096;
+            /* Small in-domain range (-1..2) so every c_temp bitmask value
+             * (0..7) and both the shortcut and median paths get exercised
+             * often, not just the near-certain "no match" case a full
+             * int8_t range would produce. */
+            cand[i].i1_ref_frame[0] = (int8_t)((int)(xrand(&seed) % 4) - 1);
+            cand[i].i1_ref_frame[1] = (int8_t)((int)(xrand(&seed) % 4) - 1);
+        }
+        ref_idx = (uint8_t)(xrand(&seed) % 3);
+        b = (uint8_t)(xrand(&seed) % 2);
+        memset(&result_ref, 0xAA, sizeof result_ref);
+        memset(&result_asm, 0xAA, sizeof result_asm);
+
+        ref_mv_predictor(&result_ref, ptrs, ref_idx, b, g_mv_pred_condition);
+        mr_ih264d_get_motion_vector_predictor_m68k(
+            (uint8_t *)&result_asm, (uint8_t **)ptrs, ref_idx, b,
+            (const uint8_t *)g_mv_pred_condition);
+
+        for (k = 0; k < 4; k++)
+            if (result_ref.i2_mv[k] != result_asm.i2_mv[k])
+                report("mv_predictor", iter, k, result_ref.i2_mv[k],
+                       result_asm.i2_mv[k]);
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -1338,6 +1419,7 @@ int main(void)
     check_deblk_chroma_bslt4();
     check_decode_bin_cabac();
     check_inter_pred_chroma();
+    check_mv_predictor();
 #endif
 
     if (g_failures) {
