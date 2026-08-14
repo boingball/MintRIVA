@@ -47,8 +47,14 @@
  * m68k C ABI: all seventeen arguments are 4 bytes, passed on the stack in
  * order starting at 4(%sp). Saves %d2/%d4-%d6/%a2-%a4 (7 registers, 28
  * bytes) plus a fixed 12-byte local scratch area (red/green/blue_add) -
- * stack offsets below are +40. %d0/%d1/%a0/%a1 are scratch, no save
- * needed: d0=row, d1=column x, a0=src_y row pointer, a1=dst row pointer.
+ * stack offsets below are +40. %d0/%d1/%a0/%a1 don't need saving *for our
+ * caller's sake* (d0=row, d1=column x, a0=src_y row pointer, a1=dst row
+ * pointer) - but this function is also a caller itself (the periodic
+ * service() callback below), and values held in those same four
+ * registers that are still needed *after* that call must be explicitly
+ * preserved around it, since an ordinary C callee is entitled to clobber
+ * any of them. See the .Lyuv_tail_done comment - missing this the first
+ * time caused a real-hardware crash.
  */
 #if defined(MR_M68K_ASM)
 	.text
@@ -313,10 +319,24 @@ mr_yuv420_to_rgb24_m68k:
 	bne.b	.Lyuv_no_service
 	tst.l	84(%sp)			/* service      (44+40) */
 	beq.b	.Lyuv_no_service
-	movea.l	84(%sp),%a4
-	move.l	88(%sp),-(%sp)		/* service_opaque (48+40) */
+	movea.l	84(%sp),%a4		/* load fn ptr before pushing anything else */
+	/* d0/a0/a1 are "scratch, caller must not assume preserved" by this
+	 * port's own convention (see the header comment) - which is exactly
+	 * why they're not in the save-registers list above. That's only
+	 * safe for values *this* function doesn't need after a call it
+	 * makes itself; row/a0(y ptr)/a1(dst ptr) are read again right
+	 * after this jsr returns, so an ordinary C service() - fully
+	 * entitled to clobber d0/d1/a0/a1 like any m68k caller-saved
+	 * registers - corrupts them silently. Missing this caused a real-
+	 * hardware crash (illegal instruction + visible screen corruption)
+	 * the very first time this ran with audio servicing actually wired
+	 * up instead of NULL/a trivial test stub (see check_yuv_service()
+	 * in mr_h264_m68k_check.c, added specifically to keep this covered). */
+	movem.l	%d0/%a0-%a1,-(%sp)
+	move.l	100(%sp),-(%sp)		/* service_opaque: 88 + 12 (movem push) */
 	jsr	(%a4)
 	addq.l	#4,%sp
+	movem.l	(%sp)+,%d0/%a0-%a1
 .Lyuv_no_service:
 
 	adda.l	56(%sp),%a0		/* y_stride   (16+40) */
