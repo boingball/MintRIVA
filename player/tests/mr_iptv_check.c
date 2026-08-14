@@ -317,6 +317,12 @@ int main(void) {
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
     assert(!strstr(args, "--aga") && !strstr(args, "--kalms-c2p"));
+    options.display = MR_DISPLAY_P96;
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
+    assert(strstr(args, "--p96") && !strstr(args, "--aga") &&
+           !strstr(args, "--kalms-c2p"));
+    options.display = MR_DISPLAY_CGX;
     options.hls_low = 0;
     options.hls_max_width = 0;
     options.hls_max_height = 0;
@@ -368,6 +374,17 @@ int main(void) {
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "Native planar / kalms / Lace on / 2x on"));
       assert(strstr(summary, "H264 Fast"));
+    }
+    {
+      char *inherited[] = {"iptvgui", "--display", "p96"};
+      char summary[160], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 3, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_P96);
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "RTG (P96)"));
     }
   }
   remove("/tmp/mr_channels.json");

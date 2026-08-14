@@ -88,7 +88,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[4];
+static mr_display_mode mode_values[5];
 static unsigned mode_count;
 static int add_chooser_node(struct List *list, const char *text);
 
@@ -441,7 +441,8 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
     disable_chipset_options = selected < mode_count &&
-                              mode_values[selected] == MR_DISPLAY_CGX
+                              (mode_values[selected] == MR_DISPLAY_CGX ||
+                               mode_values[selected] == MR_DISPLAY_P96)
                             ? TRUE : FALSE;
 
     SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
@@ -614,9 +615,10 @@ int main(void)
         !add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
-        (have_rtg && !add_mode_node(&modes, "CGX/RTG", MR_DISPLAY_CGX)))
+        (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
+        (have_rtg && !add_mode_node(&modes, "RTG (P96)", MR_DISPLAY_P96)))
         goto cleanup;
-    if (have_rtg) default_mode = (int)mode_count - 1;
+    if (have_rtg) default_mode = (int)mode_count - 2;
     if (!add_chooser_node(&c2p_modes, "Standard") ||
         !add_chooser_node(&c2p_modes, "CD32") ||
         !add_chooser_node(&c2p_modes, "Kalms"))

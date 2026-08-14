@@ -50,8 +50,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[4];
-    STRPTR mode_labels[5];
+    mr_display_mode modes[5];
+    STRPTR mode_labels[6];
     unsigned mode_count;
     char path[512];
 } gt_app;
@@ -125,7 +125,8 @@ static void update_mode_controls(gt_app *app)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
     ULONG disabled = selected < app->mode_count &&
-                     app->modes[selected] == MR_DISPLAY_CGX;
+                     (app->modes[selected] == MR_DISPLAY_CGX ||
+                      app->modes[selected] == MR_DISPLAY_P96);
     GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                      GA_Disabled, disabled, TAG_DONE);
     GT_SetGadgetAttrs(app->lace, app->window, NULL,
@@ -298,9 +299,11 @@ static int build_window(gt_app *app)
         app->modes[app->mode_count++] = MR_DISPLAY_HAM8;
     }
     if (screen_is_rtg(app->screen)) {
-        app->mode_labels[app->mode_count] = (STRPTR)"Display: CGX/RTG";
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (WritePixel)";
         app->modes[app->mode_count++] = MR_DISPLAY_CGX;
         default_mode = (int)app->mode_count - 1;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (P96)";
+        app->modes[app->mode_count++] = MR_DISPLAY_P96;
     }
     app->mode_labels[app->mode_count] = NULL;
 
