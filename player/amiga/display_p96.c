@@ -105,6 +105,7 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason);
 static int  ensure_scaled(p96_state *s, int w);
 static int  p96_toggle_fullscreen(void *h);
 static int  bitmap_format_ok(struct BitMap *bm);
+static void clear_bgr24_rect(struct BitMap *bm, int x, int y, int w, int h);
 
 static int p96_close_private_screen(struct Screen **screen, const char *reason)
 {
