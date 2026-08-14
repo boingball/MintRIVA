@@ -28,6 +28,23 @@
  * register-clobbering bug taught about not assuming what happens across a
  * call into other code, applied here at the API-contract level instead of
  * the ABI level.
+ *
+ * Fullscreen only. A direct bitmap lock writes to raw, absolute screen
+ * coordinates with none of the clipping WritePixelArray gets for free from
+ * Layers: it has no idea what else is on screen, so a windowed video window
+ * dragged around a normal multi-window desktop stomps whatever siblings
+ * happen to be under it, with nothing to restore them afterwards (confirmed
+ * on real hardware - dragging the window correctly followed the window
+ * itself once win->LeftEdge/TopEdge tracking was added, but corrupted every
+ * other window and icon it passed over on the way, and the desktop stayed
+ * corrupted after the player closed). A private fullscreen screen has no
+ * siblings to corrupt, which is the only reason direct access is safe at
+ * all - see the g_display_fullscreen check in p96_open() and the matching
+ * refusal in p96_toggle_fullscreen(). Properly clipping direct writes to a
+ * window's actual visible region (Layer ClipRects) would lift this, but
+ * that is real Amiga-internals work this project has no way to verify
+ * without a compiler or real hardware in the loop at every step, so it is
+ * left as a known, deliberate limitation rather than guessed at.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -319,6 +336,22 @@ static void *p96_open(int w, int h, const char *title)
     struct Screen *scr;
     if (!CyberGfxBase || !P96Base || !p96_default_screen_is_rtg())
         return NULL;                              /* not RTG -> try CGX/AGA */
+
+    /* Fullscreen only - see the file header comment. A direct bitmap lock
+     * has no equivalent of the window-clipping WritePixelArray gets for free
+     * from Layers: every write lands at raw screen coordinates regardless of
+     * what else is on screen, so a windowed video window dragged around a
+     * normal desktop corrupts whatever sibling windows/icons happen to be
+     * under it - a private fullscreen screen has no siblings to corrupt,
+     * which is the only reason this is safe at all. Fall back to CGX/AGA for
+     * anything windowed rather than risk it. */
+    if (!g_display_fullscreen) {
+        printf("p96: windowed mode is not supported (direct bitmap locks "
+               "have no window clipping and would corrupt other windows on "
+               "the desktop) - falling back to WritePixelArray; use "
+               "--fullscreen to use P96\n");
+        return NULL;
+    }
 
     s = (p96_state *)AllocVec(sizeof *s, MEMF_CLEAR);
     if (!s) return NULL;
@@ -736,6 +769,17 @@ static int p96_toggle_fullscreen(void *h)
     struct IntuiMessage *msg;
     int next_fullscreen;
     if (!s || !s->win) return 0;
+    if (s->fullscreen) {
+        /* Refuse to leave fullscreen - see p96_open()'s comment. Windowed
+         * mode on a shared desktop is unsafe for this backend's direct,
+         * unclipped bitmap writes; the initial open() already only ever
+         * succeeds in fullscreen, so honour that for the lifetime of the
+         * window too rather than let F reintroduce the same corruption. */
+        printf("p96: cannot leave fullscreen (windowed mode unsupported - "
+               "see --p96 above); use --display cgx for a windowed RTG "
+               "session instead\n");
+        return 0;
+    }
     p96_close_private_screen(&s->retired_screen, "toggle retry");
     if (!s->fullscreen && s->retired_screen) {
         printf("p96-fullscreen: previous private screen still busy\n");
