@@ -64,7 +64,8 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
       vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c \
       core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h263.c core/mr_h264.c \
-      core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c"
+      core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c \
+      core/mr_yuv_m68k.S"
 LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     | grep -v -e ithread.c -e ih264_resi_trans_quant.c -e ih264_trans_data.c) \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
@@ -95,7 +96,8 @@ $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_chroma_mc.S
 
 echo "== building mr_yuv_check.m68k =="
-$CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c
+$CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c \
+    core/mr_yuv_m68k.S
 
 echo "== building mr_scale_check.m68k / mr_c2p_check.m68k / mr_ham_check.m68k =="
 $CC -o "$BUILD/mr_scale_check.m68k" tests/mr_scale_check.c core/mr_scale.c

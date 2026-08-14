@@ -31,7 +31,7 @@ CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_mpeg2.c $(LIBMPEG2_SRC) \
            core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h263.c core/mr_h264.c \
            core/mr_msvideo1.c core/mr_rle.c \
-           core/mr_rawvideo.c core/mr_yuv.c \
+           core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S \
            $(LIBAVC_SRC)
 TESTSRC  = tests/mr_decode.c
 MINTAMP_ROOT ?= vendor/MintAMP

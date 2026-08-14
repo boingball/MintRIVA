@@ -14,6 +14,23 @@
  */
 #include "mr_yuv.h"
 
+#if defined(MR_M68K_ASM)
+/* core/mr_yuv_m68k.S - hand-written m68k loop over the same formula and
+ * tables below. __asm__ binds to the bare .globl name (m68k-amigaos-gcc
+ * decorates C symbols but not hand-written asm labels), matching every
+ * other hand-asm entry point in this project. */
+void mr_yuv420_to_rgb24_m68k(uint8_t *dst, int dst_stride,
+                             const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height,
+                             mr_yuv_service_fn service, void *service_opaque,
+                             const int *luma_x298, const int *e_x409,
+                             const int *d_xm100, const int *e_xm208,
+                             const int *d_x516)
+    __asm__("mr_yuv420_to_rgb24_m68k");
+#endif
+
 static int g_luma_x298[256];
 static int g_e_x409[256];
 static int g_d_xm100[256];
@@ -65,6 +82,14 @@ void mr_yuv420_to_rgb24(uint8_t *dst, int dst_stride,
         width <= 0 || height <= 0)
         return;
     if (!g_tables_ready) build_tables();
+
+#if defined(MR_M68K_ASM)
+    mr_yuv420_to_rgb24_m68k(dst, dst_stride, y_plane, y_stride, u_plane,
+                            u_stride, v_plane, v_stride, width, height,
+                            service, service_opaque, g_luma_x298, g_e_x409,
+                            g_d_xm100, g_e_xm208, g_d_x516);
+    return;
+#endif
 
     for (row = 0; row < height; row++) {
         const uint8_t *src_y = y_plane + row * y_stride;
