@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Microsoft MPEG-4 version 2 (MP42) decoder plugin.
+ * MintVID - Microsoft MPEG-4 version 2 (MP42) decoder plugin.
  */
 #ifndef MR_MSMPEG4V2_H
 #define MR_MSMPEG4V2_H

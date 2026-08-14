@@ -1,5 +1,5 @@
 /*
- * MintRIVA - streaming HTTP/HTTPS random-access media source.
+ * MintVID - streaming HTTP/HTTPS random-access media source.
  *
  * One response remains open while a demuxer reads sequentially. A seek closes
  * it and starts a Range request at the new byte offset. This keeps TS playback
@@ -55,7 +55,7 @@
 #define HTTP_HEADER_MAX   16384
 #define HTTP_REQUEST_MAX  (MR_HTTP_URL_MAX + MR_HTTP_USER_AGENT_MAX + \
                            MR_HTTP_REFERER_MAX + 1536)
-#define HTTP_DEFAULT_USER_AGENT "MintRIVA/0.1 AmigaOS"
+#define HTTP_DEFAULT_USER_AGENT "MintVID/0.1 AmigaOS"
 #define HTTP_CHUNK_LINE_MAX 128
 /* Read-ahead / rewind window. Presentation-order delivery makes streaming
  * alternate reads between a file's video-chunk and audio-chunk regions, and the

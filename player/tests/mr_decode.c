@@ -1,5 +1,5 @@
 /*
- * Host test harness: demux an AVI, decode its video with the MintRIVA core,
+ * Host test harness: demux an AVI, decode its video with the MintVID core,
  * and (optionally) validate every frame against a directory of reference PPMs
  * produced by ffmpeg. This is how the portable decoders are proven correct
  * before any of this touches a 68k toolchain.

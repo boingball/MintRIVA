@@ -1,5 +1,5 @@
 /*
- * MintRIVA - raw MPEG-4 Part 2 Visual elementary-stream demuxer.
+ * MintVID - raw MPEG-4 Part 2 Visual elementary-stream demuxer.
  */
 #ifndef MR_RAW_MPEG4_H
 #define MR_RAW_MPEG4_H

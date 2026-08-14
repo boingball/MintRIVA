@@ -10,7 +10,7 @@ is padded to the screen width, with the encoded picture placed at the centred
 screen offset, because this Kalms routine has no row-modulo or horizontal-offset
 ABI. The self-modifying initialiser is run once after the screen opens.
 
-Before enabling the routine, MintRIVA checks the real `BitMap->Planes[]` array:
+Before enabling the routine, MintVID checks the real `BitMap->Planes[]` array:
 the screen must have eight planes, its row length must match the padded chunky
 width, and every plane must be at the same positive `bplsize` displacement from
 plane zero. Kalms documents a 16 KiB maximum `bplsize`. An incompatible layout
@@ -18,7 +18,7 @@ falls back silently to `WritePixelArray8`.
 This deliberately avoids assumptions about how graphics.library allocated the
 planes.
 
-On fallback, MintRIVA restores WPA's visible-width-based chunky row padding;
+On fallback, MintVID restores WPA's visible-width-based chunky row padding;
 it does not retain Kalms' screen-width stride. This is required for HAM6,
 whose six-plane screen is intentionally incompatible with the eight-plane
 routine, and for any other layout that uses the WPA path.
@@ -33,7 +33,7 @@ the display or rendering frames.
 The converter is from **Mikael Kalms' C2P collection**. Kalms' upstream
 `readme.txt` states that all files outside its `others` directory are **Public
 Domain**, usable, modifiable, and redistributable for commercial and
-non-commercial purposes. MintRIVA vendors the authoritative assembly and
+non-commercial purposes. MintVID vendors the authoritative assembly and
 register-ABI header unchanged under `player/vendor/kalms-c2p/normal/`.
 
 ## Verification

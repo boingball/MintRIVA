@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local Range/redirect server for MintRIVA HTTP source regression tests."""
+"""Local Range/redirect server for MintVID HTTP source regression tests."""
 
 import argparse
 import http.server
@@ -10,7 +10,7 @@ import urllib.parse
 
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
-    server_version = "MintRIVATestHTTP/1.0"
+    server_version = "MintVIDTestHTTP/1.0"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):

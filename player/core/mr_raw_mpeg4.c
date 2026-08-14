@@ -1,5 +1,5 @@
 /*
- * MintRIVA - raw MPEG-4 Part 2 Visual elementary-stream demuxer.
+ * MintVID - raw MPEG-4 Part 2 Visual elementary-stream demuxer.
  *
  * The decoder expects one VOP per packet. Preserve any VOS/VO/VOL/GOV headers
  * immediately preceding a VOP so repeated configuration reaches the decoder.

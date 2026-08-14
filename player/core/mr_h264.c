@@ -1,9 +1,9 @@
 /*
- * MintRIVA - H.264/AVC decoder adapter.
+ * MintVID - H.264/AVC decoder adapter.
  *
  * Ittiam libavc supplies the actual Baseline/Main/High Profile decoder,
  * including CABAC, B slices, multiple references, deblocking and DPB/display
- * reordering.  This file adapts MintRIVA's avc1/AVCC packets to libavc's
+ * reordering.  This file adapts MintVID's avc1/AVCC packets to libavc's
  * Annex-B API and converts its planar YUV420 output to the RGB24 frame used by
  * the current display backends.
  */
@@ -169,7 +169,7 @@ static void h264_diag_allocfail(h264_state *s, WORD32 alignment, WORD32 size)
     ULONG fast_total, fast_largest, any_total, any_largest;
 
     if (!s || !s->diag_path) return;
-    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.allocfail", MODE_NEWFILE);
+    fh = Open((CONST_STRPTR)"RAM:MintVID-H264.allocfail", MODE_NEWFILE);
     if (!fh) return;
 
     fast_total = AvailMem(MEMF_FAST);
@@ -196,7 +196,7 @@ static void h264_pipeline_checkpoint(h264_state *s, const char *stage)
     ULONG fast_total, fast_largest;
 
     if (!s || !s->diag_path || !stage) return;
-    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.pipeline", MODE_NEWFILE);
+    fh = Open((CONST_STRPTR)"RAM:MintVID-H264.pipeline", MODE_NEWFILE);
     if (!fh) return;
     fast_total = AvailMem(MEMF_FAST);
     fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
@@ -491,7 +491,7 @@ static mr_status h264_open(mr_decoder *dec)
      * specifically so a wedged 720p/1080p hardware run leaves readable state in
      * RAM: even when stdout remains locked by the still-running player. */
     if ((uint32_t)dec->width * (uint32_t)dec->height >= 1280u * 720u) {
-        s->diag_path = "RAM:MintRIVA-H264.last";
+        s->diag_path = "RAM:MintVID-H264.last";
         s->diag_width = dec->width;
         s->diag_height = dec->height;
     }
@@ -671,7 +671,7 @@ static mr_status h264_decode(mr_decoder *dec,
 
             /* libavc owns the YUV pointers in sub_out.  Preserve the first
              * output immediately, before another decode_annexb() call can reuse
-             * those buffers.  The persistent MintRIVA RGB frame then survives
+             * those buffers.  The persistent MintVID RGB frame then survives
              * while we drain the rest of this AU. */
             if (sub_out.s_ivd_video_decode_op_t.u4_output_present &&
                 !output_captured) {

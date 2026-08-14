@@ -1,5 +1,5 @@
 /*
- * MintRIVA - minimal YouTube media resolver.
+ * MintVID - minimal YouTube media resolver.
  *
  * This is deliberately not a general YouTube extractor. It accepts public
  * live HLS plus directly usable muxed 360p/720p MP4s for compatible uploads.
@@ -16,7 +16,7 @@ int mr_youtube_is_url(const char *url);
 int mr_youtube_extract_video_id(const char *url, char out[12]);
 
 /* Build the HTTP identity used throughout a YouTube request chain. Browser
- * defaults are supplied when the caller left MintRIVA's generic UA/referer in
+ * defaults are supplied when the caller left MintVID's generic UA/referer in
  * place; explicit caller values and all HLS quality limits are preserved. */
 int mr_youtube_http_options_init(struct mr_http_options *out,
                                  const struct mr_http_options *base);

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG-1/MPEG-2 video decoder adapter using libmpeg2.
+ * MintVID - MPEG-1/MPEG-2 video decoder adapter using libmpeg2.
  */
 #ifndef MR_MPEG2_H
 #define MR_MPEG2_H

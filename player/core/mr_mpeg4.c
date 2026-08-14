@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG-4 Part 2 (Visual) decoder.  See mr_mpeg4.h.
+ * MintVID - MPEG-4 Part 2 (Visual) decoder.  See mr_mpeg4.h.
  *
  * Checkpoint 1: bitstream reader, start-code scanning, VOS/VO/VOL/GOV/VOP
  * header parsing with a cached VOL config, and a YUV420->RGB output stage.

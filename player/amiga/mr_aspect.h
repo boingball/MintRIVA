@@ -1,4 +1,4 @@
-/* MintRIVA - integer aspect-fit geometry shared by RTG display/tests. */
+/* MintVID - integer aspect-fit geometry shared by RTG display/tests. */
 #ifndef MR_ASPECT_H
 #define MR_ASPECT_H
 

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Amiga audio output (abstract).
+ * MintVID - Amiga audio output (abstract).
  *
  * A compact Paula (audio.device) PCM sink, modelled on MintAMP's proven
  * streaming/teardown patterns but self-contained. The player feeds it source

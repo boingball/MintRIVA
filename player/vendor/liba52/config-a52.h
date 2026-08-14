@@ -1,13 +1,13 @@
-/* MintRIVA portability configuration for Rockbox's fixed-point liba52. */
-#ifndef MINTRIVA_CONFIG_A52_H
-#define MINTRIVA_CONFIG_A52_H
+/* MintVID portability configuration for Rockbox's fixed-point liba52. */
+#ifndef MINTVID_CONFIG_A52_H
+#define MINTVID_CONFIG_A52_H
 
 #include <stdint.h>
 #include <stdlib.h>
 
 #define LIBA52_FIXED 1
 
-/* Rockbox places hot tables in target-specific sections.  MintRIVA keeps the
+/* Rockbox places hot tables in target-specific sections.  MintVID keeps the
  * same source portable and lets the Amiga linker choose ordinary sections. */
 #define IBSS_ATTR
 #define IDATA_ATTR

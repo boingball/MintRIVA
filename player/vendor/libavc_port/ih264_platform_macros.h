@@ -1,5 +1,5 @@
 /*
- * Architecture-neutral libavc platform primitives for MintRIVA.
+ * Architecture-neutral libavc platform primitives for MintVID.
  *
  * These are deliberately plain integer C/GCC builtins.  The byte-swap is an
  * identity on the big-endian 68k target and a swap on little-endian hosts.

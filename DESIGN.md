@@ -1,4 +1,4 @@
-# MintRIVA — design & roadmap
+# MintVID — design & roadmap
 
 A codec-agnostic video player for 68k AmigaOS, in the spirit of **MintAMP**
 (the libhelix-based audio player): small, portable C at the core, thin
@@ -200,7 +200,7 @@ chunked/length-less responses, which avoids treating GitHub Pages' transfer
 framing as a cache failure.
 The browser opens before starting an expired-cache refresh and preserves the
 HTTP/AmiSSL diagnostic with its failing stage. Cache setup probes
-`PROGDIR:Cache/IPTV/` for writes and falls back to `T:MintRIVA-IPTV/` rather
+`PROGDIR:Cache/IPTV/` for writes and falls back to `T:MintVID-IPTV/` rather
 than silently attempting downloads into a read-only program directory.
 Optional iptv-org scalar metadata accepts JSON `null`; retained nullable strings
 become empty values. Parser failures include the file, one-based object number,
@@ -247,7 +247,7 @@ IPTV request metadata crosses the player boundary only as the typed
 `--user-agent` and `--referer` options. `mr_http_options` rejects CR/LF and
 overlong values, is copied into each HTTP/HLS source instance, and is reused by
 redirects, range reconnects, master/media playlist fetches, live refreshes, and
-segment requests. The default remains `MintRIVA/0.1 AmigaOS` with no Referer;
+segment requests. The default remains `MintVID/0.1 AmigaOS` with no Referer;
 there is deliberately no arbitrary-header command-line interface.
 
 # YouTube search

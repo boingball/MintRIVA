@@ -1,7 +1,7 @@
 /*
- * Single-core thread shim for MintRIVA's libavc build.
+ * Single-core thread shim for MintVID's libavc build.
  *
- * MintRIVA always configures the decoder for one core.  libavc still links
+ * MintVID always configures the decoder for one core.  libavc still links
  * against its small thread abstraction, so provide inert locks/conditions
  * without requiring pthreads (which are not available in the noixemul
  * AmigaOS build).  Thread creation deliberately fails if a future change

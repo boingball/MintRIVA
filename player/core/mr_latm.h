@@ -1,4 +1,4 @@
-/* MintRIVA - bounded LOAS/LATM AAC framing parser. */
+/* MintVID - bounded LOAS/LATM AAC framing parser. */
 #ifndef MR_LATM_H
 #define MR_LATM_H
 

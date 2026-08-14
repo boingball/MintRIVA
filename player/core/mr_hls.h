@@ -1,5 +1,5 @@
 /*
- * MintRIVA - HLS (.m3u8) playlist source.
+ * MintVID - HLS (.m3u8) playlist source.
  *
  * Presents an HLS media playlist as one forward-only MPEG-TS byte stream:
  * the segments, concatenated, are exactly the transport stream the existing

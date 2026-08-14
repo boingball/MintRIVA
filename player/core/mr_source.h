@@ -1,5 +1,5 @@
 /*
- * MintRIVA - random-access compressed-media source.
+ * MintVID - random-access compressed-media source.
  *
  * Demuxers ask for exact byte ranges without caring whether the bytes come
  * from a local stdio file or a buffered HTTP/HTTPS response.

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG-TS/M2TS demuxer.
+ * MintVID - MPEG-TS/M2TS demuxer.
  */
 #include "mr_ts.h"
 #include "mr_latm.h"
@@ -140,7 +140,7 @@ const char *mr_ts_video_type_name(unsigned stream_type)
     }
 }
 
-/* Audio stream_type names are retained even when MintRIVA cannot decode the
+/* Audio stream_type names are retained even when MintVID cannot decode the
  * track yet. This makes IPTV failures useful codec-porting data instead of a
  * generic silent-audio result. Type 0x06 is intentionally described as private
  * PES: its registration descriptor, which we do not parse yet, identifies the
@@ -541,7 +541,7 @@ static void parse_latm_info(mr_ts *t, const uint8_t *p, size_t len)
 }
 
 /* PMT stream types 0x03/0x04 identify an MPEG audio elementary stream, but
- * the actual layer and clock live in each frame header. MintRIVA's existing
+ * the actual layer and clock live in each frame header. MintVID's existing
  * pl_mpeg audio path decodes Layer II, so accept that layer only and leave
  * Layer I/III visible as an unsupported PMT track rather than feeding it to
  * the wrong decoder. MPEG-2.5 is not represented by stream type 0x04 and is

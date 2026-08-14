@@ -1,4 +1,4 @@
-# MintRIVA
+# MintVID
 
 A codec-agnostic video player for 68k AmigaOS — built in the spirit of
 MintAMP (the libhelix audio player): a small, portable C core with thin
@@ -59,12 +59,12 @@ cd player
 make -f Makefile.amiga all SSL=1 CPU=68030
 make -f Makefile.amiga all SSL=1 CPU=68040
 make -f Makefile.amiga all SSL=1 CPU=68060
-make -f Makefile.amiga release SSL=1   # release/MintRIVA030, 040 and 060
+make -f Makefile.amiga release SSL=1   # release/MintVID030, 040 and 060
 ```
 
 Use the `.040` build for a PiStorm configured as a 68040 and `.060` only on a
-68060-compatible CPU. `release/MintRIVA030`, `release/MintRIVA040` and
-`release/MintRIVA060` are ready-to-run sets with ordinary unsuffixed program
+68060-compatible CPU. `release/MintVID030`, `release/MintVID040` and
+`release/MintVID060` are ready-to-run sets with ordinary unsuffixed program
 names. Each contains `mrplay`, the ReAction `mrgui`/`iptvgui`/`ytgui` set, the
 GadTools `mrgui-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line
 `mr_decode` codec probe/test harness. The release target finishes by restoring
@@ -152,7 +152,7 @@ manifest URLs can exceed the older 1 KiB media-URL limit.
 For ordinary uploads, the resolver also experiments with YouTube's muxed
 360p MP4 (`itag 18`) and, where still supplied, muxed 720p MP4 (`itag 22`).
 Those formats contain H.264 video and AAC audio together,
-so it can use MintRIVA's existing seekable HTTP/MP4 path without downloading or
+so it can use MintVID's existing seekable HTTP/MP4 path without downloading or
 merging separate streams. Only a direct signed HTTPS Google Video URL is
 accepted; ciphered URLs and unresolved player `n` challenges are rejected.
 Selecting 720p, 1080p, or Best makes recorded playback try 720p first and fall
@@ -210,8 +210,8 @@ and ignore the RTG-only fullscreen command. True timeline seeking is not yet
 implemented; it needs a demux keyframe/sample seek API rather than pretending
 that fast decode is a seek operation.
 
-Every GUI has a **MintRIVA > About MintRIVA...** menu containing the project
-credits and support link. **MintRIVA > Quit** closes that frontend cleanly.
+Every GUI has a **MintVID > About MintVID...** menu containing the project
+credits and support link. **MintVID > Quit** closes that frontend cleanly.
 
 The controller's file gadget identifies the selected file. On launch, `mrplay`
 also reports the container type, video codec/FourCC, dimensions, frame rate and
@@ -241,7 +241,7 @@ refresh explicitly reports that it must be rebuilt with `SSL=1`.
 The browser immediately reads valid cached `channels.json` and `streams.json`
 from `PROGDIR:Cache/IPTV/`. Its default public directory is iptv-org
 (`channels.json`, `streams.json`, `countries.json`, and `categories.json`).
-MintRIVA does not host or redistribute television channels: iptv-org is a
+MintVID does not host or redistribute television channels: iptv-org is a
 collection of publicly available links, and individual links may be offline,
 geo-blocked, or require request headers.
 
@@ -249,7 +249,7 @@ The directory reader is bounded and retains only the metadata used for local
 country/category/search filtering.  Cached JSON is used immediately, refreshed
 after 24 hours, and replaced only after a complete download parses successfully;
 a failed refresh leaves the prior cache intact.  Manual HTTP/HTTPS media URLs,
-M3U8 playlists, and simple `#EXTM3U` lists use the normal MintRIVA URL/player
+M3U8 playlists, and simple `#EXTM3U` lists use the normal MintVID URL/player
 pipeline.  Playback still depends on the existing demuxers and codecs. HLS
 prefers supported low-resolution variants (maximum width 640 by default), and
 cannot make DRM, login-only, unsupported-codec, or dead streams playable.
@@ -296,9 +296,9 @@ player/tests/        host test harness + fixtures
 player/vendor/       pinned/vendored build dependencies
 ```
 
-## Support MintRIVA
+## Support MintVID
 
-MintRIVA is made by Darren “boingball” Banfi, with a frankly unreasonable
+MintVID is made by Darren “boingball” Banfi, with a frankly unreasonable
 number of classic-Amiga test runs and LLM-assisted development sessions. If the
 player is useful—or if YouTube on an Amiga made you laugh—you can help keep the
 hardware experiments and token fund moving at
@@ -307,7 +307,7 @@ hardware experiments and token fund moving at
 ## Licensing
 
 RiVA is GPL-2.0 (`src/gpl-2.0.txt`); its AGA/CGX renderers are dual GPL/MIT. New
-MintRIVA code inherits GPL-2.0 to stay compatible with the RiVA reference it
+MintVID code inherits GPL-2.0 to stay compatible with the RiVA reference it
 draws on. The vendored VideoLAN libmpeg2 core and fixed-point Rockbox/a52dec
 AC-3 core are GPL-2.0-or-later. MintAMP/Helix
 and Apache-2.0 Ittiam libavc remain separately licensed in their pinned
@@ -329,7 +329,7 @@ The FourCC audit below is deliberately conservative. “Registry” means the al
 is covered by the deterministic routing test; a named clip means its bitstream
 was also decoded by the existing conformance suite.
 
-| FourCC | Codec family | MintRIVA decoder | Status | Tested sample |
+| FourCC | Codec family | MintVID decoder | Status | Tested sample |
 |---|---|---|---|---|
 | `DIVX`, `DX50`, `XVID`, `xvid`, `FMP4`, `MP4V`, `mp4v` | ISO MPEG-4 Part 2 | `mpeg4` | accepted | `test_mp4v_sp.avi`; registry |
 | `3IV2`, `3iv2`, `3IVX` | 3ivX / ISO MPEG-4 Part 2 | `mpeg4` | accepted | registry; upstream sample inspection pending |

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - raw Motion-JPEG demuxer.
+ * MintVID - raw Motion-JPEG demuxer.
  *
  * A raw .mjpeg stream is simply a sequence of complete JPEG images with no
  * container metadata. Frame rate is therefore unknown; we use 25 fps.

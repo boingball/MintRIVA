@@ -1,11 +1,11 @@
 /*
- * Minimal portable configuration for MintRIVA's embedded libmpeg2 build.
+ * Minimal portable configuration for MintVID's embedded libmpeg2 build.
  *
  * Architecture-specific acceleration is deliberately disabled: the generic C
  * IDCT and motion compensation paths build on both the host and m68k-amigaos.
  */
-#ifndef MINTRIVA_LIBMPEG2_CONFIG_H
-#define MINTRIVA_LIBMPEG2_CONFIG_H
+#ifndef MINTVID_LIBMPEG2_CONFIG_H
+#define MINTVID_LIBMPEG2_CONFIG_H
 
 #if defined(__GNUC__)
 #define HAVE_BUILTIN_EXPECT 1
@@ -19,4 +19,4 @@
 #define WORDS_BIGENDIAN 1
 #endif
 
-#endif /* MINTRIVA_LIBMPEG2_CONFIG_H */
+#endif /* MINTVID_LIBMPEG2_CONFIG_H */

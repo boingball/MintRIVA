@@ -1,5 +1,5 @@
 /*
- * MintRIVA - HAM8/HAM6 encoder + decoder.
+ * MintVID - HAM8/HAM6 encoder + decoder.
  */
 #include "mr_ham.h"
 

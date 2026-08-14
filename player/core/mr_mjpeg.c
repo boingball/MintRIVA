@@ -1,10 +1,10 @@
 /*
- * MintRIVA - Motion-JPEG decoder (each frame is a baseline JPEG).
+ * MintVID - Motion-JPEG decoder (each frame is a baseline JPEG).
  *
  * Thin adapter over picojpeg (public domain, Rich Geldreich; the copy here came
  * from MintAMP). Feeds one frame's JPEG bytes through picojpeg's callback
  * reader, then assembles the MCU blocks into the RGB24 framebuffer the rest of
- * MintRIVA expects. MJPEG is intra-only, so every frame is a full repaint.
+ * MintVID expects. MJPEG is intra-only, so every frame is a full repaint.
  *
  * Second codec behind mr_codec.h - the demux/display/audio layers are unchanged,
  * which is the whole point of the plugin design.

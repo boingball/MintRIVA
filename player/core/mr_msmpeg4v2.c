@@ -1,12 +1,12 @@
 /*
- * MintRIVA - Microsoft MPEG-4 version 2 (MP42) decoder.
+ * MintVID - Microsoft MPEG-4 version 2 (MP42) decoder.
  *
  * MP42 is Microsoft's pre-standard H.263-derived bitstream.  It is not an
  * MPEG-4 Visual fourcc alias, so it deliberately has its own codec plugin.
  *
  * The picture-header, macroblock and escape behaviour was cross-checked
  * against FFmpeg's LGPL msmpeg4v2 decoder.  The shared MPEG-4/H.263 VLC
- * values come from MintRIVA's existing, MIT-derived table include.
+ * values come from MintVID's existing, MIT-derived table include.
  */
 #include "mr_msmpeg4v2.h"
 

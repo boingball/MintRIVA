@@ -1,4 +1,4 @@
-/* MintRIVA YouTube-GT: OS 3.1 GadTools frontend, shared search/player core. */
+/* MintVID YouTube-GT: OS 3.1 GadTools frontend, shared search/player core. */
 #include "../core/mr_alloc.h"
 #include "../core/mr_http.h"
 #include "../core/mr_play_options.h"
@@ -24,7 +24,7 @@
 
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
-#define MRPLAY_LOG_FILE "RAM:MintRIVA.log"
+#define MRPLAY_LOG_FILE "RAM:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
 
@@ -223,7 +223,7 @@ static int start_video(ytgt *app, const mr_youtube_search_result *video)
             NP_Seglist, seglist, NP_FreeSeglist, TRUE,
             NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
             NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
-            NP_Name, (ULONG)"MintRIVA player",
+            NP_Name, (ULONG)"MintVID player",
             NP_Input, (ULONG)nil, NP_CloseInput, TRUE,
             NP_Output, (ULONG)log, NP_CloseOutput, TRUE, TAG_END);
     else
@@ -231,7 +231,7 @@ static int start_video(ytgt *app, const mr_youtube_search_result *video)
             NP_Seglist, seglist, NP_FreeSeglist, TRUE,
             NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
             NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
-            NP_Name, (ULONG)"MintRIVA player", TAG_END);
+            NP_Name, (ULONG)"MintVID player", TAG_END);
     if (!process) {
         if (log) Close(log);
         if (nil) Close(nil);
@@ -420,7 +420,7 @@ static int window_open(ytgt *app)
     nw.Width=WIN_W; nw.Height=WIN_H; nw.DetailPen=0; nw.BlockPen=1;
     nw.IDCMPFlags=IDCMP_GADGETUP|IDCMP_CLOSEWINDOW|IDCMP_REFRESHWINDOW|IDCMP_MENUPICK;
     nw.Flags=WFLG_CLOSEGADGET|WFLG_DRAGBAR|WFLG_DEPTHGADGET|WFLG_ACTIVATE|WFLG_SMART_REFRESH;
-    nw.FirstGadget=app->gadgets; nw.Title=(UBYTE *)"MintRIVA YouTube-GT";
+    nw.FirstGadget=app->gadgets; nw.Title=(UBYTE *)"MintVID YouTube-GT";
     nw.Screen=app->screen; nw.Type=CUSTOMSCREEN;
     app->window=OpenWindow(&nw);
     if (app->window) {
@@ -507,7 +507,7 @@ int main(int argc, char **argv)
                     set_button_text(&app,app.log,
                                     app.debug_log?"Log: On":"Log: Off");
                     set_text(&app,app.status,app.debug_log
-                        ?"Timing log ON: next Play writes RAM:MintRIVA.log"
+                        ?"Timing log ON: next Play writes RAM:MintVID.log"
                         :"Timing log off.");
                 }
                 else if (id==G_PAUSE) mr_player_control_send(MR_PLAYER_COMMAND_PAUSE);

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - chunky-to-planar (C2P) for the AGA path.
+ * MintVID - chunky-to-planar (C2P) for the AGA path.
  *
  * WritePixelArray8 works but carries general-case overhead (temp RastPort,
  * clipping). This is a specialised C2P that writes 8-bit chunky straight into a

@@ -1,7 +1,7 @@
 name: Build
 
-# Compile MintRIVA for AmigaOS (m68k) on every push and pull request.
-# MintRIVA uses submodules for MintAMP and libavc, so checkout must recurse.
+# Compile MintVID for AmigaOS (m68k) on every push and pull request.
+# MintVID uses submodules for MintAMP and libavc, so checkout must recurse.
 # The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
 
 on:
@@ -46,7 +46,7 @@ jobs:
       - name: Upload compiled programs
         uses: actions/upload-artifact@v4
         with:
-          name: MintRIVA-AmigaOS
+          name: MintVID-AmigaOS
           path: |
             player/mrplay
             player/mrgui

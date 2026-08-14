@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Amiga-safe allocation for shared networking/source objects.
+ * MintVID - Amiga-safe allocation for shared networking/source objects.
  *
  * HTTP documents are returned to callers in the GUI programs as well as the
  * player. Keep their ownership on Exec's AllocVec/FreeVec heap instead of

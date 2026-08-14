@@ -1,7 +1,7 @@
 # RiVA AGA display-path analysis
 
 This note records what can safely be reused from RiVA without coupling the
-MintRIVA decoders to a display format. The reference is `RendererAGAInit.i` and
+MintVID decoders to a display format. The reference is `RendererAGAInit.i` and
 `RendererAGAC2P.i`; RiVA's MPEG decoder itself remains untouched.
 
 ## What RiVA actually does
@@ -12,7 +12,7 @@ MintRIVA decoders to a display format. The reference is `RendererAGAInit.i` and
 * The C2P consumes decoder-owned luma/chroma buffers with separately calculated
   end-of-line corrections. HAM6 and HAM8 combine colour conversion, HAM command
   selection, pixel doubling and planar output. That fused input contract is not
-  compatible with MintRIVA's codec-neutral RGB24 frame contract.
+  compatible with MintVID's codec-neutral RGB24 frame contract.
 * The destination plane offsets are patched into the assembly during setup and
   `CacheClearU` follows the self-modification. This is not a general requirement
   for writing bitmap data. It is required because RiVA modifies instructions.
@@ -31,7 +31,7 @@ MintRIVA decoders to a display format. The reference is `RendererAGAInit.i` and
 
 `--riva-c2p` selects a conservative backend inside `display_aga.c`. Like RiVA,
 it works in aligned 32-pixel groups and writes directly to each bitmap plane.
-It retains MintRIVA's already verified chunky transpose, but combines four
+It retains MintVID's already verified chunky transpose, but combines four
 adjacent plane bytes into one aligned longword store. This reduces expensive
 Chip RAM transactions without adding a Fast-to-Chip staging bitmap or assuming
 that all planes are one contiguous allocation.

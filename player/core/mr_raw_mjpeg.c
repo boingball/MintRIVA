@@ -1,5 +1,5 @@
 /*
- * MintRIVA - raw Motion-JPEG demuxer implementation.
+ * MintVID - raw Motion-JPEG demuxer implementation.
  */
 #include "mr_raw_mjpeg.h"
 

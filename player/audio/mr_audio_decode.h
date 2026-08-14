@@ -1,5 +1,5 @@
 /*
- * MintRIVA - packet audio decode adapter.
+ * MintVID - packet audio decode adapter.
  *
  * This is glue only: the actual MP3/AAC codecs come from MintAMP's fixed-point
  * Helix sources.  The demuxer feeds compressed packets here and receives

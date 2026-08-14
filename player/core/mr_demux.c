@@ -1,5 +1,5 @@
 /*
- * MintRIVA - container auto-detect front end.
+ * MintVID - container auto-detect front end.
  *
  * Sniffs the buffer signature and delegates to the matching backend through
  * the neutral mr_demux interface so the player is container-blind.

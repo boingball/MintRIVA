@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Amiga player.
+ * MintVID - Amiga player.
  *
  * Ties the proven portable core (demux + decoder) to the Amiga display + audio
  * backends: load file -> auto-detect container -> decode frames / enqueue audio
@@ -157,7 +157,7 @@ static void h264_pipeline_checkpoint_player(const char *stage, int qcount,
     ULONG fast_total, fast_largest;
 
     if (!h264_pipeline_diag_enabled || !stage) return;
-    fh = Open((CONST_STRPTR)"RAM:MintRIVA-H264.pipeline", MODE_NEWFILE);
+    fh = Open((CONST_STRPTR)"RAM:MintVID-H264.pipeline", MODE_NEWFILE);
     if (!fh) return;
     fast_total = AvailMem(MEMF_FAST);
     fast_largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
@@ -1161,7 +1161,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         snprintf(line, sizeof line, "%dx%d, MPEG-1", w, h);
         player_status(MR_PLAYER_STATE_PLAYING, "MPEG-1", line);
     }
-    disp = display_open(w, h, "MintRIVA");
+    disp = display_open(w, h, "MintVID");
     if (!disp) { printf("cannot open a display\n");
                  player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
                                "cannot open a display");
@@ -1630,7 +1630,7 @@ int main(int argc, char **argv)
                  vi->width, vi->height, codec->name);
         player_status(MR_PLAYER_STATE_OPENING, codec->name, line);
     }
-    disp = display_open(vi->width, vi->height, "MintRIVA");
+    disp = display_open(vi->width, vi->height, "MintVID");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
                                "cannot open a display (RTG or AGA)");

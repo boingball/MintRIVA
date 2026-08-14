@@ -1,5 +1,5 @@
 /*
- * MintRIVA - portable core types
+ * MintVID - portable core types
  *
  * Deliberately dependency-free and fixed-width so the same core compiles on a
  * modern host (for testing) and under vbcc/bebbo-gcc for m68k AmigaOS.

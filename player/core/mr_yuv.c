@@ -1,5 +1,5 @@
 /*
- * MintRIVA - portable integer YUV420 to RGB24 conversion.
+ * MintVID - portable integer YUV420 to RGB24 conversion.
  *
  * Each U/V sample belongs to two neighbouring luma pixels. Calculating its
  * red/green/blue contribution once per pair removes four multiplications per

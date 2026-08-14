@@ -1,5 +1,5 @@
 /*
- * MintRIVA - local-file and generic source ownership.
+ * MintVID - local-file and generic source ownership.
  */
 #include "mr_source.h"
 #include "mr_hls.h"

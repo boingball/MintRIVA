@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG transport stream demuxer.
+ * MintVID - MPEG transport stream demuxer.
  *
  * Supports 188-byte TS and 192-byte M2TS carrying MPEG-1/2 or H.264/AVC video,
  * plus MPEG Layer II or ADTS AAC audio. PES payloads are assembled into the

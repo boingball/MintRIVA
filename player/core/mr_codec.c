@@ -1,5 +1,5 @@
 /*
- * MintRIVA - decoder registry and lifecycle glue.
+ * MintVID - decoder registry and lifecycle glue.
  */
 #include "mr_codec.h"
 

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MintAMP/Helix MP3 and AAC packet adapter.
+ * MintVID - MintAMP/Helix MP3 and AAC packet adapter.
  *
  * No codec implementation lives here.  The build supplies MintAMP's public
  * mp3dec/aacdec APIs; this file handles AVI packet joins, MP4 AAC raw-block

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - H.264/AVC decoder plugin backed by Ittiam libavc.
+ * MintVID - H.264/AVC decoder plugin backed by Ittiam libavc.
  *
  * The MOV demuxer supplies the avcC decoder configuration and one AVCC
  * (length-prefixed) access unit per packet.  The adapter converts both to

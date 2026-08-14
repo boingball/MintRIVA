@@ -1,5 +1,5 @@
 /*
- * MintRIVA - player -> IPTV controller status channel (Amiga only).
+ * MintVID - player -> IPTV controller status channel (Amiga only).
  *
  * The IPTV browser (iptv_reaction.c) launches the stream in a *separate*
  * mrplay process, so until now the controller only knew "a player is running"
@@ -35,8 +35,8 @@
 #include "../iptv/mr_iptv.h" /* MR_IPTV_PLAYER_PORT */
 
 #define MR_PLAYER_STATUS_MAGIC 0x4D525653UL /* 'MRVS' */
-#define MR_PLAYER_STATUS_FILE "T:MintRIVA.player-status"
-#define MR_PLAYER_STATUS_TMP  "T:MintRIVA.player-status.tmp"
+#define MR_PLAYER_STATUS_FILE "T:MintVID.player-status"
+#define MR_PLAYER_STATUS_TMP  "T:MintVID.player-status.tmp"
 #define MR_PLAYER_STATUS_TEXT_MAX 208
 #define MR_PLAYER_CODEC_MAX 48
 

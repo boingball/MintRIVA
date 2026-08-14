@@ -1,5 +1,5 @@
 /*
- * MintRIVA - HTTP/HTTPS media source internals.
+ * MintVID - HTTP/HTTPS media source internals.
  */
 #ifndef MR_HTTP_H
 #define MR_HTTP_H

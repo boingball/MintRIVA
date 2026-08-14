@@ -1,5 +1,5 @@
 /*
- * MintRIVA - HLS (.m3u8) playlist source (VOD and live).
+ * MintVID - HLS (.m3u8) playlist source (VOD and live).
  *
  * Fetches an HLS playlist, resolves a master playlist down to one media
  * variant, then presents that variant's segments - concatenated - as a single
@@ -157,7 +157,7 @@ static int range_contains_nocase(const char *begin, const char *end,
 
 /* A master can advertise several codecs at the same resolution. YouTube now
  * commonly offers AV1/VP9 beside AVC; choosing solely by bandwidth can select
- * a rendition MintRIVA cannot decode and make the TS probe consume megabytes
+ * a rendition MintVID cannot decode and make the TS probe consume megabytes
  * before it gives up. If CODECS is absent, retain the historical permissive
  * behaviour. If it is present, require a video codec we actually support. */
 static int variant_codecs_supported(const char *stream_inf)

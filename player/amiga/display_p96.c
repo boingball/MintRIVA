@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Picasso96 direct-lock RTG window backend.
+ * MintVID - Picasso96 direct-lock RTG window backend.
  *
  * Structurally this is display_cgx.c: same Intuition window/screen open,
  * geometry cache, resize/fullscreen/poll handling. The difference is only in
@@ -200,7 +200,7 @@ static struct Screen *p96_open_private_screen(p96_state *s, const char *title)
             SA_DisplayID, best_modeid,
             SA_Depth, best_depth,
             SA_Type, CUSTOMSCREEN,
-            SA_Title, (ULONG)(title ? title : "MintRIVA"),
+            SA_Title, (ULONG)(title ? title : "MintVID"),
             SA_Quiet, TRUE,
             SA_ShowTitle, FALSE,
             SA_Draggable, FALSE,
@@ -237,7 +237,7 @@ static struct Window *p96_open_window(p96_state *s, const char *title,
         if (scr) {
             win = OpenWindowTags(NULL,
                 WA_CustomScreen, (ULONG)scr,
-                WA_Title, (ULONG)(title ? title : "MintRIVA"),
+                WA_Title, (ULONG)(title ? title : "MintVID"),
                 WA_Left, 0, WA_Top, 0,
                 WA_Width, (ULONG)scr->Width, WA_Height, (ULONG)scr->Height,
                 WA_Flags, WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
@@ -260,7 +260,7 @@ static struct Window *p96_open_window(p96_state *s, const char *title,
     if (s->fullscreen) {
         win = OpenWindowTags(NULL,
             WA_PubScreen, (ULONG)scr,
-            WA_Title, (ULONG)(title ? title : "MintRIVA"),
+            WA_Title, (ULONG)(title ? title : "MintVID"),
             WA_Left, 0, WA_Top, 0,
             WA_Width, (ULONG)scr->Width, WA_Height, (ULONG)scr->Height,
             WA_Borderless, TRUE, WA_Activate, TRUE,
@@ -270,7 +270,7 @@ static struct Window *p96_open_window(p96_state *s, const char *title,
     } else {
         win = OpenWindowTags(NULL,
             WA_PubScreen, (ULONG)scr,
-            WA_Title, (ULONG)(title ? title : "MintRIVA"),
+            WA_Title, (ULONG)(title ? title : "MintVID"),
             WA_InnerWidth, (ULONG)inner_w,
             WA_InnerHeight, (ULONG)inner_h,
             WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
@@ -833,7 +833,7 @@ static int p96_toggle_fullscreen(void *h)
 static void p96_status(void *h, const char *text)
 {
     p96_state *s = (p96_state *)h;
-    const char *title = (text && *text) ? text : "MintRIVA";
+    const char *title = (text && *text) ? text : "MintVID";
     if (!s || !s->win) return;
     if (s->title == title) return;
     s->title = title;

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - minimal AVI (RIFF) demuxer implementation.
+ * MintVID - minimal AVI (RIFF) demuxer implementation.
  */
 #include "mr_avi.h"
 #include "mr_rawvideo.h"
