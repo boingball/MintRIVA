@@ -83,7 +83,18 @@ void mr_yuv420_to_rgb24(uint8_t *dst, int dst_stride,
         return;
     if (!g_tables_ready) build_tables();
 
-#if defined(MR_M68K_ASM)
+#if defined(MR_M68K_ASM) && defined(MR_YUV_M68K_ASM_ENABLE)
+    /* Disabled by default: a real-Pistorm run crashed (illegal instruction,
+     * error 80000004, plus visible corruption of the mouse pointer and
+     * clock gadget - a wild write, not a clean fault) immediately after
+     * this dispatch was added, with every earlier asm addition in this
+     * port having already been confirmed working on the same real
+     * hardware beforehand. This isolates the bug to
+     * mr_yuv420_to_rgb24_m68k specifically (core/mr_yuv_m68k.S) rather
+     * than anything else in the port. Falling back to the portable C
+     * below until that asm is understood and fixed - do not re-enable
+     * this without a real-hardware pass, host/qemu testing already
+     * passed for the version that crashed. */
     mr_yuv420_to_rgb24_m68k(dst, dst_stride, y_plane, y_stride, u_plane,
                             u_stride, v_plane, v_stride, width, height,
                             service, service_opaque, g_luma_x298, g_e_x409,
