@@ -66,6 +66,20 @@ typedef struct {
     int            iw, ih;
     int            source_w, source_h;
     int            dx, dy, dw, dh;
+    /* p96LockBitMap's RenderInfo.Memory is the whole SCREEN bitmap, not a
+     * window-relative view of it the way a RastPort is - WritePixelArray
+     * (display_cgx.c) draws window-relative and lets Layers/Intuition place
+     * it correctly regardless of where the window sits or moves; a direct
+     * lock has no such translation, so win->LeftEdge/TopEdge must be added
+     * to every destination coordinate, re-read every frame since a plain
+     * window drag fires no IDCMP event this backend was otherwise watching
+     * for. win_x/win_y is where those were last read (see p96_rebuild_geometry);
+     * last_d{x,y,w,h}/have_last_rect is the exact rect last drawn there, kept
+     * so a detected move can black out that old absolute position first -
+     * WFLG_NOCAREREFRESH (matching display_cgx.c) means Intuition will not
+     * clean it up on our behalf, and nothing else owns that screen memory. */
+    int            win_x, win_y;
+    int            last_dx, last_dy, last_dw, last_dh, have_last_rect;
     int            pending_w, pending_h;
     clock_t        resize_at;
     unsigned char *scaled;   /* persistent RGB24 scale strip, swizzled to BGR
@@ -372,6 +386,7 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
 {
     struct BitMap *bm;
     int bm_changed, scale_map_changed, old_iw, old_ih;
+    int win_x, win_y, position_changed;
     mr_aspect_rect fit;
     ULONG bm_depth = 0;
 
@@ -398,6 +413,23 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
     if (bm_changed)
         s->format_ok = bitmap_format_ok(bm);
 
+    win_x = s->win->LeftEdge;
+    win_y = s->win->TopEdge;
+    position_changed = s->geometry_valid && !bm_changed &&
+                       (win_x != s->win_x || win_y != s->win_y);
+    /* Erase the old absolute rect before anything draws at the new one -
+     * same bitmap, same format (bm_changed is false here), so the lock this
+     * needs is exactly the one write_bgr24_strip already relies on. A
+     * genuine screen/bitmap change (bm_changed) needs no such cleanup: it's
+     * either a different physical bitmap the old rect doesn't apply to, or
+     * the FillPixelArray below already clears the new window's own area. */
+    if (position_changed && s->format_ok && s->have_last_rect)
+        clear_bgr24_rect(bm, s->win_x + s->bl + s->last_dx,
+                         s->win_y + s->bt + s->last_dy,
+                         s->last_dw, s->last_dh);
+    s->win_x = win_x;
+    s->win_y = win_y;
+
     s->dx = fit.x; s->dy = fit.y;
     s->dw = fit.w; s->dh = fit.h;
     s->cached_dst_w  = s->dw;
@@ -409,14 +441,23 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
                        (UWORD)s->iw, (UWORD)s->ih, 0x00000000UL);
         s->force_full_redraw = 1;
     }
+    /* Only the delta rows since last frame get redrawn otherwise (the caller
+     * tracks source-frame changes, not screen-position ones) - after a pure
+     * move the whole picture needs repainting at the new absolute position,
+     * not just whatever rows happened to change in the video itself. */
+    if (position_changed)
+        s->force_full_redraw = 1;
+    s->last_dx = s->dx; s->last_dy = s->dy;
+    s->last_dw = s->dw; s->last_dh = s->dh;
+    s->have_last_rect = 1;
 
     if (g_display_want_time)
         printf("p96-geometry reason=%s iw=%d ih=%d video=%d,%d %dx%d "
-               "bm-changed=%d scale-map-rebuild=%d depth=%lu "
-               "format-ok=%d\n",
+               "bm-changed=%d scale-map-rebuild=%d position-changed=%d "
+               "depth=%lu format-ok=%d\n",
                reason ? reason : "?",
                s->iw, s->ih, s->dx, s->dy, s->dw, s->dh,
-               bm_changed, scale_map_changed,
+               bm_changed, scale_map_changed, position_changed,
                (unsigned long)bm_depth, s->format_ok);
 }
 
@@ -452,6 +493,27 @@ static void scale_rgb24_strip(p96_state *s, const unsigned char *src, int sw,
 {
     mr_scale_resize_rgb24_strip(src, sw, sh, src_stride, s->scaled, s->dw,
                                 s->dh, s->scaled_stride, dst_y0, rows);
+}
+
+/* Black out a rect directly (same lock/unlock discipline as
+ * write_bgr24_strip). Used to erase the last-drawn video rect at its OLD
+ * absolute screen position when the window has moved - see the p96_state
+ * comment on win_x/win_y for why that cleanup is this backend's own job. */
+static void clear_bgr24_rect(struct BitMap *bm, int x, int y, int w, int h)
+{
+    struct RenderInfo ri;
+    LONG lock;
+    int row, bpr;
+    unsigned char *base;
+
+    if (w <= 0 || h <= 0) return;
+    lock = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
+    if (!lock) return;
+    bpr = (int)ri.BytesPerRow;
+    base = (unsigned char *)ri.Memory + (size_t)y * (size_t)bpr + (size_t)x * 3;
+    for (row = 0; row < h; row++)
+        memset(base + (size_t)row * (size_t)bpr, 0, (size_t)w * 3);
+    p96UnlockBitMap(bm, lock);
 }
 
 /* Lock the live bitmap, write `rows` of RGB24 `src` (R,G,B byte order - the
@@ -504,15 +566,17 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
     total = mark = clock();
     {
         struct BitMap *cur_bm = s->win->RPort->BitMap;
-        int need_rebuild = !s->geometry_valid || cur_bm != s->cached_bitmap;
+        int moved = s->win->LeftEdge != s->win_x || s->win->TopEdge != s->win_y;
+        int need_rebuild = !s->geometry_valid || cur_bm != s->cached_bitmap ||
+                          moved;
         if (!need_rebuild &&
             (s->pending_w != s->iw || s->pending_h != s->ih) &&
             clock() - s->resize_at >= CLOCKS_PER_SEC / 10)
             need_rebuild = 1;
         if (need_rebuild)
             p96_rebuild_geometry(s, !s->geometry_valid ? "invalid" :
-                                 cur_bm != s->cached_bitmap ? "bitmap-change"
-                                                             : "resize");
+                                 cur_bm != s->cached_bitmap ? "bitmap-change" :
+                                 moved ? "moved" : "resize");
     }
     s->timing.resize_us = elapsed_us(mark);
     report_slow("resize-handling", s->timing.resize_us, service, service_opaque);
@@ -584,7 +648,8 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
             s->timing.scale_us += elapsed_us(step);
 
             step = clock();
-            if (!write_bgr24_strip(bm, s->bl + s->dx, s->bt + s->dy + y,
+            if (!write_bgr24_strip(bm, s->win_x + s->bl + s->dx,
+                                   s->win_y + s->bt + s->dy + y,
                                    s->scaled, s->scaled_stride, s->dw, rows))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
             s->timing.blit_us += elapsed_us(step);
@@ -613,7 +678,8 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
         for (y = dy0; y < dy1; y += MR_P96_STRIP_ROWS) {
             int rows = dy1 - y < MR_P96_STRIP_ROWS ? dy1 - y
                                                     : MR_P96_STRIP_ROWS;
-            if (!write_bgr24_strip(bm, s->bl + s->dx, s->bt + s->dy + y,
+            if (!write_bgr24_strip(bm, s->win_x + s->bl + s->dx,
+                                   s->win_y + s->bt + s->dy + y,
                                    rgb + (size_t)y * stride, stride, w, rows))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
             s->timing.copies++;
