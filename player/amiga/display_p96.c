@@ -90,6 +90,7 @@ typedef struct {
 static void p96_rebuild_geometry(p96_state *s, const char *reason);
 static int  ensure_scaled(p96_state *s, int w);
 static int  p96_toggle_fullscreen(void *h);
+static int  bitmap_format_ok(struct BitMap *bm);
 
 static int p96_close_private_screen(struct Screen **screen, const char *reason)
 {
@@ -110,7 +111,14 @@ static int p96_close_private_screen(struct Screen **screen, const char *reason)
 
 static struct Screen *p96_open_private_screen(p96_state *s, const char *title)
 {
-    static const ULONG depths[] = { 16, 32, 24 };
+    /* Unlike display_cgx.c (which picks the lowest depth that still shows the
+     * picture, since WritePixelArray converts for it), this backend only
+     * knows how to write fixed 24-bit BGR - a private screen opened at any
+     * other depth would make bitmap_format_ok() correctly refuse to draw,
+     * dropping every frame (audio keeps running, screen just goes black).
+     * That's exactly what happened before this fix: a card offering 16-bit
+     * modes had them picked first. Only 24-bit is a candidate here. */
+    static const ULONG depths[] = { 24 };
     struct Screen *public_screen;
     struct Screen *scr = NULL;
     ULONG best_modeid = (ULONG)INVALID_ID;
@@ -165,8 +173,13 @@ static struct Screen *p96_open_private_screen(p96_state *s, const char *title)
             SA_ShowTitle, FALSE,
             SA_Draggable, FALSE,
             TAG_END);
-    if (scr && GetCyberMapAttr(scr->RastPort.BitMap,
-                               CYBRMATTR_DEPTH) <= 8) {
+    /* Depth alone (checked below via CYBRMATTR_DEPTH) doesn't guarantee the
+     * exact RGBFB_B8G8R8 layout this backend writes - verify the real
+     * format on the screen we actually got, the same check open()/
+     * p96_rebuild_geometry() rely on, rather than trusting "24-bit implies
+     * BGR". */
+    if (scr && (GetCyberMapAttr(scr->RastPort.BitMap, CYBRMATTR_DEPTH) <= 8 ||
+                !bitmap_format_ok(scr->RastPort.BitMap))) {
         CloseScreen(scr);
         scr = NULL;
     }
