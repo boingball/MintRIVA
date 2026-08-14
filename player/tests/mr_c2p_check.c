@@ -14,7 +14,8 @@ static uint8_t next_random_byte(void)
     return (uint8_t)(random_state >> 24);
 }
 
-static int check_case(int width, int height, int dirty_y0, int dirty_y1)
+static int check_case(int nplanes, int width, int height, int dirty_y0,
+                      int dirty_y1)
 {
     int stride = width + 13, x0byte = 4, dst_y0 = 3 + dirty_y0;
     int bpr = x0byte + width / 8 + 7, dst_rows = height + 8;
@@ -25,7 +26,7 @@ static int check_case(int width, int height, int dirty_y0, int dirty_y1)
 
     if (ok)
         for (i = 0; i < stride * height; i++) chunky[i] = next_random_byte();
-    for (plane = 0; ok && plane < NPLANES; plane++) {
+    for (plane = 0; ok && plane < nplanes; plane++) {
         portable[plane] = (uint8_t *)malloc(plane_size);
         riva[plane] = (uint8_t *)malloc(plane_size);
         if (!portable[plane] || !riva[plane]) { ok = 0; break; }
@@ -35,19 +36,25 @@ static int check_case(int width, int height, int dirty_y0, int dirty_y1)
     if (ok) {
         const uint8_t *dirty = chunky + (size_t)dirty_y0 * stride;
         int rows = dirty_y1 - dirty_y0;
-        mr_c2p8(dirty, width, rows, stride, NPLANES, portable, bpr,
+        mr_c2p8(dirty, width, rows, stride, nplanes, portable, bpr,
                 x0byte, dst_y0);
-        mr_c2p8_riva32(dirty, width, rows, stride, NPLANES, riva, bpr,
+        /* mr_c2p8_riva32() dispatches to the m68k asm (mr_c2p8_riva32_m68k,
+         * core/mr_c2p_m68k.S) when MR_M68K_ASM is defined - this is what
+         * actually exercises the hand-asm C2P on real m68k/big-endian
+         * hardware via tests/run_m68k_check.sh; the host build (this file
+         * under `make check`) exercises the portable C fallback instead. */
+        mr_c2p8_riva32(dirty, width, rows, stride, nplanes, riva, bpr,
                        x0byte, dst_y0);
-        for (plane = 0; plane < NPLANES; plane++) {
+        for (plane = 0; plane < nplanes; plane++) {
             if (memcmp(portable[plane], riva[plane], plane_size)) {
-                fprintf(stderr, "C2P mismatch: width=%d dirty=%d..%d plane=%d\n",
-                        width, dirty_y0, dirty_y1, plane);
+                fprintf(stderr, "C2P mismatch: nplanes=%d width=%d "
+                                "dirty=%d..%d plane=%d\n",
+                        nplanes, width, dirty_y0, dirty_y1, plane);
                 ok = 0;
             }
         }
     }
-    for (plane = 0; plane < NPLANES; plane++) {
+    for (plane = 0; plane < nplanes; plane++) {
         free(portable[plane]);
         free(riva[plane]);
     }
@@ -57,13 +64,17 @@ static int check_case(int width, int height, int dirty_y0, int dirty_y1)
 
 int main(void)
 {
-    int iteration, width;
+    static const int planecounts[] = { 5, 6, 8 };
+    int iteration, width, p;
     for (iteration = 0; iteration < 200; iteration++) {
         for (width = 32; width <= 160; width += 32) {
-            if (!check_case(width, 11, 0, 11) ||
-                !check_case(width, 11, 2, 9) ||
-                !check_case(width, 11, 7, 8))
-                return 1;
+            for (p = 0; p < (int)(sizeof planecounts / sizeof planecounts[0]); p++) {
+                int nplanes = planecounts[p];
+                if (!check_case(nplanes, width, 11, 0, 11) ||
+                    !check_case(nplanes, width, 11, 2, 9) ||
+                    !check_case(nplanes, width, 11, 7, 8))
+                    return 1;
+            }
         }
     }
     puts("C2P checks passed");

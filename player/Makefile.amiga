@@ -65,7 +65,7 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_ts.c core/mr_ps.c \
         core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
         core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
-        core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
+        core/mr_c2p.c core/mr_c2p_m68k.S core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
         core/mr_mpeg2.c $(LIBMPEG2_SRC) \
         core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h263.c core/mr_msvideo1.c core/mr_rle.c \
         core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S
@@ -183,7 +183,7 @@ audio_task_stress: check-cc tests/amiga_audio_task_stress.c amiga/audio_paula.c
 	$(CC) $(CFLAGS) -o $@ tests/amiga_audio_task_stress.c \
 	    amiga/audio_paula.c $(LDFLAGS)
 
-KALMS_CHECK = tests/mr_kalms_c2p_check.c core/mr_c2p.c
+KALMS_CHECK = tests/mr_kalms_c2p_check.c core/mr_c2p.c core/mr_c2p_m68k.S
 
 check-cc:
 	@test -n "$(CC)" && test -x "$(CC)" || { \
