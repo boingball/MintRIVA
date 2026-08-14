@@ -29,6 +29,7 @@ typedef struct {
 } display_backend;
 
 extern const display_backend backend_cgx;
+extern const display_backend backend_p96;
 extern const display_backend backend_aga;
 
 /* AGA backend configuration, set via the public display_set_* calls. */
@@ -46,6 +47,10 @@ struct Library;
 extern struct IntuitionBase *IntuitionBase;
 extern struct GfxBase       *GfxBase;
 extern struct Library       *CyberGfxBase;
+/* Picasso96API.library base, opened only when the P96 backend is selected
+ * (display_set_force_p96()); NULL otherwise, in which case backend_p96's
+ * open() must fail so display_open() falls back to CGX/AGA. */
+extern struct Library       *P96Base;
 
 /* Set non-zero to enable timing/diagnostic printf output.  Wired to --time. */
 extern int g_display_want_time;

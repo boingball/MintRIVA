@@ -17,8 +17,10 @@
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase       *GfxBase       = NULL;
 struct Library       *CyberGfxBase  = NULL;
+struct Library       *P96Base       = NULL;
 
 static int g_force_aga = 0;
+static int g_force_p96 = 0;
 int g_aga_ham   = 0;   /* shared with the AGA backend */
 int g_aga_scale = 1;
 int g_aga_c2p   = 0;   /* WritePixelArray8 by default (measured faster);
@@ -29,6 +31,7 @@ int g_display_want_time = 0;  /* enable RTG geometry diagnostics (--time)   */
 int g_display_fullscreen = 0;
 
 void display_set_force_aga(int on) { g_force_aga = on; }
+void display_set_force_p96(int on) { g_force_p96 = on; }
 void display_set_ham(int bits) { g_aga_ham = bits; if (bits) g_force_aga = 1; }
 void display_set_scale(int n)  { g_aga_scale = (n == 2) ? 2 : 1; }
 void display_set_c2p(int on)   { g_aga_c2p = on ? 1 : 0; }
@@ -48,6 +51,7 @@ struct amiga_display {
 
 static void close_libs(void)
 {
+    if (P96Base)       { CloseLibrary(P96Base);                         P96Base       = NULL; }
     if (CyberGfxBase)  { CloseLibrary(CyberGfxBase);                    CyberGfxBase  = NULL; }
     if (GfxBase)       { CloseLibrary((struct Library *)GfxBase);       GfxBase       = NULL; }
     if (IntuitionBase) { CloseLibrary((struct Library *)IntuitionBase); IntuitionBase = NULL; }
@@ -55,7 +59,7 @@ static void close_libs(void)
 
 amiga_display *display_open(int w, int h, const char *title)
 {
-    const display_backend *order[2];
+    const display_backend *order[3];
     int n = 0, i;
 
     IntuitionBase = (struct IntuitionBase *)
@@ -66,7 +70,17 @@ amiga_display *display_open(int w, int h, const char *title)
 
     /* RTG is optional; its absence is exactly when we want the AGA fallback. */
     CyberGfxBase = OpenLibrary((CONST_STRPTR)"cybergraphics.library", 40);
+    /* Also optional, and only opened at all when P96 mode was explicitly
+     * requested - no reason to touch it on a CGX-only or AGA-only box. */
+    if (g_force_p96 && !g_force_aga)
+        P96Base = OpenLibrary((CONST_STRPTR)"Picasso96API.library", 0);
 
+    /* P96 is tried first (only when selected and available); backend_p96's
+     * own open() fails cleanly for anything but the BGR24 format it supports,
+     * in which case this still falls through to CGX, then AGA - so choosing
+     * P96 never loses working playback, only the chance at the faster path. */
+    if (!g_force_aga && g_force_p96 && CyberGfxBase && P96Base)
+        order[n++] = &backend_p96;
     if (!g_force_aga && CyberGfxBase) order[n++] = &backend_cgx;
     order[n++] = &backend_aga;
 

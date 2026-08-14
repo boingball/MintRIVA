@@ -28,6 +28,14 @@ typedef struct mr_display_timing {
  * display_open; default is RTG-first with automatic AGA fallback. */
 void display_set_force_aga(int on);
 
+/* Prefer the P96 direct-lock backend (p96LockBitMap) over the WritePixelArray
+ * (CGX) one. Call before display_open(). Only takes effect on a screen whose
+ * live BitMap format the P96 backend actually supports (currently 24-bit BGR,
+ * RGBFB_B8G8R8 - the common Picasso96 truecolour mode); anything else falls
+ * back to CGX automatically, same as CGX itself falls back to AGA. Has no
+ * effect if display_set_force_aga() is also on. */
+void display_set_force_p96(int on);
+
 /* Planar colour mode: 0 = indexed dither (256 colours on AGA, 32 on
  * OCS/ECS), 6 = HAM6 on any chipset, 8 = HAM8 on AGA. A non-zero HAM depth
  * forces the native planar backend. */

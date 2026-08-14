@@ -13,7 +13,8 @@ typedef enum {
     MR_DISPLAY_AGA = 0,
     MR_DISPLAY_HAM6,
     MR_DISPLAY_HAM8,
-    MR_DISPLAY_CGX
+    MR_DISPLAY_CGX,
+    MR_DISPLAY_P96
 } mr_display_mode;
 
 typedef enum {

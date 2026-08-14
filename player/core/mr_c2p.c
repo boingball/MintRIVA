@@ -3,6 +3,20 @@
  */
 #include "mr_c2p.h"
 
+#if defined(MR_M68K_ASM)
+/* core/mr_c2p_m68k.S - hand-written m68k version of mr_c2p8_riva32 below,
+ * using native 32-bit register-pair arithmetic instead of the uint64_t the
+ * portable version needs gcc to emulate on a target with no 64-bit ALU.
+ * __asm__ binds to the bare .globl name (m68k-amigaos-gcc decorates C
+ * symbols but not hand-written asm labels), matching every other hand-asm
+ * entry point in this project. */
+void mr_c2p8_riva32_m68k(const uint8_t *chunky, int pw, int h,
+                         int chunky_stride, int nplanes,
+                         uint8_t *const planes[], int bpr,
+                         int x0byte, int y0)
+    __asm__("mr_c2p8_riva32_m68k");
+#endif
+
 /* Transpose 8 chunky bytes (pixels, pixel 0 -> MSB of each plane byte) into 8
  * plane bytes. Host-verified identical to the naive per-bit reference. */
 static void transpose8(const uint8_t *in, uint8_t out[8])
@@ -79,6 +93,11 @@ void mr_c2p8_riva32(const uint8_t *chunky, int pw, int h, int chunky_stride,
                     int x0byte, int y0)
 {
     int y, group, plane;
+#if defined(MR_M68K_ASM)
+    mr_c2p8_riva32_m68k(chunky, pw, h, chunky_stride, nplanes, planes, bpr,
+                        x0byte, y0);
+    return;
+#endif
     for (y = 0; y < h; y++) {
         const uint8_t *row = chunky + (size_t)y * chunky_stride;
         size_t base = (size_t)(y0 + y) * bpr + x0byte;
