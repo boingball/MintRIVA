@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-/* AmigaDOS requester pattern for the local containers MintRIVA can probe.
+/* AmigaDOS requester pattern for the local containers MintVID can probe.
  * Playback still sniffs the container; this is only to keep audio-only files
  * out of the video picker. */
 #define MR_VIDEO_FILE_PATTERN \

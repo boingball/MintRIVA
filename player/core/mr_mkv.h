@@ -1,4 +1,4 @@
-/* MintRIVA - bounded Matroska demuxer for existing codec backends. */
+/* MintVID - bounded Matroska demuxer for existing codec backends. */
 #ifndef MR_MKV_H
 #define MR_MKV_H
 

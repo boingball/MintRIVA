@@ -1,5 +1,5 @@
 /*
- * MintRIVA - native YouTube live and progressive MP4 resolver.
+ * MintVID - native YouTube live and progressive MP4 resolver.
  *
  * No JavaScript engine or signature decipher is attempted. Public live HLS is
  * handed to the existing HLS path; compatible recorded uploads may provide
@@ -19,7 +19,7 @@
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " \
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 #define YOUTUBE_REFERER "https://www.youtube.com/"
-#define MINT_RIVA_DEFAULT_UA "MintRIVA/0.1 AmigaOS"
+#define MINT_VID_DEFAULT_UA "MintVID/0.1 AmigaOS"
 #define YOUTUBE_LIVE_START_SEGMENTS 2
 #define YOUTUBE_ANDROID_VERSION "21.08.266"
 #define YOUTUBE_ANDROID_UA \
@@ -124,7 +124,7 @@ int mr_youtube_http_options_init(mr_http_options *out,
         return 0;
     }
     if (base && base->user_agent[0] &&
-        strcmp(base->user_agent, MINT_RIVA_DEFAULT_UA))
+        strcmp(base->user_agent, MINT_VID_DEFAULT_UA))
         ua = base->user_agent;
     if (base && base->referer[0]) referer = base->referer;
     if (!mr_http_options_init(out, ua, referer)) return 0;
@@ -602,7 +602,7 @@ int mr_youtube_resolve_media(const char *url,
     if (result < 0) saw_n_challenge = 1;
 
     /* Android VR still exposes the classic muxed 360p MP4 on many public
-     * recorded videos. This is MintRIVA's deliberately narrow VOD target:
+     * recorded videos. This is MintVID's deliberately narrow VOD target:
      * itag 18 contains H.264 video and AAC audio in one seekable file. */
     n = snprintf(json, sizeof json,
                  "{\"videoId\":\"%s\",\"contentCheckOk\":true,"

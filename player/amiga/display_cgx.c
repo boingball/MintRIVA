@@ -1,5 +1,5 @@
 /*
- * MintRIVA - cybergraphics RTG window backend.
+ * MintVID - cybergraphics RTG window backend.
  *
  * Opens a titled window on the default public screen (truecolour RTG on
  * SAGA/P96/CGX) and blits RGB24 frames with WritePixelArray, letting
@@ -157,7 +157,7 @@ static struct Screen *cgx_open_private_screen(cgx_state *s, const char *title)
             SA_DisplayID, best_modeid,
             SA_Depth, best_depth,
             SA_Type, CUSTOMSCREEN,
-            SA_Title, (ULONG)(title ? title : "MintRIVA"),
+            SA_Title, (ULONG)(title ? title : "MintVID"),
             SA_Quiet, TRUE,
             SA_ShowTitle, FALSE,
             SA_Draggable, FALSE,
@@ -191,7 +191,7 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
         if (scr) {
             win = OpenWindowTags(NULL,
                 WA_CustomScreen, (ULONG)scr,
-                WA_Title, (ULONG)(title ? title : "MintRIVA"),
+                WA_Title, (ULONG)(title ? title : "MintVID"),
                 WA_Left, 0, WA_Top, 0,
                 WA_Width, (ULONG)scr->Width, WA_Height, (ULONG)scr->Height,
                 WA_Flags, WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
@@ -214,7 +214,7 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
     if (s->fullscreen) {
         win = OpenWindowTags(NULL,
             WA_PubScreen, (ULONG)scr,
-            WA_Title, (ULONG)(title ? title : "MintRIVA"),
+            WA_Title, (ULONG)(title ? title : "MintVID"),
             WA_Left, 0, WA_Top, 0,
             WA_Width, (ULONG)scr->Width, WA_Height, (ULONG)scr->Height,
             WA_Borderless, TRUE, WA_Activate, TRUE,
@@ -224,7 +224,7 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
     } else {
         win = OpenWindowTags(NULL,
             WA_PubScreen, (ULONG)scr,
-            WA_Title, (ULONG)(title ? title : "MintRIVA"),
+            WA_Title, (ULONG)(title ? title : "MintVID"),
             WA_InnerWidth, (ULONG)inner_w,
             WA_InnerHeight, (ULONG)inner_h,
             WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
@@ -716,7 +716,7 @@ static int cgx_toggle_fullscreen(void *h)
 static void cgx_status(void *h, const char *text)
 {
     cgx_state *s = (cgx_state *)h;
-    const char *title = (text && *text) ? text : "MintRIVA";
+    const char *title = (text && *text) ? text : "MintVID";
     if (!s || !s->win) return;
     /* Callers pass string literals, so a pointer compare cheaply skips the
      * common case of the same status being set repeatedly (e.g. every

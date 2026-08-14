@@ -15,7 +15,7 @@
 /* Public exec MsgPort name the running player publishes so the IPTV controller
  * can find it and ask it to stop before launching another stream. Only one
  * player runs at a time, so a fixed name is sufficient. */
-#define MR_IPTV_PLAYER_PORT "MintRIVA.player"
+#define MR_IPTV_PLAYER_PORT "MintVID.player"
 
 typedef struct {
   char url[MR_IPTV_URL_MAX];

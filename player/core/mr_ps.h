@@ -1,4 +1,4 @@
-/* MintRIVA - MPEG-1/2 program-stream demuxer. */
+/* MintVID - MPEG-1/2 program-stream demuxer. */
 #ifndef MR_PS_H
 #define MR_PS_H
 

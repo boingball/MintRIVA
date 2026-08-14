@@ -1,5 +1,5 @@
 /*
- * MintRIVA - RGB24 -> 8-bit palette conversion with ordered dithering.
+ * MintVID - RGB24 -> 8-bit palette conversion with ordered dithering.
  *
  * For the AGA path: AGA is planar and tops out at a 256-colour palette, so
  * frames must be quantised to 8-bit indices. A fixed 6x6x6 RGB cube plus 4x4

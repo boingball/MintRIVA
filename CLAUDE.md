@@ -1,7 +1,7 @@
 # CLAUDE.md — working notes for this repo
 
 ## What this is
-MintRIVA: a codec-agnostic 68k AmigaOS video player. New code is portable C in
+MintVID: a codec-agnostic 68k AmigaOS video player. New code is portable C in
 `player/`. The RiVA 0.54 assembly in `src/` is **reference only** (renderers +
 IDCT/motion macros worth porting) — do not try to extend that 22k-line `.s`.
 Read `DESIGN.md` before making structural decisions.

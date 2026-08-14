@@ -1,4 +1,4 @@
-/* MintRIVA IPTV-GT: OS 3.1 GadTools browser using the shared IPTV core. */
+/* MintVID IPTV-GT: OS 3.1 GadTools browser using the shared IPTV core. */
 #include "../core/mr_http.h"
 #include "../core/mr_play_options.h"
 #include "../core/mr_source.h"
@@ -115,8 +115,8 @@ static int choose_cache(iptvgt *app)
     BPTR lock=CreateDir((CONST_STRPTR)"PROGDIR:Cache"); if(lock)UnLock(lock);
     lock=CreateDir((CONST_STRPTR)"PROGDIR:Cache/IPTV"); if(lock)UnLock(lock);
     if (try_cache(app,"PROGDIR:Cache/IPTV/")) return 1;
-    lock=CreateDir((CONST_STRPTR)"T:MintRIVA-IPTV"); if(lock)UnLock(lock);
-    return try_cache(app,"T:MintRIVA-IPTV/");
+    lock=CreateDir((CONST_STRPTR)"T:MintVID-IPTV"); if(lock)UnLock(lock);
+    return try_cache(app,"T:MintVID-IPTV/");
 }
 
 static void cache_path(iptvgt *app, char *out, size_t size, const char *name)
@@ -283,9 +283,9 @@ static int start_stream(iptvgt *app, const mr_iptv_stream *stream)
     if(!seglist)
         return 0;
     if(app->debug_on){
-      if(!app->log_session_open){log=Open((CONST_STRPTR)"RAM:MintRIVA.log",MODE_NEWFILE);
+      if(!app->log_session_open){log=Open((CONST_STRPTR)"RAM:MintVID.log",MODE_NEWFILE);
         if(log)app->log_session_open=1;}
-      else{log=Open((CONST_STRPTR)"RAM:MintRIVA.log",MODE_READWRITE);if(log){
+      else{log=Open((CONST_STRPTR)"RAM:MintVID.log",MODE_READWRITE);if(log){
         static const char sep[]="\n\n===== new stream =====\n";Seek(log,0,OFFSET_END);
         Write(log,(APTR)sep,(LONG)(sizeof(sep)-1));}}
       nil=Open((CONST_STRPTR)"NIL:",MODE_NEWFILE);
@@ -293,12 +293,12 @@ static int start_stream(iptvgt *app, const mr_iptv_stream *stream)
     }
     if(log&&nil)process=CreateNewProcTags(NP_Seglist,seglist,NP_FreeSeglist,TRUE,
       NP_Arguments,(ULONG)args,NP_StackSize,MRPLAY_STACK_SIZE,NP_Cli,TRUE,
-      NP_CommandName,(ULONG)"mrplay",NP_Name,(ULONG)"MintRIVA player",
+      NP_CommandName,(ULONG)"mrplay",NP_Name,(ULONG)"MintVID player",
       NP_Input,(ULONG)nil,NP_CloseInput,TRUE,NP_Output,(ULONG)log,
       NP_CloseOutput,TRUE,TAG_END);
     else process=CreateNewProcTags(NP_Seglist,seglist,NP_FreeSeglist,TRUE,
       NP_Arguments,(ULONG)args,NP_StackSize,MRPLAY_STACK_SIZE,NP_Cli,TRUE,
-      NP_CommandName,(ULONG)"mrplay",NP_Name,(ULONG)"MintRIVA player",TAG_END);
+      NP_CommandName,(ULONG)"mrplay",NP_Name,(ULONG)"MintVID player",TAG_END);
     if(!process){if(log)Close(log);if(nil)Close(nil);UnLoadSeg(seglist);}
     return process!=NULL;
 }
@@ -413,7 +413,7 @@ static int window_open(iptvgt *app)
     nw.Width=WIN_W;nw.Height=WIN_H;nw.DetailPen=0;nw.BlockPen=1;
     nw.IDCMPFlags=IDCMP_GADGETUP|IDCMP_CLOSEWINDOW|IDCMP_REFRESHWINDOW|IDCMP_MENUPICK;
     nw.Flags=WFLG_CLOSEGADGET|WFLG_DRAGBAR|WFLG_DEPTHGADGET|WFLG_ACTIVATE|WFLG_SMART_REFRESH;
-    nw.FirstGadget=app->gadgets;nw.Title=(UBYTE *)"MintRIVA IPTV-GT";
+    nw.FirstGadget=app->gadgets;nw.Title=(UBYTE *)"MintVID IPTV-GT";
     nw.Screen=app->screen;nw.Type=CUSTOMSCREEN;app->window=OpenWindow(&nw);
     return app->window!=NULL;
 }

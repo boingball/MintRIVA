@@ -1,4 +1,4 @@
-/* Standalone MintRIVA IPTV ReAction browser.
+/* Standalone MintVID IPTV ReAction browser.
  *
  * Keeping this in a second process gives directory parsing its own event loop;
  * selected URLs are still played by the normal mrplay executable.
@@ -52,7 +52,7 @@
 #define IPTV_STREAMS_URL "https://iptv-org.github.io/api/streams.json"
 /* When the Debug toggle is on, the launched player's diagnostics (with --time)
  * are captured here so a failing stream can be inspected without a Shell. */
-#define MRPLAY_LOG_FILE "RAM:MintRIVA.log"
+#define MRPLAY_LOG_FILE "RAM:MintVID.log"
 
 /* Cleared at GUI launch: the first logged stream truncates the file, later ones
  * append, so a whole session's streams accumulate in one log (see start_stream). */
@@ -206,10 +206,10 @@ static int choose_cache_dir(char *error, size_t error_size) {
     UnLock(lock);
   if (try_cache_dir("PROGDIR:Cache/IPTV/"))
     return 1;
-  lock = CreateDir((CONST_STRPTR) "T:MintRIVA-IPTV");
+  lock = CreateDir((CONST_STRPTR) "T:MintVID-IPTV");
   if (lock)
     UnLock(lock);
-  if (try_cache_dir("T:MintRIVA-IPTV/"))
+  if (try_cache_dir("T:MintVID-IPTV/"))
     return 1;
   snprintf(error, error_size,
            "Cache directory failed: PROGDIR: and T: are not writable");
@@ -560,7 +560,7 @@ static int start_stream(const mr_iptv_stream *stream,
                   NP_Seglist, seglist, NP_FreeSeglist, TRUE, NP_Arguments,
                   (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE,
                   NP_CommandName, (ULONG) "mrplay", NP_Name,
-                  (ULONG) "MintRIVA player", NP_Input, (ULONG)nil, NP_CloseInput,
+                  (ULONG) "MintVID player", NP_Input, (ULONG)nil, NP_CloseInput,
                   TRUE, NP_Output, (ULONG)log, NP_CloseOutput, TRUE,
                   TAG_END) != NULL;
   else
@@ -568,7 +568,7 @@ static int start_stream(const mr_iptv_stream *stream,
                   NP_Seglist, seglist, NP_FreeSeglist, TRUE, NP_Arguments,
                   (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE,
                   NP_CommandName, (ULONG) "mrplay", NP_Name,
-                  (ULONG) "MintRIVA player", TAG_END) != NULL;
+                  (ULONG) "MintVID player", TAG_END) != NULL;
   if (!started) {
     if (log) Close(log);   /* not consumed by a failed CreateNewProc */
     if (nil) Close(nil);
@@ -865,7 +865,7 @@ int main(int argc, char **argv) {
   if (!layout)
     goto cleanup;
   winobj = (Object *)NewObject(
-      WINDOW_GetClass(), NULL, WA_Title, (ULONG) "MintRIVA IPTV", WA_Activate,
+      WINDOW_GetClass(), NULL, WA_Title, (ULONG) "MintVID IPTV", WA_Activate,
       TRUE, WA_DepthGadget, TRUE, WA_DragBar, TRUE, WA_CloseGadget, TRUE,
       WA_SizeGadget, TRUE, WA_IDCMP,
       IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_MENUPICK |

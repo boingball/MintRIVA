@@ -1,5 +1,5 @@
 /*
- * MintRIVA - internal display backend vtable.
+ * MintVID - internal display backend vtable.
  *
  * Each backend (RTG/cybergraphics, AGA) implements these four calls over its
  * own opaque handle; display.c picks one and routes the public API to it.

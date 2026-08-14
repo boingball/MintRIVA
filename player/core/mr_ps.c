@@ -1,8 +1,8 @@
 /*
- * MintRIVA - MPEG-1/2 program-stream demuxer.
+ * MintVID - MPEG-1/2 program-stream demuxer.
  *
  * Program streams already contain MPEG video elementary-stream bytes inside
- * PES packets. libmpeg2, which is already part of MintRIVA, consumes those
+ * PES packets. libmpeg2, which is already part of MintVID, consumes those
  * bytes directly; no additional video decoder is needed.
  */
 #include "mr_ps.h"

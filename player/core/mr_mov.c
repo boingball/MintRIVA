@@ -1,5 +1,5 @@
 /*
- * MintRIVA - minimal QuickTime (MOV) demuxer implementation.
+ * MintVID - minimal QuickTime (MOV) demuxer implementation.
  *
  * MOV is a tree of atoms [size:4][type:4][payload]. We locate the video track's
  * sample tables and flatten them into a per-frame (offset,size) index into the

@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG-1/MPEG-2 video decoder adapter.
+ * MintVID - MPEG-1/MPEG-2 video decoder adapter.
  *
  * libmpeg2 supplies the Main Profile bitstream decoder, reference pictures and
  * display reordering. The adapter consumes one elementary-stream PES payload

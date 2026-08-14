@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG-1 source, wrapping pl_mpeg.
+ * MintVID - MPEG-1 source, wrapping pl_mpeg.
  *
  * This translation unit carries pl_mpeg's implementation (PL_MPEG_IMPLEMENTATION),
  * so it is the one place its integer-only MP2 code is compiled.

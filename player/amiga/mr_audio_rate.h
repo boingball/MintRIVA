@@ -1,5 +1,5 @@
 /*
- * MintRIVA - allocation-free streaming PCM rate conversion helper.
+ * MintVID - allocation-free streaming PCM rate conversion helper.
  *
  * Paula selects its sample rate with an integer hardware period, so the rate
  * it can actually play is normally a little different from the source rate.

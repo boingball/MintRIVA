@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Paula (audio.device) PCM output backend.
+ * MintVID - Paula (audio.device) PCM output backend.
  *
  * One allocated Paula channel, mono, signed 8-bit, double-buffered CMD_WRITE.
  * Source PCM (8/16-bit, mono/stereo) is downmixed/converted to signed 8-bit
@@ -231,7 +231,7 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->stopped_sig = AllocSignal(-1);
     if (a->ready_sig < 0 || a->stopped_sig < 0) { audio_close(a); return NULL; }
     worker = CreateNewProcTags(NP_Entry, (ULONG)audio_worker_entry,
-                               NP_Name, (ULONG)"MintRIVA Paula output",
+                               NP_Name, (ULONG)"MintVID Paula output",
                                NP_Priority, 5,
                                NP_StackSize, 16384UL,
                                TAG_END);

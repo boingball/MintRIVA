@@ -1,5 +1,5 @@
 /*
- * MintRIVA - HAM8 (and HAM6) encoding for AGA near-truecolour output.
+ * MintVID - HAM8 (and HAM6) encoding for AGA near-truecolour output.
  *
  * HAM (Hold-And-Modify) gets far more than 256 on-screen colours out of a
  * planar display: each pixel either loads a fresh colour from a small base

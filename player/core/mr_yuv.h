@@ -1,4 +1,4 @@
-/* MintRIVA - shared integer YUV conversion helpers. */
+/* MintVID - shared integer YUV conversion helpers. */
 #ifndef MR_YUV_H
 #define MR_YUV_H
 

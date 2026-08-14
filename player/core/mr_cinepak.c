@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Cinepak (CVID) video decoder.
+ * MintVID - Cinepak (CVID) video decoder.
  *
  * Why Cinepak is the base-tier codec: it was designed to play from CD-ROM on
  * 386/68030-class CPUs. Decoding is vector-quantisation - codebook lookups and

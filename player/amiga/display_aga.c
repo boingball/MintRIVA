@@ -1,5 +1,5 @@
 /*
- * MintRIVA - AGA (planar) display backend.
+ * MintVID - AGA (planar) display backend.
  *
  * Opens a custom screen and blits each frame through a portable pixel encoder
  * (256-colour dither / HAM8 / HAM6) plus a chunky->planar step. The default

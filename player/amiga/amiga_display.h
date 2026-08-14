@@ -1,5 +1,5 @@
 /*
- * MintRIVA - Amiga display backend (abstract).
+ * MintVID - Amiga display backend (abstract).
  *
  * The player talks to this, not to Intuition/cybergraphics directly, so a
  * faster fullscreen RTG path or an AGA C2P path can slot in later behind the

@@ -1,4 +1,4 @@
-/* Standalone MintRIVA YouTube search window.
+/* Standalone MintVID YouTube search window.
  *
  * Search uses YouTube's public results page (no account or API key), while
  * playback stays in the normal mrplay process and its native live resolver.
@@ -47,7 +47,7 @@
 #define YT_CLASS_VERSION 44
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
-#define MRPLAY_LOG_FILE "RAM:MintRIVA.log"
+#define MRPLAY_LOG_FILE "RAM:MintVID.log"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
@@ -384,7 +384,7 @@ static int start_video(const mr_youtube_search_result *video,
             NP_Arguments, (ULONG)arguments,
             NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE,
             NP_CommandName, (ULONG)"mrplay",
-            NP_Name, (ULONG)"MintRIVA player",
+            NP_Name, (ULONG)"MintVID player",
             NP_Input, (ULONG)nil, NP_CloseInput, TRUE,
             NP_Output, (ULONG)log, NP_CloseOutput, TRUE,
             TAG_END);
@@ -394,7 +394,7 @@ static int start_video(const mr_youtube_search_result *video,
             NP_Arguments, (ULONG)arguments,
             NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE,
             NP_CommandName, (ULONG)"mrplay",
-            NP_Name, (ULONG)"MintRIVA player", TAG_END);
+            NP_Name, (ULONG)"MintVID player", TAG_END);
     if (!process) {
         if (log) Close(log);
         if (nil) Close(nil);
@@ -667,7 +667,7 @@ int main(int argc, char **argv)
     if (!layout)
         goto cleanup;
     winobj = (Object *)NewObject(
-        WINDOW_GetClass(), NULL, WA_Title, (ULONG)"MintRIVA YouTube",
+        WINDOW_GetClass(), NULL, WA_Title, (ULONG)"MintVID YouTube",
         WA_Activate, TRUE, WA_DepthGadget, TRUE, WA_DragBar, TRUE,
         WA_CloseGadget, TRUE, WA_SizeGadget, TRUE, WA_IDCMP,
         IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_MENUPICK |
@@ -732,7 +732,7 @@ int main(int argc, char **argv)
                                TAG_DONE);
                 set_status(status, window,
                            debug_log
-                           ? "Timing log ON: next Play writes RAM:MintRIVA.log"
+                           ? "Timing log ON: next Play writes RAM:MintVID.log"
                            : "Timing log off.");
             } else if (gadget == G_PAUSE) {
                 set_status(status, window,

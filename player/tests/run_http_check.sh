@@ -159,8 +159,8 @@ test -f "$tmpdir/range-used"
 # default UA and absence of an implicit Referer.
 : >"$tmpdir/headers"
 "$decoder" "$base/media/test_mpeg2.ts" --check tests/assets/ref_mpeg2_ts
-grep -F '|MintRIVA/0.1 AmigaOS|' "$tmpdir/headers" >/dev/null
-! grep -v -F '|MintRIVA/0.1 AmigaOS|' "$tmpdir/headers" >/dev/null
+grep -F '|MintVID/0.1 AmigaOS|' "$tmpdir/headers" >/dev/null
+! grep -v -F '|MintVID/0.1 AmigaOS|' "$tmpdir/headers" >/dev/null
 
 : >"$tmpdir/headers"
 "$decoder" "$base/media/test_mpeg2.ts" --user-agent 'IPTV Agent With Spaces' \
@@ -170,11 +170,11 @@ grep -F '|MintRIVA/0.1 AmigaOS|' "$tmpdir/headers" >/dev/null
 : >"$tmpdir/headers"
 "$decoder" "$base/media/test_mpeg2.ts" --referer 'https://example.com/' \
     --check tests/assets/ref_mpeg2_ts
-! grep -v -F '|MintRIVA/0.1 AmigaOS|https://example.com/' \
+! grep -v -F '|MintVID/0.1 AmigaOS|https://example.com/' \
     "$tmpdir/headers" >/dev/null
 
 : >"$tmpdir/headers"
-ua='Mozilla/5.0 MintRIVA header test'
+ua='Mozilla/5.0 MintVID header test'
 ref='https://example.com/player?channel=one&mode=live'
 "$decoder" "$base/redirect/test_mpeg2.ts" \
     --user-agent "$ua" --referer "$ref" \

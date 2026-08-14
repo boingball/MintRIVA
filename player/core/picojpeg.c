@@ -11,7 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <stdlib.h>  /* MintRIVA: was miniamp_memguard.h (memguard macros unused) */
+#include <stdlib.h>  /* MintVID: was miniamp_memguard.h (memguard macros unused) */
 
 #define PJPG_MAX_COMPONENTS 4
 #define PJPG_MAX_TABLES 4
@@ -211,7 +211,7 @@ static int pj_extend(int v, int t)
 		return 0;
 	vt = 1 << (t - 1);
 	if (v < vt)
-		v += -(1 << t) + 1;   /* MintRIVA: was (-1<<t); same value, no UB warning */
+		v += -(1 << t) + 1;   /* MintVID: was (-1<<t); same value, no UB warning */
 	return v;
 }
 

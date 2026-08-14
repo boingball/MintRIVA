@@ -1,5 +1,5 @@
 /*
- * MintRIVA - container-agnostic demux interface.
+ * MintVID - container-agnostic demux interface.
  *
  * The player shouldn't care whether frames come from AVI or QuickTime MOV, so
  * all parsers fill these neutral info/packet structs and are reached through

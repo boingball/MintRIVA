@@ -1,4 +1,4 @@
-/* MintRIVA ReAction controller.
+/* MintVID ReAction controller.
  *
  * The GUI stays on Workbench and launches the separate mrplay executable.
  * ReAction classes are opened explicitly, following MintAMP's working setup.
@@ -247,7 +247,7 @@ static struct Task *find_player(void)
     struct Task *task;
 
     Forbid();
-    task = FindTask((STRPTR)"MintRIVA player");
+    task = FindTask((STRPTR)"MintVID player");
     Permit();
     return task;
 }
@@ -257,7 +257,7 @@ static void signal_player(ULONG mask)
     struct Task *task;
 
     Forbid();
-    task = FindTask((STRPTR)"MintRIVA player");
+    task = FindTask((STRPTR)"MintVID player");
     if (task)
         Signal(task, mask);
     Permit();
@@ -344,7 +344,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
         NP_StackSize, MRPLAY_STACK_SIZE,
         NP_Cli, TRUE,
         NP_CommandName, (ULONG)"iptvgui",
-        NP_Name, (ULONG)"MintRIVA IPTV",
+        NP_Name, (ULONG)"MintVID IPTV",
         TAG_END);
     if (!process) {
         UnLoadSeg(seglist);
@@ -382,7 +382,7 @@ static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
         NP_StackSize, MRPLAY_STACK_SIZE,
         NP_Cli, TRUE,
         NP_CommandName, (ULONG)"ytgui",
-        NP_Name, (ULONG)"MintRIVA YouTube",
+        NP_Name, (ULONG)"MintVID YouTube",
         TAG_END);
     if (!process) {
         UnLoadSeg(seglist);
@@ -483,7 +483,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
 
     if (find_player()) {
         set_info(info, window,
-                 "A MintRIVA player is already running; stop it first.");
+                 "A MintVID player is already running; stop it first.");
         return;
     }
 
@@ -515,7 +515,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
         NP_StackSize, MRPLAY_STACK_SIZE,
         NP_Cli, TRUE,
         NP_CommandName, (ULONG)"mrplay",
-        NP_Name, (ULONG)"MintRIVA player",
+        NP_Name, (ULONG)"MintVID player",
         TAG_END);
 
     if (!process) {
@@ -767,7 +767,7 @@ int main(void)
 
     window_object = (Object *)NewObject(WINDOW_GetClass(), NULL,
                                          WA_Title,
-                                         (ULONG)"MintRIVA Control",
+                                         (ULONG)"MintVID Control",
                                          WA_Activate, TRUE,
                                          WA_DepthGadget, TRUE,
                                          WA_DragBar, TRUE,

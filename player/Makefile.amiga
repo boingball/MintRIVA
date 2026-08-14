@@ -1,4 +1,4 @@
-# MintRIVA - AmigaOS (m68k) cross build.
+# MintVID - AmigaOS (m68k) cross build.
 #
 # Programs:
 #   mrplay    - the player: opens an RTG window and plays an AVI/MOV clip.
@@ -273,9 +273,9 @@ RELEASE_PROGRAMS := mrplay mrgui iptvgui ytgui mrgui-GT iptvgui-GT \
 define build_release_cpu
 	$(MAKE) -f Makefile.amiga clean
 	$(MAKE) -f Makefile.amiga TOOLCHAIN=gcc CPU=$(1) all
-	@mkdir -p $(RELEASE_DIR)/MintRIVA$(2)
+	@mkdir -p $(RELEASE_DIR)/MintVID$(2)
 	@for program in $(RELEASE_PROGRAMS); do \
-		cp "$$program" "$(RELEASE_DIR)/MintRIVA$(2)/$$program"; \
+		cp "$$program" "$(RELEASE_DIR)/MintVID$(2)/$$program"; \
 	done
 endef
 
@@ -284,7 +284,7 @@ release:
 	$(call build_release_cpu,68060,060)
 	$(call build_release_cpu,68030,030)
 	@echo "Release binaries written to $(RELEASE_DIR)/"
-	@echo "Ready-to-run sets: MintRIVA030, MintRIVA040 and MintRIVA060"
+	@echo "Ready-to-run sets: MintVID030, MintVID040 and MintVID060"
 
 .PHONY: all release clean check-cc check-mintamp check-libavc check-kalms \
 	kalms_c2p_check

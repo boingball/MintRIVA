@@ -1,5 +1,5 @@
 /*
- * MintRIVA - RGB24 -> 8-bit palette conversion with 4x4 ordered dithering.
+ * MintVID - RGB24 -> 8-bit palette conversion with 4x4 ordered dithering.
  */
 #include "mr_dither.h"
 

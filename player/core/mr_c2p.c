@@ -1,5 +1,5 @@
 /*
- * MintRIVA - chunky-to-planar via 8x8 bit transpose.
+ * MintVID - chunky-to-planar via 8x8 bit transpose.
  */
 #include "mr_c2p.h"
 

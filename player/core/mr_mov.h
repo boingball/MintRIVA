@@ -1,5 +1,5 @@
 /*
- * MintRIVA - minimal QuickTime (MOV) demuxer.
+ * MintVID - minimal QuickTime (MOV) demuxer.
  *
  * Reconstructs the video track's frames from the stbl sample tables
  * (stsd/stsc/stsz/stco) pointing into mdat, and surfaces audio track info for

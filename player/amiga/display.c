@@ -1,5 +1,5 @@
 /*
- * MintRIVA - display front end.
+ * MintVID - display front end.
  *
  * Opens the shared library bases, then tries the RTG (cybergraphics) backend
  * and falls back to AGA - so the same mrplay runs on a PiStorm/RTG box and on a

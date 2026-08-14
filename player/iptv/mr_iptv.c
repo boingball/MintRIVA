@@ -104,7 +104,7 @@ static int url_has_extension(const char *url, const char *extension) {
 }
 
 int mr_iptv_supported_url(const char *url) {
-  /* MintRIVA supports HLS and direct HTTP media, but not MPEG-DASH. Keeping a
+  /* MintVID supports HLS and direct HTTP media, but not MPEG-DASH. Keeping a
    * known .mpd entry makes the browser advertise a channel which can only fail
    * later as an unsupported container. Unknown extensions remain eligible so
    * server-generated and extensionless HLS URLs continue to work. */

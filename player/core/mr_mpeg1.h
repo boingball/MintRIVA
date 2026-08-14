@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG-1 program-stream source (wraps pl_mpeg).
+ * MintVID - MPEG-1 program-stream source (wraps pl_mpeg).
  *
  * MPEG-1 .mpg is a self-contained stream (its own demux + video + MP2 audio),
  * so it does not fit the mr_demux -> mr_codec split; it gets this small source

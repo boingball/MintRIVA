@@ -32,7 +32,7 @@ static int parse_asc(latm_bits *b, mr_latm_config *cfg)
     sri = get_bits(b, 4);
     if (sri == 15) { get_bits(b, 24); return 0; }
     channels = get_bits(b, 4);
-    /* MintRIVA's fixed Helix path currently accepts AAC-LC mono/stereo. */
+    /* MintVID's fixed Helix path currently accepts AAC-LC mono/stereo. */
     if (b->bad || object != 2 || sri >= 13 || channels < 1 || channels > 2)
         return 0;
     get_bits(b, 1);                       /* frameLengthFlag              */

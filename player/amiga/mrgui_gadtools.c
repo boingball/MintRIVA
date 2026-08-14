@@ -1,4 +1,4 @@
-/* MintRIVA-GT: OS 3.1 GadTools controller for the shared mrplay engine. */
+/* MintVID-GT: OS 3.1 GadTools controller for the shared mrplay engine. */
 #include "../core/mr_play_options.h"
 #include "mr_gui_menu.h"
 #include "mr_master_options.h"
@@ -139,7 +139,7 @@ static struct Task *find_player(void)
 {
     struct Task *task;
     Forbid();
-    task = FindTask((STRPTR)"MintRIVA player");
+    task = FindTask((STRPTR)"MintVID player");
     Permit();
     return task;
 }
@@ -148,7 +148,7 @@ static void signal_player(ULONG mask)
 {
     struct Task *task;
     Forbid();
-    task = FindTask((STRPTR)"MintRIVA player");
+    task = FindTask((STRPTR)"MintVID player");
     if (task)
         Signal(task, mask);
     Permit();
@@ -203,13 +203,13 @@ static void play_file(gt_app *app)
         return;
     }
     if (find_player()) {
-        set_info(app, "A MintRIVA player is already running; stop it first.");
+        set_info(app, "A MintVID player is already running; stop it first.");
         return;
     }
     read_options(app, &options);
     if (!mr_build_player_arguments(args, sizeof(args), &options, app->path,
                                    NULL, NULL) ||
-        !launch("mrplay", "MintRIVA player", args))
+        !launch("mrplay", "MintVID player", args))
         set_info(app, "Could not start mrplay (keep it beside mrgui-GT).");
     else
         set_info(app, "Starting playback...");
@@ -244,7 +244,7 @@ static void open_browser(gt_app *app, int youtube)
     mr_play_options options;
     char args[512];
     const char *program = youtube ? "ytgui-GT" : "iptvgui-GT";
-    const char *task = youtube ? "MintRIVA YouTube GT" : "MintRIVA IPTV GT";
+    const char *task = youtube ? "MintVID YouTube GT" : "MintVID IPTV GT";
     read_options(app, &options);
     publish_options(app);
     if (!mr_build_iptv_arguments(args, sizeof(args), &options) ||
@@ -351,7 +351,7 @@ static int build_window(gt_app *app)
     nw.Flags = WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET |
                WFLG_ACTIVATE | WFLG_SMART_REFRESH;
     nw.FirstGadget = app->gadgets;
-    nw.Title = (UBYTE *)"MintRIVA Control-GT";
+    nw.Title = (UBYTE *)"MintVID Control-GT";
     nw.Screen = app->screen;
     nw.Type = CUSTOMSCREEN;
     app->window = OpenWindow(&nw);

@@ -13,8 +13,8 @@ struct Library *GadToolsBase;
 #define MR_MENU_USER_QUIT  ((APTR)2)
 
 static struct NewMenu menu_template[] = {
-    {NM_TITLE, (STRPTR)"MintRIVA", NULL, 0, 0, NULL},
-    {NM_ITEM, (STRPTR)"About MintRIVA...", (STRPTR)"?", 0, 0,
+    {NM_TITLE, (STRPTR)"MintVID", NULL, 0, 0, NULL},
+    {NM_ITEM, (STRPTR)"About MintVID...", (STRPTR)"?", 0, 0,
      MR_MENU_USER_ABOUT},
     {NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL},
     {NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, MR_MENU_USER_QUIT},
@@ -93,9 +93,9 @@ void mr_gui_show_about(struct Window *window, const char *edition)
 
     request.es_StructSize = sizeof(request);
     request.es_Flags = 0;
-    request.es_Title = (UBYTE *)"About MintRIVA";
+    request.es_Title = (UBYTE *)"About MintVID";
     request.es_TextFormat = (UBYTE *)
-        "MintRIVA - Video for classic AmigaOS\n"
+        "MintVID - Video for classic AmigaOS\n"
         "%s\n\n"
         "Made by Darren 'boingball' Banfi\n"
         "Copyright 2026\n\n"

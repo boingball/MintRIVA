@@ -1,5 +1,5 @@
 /*
- * MintRIVA - simple portable image scaling.
+ * MintVID - simple portable image scaling.
  *
  * The AGA backend uses the fixed 2x path for small clips and the arbitrary
  * nearest-neighbour path when compensating for HIRES/interlace pixel aspect.

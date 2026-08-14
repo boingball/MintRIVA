@@ -1,5 +1,5 @@
 /*
- * MintRIVA - MPEG-4 Part 2 (Visual) decoder, aka DivX/Xvid.
+ * MintVID - MPEG-4 Part 2 (Visual) decoder, aka DivX/Xvid.
  *
  * A from-scratch, portable-C decoder (no libavcodec/xvid dependency) plugged in
  * behind mr_codec.h. Built and validated bottom-up against ffmpeg.

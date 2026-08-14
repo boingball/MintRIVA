@@ -1,5 +1,5 @@
 /*
- * MintRIVA - native ITU-T H.263 baseline decoder.
+ * MintVID - native ITU-T H.263 baseline decoder.
  *
  * Baseline syntax deliberately remains separate from the H.263+ feature gate;
  * unsupported annex tools return MR_EUNSUPPORTED before reconstruction.

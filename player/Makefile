@@ -1,4 +1,4 @@
-# MintRIVA portable core - host build (for development & codec validation).
+# MintVID portable core - host build (for development & codec validation).
 # The Amiga build uses a separate toolchain (vbcc / bebbo-gcc); this Makefile
 # only proves the portable core on the dev host.
 

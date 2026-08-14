@@ -1,5 +1,5 @@
 /*
- * MintRIVA controller -> browser playback-option snapshot (Amiga only).
+ * MintVID controller -> browser playback-option snapshot (Amiga only).
  *
  * This deliberately uses a tiny T: file rather than a public MsgPort/shared
  * memory block.  mrgui writes only when one of its controls changes; ytgui and
@@ -16,8 +16,8 @@
 #include <proto/dos.h>
 
 #define MR_MASTER_OPTIONS_MAGIC 0x4D524D4FUL /* 'MRMO' */
-#define MR_MASTER_OPTIONS_FILE "T:MintRIVA.master-options"
-#define MR_MASTER_OPTIONS_TMP  "T:MintRIVA.master-options.tmp"
+#define MR_MASTER_OPTIONS_FILE "T:MintVID.master-options"
+#define MR_MASTER_OPTIONS_TMP  "T:MintVID.master-options.tmp"
 
 typedef struct {
     ULONG magic;

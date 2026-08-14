@@ -1,5 +1,5 @@
 /*
- * MintRIVA - video decoder plugin interface
+ * MintVID - video decoder plugin interface
  *
  * The whole point of this project is a *codec-agnostic* player: one demux +
  * sync + render skeleton, with decoders that plug in behind this vtable. That

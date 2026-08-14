@@ -1,5 +1,5 @@
 /*
- * MintRIVA - 2x nearest-neighbour upscale.
+ * MintVID - 2x nearest-neighbour upscale.
  */
 #include "mr_scale.h"
 

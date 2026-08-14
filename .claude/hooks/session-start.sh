@@ -1,7 +1,7 @@
 #!/bin/bash
 # SessionStart hook for Claude Code on the web.
 #
-# MintRIVA's player/ has no dependency manifest (it's a plain C project with
+# MintVID's player/ has no dependency manifest (it's a plain C project with
 # git submodules), so there is nothing for a package manager to install.
 # What actually blocks `make check` / `make check-audio` / `make check-m68k`
 # from an otherwise-fresh clone is:

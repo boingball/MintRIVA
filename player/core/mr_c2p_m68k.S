@@ -1,5 +1,5 @@
 /*
- * MintRIVA - hand-tuned m68k chunky-to-planar (32-pixel groups).
+ * MintVID - hand-tuned m68k chunky-to-planar (32-pixel groups).
  *
  * mr_c2p8_riva32_m68k() implements the exact same contract as the portable C
  * mr_c2p8_riva32() (core/mr_c2p.c): given a pw-wide (multiple of 32) chunky

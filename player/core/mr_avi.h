@@ -1,5 +1,5 @@
 /*
- * MintRIVA - minimal AVI (RIFF) demuxer.
+ * MintVID - minimal AVI (RIFF) demuxer.
  *
  * Identifies the video stream + codec fourcc, geometry and frame rate, and
  * iterates 'movi' packets. Audio stream info is surfaced for the MintAMP audio
