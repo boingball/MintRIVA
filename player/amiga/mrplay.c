@@ -1366,7 +1366,8 @@ int main(int argc, char **argv)
                "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] [--p96] "
-               "[--2x] [--lace] [--loop] [--wpa|--c2p|--riva-c2p|--kalms-c2p] "
+               "[--2x] [--lace] [--ecs-fast] [--loop] "
+               "[--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--h264-speed=auto|quality|balanced|fast] "
                "[--time]\n");
@@ -1399,6 +1400,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--kalms-c2p")) display_set_kalms_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
+            else if (!strcmp(argv[i], "--ecs-fast")) display_set_ecs_fast(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
             else if (!strcmp(argv[i], "--time")) { want_time = 1; display_set_timing_mode(1); }
             else if (!strcmp(argv[i], "--fullscreen")) fullscreen = 1;

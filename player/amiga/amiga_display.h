@@ -63,6 +63,13 @@ void display_set_lace(int on);
  * CD32 only; no effect (and unsafe) elsewhere, so gate it on --cd32. */
 void display_set_akiko(int on);
 
+/* Force the 4-plane/16-colour indexed encoder (half the AGA backend's normal
+ * 8-plane/256-colour depth) for a faster encode + blit. Works on any chipset,
+ * including AGA - unlike the ECS/OCS 32-colour fallback, this is an opt-in
+ * speed/quality tradeoff, not a chipset requirement. Forces the native planar
+ * backend, same as display_set_ham(). */
+void display_set_ecs_fast(int on);
+
 /* Enable timing/diagnostic output for the RTG backend (mirrors --time).
  * Must be called before display_open() to capture init diagnostics. */
 void display_set_timing_mode(int on);
