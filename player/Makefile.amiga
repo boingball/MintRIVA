@@ -33,11 +33,14 @@
 #
 # MintAMP's hand-asm (real/amiga_m68k_polyphase.S etc.) is linked in
 # automatically for CPU=68030/68040 - the same asm bundle MintAMP's own
-# Makefile.amiga uses by default for those CPUs. On CPU=68060 that asm is
-# actively harmful (it traps into software emulation - see the MINTAMP_CPU
-# comment further down) and is left out unless requested feature-by-feature:
-#   make -f Makefile.amiga mrplay CPU=68060 \
-#       ASM60_GROUPS="lowrate060 huffman midside planars8"
+# Makefile.amiga uses by default for those CPUs. CPU=68060's raw asm is
+# actively harmful there (it traps into software emulation - see the
+# MINTAMP_CPU comment further down), so 68060 instead defaults to
+# ASM60_GROUPS="lowrate060 huffman midside planars8" - the trap-free,
+# real-hardware-confirmed combination (large speedup, no emulated
+# multiply). Override on the command line, e.g. a clean C baseline for
+# A/B comparison:
+#   make -f Makefile.amiga mrplay CPU=68060 ASM60_GROUPS=
 # `release` forwards ASM60_GROUPS to its CPU=68060 sub-build the same way it
 # already forwards SSL/SSLCERTS/RADIO (GNU Make auto-propagates command-line
 # variables to $(MAKE) recursion).
@@ -144,12 +147,16 @@ MINTAMP_ASM_CPPFLAGS_FULL030 := \
 MINTAMP_ASM_SOURCES_FULL030 := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S \
                                $(MINTAMP_ROOT)/amiga_m68k_planars8.S
 
-# ASM60_GROUPS: space-separated opt-in feature groups for CPU=68060 only
-# (ignored otherwise). Nothing here is a public-release default; validate
-# on real 68060 hardware before shipping a given combination - see
+# ASM60_GROUPS: space-separated feature groups for CPU=68060 only (ignored
+# otherwise). Default is "lowrate060 huffman midside planars8" -
+# real-hardware confirmed on 68060, a large audio-decode speedup with none
+# of the trapped register-pair multiply (lowrate060 uses the dedicated
+# 68060 polyphase kernel, not the emulated one - see
 # vendor/MintAMP/Makefile.amiga's own ASM60_GROUPS comment block for the
-# per-group hardware-testing notes this was ported from.
-ASM60_GROUPS ?=
+# per-group hardware-testing notes this table was ported from). Override
+# on the command line (e.g. ASM60_GROUPS= for the clean C baseline, or a
+# different combination to A/B) same as any other `?=` variable.
+ASM60_GROUPS ?= lowrate060 huffman midside planars8
 ASM60_FLAGS_huffman             := -DAMIGA_M68K_ASM_HUFFMAN
 ASM60_FLAGS_dequant             := -DAMIGA_M68K_ASM_DEQUANT
 ASM60_FLAGS_imdct               := -DAMIGA_M68K_ASM_IMDCT
