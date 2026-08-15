@@ -70,6 +70,9 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_intra_pred_luma_16x16_dc_m68k;
     codec->apf_intra_pred_luma_16x16[3] =
         mr_ih264_intra_pred_luma_16x16_plane_m68k;
+    codec->apf_intra_pred_luma_4x4[0] = mr_ih264_intra_pred_luma_4x4_vert_m68k;
+    codec->apf_intra_pred_luma_4x4[1] = mr_ih264_intra_pred_luma_4x4_horz_m68k;
+    codec->apf_intra_pred_luma_4x4[2] = mr_ih264_intra_pred_luma_4x4_dc_m68k;
     codec->pf_deblk_luma_vert_bs4 = mr_ih264_deblk_luma_vert_bs4_m68k;
     codec->pf_deblk_luma_horz_bs4 = mr_ih264_deblk_luma_horz_bs4_m68k;
     codec->pf_deblk_luma_vert_bslt4 = mr_ih264_deblk_luma_vert_bslt4_m68k;

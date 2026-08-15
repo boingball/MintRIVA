@@ -269,6 +269,99 @@ static void check_intra16_dc(void)
     }
 }
 
+/* ---- intra 4x4 vertical / horizontal / DC (8.3.1.2.1/2/3) -------------- */
+/* Same neighbour-buffer convention as intra16 above, just BLK_SIZE=4:
+ * left column at src[0..3], corner at src[4], top row at src[5..8]. */
+static void ref_intra4_vert(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    const uint8_t *top = src + 5;
+    int row, col;
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 4; col++)
+            dst[row * dst_strd + col] = top[col];
+}
+
+static void ref_intra4_horz(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    int row, col;
+    for (row = 0; row < 4; row++) {
+        uint8_t left = src[3 - row];
+        for (col = 0; col < 4; col++)
+            dst[row * dst_strd + col] = left;
+    }
+}
+
+static void ref_intra4_dc(const uint8_t *src, uint8_t *dst, int dst_strd,
+                          int neighbour_available)
+{
+    const uint8_t *top = src + 5;
+    const uint8_t *left = src + 3;
+    int use_left = neighbour_available & 0x01;
+    int use_top = (neighbour_available >> 2) & 0x01;
+    int val = 0, row, col;
+    if (use_left)
+        val += left[0] + left[-1] + left[-2] + left[-3] + 2;
+    if (use_top)
+        val += top[0] + top[1] + top[2] + top[3] + 2;
+    val = val ? (val >> (1 + use_left + use_top)) : 128;
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 4; col++)
+            dst[row * dst_strd + col] = (uint8_t)val;
+}
+
+static void check_intra4(void)
+{
+    static const int avail[] = { 0x00, 0x01, 0x04, 0x05 };
+    uint32_t seed = 12;
+    int trial, ai;
+    for (trial = 0; trial < 8; trial++) {
+        uint8_t nbr[16];
+        uint8_t dst_m68k[4 * 8], dst_ref[4 * 8];
+        int dst_strd = 8, row, col;
+
+        fill_random(nbr, sizeof nbr, &seed);
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_4x4_vert_m68k(nbr, dst_m68k, 0, dst_strd, 0);
+        ref_intra4_vert(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 4; row++)
+            for (col = 0; col < 4; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra4_vert", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_4x4_horz_m68k(nbr, dst_m68k, 0, dst_strd, 0);
+        ref_intra4_horz(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 4; row++)
+            for (col = 0; col < 4; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra4_horz", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+
+        for (ai = 0; ai < 4; ai++) {
+            memset(dst_m68k, 0xAA, sizeof dst_m68k);
+            memset(dst_ref, 0xAA, sizeof dst_ref);
+            mr_ih264_intra_pred_luma_4x4_dc_m68k(nbr, dst_m68k, 0, dst_strd,
+                                                  avail[ai]);
+            ref_intra4_dc(nbr, dst_ref, dst_strd, avail[ai]);
+            for (row = 0; row < 4; row++)
+                for (col = 0; col < 4; col++) {
+                    int idx = row * dst_strd + col;
+                    if (dst_m68k[idx] != dst_ref[idx])
+                        report("intra4_dc", row, col, dst_ref[idx],
+                               dst_m68k[idx]);
+                }
+        }
+    }
+}
+
 /* ---- inter_pred_luma_horz / vert (H.264 8.4.2.2.1, 6-tap half-pel) ----- */
 /* mr_ih264_inter_pred_luma_horz_m68k/vert_m68k (ih264_m68k_interp.S) only
  * exist on an m68k build (see ih264_m68k_optim.h) - the hand-written .S is
@@ -2011,6 +2104,7 @@ int main(void)
     check_weighted_pred_chroma();
     check_intra16();
     check_intra16_dc();
+    check_intra4();
 #if defined(MR_M68K_ASM)
     check_interp();
     check_interp_qpel_qpel();

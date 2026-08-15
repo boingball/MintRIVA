@@ -17,6 +17,12 @@ void mr_ih264_intra_pred_luma_16x16_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
                                                WORD32, WORD32);
 void mr_ih264_intra_pred_luma_16x16_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
                                              WORD32, WORD32);
+void mr_ih264_intra_pred_luma_4x4_vert_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                             WORD32, WORD32);
+void mr_ih264_intra_pred_luma_4x4_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                             WORD32, WORD32);
+void mr_ih264_intra_pred_luma_4x4_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                           WORD32, WORD32);
 
 /* Hand-written m68k assembly (ih264_m68k_interp.S) - only assembled/linked
  * when MR_M68K_ASM is set (Makefile.amiga, tests/run_m68k_check.sh), hence
