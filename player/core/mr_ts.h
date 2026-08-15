@@ -43,8 +43,6 @@ typedef struct {
 
     mr_ts_pes      video_pes;
     mr_ts_pes      audio_pes;
-    uint8_t       *packet_buf;  /* Annex-B -> AVCC output                   */
-    size_t         packet_cap;
     uint8_t       *config;      /* generated avcC SPS/PPS                   */
 
     mr_video_info  video;

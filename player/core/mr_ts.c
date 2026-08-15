@@ -776,46 +776,30 @@ static int pes_append(mr_ts_pes *p, const uint8_t *data, size_t len)
     return 1;
 }
 
-static mr_status annexb_to_avcc(mr_ts *t, const uint8_t *p, size_t len,
-                                mr_packet *pkt)
-{
-    size_t pos = 0, used = 0, prefix;
-    while ((pos = start_code(p, len, pos, &prefix)) < len) {
-        size_t begin = pos + prefix, next_prefix, end;
-        size_t next = start_code(p, len, begin, &next_prefix);
-        size_t n;
-        end = next;
-        while (end > begin && p[end - 1] == 0) end--;
-        n = end - begin;
-        if (n) {
-            if (n > 0xffffffffUL || used > 0xffffffffUL - n - 4 ||
-                !reserve(&t->packet_buf, &t->packet_cap, used + n + 4,
-                         TS_PES_MAX))
-                return MR_ENOMEM;
-            t->packet_buf[used + 0] = (uint8_t)(n >> 24);
-            t->packet_buf[used + 1] = (uint8_t)(n >> 16);
-            t->packet_buf[used + 2] = (uint8_t)(n >> 8);
-            t->packet_buf[used + 3] = (uint8_t)n;
-            memcpy(t->packet_buf + used + 4, p + begin, n);
-            used += n + 4;
-        }
-        pos = next;
-    }
-    if (!used) return MR_EFORMAT;
-    pkt->is_video = 1;
-    pkt->data = t->packet_buf;
-    pkt->len = (uint32_t)used;
-    return MR_OK;
-}
-
 static mr_status emit_pes(mr_ts *t, mr_ts_pes *p, int video, mr_packet *pkt)
 {
     mr_status st;
     clock_t begin = t->timing_enabled ? clock() : 0;
     pkt->has_pts = p->has_pts;
     pkt->pts_us = p->has_pts ? p->pts * 1000000ULL / 90000ULL : 0;
+    /* MPEG-TS carries H.264 in genuine Annex-B (byte-stream) format already -
+     * this used to be rewritten into AVCC (4-byte length prefixes) here via
+     * annexb_to_avcc(), purely so mr_h264_decode() could feed it through the
+     * SAME uniform AVCC-in interface MOV/MP4's native avc1 sample format
+     * needs. mr_h264_decode() immediately converted it straight back to
+     * Annex-B (avcc_sample_to_annexb()) before decoding, since that is the
+     * only format libavc's decode_annexb() actually accepts - two full
+     * scan+copy passes over every NAL that cancelled out format-wise and
+     * decoded the exact same bytes TS handed over in the first place.
+     * is_annexb tells mr_h264_decode() to skip its own conversion and
+     * decode straight from this PES payload - see mr_h264_set_input_annexb()
+     * and its call site in mrplay.c. */
     if (video && t->video_type == 0x1b) {
-        st = annexb_to_avcc(t, p->data, p->len, pkt);
+        pkt->is_video = 1;
+        pkt->is_annexb = 1;
+        pkt->data = p->data;
+        pkt->len = (uint32_t)p->len;
+        st = p->len ? MR_OK : MR_EAGAIN;
         if (t->timing_enabled) t->timing.copy_us += ticks_us(begin);
     } else {
         pkt->is_video = video;
@@ -946,8 +930,7 @@ void mr_ts_close(mr_ts *t)
     if (!t) return;
     free(t->video_pes.data);
     free(t->audio_pes.data);
-    free(t->packet_buf);
     free(t->config);
     t->video_pes.data = t->audio_pes.data = NULL;
-    t->packet_buf = t->config = NULL;
+    t->config = NULL;
 }

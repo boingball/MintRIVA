@@ -171,6 +171,13 @@ run "$BUILD/mr_mpeg1_idct_check.m68k"
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \
     --check tests/assets/ref_h264_high
+echo "[MPEG-TS: H.264 Annex-B direct decode, real m68k/big-endian]"
+# The TS demuxer hands H.264 packets straight through as Annex-B
+# (mr_ts.c's emit_pes()/pkt.is_annexb - see mr_h264_set_input_annexb()),
+# skipping the AVCC round-trip the MOV/MP4 path above still needs. Real
+# big-endian coverage for that path specifically, not just the MOV one.
+run "$BUILD/mr_decode.m68k" tests/assets/test_h264_aac.ts \
+    --check tests/assets/ref_h264_high
 echo "[Cinepak AVI, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_cinepak.avi \
     --check tests/assets/ref_cinepak

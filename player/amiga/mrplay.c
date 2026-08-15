@@ -2234,6 +2234,7 @@ int main(int argc, char **argv)
                 if (rdt > LIVE_RESYNC_EDGE_US) break;   /* reached the frontier */
                 if (pkt.is_video && pkt.len) {
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
+                    mr_h264_set_input_annexb(&dec, pkt.is_annexb);
                     mr_decoder_decode(&dec, pkt.data, pkt.len);
                 }
                 /* audio packets are discarded: the FIFO is flushed below */
@@ -2687,6 +2688,7 @@ int main(int argc, char **argv)
                      * This is what makes the audio-cushion top-up above cheap. */
                     mr_h264_set_skip_output(&dec, qcount >= video_cap);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
+                    mr_h264_set_input_annexb(&dec, pkt.is_annexb);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
                     decode_end = monotonic_us();

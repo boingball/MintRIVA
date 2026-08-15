@@ -59,6 +59,13 @@ typedef struct {
      * demuxers point into their input; file-backed demuxers reuse one buffer. */
     const uint8_t *data;
     uint32_t       len;
+    /* H.264 only: 1 when data is already Annex-B (start-code-prefixed) NAL
+     * data, as MPEG-TS carries it natively - lets the H.264 decoder skip its
+     * own AVCC->Annex-B conversion and decode straight from this buffer (see
+     * mr_h264_set_input_annexb()). 0 (the default mr_demux_next_packet()
+     * resets every packet to) for MOV/MP4's native AVCC avc1 samples and for
+     * every non-H.264 packet, which never reads this field. */
+    int            is_annexb;
 } mr_packet;
 
 typedef enum {
