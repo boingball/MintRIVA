@@ -241,7 +241,7 @@ mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
     mr_status status;
     mr_demux_timing before;
     if (ts_timing) before = d->u.ts.timing;
-    if (pkt) { pkt->has_pts = 0; pkt->pts_us = 0; }
+    if (pkt) { pkt->has_pts = 0; pkt->pts_us = 0; pkt->is_annexb = 0; }
     if (d->kind == MR_CONTAINER_AVI) status = mr_avi_next_packet(&d->u.avi, pkt);
     else if (d->kind == MR_CONTAINER_MOV) status = mr_mov_next_packet(&d->u.mov, pkt);
     else if (d->kind == MR_CONTAINER_TS) status = mr_ts_next_packet(&d->u.ts, pkt);

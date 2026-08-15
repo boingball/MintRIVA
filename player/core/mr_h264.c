@@ -63,6 +63,7 @@ typedef struct {
     int       skip_output;
     int       timing_enabled;
     int       yuv_output;
+    int       input_annexb;
     h264_pts_entry pts_map[H264_PTS_MAP_CAP];
     uint64_t  pending_input_pts_us;
     int       pending_input_pts_set;
@@ -622,6 +623,7 @@ static mr_status h264_decode(mr_decoder *dec,
     h264_state *s = (h264_state *)dec->priv;
     IV_API_CALL_STATUS_T ret;
     uint32_t annexb_len;
+    const uint8_t *annexb_buf;
     uint32_t au_ts;
     mr_status st;
     mr_status captured_status = MR_EAGAIN;
@@ -642,10 +644,19 @@ static mr_status h264_decode(mr_decoder *dec,
      * --time). Skipping them keeps a normal playback run from paying for
      * several clock() calls every decoded frame for numbers nobody looks
      * at. */
-    if (s->timing_enabled) input_mark = clock();
-    st = avcc_sample_to_annexb(s, data, len, &annexb_len);
-    if (s->timing_enabled) s->timing.input_us = h264_elapsed_us(input_mark);
-    if (st != MR_OK) return st;
+    if (s->input_annexb) {
+        /* Already Annex-B (MPEG-TS, via mr_h264_set_input_annexb()) - decode
+         * straight from the caller's own buffer, no AVCC->Annex-B scan+copy
+         * into s->packet at all. */
+        annexb_buf = data;
+        annexb_len = len;
+    } else {
+        if (s->timing_enabled) input_mark = clock();
+        st = avcc_sample_to_annexb(s, data, len, &annexb_len);
+        if (s->timing_enabled) s->timing.input_us = h264_elapsed_us(input_mark);
+        if (st != MR_OK) return st;
+        annexb_buf = s->packet;
+    }
     if (s->service) s->service(s->service_opaque);
 
     /* One input AU gets exactly one libavc timestamp, even when the decoder
@@ -687,7 +698,7 @@ static mr_status h264_decode(mr_decoder *dec,
                 mr_h264_stage_profile_reset();
                 call_mark = clock();
             }
-            r = decode_annexb(s, au_ts, s->packet + off,
+            r = decode_annexb(s, au_ts, annexb_buf + off,
                               annexb_len - off, &sub_out);
             if (s->timing_enabled) {
                 s->timing.core_us += h264_elapsed_us(call_mark);
@@ -821,6 +832,23 @@ void mr_h264_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us)
     s->pending_input_has_pts = has_pts != 0;
 }
 
+/*
+ * Set for the next mr_decoder_decode() call only (consumed and not reset
+ * back to 0 here - the caller is expected to pass the current packet's own
+ * mr_packet.is_annexb every time, e.g. mrplay.c calling this right before
+ * decode alongside mr_h264_set_input_pts()). When set, mr_h264_decode()
+ * skips avcc_sample_to_annexb() entirely and decodes straight from the
+ * caller's own buffer - see that function and mr_ts.c's emit_pes(), the
+ * only current producer of Annex-B-native packets (MPEG-TS).
+ */
+void mr_h264_set_input_annexb(mr_decoder *dec, int is_annexb)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    s->input_annexb = is_annexb != 0;
+}
+
 int mr_h264_output_pts(mr_decoder *dec, uint64_t *pts_us)
 {
     h264_state *s;
@@ -928,7 +956,15 @@ static mr_status h264_flush(mr_decoder *dec)
         }
         s->flushing = 1;
     }
-    ret = decode_annexb(s, s->timestamp, s->packet, 0, &out);
+    /* Zero-length flush poke: libavc reads nothing from this pointer at
+     * num_Bytes=0, but s->packet can now be NULL for the life of a session
+     * that decoded only Annex-B-native input (mr_h264_set_input_annexb(),
+     * e.g. pure MPEG-TS) and so never allocated it via
+     * avcc_sample_to_annexb() - pass a guaranteed non-NULL empty buffer
+     * instead of relying on that being safe. */
+    ret = decode_annexb(s, s->timestamp,
+                        s->packet ? s->packet : (const uint8_t *)"",
+                        0, &out);
     if (out.s_ivd_video_decode_op_t.u4_output_present) {
         h264_remember_output_pts(s, out.s_ivd_video_decode_op_t.u4_ts);
         return emit_rgb(dec, &out.s_ivd_video_decode_op_t);

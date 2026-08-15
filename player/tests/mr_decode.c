@@ -281,7 +281,14 @@ int main(int argc, char **argv)
         if (!pkt.is_video) { audio_bytes += pkt.len; audio_pkts++; continue; }
         if (pkt.len == 0) continue;
         {
-            mr_status ds = mr_decoder_decode(&dec, pkt.data, pkt.len);
+            mr_status ds;
+            /* No-op for any non-H.264 decoder (see the guard in
+             * mr_h264_set_input_annexb() itself) - MPEG-TS hands over
+             * Annex-B-native H.264 packets (pkt.is_annexb) since the
+             * decoder now decodes straight from them instead of always
+             * converting through AVCC first. */
+            mr_h264_set_input_annexb(&dec, pkt.is_annexb);
+            ds = mr_decoder_decode(&dec, pkt.data, pkt.len);
             if (ds == MR_EAGAIN) continue;   /* reorder delay: no frame yet   */
             if (ds != MR_OK) {
                 fprintf(stderr, "decode error at frame %d\n", frame); break;

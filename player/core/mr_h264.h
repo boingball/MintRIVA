@@ -55,6 +55,13 @@ void mr_h264_set_yuv_output(mr_decoder *dec, int enabled);
  * the PTS belonging to that emitted frame rather than the current input. */
 void mr_h264_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us);
 int mr_h264_output_pts(mr_decoder *dec, uint64_t *pts_us);
+/* Set when the next mr_decoder_decode() call's data is already Annex-B
+ * (start-code-prefixed) NAL data, as MPEG-TS carries H.264 natively - skips
+ * the AVCC->Annex-B conversion mr_h264_decode() otherwise always does, and
+ * decodes straight from the caller's buffer instead. Not "sticky": pass the
+ * current packet's own mr_packet.is_annexb before every decode call, same
+ * as mr_h264_set_input_pts(). */
+void mr_h264_set_input_annexb(mr_decoder *dec, int is_annexb);
 /* Select libavc's quality/performance trade-off. Balanced only degrades
  * non-reference pictures; Fast applies cheaper filtering to all non-key
  * pictures. Returns non-zero when the decoder accepted the control call. */
