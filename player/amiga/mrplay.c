@@ -542,6 +542,9 @@ typedef struct playback_stats {
     int64_t calculated_lateness_us;
     unsigned queue_head, dropped_in_pass, timing_rebases;
     mr_display_timing last_rtg;
+    uint64_t yuv_indexed_us;
+    unsigned long yuv_indexed_max_us;
+    unsigned yuv_indexed_frames;
 } playback_stats;
 
 /*
@@ -887,6 +890,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     unsigned long ad = average_hundredths(st->audio_decode_us, st->samples);
     unsigned long cv = average_hundredths(st->convert_us, st->presented);
     unsigned long sc = average_hundredths(st->scale_us, st->presented);
+    unsigned long yi = average_hundredths(st->yuv_indexed_us,
+                                          st->yuv_indexed_frames);
     unsigned long ds = average_hundredths(st->display_us, st->presented);
     unsigned long la = average_hundredths(st->latency_us, st->presented);
     unsigned long pf = rate_hundredths(st->presented, elapsed_us);
@@ -899,7 +904,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     mr_demux_timing_get(demux, &demux_timing, 1);
     printf("rtg timing: vdecode=%lu.%02lu/%lu ms network-blocked=%lu ms "
            "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
-           "convert=%lu.%02lu ms scale=%lu.%02lu ms display=%lu.%02lu/%lu ms "
+           "convert=%lu.%02lu ms scale=%lu.%02lu ms "
+           "yuv-indexed=%lu.%02lu/%lu ms display=%lu.%02lu/%lu ms "
            "audio-buffered=%lu ms vqueue=%d late=%u dropped=%u "
            "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
            "sleep-max-error=%lu us latency=%lu.%02lu ms "
@@ -908,6 +914,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            (unsigned long)(st->network_us / 1000) + io.network_ms,
            io.hls_segment_ms, dm / 100, dm % 100, ad / 100, ad % 100,
            cv / 100, cv % 100, sc / 100, sc % 100,
+           yi / 100, yi % 100, st->yuv_indexed_max_us / 1000,
            ds / 100, ds % 100, st->display_max_us / 1000,
            audio ? audio_buffered_ms(audio) : 0, depth, st->late, st->dropped,
            pf / 100, pf % 100, df / 100, df % 100,
@@ -1756,6 +1763,14 @@ int main(int argc, char **argv)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
             disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale);
     if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
+    if (want_time && use_yuv_indexed_queue)
+        printf("video path: YUV420P %dx%d -> INDEX8 %dx%d vscale=%d\n",
+               vi->width, vi->height, yuv_dst_w, yuv_dst_h, yuv_vscale);
+    else if (want_time && use_indexed_queue)
+        printf("video path: RGB24 %dx%d -> INDEX8 (queue_copy_indexed)\n",
+               vi->width, vi->height);
+    else if (want_time)
+        printf("video path: RGB24 %dx%d (queue_copy)\n", vi->width, vi->height);
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
      * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
@@ -2797,11 +2812,26 @@ int main(int argc, char **argv)
                              * (see their declarations above). */
                             uint64_t decoded_at = want_time ? monotonic_us() : 0;
                             int copy_ok;
-                            if (use_yuv_indexed_queue)
+                            if (use_yuv_indexed_queue) {
+                                /* Only the fused YUV420->indexed path gets its
+                                 * own timing bucket: it is real per-frame work
+                                 * (mr_yuv420_dither8()), not folded into any
+                                 * existing stat, and is the next ASM
+                                 * candidate - this is how its cost gets
+                                 * measured. */
+                                uint64_t yt0 = want_time ? monotonic_us() : 0;
                                 copy_ok = queue_copy_yuv_indexed(
                                     tail, &dec.frame, pts, decoded_at,
                                     yuv_dst_w, yuv_dst_h, yuv_vscale);
-                            else if (use_indexed_queue)
+                                if (want_time) {
+                                    unsigned long us =
+                                        (unsigned long)(monotonic_us() - yt0);
+                                    stats.yuv_indexed_us += us;
+                                    stats.yuv_indexed_frames++;
+                                    if (us > stats.yuv_indexed_max_us)
+                                        stats.yuv_indexed_max_us = us;
+                                }
+                            } else if (use_indexed_queue)
                                 copy_ok = queue_copy_indexed(tail, &dec.frame,
                                                              pts, decoded_at);
                             else
