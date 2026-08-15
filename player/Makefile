@@ -151,7 +151,8 @@ mr_h264_m68k_check: tests/mr_h264_m68k_check.c \
                      vendor/libavc_port/ih264_m68k_cabac.S \
                      vendor/libavc_port/ih264_m68k_chroma_mc.S \
                      vendor/libavc_port/ih264_m68k_mvpred.S \
-                     vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S
+                     vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
+                     vendor/libavc_port/ih264_m68k_intra_pred.S
 	$(CC) $(CFLAGS) -o $@ tests/mr_h264_m68k_check.c \
 	    vendor/libavc_port/ih264_m68k_optim.c \
 	    vendor/libavc_port/ih264_m68k_interp.S \
@@ -159,7 +160,8 @@ mr_h264_m68k_check: tests/mr_h264_m68k_check.c \
 	    vendor/libavc_port/ih264_m68k_cabac.S \
 	    vendor/libavc_port/ih264_m68k_chroma_mc.S \
 	    vendor/libavc_port/ih264_m68k_mvpred.S \
-	    vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S
+	    vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
+	    vendor/libavc_port/ih264_m68k_intra_pred.S
 
 mr_h264_cabac_coeff_check: tests/mr_h264_cabac_coeff_check.c $(LIBAVC_SRC)
 	$(CC) $(CFLAGS) -o $@ tests/mr_h264_cabac_coeff_check.c $(LIBAVC_SRC)

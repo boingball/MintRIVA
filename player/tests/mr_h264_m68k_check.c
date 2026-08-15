@@ -219,6 +219,56 @@ static void check_intra16(void)
     }
 }
 
+/* ---- intra 16x16 DC (8.3.3.3) ------------------------------------------ */
+static void ref_intra16_dc(const uint8_t *src, uint8_t *dst, int dst_strd,
+                           int neighbour_available)
+{
+    const uint8_t *top = src + 17;
+    const uint8_t *left = src + 15;
+    int use_left = neighbour_available & 0x01;
+    int use_top = (neighbour_available >> 2) & 0x01;
+    int val = 0, row, col, y;
+    if (use_left) {
+        for (y = 0; y < 16; y++) val += left[-y];
+        val += 8;
+    }
+    if (use_top) {
+        for (y = 0; y < 16; y++) val += top[y];
+        val += 8;
+    }
+    val = val ? (val >> (3 + use_left + use_top)) : 128;
+    for (row = 0; row < 16; row++)
+        for (col = 0; col < 16; col++)
+            dst[row * dst_strd + col] = (uint8_t)val;
+}
+
+static void check_intra16_dc(void)
+{
+    static const int avail[] = { 0x00, 0x01, 0x04, 0x05 };
+    uint32_t seed = 5;
+    int trial, ai;
+    for (trial = 0; trial < 4; trial++) {
+        uint8_t nbr[40];
+        fill_random(nbr, sizeof nbr, &seed);
+        for (ai = 0; ai < 4; ai++) {
+            uint8_t dst_m68k[16 * 20], dst_ref[16 * 20];
+            int dst_strd = 20, row, col;
+            memset(dst_m68k, 0xAA, sizeof dst_m68k);
+            memset(dst_ref, 0xAA, sizeof dst_ref);
+            mr_ih264_intra_pred_luma_16x16_dc_m68k(nbr, dst_m68k, 0, dst_strd,
+                                                    avail[ai]);
+            ref_intra16_dc(nbr, dst_ref, dst_strd, avail[ai]);
+            for (row = 0; row < 16; row++)
+                for (col = 0; col < 16; col++) {
+                    int idx = row * dst_strd + col;
+                    if (dst_m68k[idx] != dst_ref[idx])
+                        report("intra16_dc", row, col, dst_ref[idx],
+                               dst_m68k[idx]);
+                }
+        }
+    }
+}
+
 /* ---- inter_pred_luma_horz / vert (H.264 8.4.2.2.1, 6-tap half-pel) ----- */
 /* mr_ih264_inter_pred_luma_horz_m68k/vert_m68k (ih264_m68k_interp.S) only
  * exist on an m68k build (see ih264_m68k_optim.h) - the hand-written .S is
@@ -1011,6 +1061,111 @@ static void check_iquant_itrans_recon(void)
                 }
             }
         }
+    }
+}
+
+/* ---- intra 16x16 Plane (8.3.3.4) ---------------------------------------- */
+/* Independent re-derivation of ih264_intra_pred_luma_16x16_mode_plane -
+ * unlike ih264_m68k_intra_pred.S's own closed-form re-derivation (which
+ * uses real multiplies), this transcribes Ittiam's literal "no
+ * multiplications" shift-add chain directly, so a mistake in either the
+ * asm's derivation or this transcription would have to independently
+ * agree to hide a bug. */
+static void ref_intra16_plane(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    const uint8_t *top = src + 17;
+    const uint8_t *left = src + 15;
+    const uint8_t *topleft = src + 16;
+    int32_t a, b, c, tmp;
+    const uint8_t *tmp1, *tmp2;
+
+    a = (top[15] + left[-15]) << 4;
+
+    tmp1 = top + 8;
+    tmp2 = tmp1 - 2;
+    b = (*tmp1++ - *tmp2--);
+    b += (*tmp1++ - *tmp2--) << 1;
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 1) + tmp;
+    b += (*tmp1++ - *tmp2--) << 2;
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 2) + tmp;
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 2) + (tmp << 1);
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 3) - tmp;
+    b += (*tmp1 - *topleft) << 3;
+    b = ((b << 2) + b + 32) >> 6;
+
+    tmp1 = left - 8;
+    tmp2 = tmp1 + 2;
+    c = (*tmp1 - *tmp2);
+    tmp1--; tmp2++;
+    c += (*tmp1 - *tmp2) << 1;
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 1) + tmp;
+    tmp1--; tmp2++;
+    c += (*tmp1 - *tmp2) << 2;
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 2) + tmp;
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 2) + (tmp << 1);
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 3) - tmp;
+    tmp1--;
+    c += (*tmp1 - *topleft) << 3;
+    c = ((c << 2) + c + 32) >> 6;
+
+    {
+        int32_t tv, tmpx, tmpx_init, i, j;
+        tmpx_init = -(b << 3);
+        tmp = a - (c << 3) + 16;
+        for (i = 0; i < 16; i++) {
+            tmp += c;
+            tmpx = tmpx_init;
+            for (j = 0; j < 16; j++) {
+                tmpx += b;
+                tv = (tmp + tmpx) >> 5;
+                tv = tv < 0 ? 0 : tv > 255 ? 255 : tv;
+                dst[i * dst_strd + j] = (uint8_t)tv;
+            }
+        }
+    }
+}
+
+static void check_intra16_plane(void)
+{
+    uint32_t seed = 6;
+    int trial;
+    for (trial = 0; trial < 20; trial++) {
+        uint8_t nbr[40];
+        uint8_t dst_m68k[16 * 20], dst_ref[16 * 20];
+        int dst_strd = 20, row, col;
+
+        if (trial < 10)
+            fill_random(nbr, sizeof nbr, &seed);
+        else {
+            unsigned j;
+            for (j = 0; j < sizeof nbr; j++)
+                nbr[j] = (xrand(&seed) & 1) ? 255 : 0;
+        }
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_16x16_plane_m68k(nbr, dst_m68k, 0, dst_strd,
+                                                   0);
+        ref_intra16_plane(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 16; row++)
+            for (col = 0; col < 16; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra16_plane", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
     }
 }
 
@@ -1855,6 +2010,7 @@ int main(void)
     check_weighted_pred_luma();
     check_weighted_pred_chroma();
     check_intra16();
+    check_intra16_dc();
 #if defined(MR_M68K_ASM)
     check_interp();
     check_interp_qpel_qpel();
@@ -1863,6 +2019,7 @@ int main(void)
     check_interp_horz_qpel_vert_hpel();
     check_interp_horz_hpel_vert_qpel();
     check_iquant_itrans_recon();
+    check_intra16_plane();
     check_deblk_bs4();
     check_deblk_bslt4();
     check_deblk_chroma_bs4();

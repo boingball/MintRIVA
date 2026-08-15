@@ -15,6 +15,8 @@ void mr_ih264_intra_pred_luma_16x16_vert_m68k(UWORD8 *, UWORD8 *, WORD32,
                                                WORD32, WORD32);
 void mr_ih264_intra_pred_luma_16x16_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
                                                WORD32, WORD32);
+void mr_ih264_intra_pred_luma_16x16_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                             WORD32, WORD32);
 
 /* Hand-written m68k assembly (ih264_m68k_interp.S) - only assembled/linked
  * when MR_M68K_ASM is set (Makefile.amiga, tests/run_m68k_check.sh), hence
@@ -178,6 +180,20 @@ void mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k(WORD16 *pi2_src,
                                                      WORD16 *pi2_tmp,
                                                      WORD16 *pi2_dc_src)
     __asm__("mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k");
+
+/* ih264_m68k_intra_pred.S - H.264 8.3.3.4 luma 16x16 plane intra
+ * prediction (ih264_intra_pred_luma_16x16_mode_plane). Genuine hand asm
+ * (unlike the vert/horz/dc predictors above, which are ordinary C in this
+ * file) because plane's per-pixel body is a serial add+shift+clip formula
+ * with no 4-bytes-at-once opportunity - the same reasoning that put the
+ * interpolation filters and iquant/itrans/recon in real .S files instead
+ * of here. */
+void mr_ih264_intra_pred_luma_16x16_plane_m68k(UWORD8 *pu1_src,
+                                               UWORD8 *pu1_dst,
+                                               WORD32 src_strd,
+                                               WORD32 dst_strd,
+                                               WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_16x16_plane_m68k");
 #endif
 
 #endif
