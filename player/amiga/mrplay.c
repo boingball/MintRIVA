@@ -22,6 +22,7 @@
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
 #include "../core/mr_dither.h"
+#include "../core/mr_yuv_dither.h"
 #include "../audio/mr_audio_decode.h"
 #include "../iptv/mr_iptv.h"
 #include "amiga_display.h"
@@ -833,6 +834,35 @@ static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
                    q->rgb, fr->width, 0);
     q->width = fr->width; q->height = fr->height; q->stride = fr->width;
     q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
+    q->pts_us = pts; q->decoded_at_us = decoded_at;
+    return 1;
+}
+
+/*
+ * Same contract as queue_copy_indexed(), but for the AGA vertical-only-
+ * downscale case (display_supports_yuv_indexed() - see display_backend.h
+ * and aga_supports_yuv_indexed()): fr must be a MR_PIX_YUV420P frame
+ * (mr_h264_set_yuv_output() enabled), and dst_w/dst_h/vscale are
+ * display_supports_yuv_indexed()'s own output for this session. Converts
+ * straight from the decoder's YUV planes to indexed at the display's
+ * fitted size in one pass (core/mr_yuv_dither.h) - no RGB24 buffer, full
+ * resolution or resized, ever exists on this path.
+ */
+static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
+                                  uint64_t pts, uint64_t decoded_at,
+                                  int dst_w, int dst_h, int vscale)
+{
+    size_t bytes = (size_t)dst_w * (size_t)dst_h;
+    if (q->capacity < bytes) {
+        unsigned char *p = (unsigned char *)realloc(q->rgb, bytes);
+        if (!p) return 0;
+        q->rgb = p; q->capacity = bytes;
+    }
+    mr_yuv420_dither8(fr->data, fr->stride, fr->u_data, fr->u_stride,
+                      fr->v_data, fr->v_stride, fr->width, fr->height,
+                      vscale, q->rgb, dst_w, 0);
+    q->width = dst_w; q->height = dst_h; q->stride = dst_w;
+    q->dirty_y0 = 0; q->dirty_y1 = dst_h;
     q->pts_us = pts; q->decoded_at_us = decoded_at;
     return 1;
 }
@@ -1713,6 +1743,19 @@ int main(int argc, char **argv)
      * mode is fixed for the life of this session, so every queue slot below
      * uses the same format throughout. */
     int use_indexed_queue = display_supports_indexed(disp);
+    /* True only when the fitted AGA geometry needs an exact integer
+     * vertical-only downscale from the source (aga_supports_yuv_indexed()) -
+     * the common non-laced-HIRES case (e.g. 640x360 -> 640x180) that
+     * use_indexed_queue's !resize requirement excludes. H.264-only: that is
+     * the only decoder mr_h264_set_yuv_output()/mr_yuv420_dither8() support
+     * so far. Mutually exclusive with use_indexed_queue by construction
+     * (aga_supports_indexed requires !resize, aga_supports_yuv_indexed
+     * requires resize), so at most one is ever set. */
+    int use_yuv_indexed_queue = 0, yuv_dst_w = 0, yuv_dst_h = 0, yuv_vscale = 1;
+    if (!use_indexed_queue && codec == &mr_codec_h264)
+        use_yuv_indexed_queue = display_supports_yuv_indexed(
+            disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale);
+    if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
      * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
@@ -1930,7 +1973,13 @@ int main(int argc, char **argv)
         presenter.frames = &frames;
         presenter.stats = &stats;
         presenter.want_time = want_time;
-        presenter.use_indexed = use_indexed_queue;
+        /* present_service_frame() only needs to know whether front->rgb
+         * holds indexed data or RGB24 - front->width/height already carry
+         * whichever path's real dimensions (source size for
+         * use_indexed_queue, the fitted downscaled size for
+         * use_yuv_indexed_queue - see queue_copy_indexed()/
+         * queue_copy_yuv_indexed()), so one flag covers both. */
+        presenter.use_indexed = use_indexed_queue || use_yuv_indexed_queue;
         trace.presenter = &presenter;
 
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
@@ -2303,7 +2352,12 @@ int main(int argc, char **argv)
                                                 qcount, playback_started);
                 h264_pipeline_stage = 4;
             }
-            if (use_indexed_queue)
+            /* front->width/height already hold whichever path's real
+             * dimensions - source size for use_indexed_queue, the fitted
+             * downscaled size for use_yuv_indexed_queue (see
+             * queue_copy_indexed()/queue_copy_yuv_indexed()) - so both
+             * take the same display_show_indexed() call. */
+            if (use_indexed_queue || use_yuv_indexed_queue)
                 display_show_indexed(disp, front->rgb, front->width, front->height,
                                      front->stride, front->dirty_y0, front->dirty_y1);
             else
@@ -2406,6 +2460,7 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
+            if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2480,6 +2535,7 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
+            if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2736,12 +2792,22 @@ int main(int argc, char **argv)
                             /* decoded_at_us only ever feeds the --time
                              * latency stat (both readers are want_time-
                              * gated) - skip the monotonic_us() call
-                             * otherwise. */
-                            if (!(use_indexed_queue
-                                  ? queue_copy_indexed(tail, &dec.frame, pts,
-                                                       want_time ? monotonic_us() : 0)
-                                  : queue_copy(tail, &dec.frame, pts,
-                                              want_time ? monotonic_us() : 0))) {
+                             * otherwise. use_indexed_queue and
+                             * use_yuv_indexed_queue are mutually exclusive
+                             * (see their declarations above). */
+                            uint64_t decoded_at = want_time ? monotonic_us() : 0;
+                            int copy_ok;
+                            if (use_yuv_indexed_queue)
+                                copy_ok = queue_copy_yuv_indexed(
+                                    tail, &dec.frame, pts, decoded_at,
+                                    yuv_dst_w, yuv_dst_h, yuv_vscale);
+                            else if (use_indexed_queue)
+                                copy_ok = queue_copy_indexed(tail, &dec.frame,
+                                                             pts, decoded_at);
+                            else
+                                copy_ok = queue_copy(tail, &dec.frame, pts,
+                                                     decoded_at);
+                            if (!copy_ok) {
                                 /* Out of RAM for another RGB slot (a backstop -
                                  * the queue is sized to fit; see main). Never
                                  * quit: drop this frame exactly as a full queue
@@ -2841,6 +2907,17 @@ int main(int argc, char **argv)
      * die. */
     mr_hls_set_wait(NULL, NULL);
     mr_http_set_service(NULL, NULL);
+
+    /* This drain loop calls display_show_rgb() directly on dec.frame.data,
+     * bypassing the queue (and so bypassing queue_copy_yuv_indexed()'s
+     * fused conversion too) - h264_flush() runs frames through the same
+     * emit_rgb() the normal decode path does, so with yuv_output still
+     * enabled dec.frame would be MR_PIX_YUV420P and dec.frame.data would
+     * be the Y plane alone, which display_show_rgb() would misread as
+     * RGB24. Only ever drains the last frame or two at EOF, so falling
+     * back to the ordinary (always-correct) RGB24 conversion here costs
+     * nothing worth avoiding. */
+    if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 0);
 
     /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.
      * Drain it through the same pacing and display path so the player does not
