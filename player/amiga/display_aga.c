@@ -438,38 +438,41 @@ fail:
 }
 
 /*
- * Chunky-to-planar + blit only, no encode: s->chunky[ddy0..ddy0+ddh) must
- * already hold this frame's dithered/HAM-encoded pixels (pw bytes/row, plus
- * the Kalms x0 pad where applicable) before calling this. Shared by
- * aga_show() (which encodes into s->chunky itself first) and
- * aga_show_indexed() (which is handed already-dithered rows to copy
- * straight in - see that function).
+ * Chunky-to-planar + blit. src[ddy0..ddy0+ddh) must hold this frame's
+ * dithered/HAM-encoded pixels at src_stride bytes/row (Kalms ignores src -
+ * see below). Two callers: aga_show() passes s->chunky/s->pw after encoding
+ * into it itself; aga_show_indexed() passes either s->chunky/s->pw (after
+ * copying in already-dithered rows) or, for the common aligned case, the
+ * caller's own already-dithered buffer directly - see that function.
  */
-static void aga_blit(aga_state *s, int ddy0, int ddh)
+static void aga_blit(aga_state *s, const uint8_t *src, int src_stride,
+                     int ddy0, int ddh)
 {
     int pw = s->pw, dw = s->dw;
     clock_t a = 0;
     if (g_display_want_time) a = clock();
     {
-    const uint8_t *crow = s->chunky + (size_t)ddy0 * pw;
+    const uint8_t *crow = src + (size_t)ddy0 * src_stride;
     if (s->use_akiko) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        akiko_c2p(crow, pw, ddh, pw, s->depth,
+        akiko_c2p(crow, pw, ddh, src_stride, s->depth,
                   (uint8_t *const *)bm->Planes, bm->BytesPerRow,
                   s->x0byte, s->y0 + ddy0);
     } else if (s->use_kalms_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        /* This routine has no row-modulo ABI. Convert the complete persistent
-         * screen-width chunky frame; unchanged rows remain valid in it. */
+        /* This routine has no row-modulo ABI and converts the complete
+         * persistent screen-width chunky frame, so it always needs the
+         * caller to have kept s->chunky itself up to date (never called with
+         * src != s->chunky - see aga_show_indexed()'s direct-buffer check). */
         c2p1x1_8_c5_030(s->chunky, bm->Planes[0]);
     } else if (s->use_riva_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        mr_c2p8_riva32(crow, pw, ddh, pw, s->depth,
+        mr_c2p8_riva32(crow, pw, ddh, src_stride, s->depth,
                        (uint8_t *const *)bm->Planes, bm->BytesPerRow,
                        s->x0byte, s->y0 + ddy0);
     } else if (s->use_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        mr_c2p8(crow, pw, ddh, pw, s->depth,
+        mr_c2p8(crow, pw, ddh, src_stride, s->depth,
                 (uint8_t *const *)bm->Planes, bm->BytesPerRow,
                 s->x0byte, s->y0 + ddy0);
     } else {
@@ -556,7 +559,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     }
     if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }
 
-    aga_blit(s, ddy0, ddh);
+    aga_blit(s, s->chunky, pw, ddy0, ddh);
 }
 
 /*
@@ -614,6 +617,24 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     if (dy0 < 0) dy0 = 0;
     if (dy1 > h)  dy1 = h;
     if (dy1 <= dy0) return;
+    ddy0 = dy0; ddh = dy1 - dy0;
+
+    /* For the common aligned case (idx already laid out at exactly pw
+     * bytes/row - true whenever dw needs no C2P/WPA padding, e.g. the
+     * ordinary 640-wide HIRES geometry) every blit backend can consume the
+     * queue buffer directly, skipping this frame's copy into s->chunky
+     * entirely. Kalms always needs the copy: its C2P routine has no
+     * row-modulo ABI and converts the complete persistent screen-width
+     * s->chunky array regardless of ddy0/ddh (see aga_blit()). A padded or
+     * off-pw-stride geometry (idx_stride != pw) also keeps the copy - the
+     * pad columns beyond the visible width must read as s->chunky's cleared
+     * black, not whatever the queue buffer happens to hold past its own
+     * (narrower) row. */
+    if (!s->use_kalms_c2p && idx_stride == pw) {
+        s_frame_enc = 0;
+        aga_blit(s, idx, idx_stride, ddy0, ddh);
+        return;
+    }
 
     { clock_t a = 0;
     if (g_display_want_time) a = clock();
@@ -628,8 +649,7 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     }
     if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }
 
-    ddy0 = dy0; ddh = dy1 - dy0;
-    aga_blit(s, ddy0, ddh);
+    aga_blit(s, s->chunky, pw, ddy0, ddh);
 }
 
 static int aga_poll(void *handle)
