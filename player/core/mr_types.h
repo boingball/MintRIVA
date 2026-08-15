@@ -49,13 +49,23 @@ typedef struct {
     int       width;
     int       height;
     mr_pixfmt fmt;
-    int       stride;   /* bytes per row of the primary plane              */
-    uint8_t  *data;     /* owned by the decoder; valid until next decode    */
+    int       stride;   /* bytes per row of the primary plane (Y, when
+                          * fmt==MR_PIX_YUV420P)                            */
+    uint8_t  *data;     /* owned by the decoder; valid until next decode.
+                          * Interleaved RGB24, or the Y plane when
+                          * fmt==MR_PIX_YUV420P                             */
     /* Rows [dirty_y0, dirty_y1) changed this frame (the rest are identical to
      * the previous frame, since decoders patch a persistent buffer). A decoder
      * may report the full frame; dirty_y1 <= dirty_y0 means nothing changed. */
     int       dirty_y0;
     int       dirty_y1;
+    /* Only valid when fmt == MR_PIX_YUV420P: Cb/Cr planes, half width and
+     * half height of the Y plane (2x2 subsampled), each with its own row
+     * stride. Unused (NULL/0) for MR_PIX_RGB24. */
+    uint8_t  *u_data;
+    uint8_t  *v_data;
+    int       u_stride;
+    int       v_stride;
 } mr_frame;
 
 #endif /* MR_TYPES_H */

@@ -62,6 +62,7 @@ typedef struct {
     mr_h264_timing timing;
     int       skip_output;
     int       timing_enabled;
+    int       yuv_output;
     h264_pts_entry pts_map[H264_PTS_MAP_CAP];
     uint64_t  pending_input_pts_us;
     int       pending_input_pts_set;
@@ -425,6 +426,32 @@ static mr_status emit_rgb(mr_decoder *dec,
     if (!s->pipeline_rgb_done) h264_pipeline_checkpoint(s, "rgb-enter");
 #endif
 
+    if (s->yuv_output) {
+        /* Hand back libavc's own display-buffer pointers directly - no
+         * RGB24 allocation, no mr_yuv420_to_rgb24() call. Matches the RGB
+         * path's dec->frame.width/height/dirty_y1 convention (dec->width/
+         * dec->height, not the f->u4_y_wd/u4_y_ht clamp below) for
+         * consistency with it. */
+        dec->frame.width = dec->width;
+        dec->frame.height = dec->height;
+        dec->frame.fmt = MR_PIX_YUV420P;
+        dec->frame.data = (uint8_t *)yp;
+        dec->frame.stride = (int)f->u4_y_strd;
+        dec->frame.u_data = (uint8_t *)up;
+        dec->frame.v_data = (uint8_t *)vp;
+        dec->frame.u_stride = (int)f->u4_u_strd;
+        dec->frame.v_stride = (int)f->u4_v_strd;
+        dec->frame.dirty_y0 = 0;
+        dec->frame.dirty_y1 = dec->height;
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
+        if (!s->pipeline_rgb_done) {
+            h264_pipeline_checkpoint(s, "rgb-complete");
+            s->pipeline_rgb_done = 1;
+        }
+#endif
+        return MR_OK;
+    }
+
     /* Do not reserve a full RGB24 frame during h264_open(). At 1080p that is
      * 6,220,800 bytes held idle while libavc performs its much larger first-
      * picture / DPB allocations. Allocate RGB only after libavc has actually
@@ -765,6 +792,23 @@ void mr_h264_set_timing_enabled(mr_decoder *dec, int enabled)
     if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
     s = (h264_state *)dec->priv;
     s->timing_enabled = enabled != 0;
+}
+
+/* Off by default: emit_rgb() converts to RGB24 as usual unless a caller
+ * opts in, in which case it hands back libavc's own Y/Cb/Cr display-buffer
+ * pointers directly (dec->frame.fmt = MR_PIX_YUV420P) and skips both the
+ * RGB24 allocation and mr_yuv420_to_rgb24() call entirely - for a consumer
+ * (e.g. the AGA backend's direct-to-indexed dither) that wants the raw
+ * planes instead of an RGB24 intermediate. Those pointers are borrowed from
+ * libavc's own display picture buffer, exactly like the RGB path already
+ * borrows them for the synchronous conversion call - valid until the next
+ * decode, same lifetime mr_frame's own contract already documents. */
+void mr_h264_set_yuv_output(mr_decoder *dec, int enabled)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    s->yuv_output = enabled != 0;
 }
 
 void mr_h264_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us)
