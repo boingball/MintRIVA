@@ -162,3 +162,66 @@ void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
         }
     }
 }
+
+static uint8_t yuv420_pixel_index(const uint8_t *y_plane, int y_stride,
+                                  const uint8_t *u_plane, int u_stride,
+                                  const uint8_t *v_plane, int v_stride,
+                                  int sx, int sy, uint8_t threshold)
+{
+    const uint8_t *src_y = y_plane + (size_t)sy * y_stride;
+    const uint8_t *src_u = u_plane + (size_t)(sy >> 1) * u_stride;
+    const uint8_t *src_v = v_plane + (size_t)(sy >> 1) * v_stride;
+    unsigned uu = src_u[sx >> 1], vv = src_v[sx >> 1];
+    int red_add = g_e_x409[vv] + 128;
+    int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
+    int blue_add = g_d_x516[uu] + 128;
+    int luma = (int)src_y[sx] - 16;
+    int scaled_y, r, g, b;
+
+    if (luma < 0) luma = 0;
+    scaled_y = g_luma_x298[luma];
+    r = clip8((scaled_y + red_add) >> 8);
+    g = clip8((scaled_y + green_add) >> 8);
+    b = clip8((scaled_y + blue_add) >> 8);
+    return (uint8_t)(lut_r[threshold][r] + lut_g[threshold][g] +
+                     lut_b[threshold][b]);
+}
+
+void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
+                              const uint8_t *u_plane, int u_stride,
+                              const uint8_t *v_plane, int v_stride,
+                              int width, int height,
+                              uint8_t *out, int dst_w, int dst_h,
+                              int out_stride, int y_base)
+{
+    int xq, xr, sx0, xerr0, yq, yr, sy, yerr, oy;
+    if (!y_plane || !u_plane || !v_plane || !out ||
+        width <= 0 || height <= 0 || dst_w <= 0 || dst_h <= 0)
+        return;
+    if (!g_yuv_tables_ready) build_yuv_tables();
+    if (!dither_lut_ready) build_dither_lut();
+
+    xq = width / dst_w; xr = width % dst_w;
+    sx0 = (width / 2) / dst_w; xerr0 = (width / 2) % dst_w;
+    yq = height / dst_h; yr = height % dst_h;
+    sy = (height / 2) / dst_h; yerr = (height / 2) % dst_h;
+
+    for (oy = 0; oy < dst_h; oy++) {
+        uint8_t *dr = out + (size_t)oy * out_stride;
+        const uint8_t *threshold = bayer4[(y_base + oy) & 3];
+        int ox, sx = sx0, xerr = xerr0;
+
+        for (ox = 0; ox < dst_w; ox++) {
+            dr[ox] = yuv420_pixel_index(y_plane, y_stride, u_plane, u_stride,
+                                        v_plane, v_stride, sx, sy,
+                                        threshold[ox & 3]);
+            sx += xq;
+            xerr += xr;
+            if (xerr >= dst_w) { xerr -= dst_w; sx++; }
+        }
+
+        sy += yq;
+        yerr += yr;
+        if (yerr >= dst_h) { yerr -= dst_h; sy++; }
+    }
+}

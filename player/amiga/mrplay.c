@@ -847,14 +847,19 @@ static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
 }
 
 /*
- * Same contract as queue_copy_indexed(), but for the AGA vertical-only-
- * downscale case (display_supports_yuv_indexed() - see display_backend.h
- * and aga_supports_yuv_indexed()): fr must be a MR_PIX_YUV420P frame
+ * Same contract as queue_copy_indexed(), but for the AGA resize case
+ * (display_supports_yuv_indexed() - see display_backend.h and
+ * aga_supports_yuv_indexed()): fr must be a MR_PIX_YUV420P frame
  * (mr_h264_set_yuv_output() enabled), and dst_w/dst_h/vscale are
  * display_supports_yuv_indexed()'s own output for this session. Converts
  * straight from the decoder's YUV planes to indexed at the display's
  * fitted size in one pass (core/mr_yuv_dither.h) - no RGB24 buffer, full
- * resolution or resized, ever exists on this path.
+ * resolution or resized, ever exists on this path. vscale > 0 selects the
+ * exact vertical-only downscale's hand-tuned m68k asm (mr_yuv420_dither8());
+ * vscale == 0 selects the general 2D nearest-neighbour path
+ * (mr_yuv420_dither8_resize(), portable C only) for every other resize
+ * shape, including an upscale (e.g. a 192x108 mobile HLS variant fitted up
+ * to a 320x180 AGA screen).
  */
 static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
                                   uint64_t pts, uint64_t decoded_at,
@@ -866,9 +871,15 @@ static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    mr_yuv420_dither8(fr->data, fr->stride, fr->u_data, fr->u_stride,
-                      fr->v_data, fr->v_stride, fr->width, fr->height,
-                      vscale, q->rgb, dst_w, 0);
+    if (vscale > 0)
+        mr_yuv420_dither8(fr->data, fr->stride, fr->u_data, fr->u_stride,
+                          fr->v_data, fr->v_stride, fr->width, fr->height,
+                          vscale, q->rgb, dst_w, 0);
+    else
+        mr_yuv420_dither8_resize(fr->data, fr->stride, fr->u_data,
+                                 fr->u_stride, fr->v_data, fr->v_stride,
+                                 fr->width, fr->height, q->rgb, dst_w, dst_h,
+                                 dst_w, 0);
     q->width = dst_w; q->height = dst_h; q->stride = dst_w;
     q->dirty_y0 = 0; q->dirty_y1 = dst_h;
     q->pts_us = pts; q->decoded_at_us = decoded_at;
@@ -1772,22 +1783,27 @@ int main(int argc, char **argv)
      * mode is fixed for the life of this session, so every queue slot below
      * uses the same format throughout. */
     int use_indexed_queue = display_supports_indexed(disp);
-    /* True only when the fitted AGA geometry needs an exact integer
-     * vertical-only downscale from the source (aga_supports_yuv_indexed()) -
-     * the common non-laced-HIRES case (e.g. 640x360 -> 640x180) that
-     * use_indexed_queue's !resize requirement excludes. H.264-only: that is
-     * the only decoder mr_h264_set_yuv_output()/mr_yuv420_dither8() support
-     * so far. Mutually exclusive with use_indexed_queue by construction
-     * (aga_supports_indexed requires !resize, aga_supports_yuv_indexed
-     * requires resize), so at most one is ever set. */
+    /* True whenever the fitted AGA geometry needs any resize from the
+     * source (aga_supports_yuv_indexed()) that use_indexed_queue's !resize
+     * requirement excludes - the common non-laced-HIRES vertical-only
+     * downscale (e.g. 640x360 -> 640x180, yuv_vscale > 0, hand-tuned m68k
+     * asm) as well as every other resize shape, including an upscale (e.g.
+     * a 192x108 mobile HLS source fitted up to a 320x180 AGA screen,
+     * yuv_vscale == 0, portable C - see queue_copy_yuv_indexed()). H.264-
+     * only: that is the only decoder mr_h264_set_yuv_output()/
+     * mr_yuv420_dither8*() support so far. Mutually exclusive with
+     * use_indexed_queue by construction (aga_supports_indexed requires
+     * !resize, aga_supports_yuv_indexed requires resize), so at most one is
+     * ever set. */
     int use_yuv_indexed_queue = 0, yuv_dst_w = 0, yuv_dst_h = 0, yuv_vscale = 1;
     if (!use_indexed_queue && codec == &mr_codec_h264)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
             disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale);
     if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
     if (want_time && use_yuv_indexed_queue)
-        printf("video path: YUV420P %dx%d -> INDEX8 %dx%d vscale=%d\n",
-               vi->width, vi->height, yuv_dst_w, yuv_dst_h, yuv_vscale);
+        printf("video path: YUV420P %dx%d -> INDEX8 %dx%d %s\n",
+               vi->width, vi->height, yuv_dst_w, yuv_dst_h,
+               yuv_vscale > 0 ? "(vscale asm path)" : "(general resize path)");
     else if (want_time && use_indexed_queue)
         printf("video path: RGB24 %dx%d -> INDEX8 (queue_copy_indexed)\n",
                vi->width, vi->height);

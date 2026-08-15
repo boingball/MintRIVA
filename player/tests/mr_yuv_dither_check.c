@@ -90,6 +90,67 @@ static int run_case(int width, int height, int vscale, int y_stride,
     return fails;
 }
 
+static int run_resize_case(int width, int height, int dst_w, int dst_h,
+                           int y_stride, int u_stride, int v_stride,
+                           int extreme, int seed)
+{
+    int ch = (height + 1) / 2;
+    uint8_t *y = (uint8_t *)malloc((size_t)y_stride * height);
+    uint8_t *u = (uint8_t *)malloc((size_t)u_stride * ch);
+    uint8_t *v = (uint8_t *)malloc((size_t)v_stride * ch);
+    uint8_t *rgb_full = (uint8_t *)malloc((size_t)width * height * 3);
+    uint8_t *rgb_resized = (uint8_t *)malloc((size_t)dst_w * dst_h * 3);
+    uint8_t *ref_out = (uint8_t *)malloc((size_t)dst_w * dst_h);
+    uint8_t *got_out = (uint8_t *)malloc((size_t)dst_w * dst_h);
+    int yy, xx, y_base = seed & 7, fails = 0;
+
+    state = 0x79647468U ^ (unsigned)seed;
+    for (yy = 0; yy < height; yy++)
+        for (xx = 0; xx < y_stride; xx++)
+            y[(size_t)yy * y_stride + xx] = extreme ? ((xx ^ yy) & 1 ? 255 : 0)
+                                                    : random_byte();
+    for (yy = 0; yy < ch; yy++)
+        for (xx = 0; xx < u_stride; xx++)
+            u[(size_t)yy * u_stride + xx] = extreme ? ((xx ^ yy) & 1 ? 255 : 0)
+                                                    : random_byte();
+    for (yy = 0; yy < ch; yy++)
+        for (xx = 0; xx < v_stride; xx++)
+            v[(size_t)yy * v_stride + xx] = extreme ? ((xx ^ yy) & 1 ? 0 : 255)
+                                                    : random_byte();
+
+    /* Reference: the real three-stage pipeline, resizing both axes. */
+    mr_yuv420_to_rgb24(rgb_full, width * 3, y, y_stride, u, u_stride,
+                       v, v_stride, width, height, NULL, NULL);
+    mr_scale_resize_rgb24(rgb_full, width, height, width * 3,
+                          rgb_resized, dst_w, dst_h, dst_w * 3);
+    mr_dither_rgb8(rgb_resized, dst_w, dst_h, dst_w * 3, ref_out, dst_w,
+                  y_base);
+
+    /* Under test: the general fused resize+dither path. */
+    mr_yuv420_dither8_resize(y, y_stride, u, u_stride, v, v_stride,
+                             width, height, got_out, dst_w, dst_h, dst_w,
+                             y_base);
+
+    if (memcmp(ref_out, got_out, (size_t)dst_w * dst_h) != 0) {
+        int i;
+        for (i = 0; i < dst_w * dst_h; i++) {
+            if (ref_out[i] != got_out[i]) {
+                printf("FAIL (resize) w=%d h=%d dst_w=%d dst_h=%d "
+                       "y_stride=%d u_stride=%d v_stride=%d extreme=%d "
+                       "seed=%d index=%d ref=%u got=%u\n",
+                       width, height, dst_w, dst_h, y_stride, u_stride,
+                       v_stride, extreme, seed, i, ref_out[i], got_out[i]);
+                fails = 1;
+                break;
+            }
+        }
+    }
+
+    free(y); free(u); free(v);
+    free(rgb_full); free(rgb_resized); free(ref_out); free(got_out);
+    return fails;
+}
+
 int main(void)
 {
     static const struct { int w, h, vscale; } geoms[] = {
@@ -122,6 +183,42 @@ int main(void)
             for (r = 0; r < 5; r++)
                 fails += run_case(w, h, vs, w, (w + 1) / 2, (w + 1) / 2, 0,
                                   seed++);
+        }
+    }
+
+    {
+        static const struct { int w, h, dw, dh; } resize_geoms[] = {
+            /* the motivating case: BBC's 192x108 HLS mobile variant fitted
+             * to a 320x180 AGA screen - upscale on both axes. */
+            { 192, 108, 320, 180 },
+            { 640, 360, 640, 180 },   /* vscale-only shape, via the general
+                                       * path too (must agree with the fast
+                                       * path's own dedicated test above)   */
+            { 320, 240, 320, 240 },   /* identity, both axes                */
+            { 320, 240, 160, 120 },   /* downscale both axes                */
+            { 160, 120, 320, 240 },   /* upscale both axes                  */
+            { 640, 480, 320, 180 },   /* downscale, non-uniform ratio       */
+            { 176, 144, 320, 256 },   /* upscale, non-uniform ratio         */
+            { 17, 13, 31, 19 },       /* odd source and destination sizes   */
+            { 2, 2, 5, 5 },
+        };
+        size_t rn = sizeof resize_geoms / sizeof resize_geoms[0], ri;
+
+        for (ri = 0; ri < rn; ri++) {
+            int w = resize_geoms[ri].w, h = resize_geoms[ri].h;
+            int dw = resize_geoms[ri].dw, dh = resize_geoms[ri].dh;
+            fails += run_resize_case(w, h, dw, dh, w, (w + 1) / 2,
+                                     (w + 1) / 2, 0, seed++);
+            fails += run_resize_case(w, h, dw, dh, w, (w + 1) / 2,
+                                     (w + 1) / 2, 1, seed++);
+            fails += run_resize_case(w, h, dw, dh, w + 8, (w + 1) / 2 + 4,
+                                     (w + 1) / 2 + 4, 0, seed++);
+            {
+                int r;
+                for (r = 0; r < 5; r++)
+                    fails += run_resize_case(w, h, dw, dh, w, (w + 1) / 2,
+                                             (w + 1) / 2, 0, seed++);
+            }
         }
     }
 
