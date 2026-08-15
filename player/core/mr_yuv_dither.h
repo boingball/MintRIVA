@@ -41,4 +41,29 @@ void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
                        int width, int height, int vscale,
                        uint8_t *out, int out_stride, int y_base);
 
+/*
+ * General nearest-neighbour resize + dither fusion: dst_w/dst_h may differ
+ * from width/height in either direction (upscale or downscale, horizontal
+ * or vertical or both) - not just mr_yuv420_dither8()'s exact vertical-only
+ * integer downscale. Uses the same destination-pixel-centre DDA as
+ * mr_scale_resize_rgb24() (source = floor(((2*dest+1)*src_size) /
+ * (2*dest_size)), stepped via quotient/remainder rather than per-pixel
+ * division), applied independently on each axis, so this is bit-identical
+ * to mr_yuv420_to_rgb24() -> mr_scale_resize_rgb24() -> mr_dither_rgb8()
+ * for any width/height -> dst_w/dst_h combination (see
+ * tests/mr_yuv_dither_check.c). The Bayer dither phase is keyed by the
+ * *destination* row/column (y_base+oy, ox), matching mr_dither_rgb8()'s own
+ * convention of dithering the already-resized frame.
+ *
+ * Portable C only for now: unlike mr_yuv420_dither8()'s pair-unrolled m68k
+ * asm, a horizontally-resizing DDA can't assume adjacent destination
+ * columns share a chroma sample, so it has no hand-tuned asm yet.
+ */
+void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
+                              const uint8_t *u_plane, int u_stride,
+                              const uint8_t *v_plane, int v_stride,
+                              int width, int height,
+                              uint8_t *out, int dst_w, int dst_h,
+                              int out_stride, int y_base);
+
 #endif /* MR_YUV_DITHER_H */
