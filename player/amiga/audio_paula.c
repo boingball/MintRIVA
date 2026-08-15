@@ -36,6 +36,10 @@
 #define NBUF       2           /* double buffer                            */
 #define PAULA_REQUEST_MS 100    /* measured validation value; tune here     */
 
+/* See mr_audio.h's audio_set_timing_mode() comment. */
+static int g_audio_want_time = 0;
+void audio_set_timing_mode(int on) { g_audio_want_time = on ? 1 : 0; }
+
 typedef struct audio_request_timeline {
     uint64_t sequence;
     unsigned submitted_samples;
@@ -336,20 +340,31 @@ void audio_write_s16(mr_audio *a, const short *pcm,
 static void audio_pump(mr_audio *a)
 {
     int i;
-    clock_t service_now;
+    /* service_now/last_service/no_active_since/longest_service_gap/
+     * longest_no_active only ever feed audio_diagnostics(), read solely by
+     * mrplay.c's --time "audio diagnostics:"/"audio hardware:" report -
+     * skip the clock() call and its bookkeeping on every ordinary wake of
+     * this worker task when nobody is watching. hardware_starved/
+     * hardware_starvations below are real rescue-logic inputs and stay
+     * unconditional. */
+    clock_t service_now = 0;
     uint64_t now;
     unsigned long buffered;
     int active_at_entry;
     if (!a) return;
     now = audio_now_us();
-    service_now = clock();
-    if (a->last_service && service_now - a->last_service > a->longest_service_gap)
-        a->longest_service_gap = service_now - a->last_service;
-    a->last_service = service_now;
+    if (g_audio_want_time) {
+        service_now = clock();
+        if (a->last_service && service_now - a->last_service > a->longest_service_gap)
+            a->longest_service_gap = service_now - a->last_service;
+        a->last_service = service_now;
+    }
     active_at_entry = active_request_count(a);
-    if (a->running && active_at_entry == 0) {
-        if (!a->no_active_since) a->no_active_since = service_now;
-    } else a->no_active_since = 0;
+    if (g_audio_want_time) {
+        if (a->running && active_at_entry == 0) {
+            if (!a->no_active_since) a->no_active_since = service_now;
+        } else a->no_active_since = 0;
+    }
 
     /* Reap finished writes. */
     for (i = 0; i < NBUF; i++) {
@@ -430,17 +445,19 @@ static void audio_pump(mr_audio *a)
                 a->minimum_active_ms = active_ms;
         }
         if (a->running && active == 0) {
-            clock_t gap;
             if (!a->hardware_starved) {
                 a->hardware_starvations++;
                 a->hardware_starved = 1;
             }
-            if (!a->no_active_since) a->no_active_since = service_now;
-            gap = service_now - a->no_active_since;
-            if (gap > a->longest_no_active) a->longest_no_active = gap;
+            if (g_audio_want_time) {
+                clock_t gap;
+                if (!a->no_active_since) a->no_active_since = service_now;
+                gap = service_now - a->no_active_since;
+                if (gap > a->longest_no_active) a->longest_no_active = gap;
+            }
         } else {
             a->hardware_starved = 0;
-            a->no_active_since = 0;
+            if (g_audio_want_time) a->no_active_since = 0;
         }
     }
 }

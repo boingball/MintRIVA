@@ -1500,7 +1500,11 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--ecs-fast")) display_set_ecs_fast(1);
             else if (!strcmp(argv[i], "--ecs32")) display_set_ecs32(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
-            else if (!strcmp(argv[i], "--time")) { want_time = 1; display_set_timing_mode(1); }
+            else if (!strcmp(argv[i], "--time")) {
+                want_time = 1;
+                display_set_timing_mode(1);
+                audio_set_timing_mode(1);
+            }
             else if (!strcmp(argv[i], "--fullscreen")) fullscreen = 1;
             else if (!strcmp(argv[i], "--hls-low")) hls_low = 1;
             else if (!strncmp(argv[i], "--hls-max-width=", 16))

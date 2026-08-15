@@ -89,4 +89,13 @@ void          audio_flush(mr_audio *a);
 
 void          audio_close(mr_audio *a);
 
+/* Off by default: audio_pump() (the worker task's per-wake service routine)
+ * calls clock() - a second, separate clock domain from the ReadEClock()-
+ * based audio_now_us() it already reads for real request scheduling -
+ * solely to feed longest_service_gap/longest_no_active, read only by the
+ * --time "audio diagnostics:" report. Skip that second clock() call and its
+ * bookkeeping on an ordinary run; see display_set_timing_mode() for the
+ * same pattern on the display side. */
+void          audio_set_timing_mode(int on);
+
 #endif /* MR_AUDIO_H */
