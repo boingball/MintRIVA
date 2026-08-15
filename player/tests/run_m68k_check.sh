@@ -59,7 +59,8 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c core/mr_cinepak.c \
       core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_scale.c \
       core/mr_c2p.c core/mr_c2p_m68k.S \
-      core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c core/mr_mpeg2.c \
+      core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c core/mr_mpeg1_blockset_m68k.S \
+      core/mr_mpeg2.c \
       vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
       vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
@@ -136,6 +137,10 @@ $CC -o "$BUILD/mr_ham_check.m68k" tests/mr_ham_check.c core/mr_ham.c
 $CC -o "$BUILD/mr_dither_check.m68k" tests/mr_dither_check.c core/mr_dither.c \
     core/mr_dither_m68k.S
 
+echo "== building mr_mpeg1_blockset_check.m68k =="
+$CC -o "$BUILD/mr_mpeg1_blockset_check.m68k" tests/mr_mpeg1_blockset_check.c \
+    core/mr_mpeg1_blockset_m68k.S
+
 run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 
 run "$BUILD/mr_h264_m68k_check.m68k"
@@ -146,6 +151,7 @@ run "$BUILD/mr_scale_check.m68k"
 run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
+run "$BUILD/mr_mpeg1_blockset_check.m68k"
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \
@@ -159,5 +165,8 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
 echo "[Microsoft MPEG-4 v2 / MP42, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp42.avi \
     --check tests/assets/ref_mp42
+echo "[MPEG-1, real m68k/big-endian - exercises the new motion-comp asm]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg1.mpg \
+    --check tests/assets/ref_mpeg1
 
 echo "m68k/big-endian check: OK"
