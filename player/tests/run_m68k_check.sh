@@ -138,6 +138,16 @@ $CC -o "$BUILD/mr_ham_check.m68k" tests/mr_ham_check.c core/mr_ham.c
 $CC -o "$BUILD/mr_dither_check.m68k" tests/mr_dither_check.c core/mr_dither.c \
     core/mr_dither_m68k.S
 
+echo "== building mr_yuv_dither_check.m68k =="
+# Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
+# (via core/mr_yuv.c core/mr_dither.c's own MR_M68K_ASM dispatch, active in
+# this build) as the reference composition mr_yuv420_dither8() is compared
+# against - so on real m68k this also cross-checks the fused C path against
+# the real accelerated three-stage pipeline, not just a host-only reference.
+$CC -o "$BUILD/mr_yuv_dither_check.m68k" tests/mr_yuv_dither_check.c \
+    core/mr_yuv_dither.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_scale.c \
+    core/mr_dither.c core/mr_dither_m68k.S
+
 echo "== building mr_mpeg1_blockset_check.m68k / mr_mpeg1_idct_check.m68k =="
 $CC -o "$BUILD/mr_mpeg1_blockset_check.m68k" tests/mr_mpeg1_blockset_check.c \
     core/mr_mpeg1_blockset_m68k.S
@@ -154,6 +164,7 @@ run "$BUILD/mr_scale_check.m68k"
 run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
+run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
 run "$BUILD/mr_mpeg1_idct_check.m68k"
 

@@ -40,6 +40,16 @@ void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing);
  * would read the result anyway. */
 void mr_h264_set_timing_enabled(mr_decoder *dec, int enabled);
 void mr_h264_set_skip_output(mr_decoder *dec, int skip);
+/* Off by default. When enabled, decoded frames come back as
+ * MR_PIX_YUV420P (dec->frame.data/stride = Y, u_data/u_stride = Cb,
+ * v_data/v_stride = Cr) instead of MR_PIX_RGB24 - no RGB24 buffer is
+ * allocated or written. For a caller (e.g. an AGA direct-to-indexed
+ * dither path) that wants the raw decoded planes instead of an RGB24
+ * intermediate. See core/mr_yuv_dither.h for a fused YUV420P -> 8-bit
+ * indexed conversion matching mr_yuv420_to_rgb24() + a nearest-neighbour
+ * resize + mr_dither_rgb8() bit-exactly, without either intermediate
+ * buffer. */
+void mr_h264_set_yuv_output(mr_decoder *dec, int enabled);
 /* Associate the next compressed access unit with its container PTS.  Libavc
  * may emit an older access unit after display reordering; output_pts() returns
  * the PTS belonging to that emitted frame rather than the current input. */
