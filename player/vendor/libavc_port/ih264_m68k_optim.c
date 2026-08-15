@@ -151,3 +151,114 @@ void mr_ih264_intra_pred_luma_16x16_horz_m68k(
         dst += dst_stride;
     }
 }
+
+/* H.264 8.3.3.3 - the value predicted is a single average of the available
+ * top/left neighbours (or 128 if neither is available), broadcast over the
+ * whole 16x16 block. Ittiam's generic version calls memset() once per row;
+ * this instead replicates the byte to a 32-bit pattern once and stores it
+ * with store_u32 (same trick as the horz predictor above), which avoids a
+ * memset() call per row for a value gcc cannot fold into a compile-time
+ * constant memset. neighbour_available bit 0 = left available, bit 2 = top
+ * available (LEFT_MB_AVAILABLE_MASK / TOP_MB_AVAILABLE_MASK in
+ * ih264_defs.h - not included here, see this file's header comment on why
+ * these small integer masks are inlined instead). */
+void mr_ih264_intra_pred_luma_16x16_dc_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *top = src + 17;
+    const UWORD8 *left = src + 15;
+    WORD32 use_left = neighbour_available & 0x01;
+    WORD32 use_top = (neighbour_available >> 2) & 0x01;
+    WORD32 val = 0;
+    WORD32 y;
+    uint32_t bval;
+    (void)src_stride;
+
+    if(use_left)
+    {
+        for(y = 0; y < 16; y++) val += left[-y];
+        val += 8;
+    }
+    if(use_top)
+    {
+        for(y = 0; y < 16; y++) val += top[y];
+        val += 8;
+    }
+    /* Since 8 is added if either left/top pred is there, val still being
+     * zero implies both preds are unavailable. */
+    val = val ? (val >> (3 + use_left + use_top)) : 128;
+
+    bval = (uint32_t)val * UINT32_C(0x01010101);
+    for(y = 0; y < 16; y++)
+    {
+        store_u32(dst, bval); store_u32(dst + 4, bval);
+        store_u32(dst + 8, bval); store_u32(dst + 12, bval);
+        dst += dst_stride;
+    }
+}
+
+/* H.264 8.3.1.2.1/2/3 - luma 4x4 vert/horz/dc, the exact same three shapes
+ * as the 16x16 versions above (single-row-of-neighbours broadcast, or a
+ * left-column byte broadcast per row), just one store_u32 per row instead
+ * of four since the block is only 4 bytes wide. apf_intra_pred_luma_4x4[]
+ * call counts on this project's H.264 test clip (qemu exec trace) put
+ * these three at 227-773 hits each - higher than any already-ported
+ * 16x16 intra mode and comparable to the 4x4 iquant/itrans/recon
+ * functions - while the other six 4x4 modes (diagonal/vert_r/horz_d/
+ * vert_l/horz_u) sit at 20-56 hits each and would need genuine multi-tap
+ * hand asm to port, not this style; not worth it at that call volume. */
+void mr_ih264_intra_pred_luma_4x4_vert_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    uint32_t top = load_u32(src + 5);
+    (void)src_stride;
+    (void)neighbour_available;
+    store_u32(dst, top);
+    store_u32(dst + dst_stride, top);
+    store_u32(dst + 2 * dst_stride, top);
+    store_u32(dst + 3 * dst_stride, top);
+}
+
+void mr_ih264_intra_pred_luma_4x4_horz_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *left = src + 3;
+    (void)src_stride;
+    (void)neighbour_available;
+    store_u32(dst, (uint32_t)left[0] * UINT32_C(0x01010101));
+    store_u32(dst + dst_stride, (uint32_t)left[-1] * UINT32_C(0x01010101));
+    store_u32(dst + 2 * dst_stride,
+             (uint32_t)left[-2] * UINT32_C(0x01010101));
+    store_u32(dst + 3 * dst_stride,
+             (uint32_t)left[-3] * UINT32_C(0x01010101));
+}
+
+void mr_ih264_intra_pred_luma_4x4_dc_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *top = src + 5;
+    const UWORD8 *left = src + 3;
+    WORD32 use_left = neighbour_available & 0x01;
+    WORD32 use_top = (neighbour_available >> 2) & 0x01;
+    WORD32 val = 0;
+    uint32_t bval;
+    (void)src_stride;
+
+    if(use_left)
+        val += left[0] + left[-1] + left[-2] + left[-3] + 2;
+    if(use_top)
+        val += top[0] + top[1] + top[2] + top[3] + 2;
+    /* Since 2 is added if either left/top pred is there, val still being
+     * zero implies both preds are unavailable. */
+    val = val ? (val >> (1 + use_left + use_top)) : 128;
+
+    bval = (uint32_t)val * UINT32_C(0x01010101);
+    store_u32(dst, bval);
+    store_u32(dst + dst_stride, bval);
+    store_u32(dst + 2 * dst_stride, bval);
+    store_u32(dst + 3 * dst_stride, bval);
+}

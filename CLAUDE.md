@@ -9,8 +9,13 @@ Read `DESIGN.md` before making structural decisions.
 ## Core principles
 - **Portable core, thin platform layer.** `player/core/` must stay
   Amiga-independent and host-buildable (C99, fixed-width ints, big-endian-safe
-  via `mr_rl*`/`mr_rb*` helpers). Amiga-specific output/audio/IO goes in a
-  separate `player/amiga/` layer (not yet written).
+  via `mr_rl*`/`mr_rb*` helpers). Amiga-specific output/audio/IO lives in
+  `player/amiga/` (`display.c`/`display_aga.c`/`display_cgx.c`/`display_p96.c`,
+  `audio_paula.c`, `mrplay.c`, the GUI files) - chipset-aware AGA/ECS/HAM
+  mode selection and multiple c2p backends (this project's own portable
+  8x8-transpose by default, RiVA's hand-tuned variant, and an opt-in
+  Kalms c2p for one fixed 8-plane/256-colour AGA layout) are already
+  implemented there, see `display_backend.h`/`display_aga.c`.
 - **Codecs plug in behind `mr_codec.h`.** Add a decoder, register it in
   `mr_codec.c` — never special-case a codec in the player skeleton.
 - **Audio is MintAMP.** Do not add an in-tree audio codec; the audio backend

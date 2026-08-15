@@ -127,6 +127,20 @@ static void update_mode_controls(gt_app *app)
     ULONG disabled = selected < app->mode_count &&
                      (app->modes[selected] == MR_DISPLAY_CGX ||
                       app->modes[selected] == MR_DISPLAY_P96);
+    ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
+
+    /* Kalms' c2p only handles a genuine 8-plane, non-HAM AGA screen (see
+     * display_aga.c's "compatible" check in aga_open) - on anything else
+     * it silently falls back to WritePixelArray8. Snap the cycle gadget
+     * back to Standard whenever the mode isn't plain "AGA (256 colours)"
+     * and Kalms is currently picked, so the label never lies about what
+     * c2p is actually in use. */
+    if (selected_c2p == 2 &&
+        !(selected < app->mode_count && app->modes[selected] == MR_DISPLAY_AGA)) {
+        GT_SetGadgetAttrs(app->c2p, app->window, NULL,
+                         GTCY_Active, 0, TAG_DONE);
+    }
+
     GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                      GA_Disabled, disabled, TAG_DONE);
     GT_SetGadgetAttrs(app->lace, app->window, NULL,
@@ -441,7 +455,11 @@ int main(void)
                     update_mode_controls(&app);
                     publish_options(&app);
                     break;
-                case G_C2P: case G_H264: case G_LACE: case G_2X:
+                case G_C2P:
+                    update_mode_controls(&app);
+                    publish_options(&app);
+                    break;
+                case G_H264: case G_LACE: case G_2X:
                     publish_options(&app); break;
                 default: break;
                 }

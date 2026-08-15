@@ -219,6 +219,149 @@ static void check_intra16(void)
     }
 }
 
+/* ---- intra 16x16 DC (8.3.3.3) ------------------------------------------ */
+static void ref_intra16_dc(const uint8_t *src, uint8_t *dst, int dst_strd,
+                           int neighbour_available)
+{
+    const uint8_t *top = src + 17;
+    const uint8_t *left = src + 15;
+    int use_left = neighbour_available & 0x01;
+    int use_top = (neighbour_available >> 2) & 0x01;
+    int val = 0, row, col, y;
+    if (use_left) {
+        for (y = 0; y < 16; y++) val += left[-y];
+        val += 8;
+    }
+    if (use_top) {
+        for (y = 0; y < 16; y++) val += top[y];
+        val += 8;
+    }
+    val = val ? (val >> (3 + use_left + use_top)) : 128;
+    for (row = 0; row < 16; row++)
+        for (col = 0; col < 16; col++)
+            dst[row * dst_strd + col] = (uint8_t)val;
+}
+
+static void check_intra16_dc(void)
+{
+    static const int avail[] = { 0x00, 0x01, 0x04, 0x05 };
+    uint32_t seed = 5;
+    int trial, ai;
+    for (trial = 0; trial < 4; trial++) {
+        uint8_t nbr[40];
+        fill_random(nbr, sizeof nbr, &seed);
+        for (ai = 0; ai < 4; ai++) {
+            uint8_t dst_m68k[16 * 20], dst_ref[16 * 20];
+            int dst_strd = 20, row, col;
+            memset(dst_m68k, 0xAA, sizeof dst_m68k);
+            memset(dst_ref, 0xAA, sizeof dst_ref);
+            mr_ih264_intra_pred_luma_16x16_dc_m68k(nbr, dst_m68k, 0, dst_strd,
+                                                    avail[ai]);
+            ref_intra16_dc(nbr, dst_ref, dst_strd, avail[ai]);
+            for (row = 0; row < 16; row++)
+                for (col = 0; col < 16; col++) {
+                    int idx = row * dst_strd + col;
+                    if (dst_m68k[idx] != dst_ref[idx])
+                        report("intra16_dc", row, col, dst_ref[idx],
+                               dst_m68k[idx]);
+                }
+        }
+    }
+}
+
+/* ---- intra 4x4 vertical / horizontal / DC (8.3.1.2.1/2/3) -------------- */
+/* Same neighbour-buffer convention as intra16 above, just BLK_SIZE=4:
+ * left column at src[0..3], corner at src[4], top row at src[5..8]. */
+static void ref_intra4_vert(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    const uint8_t *top = src + 5;
+    int row, col;
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 4; col++)
+            dst[row * dst_strd + col] = top[col];
+}
+
+static void ref_intra4_horz(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    int row, col;
+    for (row = 0; row < 4; row++) {
+        uint8_t left = src[3 - row];
+        for (col = 0; col < 4; col++)
+            dst[row * dst_strd + col] = left;
+    }
+}
+
+static void ref_intra4_dc(const uint8_t *src, uint8_t *dst, int dst_strd,
+                          int neighbour_available)
+{
+    const uint8_t *top = src + 5;
+    const uint8_t *left = src + 3;
+    int use_left = neighbour_available & 0x01;
+    int use_top = (neighbour_available >> 2) & 0x01;
+    int val = 0, row, col;
+    if (use_left)
+        val += left[0] + left[-1] + left[-2] + left[-3] + 2;
+    if (use_top)
+        val += top[0] + top[1] + top[2] + top[3] + 2;
+    val = val ? (val >> (1 + use_left + use_top)) : 128;
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 4; col++)
+            dst[row * dst_strd + col] = (uint8_t)val;
+}
+
+static void check_intra4(void)
+{
+    static const int avail[] = { 0x00, 0x01, 0x04, 0x05 };
+    uint32_t seed = 12;
+    int trial, ai;
+    for (trial = 0; trial < 8; trial++) {
+        uint8_t nbr[16];
+        uint8_t dst_m68k[4 * 8], dst_ref[4 * 8];
+        int dst_strd = 8, row, col;
+
+        fill_random(nbr, sizeof nbr, &seed);
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_4x4_vert_m68k(nbr, dst_m68k, 0, dst_strd, 0);
+        ref_intra4_vert(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 4; row++)
+            for (col = 0; col < 4; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra4_vert", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_4x4_horz_m68k(nbr, dst_m68k, 0, dst_strd, 0);
+        ref_intra4_horz(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 4; row++)
+            for (col = 0; col < 4; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra4_horz", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+
+        for (ai = 0; ai < 4; ai++) {
+            memset(dst_m68k, 0xAA, sizeof dst_m68k);
+            memset(dst_ref, 0xAA, sizeof dst_ref);
+            mr_ih264_intra_pred_luma_4x4_dc_m68k(nbr, dst_m68k, 0, dst_strd,
+                                                  avail[ai]);
+            ref_intra4_dc(nbr, dst_ref, dst_strd, avail[ai]);
+            for (row = 0; row < 4; row++)
+                for (col = 0; col < 4; col++) {
+                    int idx = row * dst_strd + col;
+                    if (dst_m68k[idx] != dst_ref[idx])
+                        report("intra4_dc", row, col, dst_ref[idx],
+                               dst_m68k[idx]);
+                }
+        }
+    }
+}
+
 /* ---- inter_pred_luma_horz / vert (H.264 8.4.2.2.1, 6-tap half-pel) ----- */
 /* mr_ih264_inter_pred_luma_horz_m68k/vert_m68k (ih264_m68k_interp.S) only
  * exist on an m68k build (see ih264_m68k_optim.h) - the hand-written .S is
@@ -567,6 +710,558 @@ static void check_interp_hpel_hpel(void)
         }
     }
 }
+/* ---- inter_pred_luma_horz_qpel_vert_hpel (dydx 9/11) -------------------- */
+/* Independent re-derivation of ih264_inter_pred_luma_horz_qpel_vert_hpel:
+ * stages 1+2 are the same vertical-then-horizontal raw/rounded 6-tap
+ * pipeline as ref_interp_hpel_hpel above (the H(1/2,1/2) diagonal half-pel
+ * pixel, into dst). Stage 3 re-walks stage 1's raw vertical-6-tap buffer at
+ * column offset 2 + ((dydx&3)>>1) (the "+2" is the column-(-2) buffer base,
+ * matching the vendored pi2_pred1 = pu1_tmp + 2 WORD16s), applies the
+ * single-tap (+16)>>5 round+clip, and averages with the H(1/2,1/2) pixel
+ * already in dst. */
+static void ref_interp_horz_qpel_vert_hpel(const uint8_t *src, uint8_t *dst,
+                                           int src_strd, int dst_strd, int ht,
+                                           int wd, int dydx)
+{
+    int32_t tmp[16 * 21]; /* row pitch (wd+5), raw vertical 6-tap sums */
+    int xo = (dydx & 3) >> 1; /* 0 or 1 */
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        for (col = -2; col < wd + 3; col++) {
+            int32_t s = 1 * (src[col - 2 * src_strd] + src[col + 3 * src_strd])
+                       - 5 * (src[col - 1 * src_strd] + src[col + 2 * src_strd])
+                       + 20 * (src[col] + src[col + 1 * src_strd]);
+            tmp[row * (wd + 5) + (col + 2)] = s;
+        }
+        src += src_strd;
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[row * (wd + 5) + 2];
+        for (col = 0; col < wd; col++) {
+            int32_t t = 1 * (p[col - 2] + p[col + 3])
+                       - 5 * (p[col - 1] + p[col + 2])
+                       + 20 * (p[col] + p[col + 1]);
+            t = (t + 512) >> 10;
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            dst[row * dst_strd + col] = (uint8_t)t;
+        }
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[row * (wd + 5) + 2 + xo];
+        for (col = 0; col < wd; col++) {
+            int32_t v = (p[col] + 16) >> 5;
+            int32_t d;
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            d = dst[row * dst_strd + col];
+            dst[row * dst_strd + col] = (uint8_t)((d + v + 1) >> 1);
+        }
+    }
+}
+
+static void check_interp_horz_qpel_vert_hpel(void)
+{
+    static const int wds[] = { 4, 4, 8, 8, 16, 16 };
+    static const int hts[] = { 4, 8, 4, 16, 8, 16 };
+    static const int dydxs[] = { 9, 11 };
+    uint32_t seed = 9;
+    unsigned i, di;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        for (di = 0; di < 2; di++) {
+            int extreme;
+            for (extreme = 0; extreme < 2; extreme++) {
+                int wd = wds[i], ht = hts[i];
+                int pad = 5, src_strd = wd + 2 * pad, dst_strd = wd + 5;
+                uint8_t src[26 * 26], dst_m68k[16 * 21], dst_ref[16 * 21];
+                uint8_t tmp_m68k[(16 + 5) * 16 * 2]; /* WORD16 scratch */
+                const uint8_t *src0 = src + pad * src_strd + pad;
+                int row, col, j;
+                for (j = 0; j < src_strd * (ht + 2 * pad); j++)
+                    src[j] = extreme ? (uint8_t)((xrand(&seed) & 1) ? 255 : 0)
+                                     : (uint8_t)(xrand(&seed) & 0xff);
+
+                memset(dst_m68k, 0xAA, sizeof dst_m68k);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(tmp_m68k, 0, sizeof tmp_m68k);
+                mr_ih264_inter_pred_luma_horz_qpel_vert_hpel_m68k(
+                    (uint8_t *)src0, dst_m68k, src_strd, dst_strd, ht, wd,
+                    tmp_m68k, dydxs[di]);
+                ref_interp_horz_qpel_vert_hpel(src0, dst_ref, src_strd,
+                                               dst_strd, ht, wd, dydxs[di]);
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < wd; col++) {
+                        int idx = row * dst_strd + col;
+                        if (dst_m68k[idx] != dst_ref[idx])
+                            report("interp_horz_qpel_vert_hpel", row, col,
+                                   dst_ref[idx], dst_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
+
+/* ---- inter_pred_luma_horz_hpel_vert_qpel (dydx 6/14) -------------------- */
+/* Independent re-derivation of ih264_inter_pred_luma_horz_hpel_vert_qpel:
+ * the row/column transpose of horz_qpel_vert_hpel above. Stage 1 is a
+ * horizontal raw 6-tap run once per source row for ht+5 rows (-2..ht+2),
+ * into a WORD16 buffer with row pitch wd (no column padding - the padding
+ * is extra *rows* this time). Stage 2 is the vertical 6-tap over those
+ * intermediates -> H(1/2,1/2) into dst. Stage 3 re-walks stage 1's raw
+ * buffer at row offset 2 + ((dydx>>2 & 3)>>1) (again "+2" is the row -2
+ * buffer base), applies (+16)>>5 round+clip, and averages with dst. */
+static void ref_interp_horz_hpel_vert_qpel(const uint8_t *src, uint8_t *dst,
+                                           int src_strd, int dst_strd, int ht,
+                                           int wd, int dydx)
+{
+    int32_t tmp[(16 + 5) * 16]; /* (ht+5) rows x wd cols, raw horiz 6-tap */
+    int yo = ((dydx >> 2) & 3) >> 1; /* 0 or 1 */
+    const uint8_t *s = src - 2 * src_strd;
+    int row, col, k;
+    for (k = 0; k < ht + 5; k++) {
+        for (col = 0; col < wd; col++) {
+            int32_t v = 1 * (s[col - 2] + s[col + 3])
+                       - 5 * (s[col - 1] + s[col + 2])
+                       + 20 * (s[col] + s[col + 1]);
+            tmp[k * wd + col] = v;
+        }
+        s += src_strd;
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[(row + 2) * wd];
+        for (col = 0; col < wd; col++) {
+            int32_t t = 1 * (p[col - 2 * wd] + p[col + 3 * wd])
+                       - 5 * (p[col - 1 * wd] + p[col + 2 * wd])
+                       + 20 * (p[col] + p[col + 1 * wd]);
+            t = (t + 512) >> 10;
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            dst[row * dst_strd + col] = (uint8_t)t;
+        }
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[(row + 2 + yo) * wd];
+        for (col = 0; col < wd; col++) {
+            int32_t v = (p[col] + 16) >> 5;
+            int32_t d;
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            d = dst[row * dst_strd + col];
+            dst[row * dst_strd + col] = (uint8_t)((d + v + 1) >> 1);
+        }
+    }
+}
+
+static void check_interp_horz_hpel_vert_qpel(void)
+{
+    static const int wds[] = { 4, 4, 8, 8, 16, 16 };
+    static const int hts[] = { 4, 8, 4, 16, 8, 16 };
+    static const int dydxs[] = { 6, 14 };
+    uint32_t seed = 10;
+    unsigned i, di;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        for (di = 0; di < 2; di++) {
+            int extreme;
+            for (extreme = 0; extreme < 2; extreme++) {
+                int wd = wds[i], ht = hts[i];
+                int pad = 5, src_strd = wd + 2 * pad, dst_strd = wd + 5;
+                uint8_t src[26 * 26], dst_m68k[16 * 21], dst_ref[16 * 21];
+                uint8_t tmp_m68k[(16 + 5) * 16 * 2]; /* WORD16 scratch */
+                const uint8_t *src0 = src + pad * src_strd + pad;
+                int row, col, j;
+                for (j = 0; j < src_strd * (ht + 2 * pad); j++)
+                    src[j] = extreme ? (uint8_t)((xrand(&seed) & 1) ? 255 : 0)
+                                     : (uint8_t)(xrand(&seed) & 0xff);
+
+                memset(dst_m68k, 0xAA, sizeof dst_m68k);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(tmp_m68k, 0, sizeof tmp_m68k);
+                mr_ih264_inter_pred_luma_horz_hpel_vert_qpel_m68k(
+                    (uint8_t *)src0, dst_m68k, src_strd, dst_strd, ht, wd,
+                    tmp_m68k, dydxs[di]);
+                ref_interp_horz_hpel_vert_qpel(src0, dst_ref, src_strd,
+                                               dst_strd, ht, wd, dydxs[di]);
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < wd; col++) {
+                        int idx = row * dst_strd + col;
+                        if (dst_m68k[idx] != dst_ref[idx])
+                            report("interp_horz_hpel_vert_qpel", row, col,
+                                   dst_ref[idx], dst_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
+
+/* ---- iquant_itrans_recon_4x4 / _dc / _chroma_4x4 / _chroma_4x4_dc ------ */
+/* Independent re-derivation of ih264_iquant_itrans_recon_4x4[_dc] and
+ * ih264_iquant_itrans_recon_chroma_4x4[_dc] (ih264_iquant_itrans_recon.c),
+ * including the INV_QUANT macro's own arithmetic (ih264_trans_macros.h):
+ * value = ((raw*iscal*weight + rnd) << qp_div_6) >> 4, rnd = qp_div_6 < 4 ?
+ * 1<<(3-qp_div_6) : 0. q0..q3 stay WORD32 (untruncated - x2/x3 shift the
+ * *full* dequantised value); x0..x3 and i_macro are WORD16, truncating on
+ * assignment exactly like the vendored C, which matters once a random
+ * fuzz input drives q0+q2 etc. past 16 bits. */
+static WORD32 ref_inv_quant(WORD16 raw, UWORD16 iscal, UWORD16 weight,
+                            UWORD32 qp_div_6)
+{
+    WORD32 rnd = (qp_div_6 < 4) ? (WORD32)(1 << (3 - qp_div_6)) : 0;
+    WORD32 v = (WORD32)raw;
+    v *= (WORD32)iscal;
+    v *= (WORD32)weight;
+    v += rnd;
+    v <<= qp_div_6;
+    v >>= 4;
+    return v;
+}
+
+static void ref_iquant_itrans_recon_4x4(const WORD16 *pi2_src,
+                                        const UWORD8 *pu1_pred,
+                                        UWORD8 *pu1_out, int pred_strd,
+                                        int out_strd, const UWORD16 *iscal,
+                                        const UWORD16 *weigh,
+                                        UWORD32 qp_div_6, int iq_start_idx,
+                                        const WORD16 *pi2_dc_ld_addr)
+{
+    WORD16 tmp[16];
+    int i;
+    for (i = 0; i < 4; i++) {
+        const WORD16 *s = pi2_src + i * 4;
+        const UWORD16 *ic = iscal + i * 4;
+        const UWORD16 *we = weigh + i * 4;
+        WORD32 q0 = ref_inv_quant(s[0], ic[0], we[0], qp_div_6);
+        WORD32 q2, q1, q3;
+        WORD16 x0, x1, x2, x3;
+        if (i == 0 && iq_start_idx == 1) q0 = pi2_dc_ld_addr[0];
+        q2 = ref_inv_quant(s[2], ic[2], we[2], qp_div_6);
+        x0 = (WORD16)(q0 + q2);
+        x1 = (WORD16)(q0 - q2);
+        q1 = ref_inv_quant(s[1], ic[1], we[1], qp_div_6);
+        q3 = ref_inv_quant(s[3], ic[3], we[3], qp_div_6);
+        x2 = (WORD16)((q1 >> 1) - q3);
+        x3 = (WORD16)(q1 + (q3 >> 1));
+        tmp[i * 4 + 0] = (WORD16)(x0 + x3);
+        tmp[i * 4 + 1] = (WORD16)(x1 + x2);
+        tmp[i * 4 + 2] = (WORD16)(x1 - x2);
+        tmp[i * 4 + 3] = (WORD16)(x0 - x3);
+    }
+    for (i = 0; i < 4; i++) {
+        const UWORD8 *pred = pu1_pred + i;
+        UWORD8 *out = pu1_out + i;
+        WORD16 x0 = (WORD16)(tmp[0 * 4 + i] + tmp[2 * 4 + i]);
+        WORD16 x1 = (WORD16)(tmp[0 * 4 + i] - tmp[2 * 4 + i]);
+        WORD16 x2 = (WORD16)((tmp[1 * 4 + i] >> 1) - tmp[3 * 4 + i]);
+        WORD16 x3 = (WORD16)(tmp[1 * 4 + i] + (tmp[3 * 4 + i] >> 1));
+        int vals[4], r;
+        vals[0] = x0 + x3; vals[1] = x1 + x2;
+        vals[2] = x1 - x2; vals[3] = x0 - x3;
+        for (r = 0; r < 4; r++) {
+            WORD16 im = (WORD16)vals[r];
+            int t = ((int)im + 32) >> 6;
+            t += pred[r * pred_strd];
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            out[r * out_strd] = (UWORD8)t;
+        }
+    }
+}
+
+static void ref_iquant_itrans_recon_4x4_dc(const WORD16 *pi2_src,
+                                           const UWORD8 *pu1_pred,
+                                           UWORD8 *pu1_out, int pred_strd,
+                                           int out_strd, const UWORD16 *iscal,
+                                           const UWORD16 *weigh,
+                                           UWORD32 qp_div_6, int iq_start_idx,
+                                           const WORD16 *pi2_dc_ld_addr)
+{
+    WORD32 q0 = (iq_start_idx == 0)
+                    ? ref_inv_quant(pi2_src[0], iscal[0], weigh[0], qp_div_6)
+                    : pi2_dc_ld_addr[0];
+    WORD16 i_macro = (WORD16)((q0 + 32) >> 6);
+    int col, row;
+    for (col = 0; col < 4; col++)
+        for (row = 0; row < 4; row++) {
+            int t = (int)i_macro + pu1_pred[col + row * pred_strd];
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            pu1_out[col + row * out_strd] = (UWORD8)t;
+        }
+}
+
+static void ref_iquant_itrans_recon_chroma_4x4(const WORD16 *pi2_src,
+                                               const UWORD8 *pu1_pred,
+                                               UWORD8 *pu1_out, int pred_strd,
+                                               int out_strd,
+                                               const UWORD16 *iscal,
+                                               const UWORD16 *weigh,
+                                               UWORD32 qp_div_6,
+                                               const WORD16 *pi2_dc_src)
+{
+    WORD16 tmp[16];
+    int i;
+    for (i = 0; i < 4; i++) {
+        const WORD16 *s = pi2_src + i * 4;
+        const UWORD16 *ic = iscal + i * 4;
+        const UWORD16 *we = weigh + i * 4;
+        WORD32 q0 = (i == 0) ? pi2_dc_src[0]
+                              : ref_inv_quant(s[0], ic[0], we[0], qp_div_6);
+        WORD32 q2, q1, q3;
+        WORD16 x0, x1, x2, x3;
+        q2 = ref_inv_quant(s[2], ic[2], we[2], qp_div_6);
+        x0 = (WORD16)(q0 + q2);
+        x1 = (WORD16)(q0 - q2);
+        q1 = ref_inv_quant(s[1], ic[1], we[1], qp_div_6);
+        q3 = ref_inv_quant(s[3], ic[3], we[3], qp_div_6);
+        x2 = (WORD16)((q1 >> 1) - q3);
+        x3 = (WORD16)(q1 + (q3 >> 1));
+        tmp[i * 4 + 0] = (WORD16)(x0 + x3);
+        tmp[i * 4 + 1] = (WORD16)(x1 + x2);
+        tmp[i * 4 + 2] = (WORD16)(x1 - x2);
+        tmp[i * 4 + 3] = (WORD16)(x0 - x3);
+    }
+    for (i = 0; i < 4; i++) {
+        const UWORD8 *pred = pu1_pred + i * 2;
+        UWORD8 *out = pu1_out + i * 2;
+        WORD16 x0 = (WORD16)(tmp[0 * 4 + i] + tmp[2 * 4 + i]);
+        WORD16 x1 = (WORD16)(tmp[0 * 4 + i] - tmp[2 * 4 + i]);
+        WORD16 x2 = (WORD16)((tmp[1 * 4 + i] >> 1) - tmp[3 * 4 + i]);
+        WORD16 x3 = (WORD16)(tmp[1 * 4 + i] + (tmp[3 * 4 + i] >> 1));
+        int vals[4], r;
+        vals[0] = x0 + x3; vals[1] = x1 + x2;
+        vals[2] = x1 - x2; vals[3] = x0 - x3;
+        for (r = 0; r < 4; r++) {
+            WORD16 im = (WORD16)vals[r];
+            int t = ((int)im + 32) >> 6;
+            t += pred[r * pred_strd];
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            out[r * out_strd] = (UWORD8)t;
+        }
+    }
+}
+
+static void ref_iquant_itrans_recon_chroma_4x4_dc(const UWORD8 *pu1_pred,
+                                                   UWORD8 *pu1_out,
+                                                   int pred_strd, int out_strd,
+                                                   const WORD16 *pi2_dc_src)
+{
+    WORD32 q0 = pi2_dc_src[0];
+    WORD16 i_macro = (WORD16)((q0 + 32) >> 6);
+    int col, row;
+    for (col = 0; col < 4; col++)
+        for (row = 0; row < 4; row++) {
+            int t = (int)i_macro + pu1_pred[col * 2 + row * pred_strd];
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            pu1_out[col * 2 + row * out_strd] = (UWORD8)t;
+        }
+}
+
+static void check_iquant_itrans_recon(void)
+{
+    static const UWORD32 qp_divs[] = { 0, 1, 3, 4, 5, 7, 8, 12 };
+    uint32_t seed = 11;
+    unsigned qi;
+    for (qi = 0; qi < sizeof qp_divs / sizeof qp_divs[0]; qi++) {
+        int extreme;
+        for (extreme = 0; extreme < 2; extreme++) {
+            WORD16 src[16], tmp_m68k[16], dc_val;
+            UWORD16 iscal[16], weigh[16];
+            UWORD8 pred[8 * 4], out_m68k[8 * 4], out_ref[8 * 4];
+            int i, iq_start_idx, pred_strd = 6, out_strd = 8;
+
+            for (i = 0; i < 16; i++) {
+                if (extreme) {
+                    src[i] = (xrand(&seed) & 1) ? 2047 : -2048;
+                    iscal[i] = (xrand(&seed) & 1) ? 0xffff : 0;
+                    weigh[i] = (xrand(&seed) & 1) ? 0xffff : 0;
+                } else {
+                    src[i] = (WORD16)((xrand(&seed) & 0x1ff) - 256);
+                    iscal[i] = (UWORD16)(10 + (xrand(&seed) % 40));
+                    weigh[i] = (UWORD16)(16 + (xrand(&seed) % 200));
+                }
+            }
+            dc_val = (WORD16)((xrand(&seed) & 0x1ff) - 256);
+            for (i = 0; i < (int)(sizeof pred); i++)
+                pred[i] = (uint8_t)(xrand(&seed) & 0xff);
+
+            for (iq_start_idx = 0; iq_start_idx < 2; iq_start_idx++) {
+                memset(out_m68k, 0xAA, sizeof out_m68k);
+                memset(out_ref, 0xAA, sizeof out_ref);
+                memset(tmp_m68k, 0, sizeof tmp_m68k);
+                mr_ih264_iquant_itrans_recon_4x4_m68k(
+                    src, pred, out_m68k, pred_strd, out_strd, iscal, weigh,
+                    qp_divs[qi], tmp_m68k, iq_start_idx, &dc_val);
+                ref_iquant_itrans_recon_4x4(src, pred, out_ref, pred_strd,
+                                            out_strd, iscal, weigh,
+                                            qp_divs[qi], iq_start_idx,
+                                            &dc_val);
+                for (i = 0; i < 4; i++) {
+                    int row;
+                    for (row = 0; row < 4; row++) {
+                        int idx = i + row * out_strd;
+                        if (out_m68k[idx] != out_ref[idx])
+                            report("iquant_itrans_recon_4x4", row, i,
+                                   out_ref[idx], out_m68k[idx]);
+                    }
+                }
+
+                memset(out_m68k, 0xAA, sizeof out_m68k);
+                memset(out_ref, 0xAA, sizeof out_ref);
+                mr_ih264_iquant_itrans_recon_4x4_dc_m68k(
+                    src, pred, out_m68k, pred_strd, out_strd, iscal, weigh,
+                    qp_divs[qi], tmp_m68k, iq_start_idx, &dc_val);
+                ref_iquant_itrans_recon_4x4_dc(src, pred, out_ref, pred_strd,
+                                               out_strd, iscal, weigh,
+                                               qp_divs[qi], iq_start_idx,
+                                               &dc_val);
+                for (i = 0; i < 4; i++) {
+                    int row;
+                    for (row = 0; row < 4; row++) {
+                        int idx = i + row * out_strd;
+                        if (out_m68k[idx] != out_ref[idx])
+                            report("iquant_itrans_recon_4x4_dc", row, i,
+                                   out_ref[idx], out_m68k[idx]);
+                    }
+                }
+            }
+
+            memset(out_m68k, 0xAA, sizeof out_m68k);
+            memset(out_ref, 0xAA, sizeof out_ref);
+            memset(tmp_m68k, 0, sizeof tmp_m68k);
+            mr_ih264_iquant_itrans_recon_chroma_4x4_m68k(
+                src, pred, out_m68k, pred_strd, out_strd, iscal, weigh,
+                qp_divs[qi], tmp_m68k, &dc_val);
+            ref_iquant_itrans_recon_chroma_4x4(src, pred, out_ref, pred_strd,
+                                               out_strd, iscal, weigh,
+                                               qp_divs[qi], &dc_val);
+            for (i = 0; i < 4; i++) {
+                int row;
+                for (row = 0; row < 4; row++) {
+                    int idx = i * 2 + row * out_strd;
+                    if (out_m68k[idx] != out_ref[idx])
+                        report("iquant_itrans_recon_chroma_4x4", row, i,
+                               out_ref[idx], out_m68k[idx]);
+                }
+            }
+
+            memset(out_m68k, 0xAA, sizeof out_m68k);
+            memset(out_ref, 0xAA, sizeof out_ref);
+            mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k(
+                src, pred, out_m68k, pred_strd, out_strd, iscal, weigh,
+                qp_divs[qi], tmp_m68k, &dc_val);
+            ref_iquant_itrans_recon_chroma_4x4_dc(pred, out_ref, pred_strd,
+                                                  out_strd, &dc_val);
+            for (i = 0; i < 4; i++) {
+                int row;
+                for (row = 0; row < 4; row++) {
+                    int idx = i * 2 + row * out_strd;
+                    if (out_m68k[idx] != out_ref[idx])
+                        report("iquant_itrans_recon_chroma_4x4_dc", row, i,
+                               out_ref[idx], out_m68k[idx]);
+                }
+            }
+        }
+    }
+}
+
+/* ---- intra 16x16 Plane (8.3.3.4) ---------------------------------------- */
+/* Independent re-derivation of ih264_intra_pred_luma_16x16_mode_plane -
+ * unlike ih264_m68k_intra_pred.S's own closed-form re-derivation (which
+ * uses real multiplies), this transcribes Ittiam's literal "no
+ * multiplications" shift-add chain directly, so a mistake in either the
+ * asm's derivation or this transcription would have to independently
+ * agree to hide a bug. */
+static void ref_intra16_plane(const uint8_t *src, uint8_t *dst, int dst_strd)
+{
+    const uint8_t *top = src + 17;
+    const uint8_t *left = src + 15;
+    const uint8_t *topleft = src + 16;
+    int32_t a, b, c, tmp;
+    const uint8_t *tmp1, *tmp2;
+
+    a = (top[15] + left[-15]) << 4;
+
+    tmp1 = top + 8;
+    tmp2 = tmp1 - 2;
+    b = (*tmp1++ - *tmp2--);
+    b += (*tmp1++ - *tmp2--) << 1;
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 1) + tmp;
+    b += (*tmp1++ - *tmp2--) << 2;
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 2) + tmp;
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 2) + (tmp << 1);
+    tmp = (*tmp1++ - *tmp2--);
+    b += (tmp << 3) - tmp;
+    b += (*tmp1 - *topleft) << 3;
+    b = ((b << 2) + b + 32) >> 6;
+
+    tmp1 = left - 8;
+    tmp2 = tmp1 + 2;
+    c = (*tmp1 - *tmp2);
+    tmp1--; tmp2++;
+    c += (*tmp1 - *tmp2) << 1;
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 1) + tmp;
+    tmp1--; tmp2++;
+    c += (*tmp1 - *tmp2) << 2;
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 2) + tmp;
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 2) + (tmp << 1);
+    tmp1--; tmp2++;
+    tmp = (*tmp1 - *tmp2);
+    c += (tmp << 3) - tmp;
+    tmp1--;
+    c += (*tmp1 - *topleft) << 3;
+    c = ((c << 2) + c + 32) >> 6;
+
+    {
+        int32_t tv, tmpx, tmpx_init, i, j;
+        tmpx_init = -(b << 3);
+        tmp = a - (c << 3) + 16;
+        for (i = 0; i < 16; i++) {
+            tmp += c;
+            tmpx = tmpx_init;
+            for (j = 0; j < 16; j++) {
+                tmpx += b;
+                tv = (tmp + tmpx) >> 5;
+                tv = tv < 0 ? 0 : tv > 255 ? 255 : tv;
+                dst[i * dst_strd + j] = (uint8_t)tv;
+            }
+        }
+    }
+}
+
+static void check_intra16_plane(void)
+{
+    uint32_t seed = 6;
+    int trial;
+    for (trial = 0; trial < 20; trial++) {
+        uint8_t nbr[40];
+        uint8_t dst_m68k[16 * 20], dst_ref[16 * 20];
+        int dst_strd = 20, row, col;
+
+        if (trial < 10)
+            fill_random(nbr, sizeof nbr, &seed);
+        else {
+            unsigned j;
+            for (j = 0; j < sizeof nbr; j++)
+                nbr[j] = (xrand(&seed) & 1) ? 255 : 0;
+        }
+
+        memset(dst_m68k, 0xAA, sizeof dst_m68k);
+        memset(dst_ref, 0xAA, sizeof dst_ref);
+        mr_ih264_intra_pred_luma_16x16_plane_m68k(nbr, dst_m68k, 0, dst_strd,
+                                                   0);
+        ref_intra16_plane(nbr, dst_ref, dst_strd);
+        for (row = 0; row < 16; row++)
+            for (col = 0; col < 16; col++) {
+                int idx = row * dst_strd + col;
+                if (dst_m68k[idx] != dst_ref[idx])
+                    report("intra16_plane", row, col, dst_ref[idx],
+                           dst_m68k[idx]);
+            }
+    }
+}
+
 /* ---- deblk_luma_vert_bs4 / horz_bs4 (H.264 8.7.2.4, bS==4) -------------- */
 /* Independent re-derivation of ih264_deblk_luma_vert_bs4/horz_bs4 straight
  * from the filtering-decision + strong/weak formulas in the spec section
@@ -1319,6 +2014,87 @@ static void check_inter_pred_chroma(void)
         }
     }
 }
+/* ---- motion vector prediction (ih264_m68k_mvpred.S) -------------------
+ * Independent reference, transcribed directly from
+ * ih264d_get_motion_vector_predictor()'s C (spec 8.4.1.2.1), not from the
+ * asm. test_mv_pred_t mirrors mv_pred_t's layout (ih264d_structs.h) byte
+ * for byte - i2_mv[4] at offset 0, i1_ref_frame[2] at offset 8 - since the
+ * asm indexes into it by those fixed offsets. */
+typedef struct {
+    int16_t i2_mv[4];
+    int8_t  i1_ref_frame[2];
+    uint8_t u1_col_ref_pic_idx;
+    uint8_t u1_pic_type;
+} test_mv_pred_t;
+
+static const int8_t g_mv_pred_condition[8] = { -1, 0, 1, -1, 2, -1, -1, -1 };
+
+static void ref_mv_predictor(test_mv_pred_t *result, test_mv_pred_t **mv_pred,
+                             uint8_t ref_idx, uint8_t b, const int8_t *cond)
+{
+    int8_t c_temp;
+    uint8_t b2 = (uint8_t)(b << 1);
+
+    c_temp = (int8_t)((mv_pred[0]->i1_ref_frame[b] == ref_idx) |
+                      ((mv_pred[1]->i1_ref_frame[b] == ref_idx) << 1) |
+                      ((mv_pred[2]->i1_ref_frame[b] == ref_idx) << 2));
+    c_temp = cond[c_temp];
+
+    if (c_temp != -1) {
+        result->i2_mv[b2 + 0] = mv_pred[c_temp]->i2_mv[b2 + 0];
+        result->i2_mv[b2 + 1] = mv_pred[c_temp]->i2_mv[b2 + 1];
+    } else {
+        int i, d0, d1;
+        for (i = 0; i < 2; i++) {
+            int a = mv_pred[0]->i2_mv[b2 + i];
+            int t = mv_pred[1]->i2_mv[b2 + i];
+            int tr = mv_pred[2]->i2_mv[b2 + i];
+            d0 = a < t ? a : t;
+            d1 = a > t ? a : t;
+            d1 = d1 < tr ? d1 : tr;
+            result->i2_mv[b2 + i] = (int16_t)(d0 > d1 ? d0 : d1);
+        }
+    }
+}
+
+static void check_mv_predictor(void)
+{
+    enum { N_ITER = 20000 };
+    uint32_t seed = 137;
+    int iter;
+
+    for (iter = 0; iter < N_ITER; iter++) {
+        test_mv_pred_t cand[3], result_ref, result_asm;
+        test_mv_pred_t *ptrs[3] = { &cand[0], &cand[1], &cand[2] };
+        uint8_t ref_idx, b;
+        int i, k;
+
+        for (i = 0; i < 3; i++) {
+            for (k = 0; k < 4; k++)
+                cand[i].i2_mv[k] = (int16_t)(xrand(&seed) % 8192) - 4096;
+            /* Small in-domain range (-1..2) so every c_temp bitmask value
+             * (0..7) and both the shortcut and median paths get exercised
+             * often, not just the near-certain "no match" case a full
+             * int8_t range would produce. */
+            cand[i].i1_ref_frame[0] = (int8_t)((int)(xrand(&seed) % 4) - 1);
+            cand[i].i1_ref_frame[1] = (int8_t)((int)(xrand(&seed) % 4) - 1);
+        }
+        ref_idx = (uint8_t)(xrand(&seed) % 3);
+        b = (uint8_t)(xrand(&seed) % 2);
+        memset(&result_ref, 0xAA, sizeof result_ref);
+        memset(&result_asm, 0xAA, sizeof result_asm);
+
+        ref_mv_predictor(&result_ref, ptrs, ref_idx, b, g_mv_pred_condition);
+        mr_ih264d_get_motion_vector_predictor_m68k(
+            (uint8_t *)&result_asm, (uint8_t **)ptrs, ref_idx, b,
+            (const uint8_t *)g_mv_pred_condition);
+
+        for (k = 0; k < 4; k++)
+            if (result_ref.i2_mv[k] != result_asm.i2_mv[k])
+                report("mv_predictor", iter, k, result_ref.i2_mv[k],
+                       result_asm.i2_mv[k]);
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
@@ -1327,17 +2103,24 @@ int main(void)
     check_weighted_pred_luma();
     check_weighted_pred_chroma();
     check_intra16();
+    check_intra16_dc();
+    check_intra4();
 #if defined(MR_M68K_ASM)
     check_interp();
     check_interp_qpel_qpel();
     check_interp_qpel();
     check_interp_hpel_hpel();
+    check_interp_horz_qpel_vert_hpel();
+    check_interp_horz_hpel_vert_qpel();
+    check_iquant_itrans_recon();
+    check_intra16_plane();
     check_deblk_bs4();
     check_deblk_bslt4();
     check_deblk_chroma_bs4();
     check_deblk_chroma_bslt4();
     check_decode_bin_cabac();
     check_inter_pred_chroma();
+    check_mv_predictor();
 #endif
 
     if (g_failures) {

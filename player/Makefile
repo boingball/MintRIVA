@@ -149,13 +149,25 @@ mr_h264_m68k_check: tests/mr_h264_m68k_check.c \
                      vendor/libavc_port/ih264_m68k_interp.S \
                      vendor/libavc_port/ih264_m68k_deblk.S \
                      vendor/libavc_port/ih264_m68k_cabac.S \
-                     vendor/libavc_port/ih264_m68k_chroma_mc.S
+                     vendor/libavc_port/ih264_m68k_chroma_mc.S \
+                     vendor/libavc_port/ih264_m68k_mvpred.S \
+                     vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
+                     vendor/libavc_port/ih264_m68k_intra_pred.S
 	$(CC) $(CFLAGS) -o $@ tests/mr_h264_m68k_check.c \
 	    vendor/libavc_port/ih264_m68k_optim.c \
 	    vendor/libavc_port/ih264_m68k_interp.S \
 	    vendor/libavc_port/ih264_m68k_deblk.S \
 	    vendor/libavc_port/ih264_m68k_cabac.S \
-	    vendor/libavc_port/ih264_m68k_chroma_mc.S
+	    vendor/libavc_port/ih264_m68k_chroma_mc.S \
+	    vendor/libavc_port/ih264_m68k_mvpred.S \
+	    vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
+	    vendor/libavc_port/ih264_m68k_intra_pred.S
+
+mr_h264_cabac_coeff_check: tests/mr_h264_cabac_coeff_check.c $(LIBAVC_SRC)
+	$(CC) $(CFLAGS) -o $@ tests/mr_h264_cabac_coeff_check.c $(LIBAVC_SRC)
+
+mr_h264_mvpred_dispatch_check: tests/mr_h264_mvpred_dispatch_check.c $(LIBAVC_SRC)
+	$(CC) $(CFLAGS) -o $@ tests/mr_h264_mvpred_dispatch_check.c $(LIBAVC_SRC)
 
 mr_iptv_check: tests/mr_iptv_check.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
                iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c iptv/mr_iptv.h \

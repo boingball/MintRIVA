@@ -50,6 +50,14 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->apf_inter_pred_luma[12] = mr_ih264_inter_pred_luma_vert_qpel_m68k;
     codec->apf_inter_pred_luma[10] =
         mr_ih264_inter_pred_luma_horz_hpel_vert_hpel_m68k;
+    codec->apf_inter_pred_luma[9] =
+        mr_ih264_inter_pred_luma_horz_qpel_vert_hpel_m68k;
+    codec->apf_inter_pred_luma[11] =
+        mr_ih264_inter_pred_luma_horz_qpel_vert_hpel_m68k;
+    codec->apf_inter_pred_luma[6] =
+        mr_ih264_inter_pred_luma_horz_hpel_vert_qpel_m68k;
+    codec->apf_inter_pred_luma[14] =
+        mr_ih264_inter_pred_luma_horz_hpel_vert_qpel_m68k;
     codec->pf_default_weighted_pred_luma =
         mr_ih264_default_weighted_pred_luma_m68k;
     codec->pf_default_weighted_pred_chroma =
@@ -58,6 +66,13 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_intra_pred_luma_16x16_vert_m68k;
     codec->apf_intra_pred_luma_16x16[1] =
         mr_ih264_intra_pred_luma_16x16_horz_m68k;
+    codec->apf_intra_pred_luma_16x16[2] =
+        mr_ih264_intra_pred_luma_16x16_dc_m68k;
+    codec->apf_intra_pred_luma_16x16[3] =
+        mr_ih264_intra_pred_luma_16x16_plane_m68k;
+    codec->apf_intra_pred_luma_4x4[0] = mr_ih264_intra_pred_luma_4x4_vert_m68k;
+    codec->apf_intra_pred_luma_4x4[1] = mr_ih264_intra_pred_luma_4x4_horz_m68k;
+    codec->apf_intra_pred_luma_4x4[2] = mr_ih264_intra_pred_luma_4x4_dc_m68k;
     codec->pf_deblk_luma_vert_bs4 = mr_ih264_deblk_luma_vert_bs4_m68k;
     codec->pf_deblk_luma_horz_bs4 = mr_ih264_deblk_luma_horz_bs4_m68k;
     codec->pf_deblk_luma_vert_bslt4 = mr_ih264_deblk_luma_vert_bslt4_m68k;
@@ -67,6 +82,14 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->pf_deblk_chroma_vert_bslt4 = mr_ih264_deblk_chroma_vert_bslt4_m68k;
     codec->pf_deblk_chroma_horz_bslt4 = mr_ih264_deblk_chroma_horz_bslt4_m68k;
     codec->pf_inter_pred_chroma = mr_ih264_inter_pred_chroma_m68k;
+    codec->pf_iquant_itrans_recon_luma_4x4 =
+        mr_ih264_iquant_itrans_recon_4x4_m68k;
+    codec->pf_iquant_itrans_recon_luma_4x4_dc =
+        mr_ih264_iquant_itrans_recon_4x4_dc_m68k;
+    codec->pf_iquant_itrans_recon_chroma_4x4 =
+        mr_ih264_iquant_itrans_recon_chroma_4x4_m68k;
+    codec->pf_iquant_itrans_recon_chroma_4x4_dc =
+        mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k;
 #endif
 #if defined(MR_H264_STAGE_PROFILE)
     /* Diagnostic-only, opt-in: wraps whatever is now sitting in the
