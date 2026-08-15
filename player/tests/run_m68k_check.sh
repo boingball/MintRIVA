@@ -57,8 +57,8 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_youtube.c core/mr_demux.c core/mr_latm.c core/mr_mkv.c \
       core/mr_avi.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \
       core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c core/mr_cinepak.c \
-      core/mr_dither.c core/mr_ham.c core/mr_scale.c core/mr_c2p.c \
-      core/mr_c2p_m68k.S \
+      core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_scale.c \
+      core/mr_c2p.c core/mr_c2p_m68k.S \
       core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c core/mr_mpeg2.c \
       vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
@@ -128,11 +128,13 @@ echo "== building mr_yuv_check.m68k =="
 $CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c \
     core/mr_yuv_m68k.S
 
-echo "== building mr_scale_check.m68k / mr_c2p_check.m68k / mr_ham_check.m68k =="
+echo "== building mr_scale_check.m68k / mr_c2p_check.m68k / mr_ham_check.m68k / mr_dither_check.m68k =="
 $CC -o "$BUILD/mr_scale_check.m68k" tests/mr_scale_check.c core/mr_scale.c
 $CC -o "$BUILD/mr_c2p_check.m68k" tests/mr_c2p_check.c core/mr_c2p.c \
     core/mr_c2p_m68k.S
 $CC -o "$BUILD/mr_ham_check.m68k" tests/mr_ham_check.c core/mr_ham.c
+$CC -o "$BUILD/mr_dither_check.m68k" tests/mr_dither_check.c core/mr_dither.c \
+    core/mr_dither_m68k.S
 
 run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 
@@ -143,6 +145,7 @@ run "$BUILD/mr_yuv_check.m68k"
 run "$BUILD/mr_scale_check.m68k"
 run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
+run "$BUILD/mr_dither_check.m68k"
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \
