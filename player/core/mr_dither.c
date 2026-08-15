@@ -3,6 +3,19 @@
  */
 #include "mr_dither.h"
 
+#if defined(MR_M68K_ASM)
+/* core/mr_dither_m68k.S - hand-written m68k version of mr_dither_rgb8
+ * below, unrolled 4 pixels at a time to match the Bayer pattern's period -
+ * see that file's header comment. __asm__ binds to the bare .globl name
+ * (m68k-amigaos-gcc otherwise decorates C symbols but not hand-written asm
+ * labels), matching every other hand-asm entry point in this project. */
+void mr_dither_rgb8_m68k(const uint8_t *rgb, int w, int h, int rgb_stride,
+                         uint8_t *out, int out_stride, int y_base,
+                         const uint8_t *lut_r, const uint8_t *lut_g,
+                         const uint8_t *lut_b)
+    __asm__("mr_dither_rgb8_m68k");
+#endif
+
 /* Normalised 4x4 Bayer matrix, values 0..15. */
 static const uint8_t bayer4[4][4] = {
     {  0,  8,  2, 10 },
@@ -54,6 +67,11 @@ void mr_dither_rgb8(const uint8_t *rgb, int w, int h, int rgb_stride,
 {
     int x, y;
     if (!lut_ready) build_lut();
+#if defined(MR_M68K_ASM)
+    mr_dither_rgb8_m68k(rgb, w, h, rgb_stride, out, out_stride, y_base,
+                        &lut_r[0][0], &lut_g[0][0], &lut_b[0][0]);
+    return;
+#endif
     for (y = 0; y < h; y++) {
         const uint8_t *sr = rgb + (size_t)y * rgb_stride;
         uint8_t       *dr = out + (size_t)y * out_stride;
