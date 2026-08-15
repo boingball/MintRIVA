@@ -22,8 +22,17 @@ int        mr_mpeg1_probe(const uint8_t *buf, size_t len);
  * pl_mpeg, even when the accompanying audio happens to be MP2. */
 int        mr_mpeg2_ps_probe(const uint8_t *buf, size_t len);
 
-/* Open over a borrowed buffer (must outlive the source). NULL on failure. */
-mr_mpeg1  *mr_mpeg1_open(const uint8_t *buf, size_t len);
+/* Open over a borrowed buffer (must outlive the source). NULL on failure.
+ * low_rate halves the effective audio rate mr_mpeg1_samplerate() reports
+ * again, on top of the always-on >28kHz halving (mirrors
+ * audio/mr_audio_decode.c's compute_stride() and mr_audio_decoder_open()'s
+ * own low_rate - this MP2 path is a separate, self-contained source that
+ * doesn't route through that adapter, so it needs its own copy of the same
+ * --audio-rate=low policy). no_audio skips demuxing/decoding the MP2 track
+ * entirely (mr_mpeg1_samplerate() then reports 0, same as a video-only
+ * stream, so callers need no separate no_audio check of their own). */
+mr_mpeg1  *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
+                         int no_audio);
 
 int        mr_mpeg1_width(mr_mpeg1 *m);
 int        mr_mpeg1_height(mr_mpeg1 *m);

@@ -57,6 +57,7 @@ struct mr_audio_decoder {
     int he_aac;
     mr_audio_info pcm_info;
     unsigned stride;
+    unsigned decim_phase;
     int low_rate;
     unsigned char *pending;
     size_t pending_len;
@@ -147,15 +148,20 @@ static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
         return (long)frames;
     }
 
-    /* Compact in-place, preserving interleaving. Frame counts are even for
-     * normal MP3/AAC blocks, so phase cannot drift between packets. */
+    /* Compact in-place, preserving interleaving. d->decim_phase carries the
+     * stride's position across calls, so a batch/packet boundary that lands
+     * mid-stride doesn't restart the pattern at frame zero and drift the
+     * effective output rate - block sizes are stride multiples for MP3/AAC/
+     * AC-3, so phase is always 0 there, but raw PCM chunks (AVI/WAV) can be
+     * any length. */
     out = 0;
-    for (i = 0; i < frames; i += d->stride) {
+    for (i = d->decim_phase; i < frames; i += d->stride) {
         unsigned ch;
         for (ch = 0; ch < channels; ch++)
             d->pcm[out * channels + ch] = d->pcm[i * channels + ch];
         out++;
     }
+    d->decim_phase = i - frames;
     if (sink && out) sink(user, d->pcm, out, channels);
     return (long)out;
 }
@@ -558,6 +564,7 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
 {
     if (!d) return 0;
     d->pending_len = 0;
+    d->decim_phase = 0;
     if (d->kind == AUDIO_KIND_PCM) return 1;
     if (d->kind == AUDIO_KIND_MP3) {
         MP3FreeDecoder(d->mp3);

@@ -1245,7 +1245,8 @@ static int hls_wait_service(void *opaque, unsigned wait_ms)
 /* MPEG-1 program streams (.mpg/.mpeg) play through pl_mpeg (video + MP2 audio),
  * reusing the display and Paula audio backends. Separate from the AVI/MOV +
  * codec path because .mpg is a self-contained stream. */
-static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_time)
+static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_time,
+                      int audio_low_rate, int no_audio)
 {
     mr_mpeg1      *mp;
     amiga_display *disp;
@@ -1260,7 +1261,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     int64_t        pts_us;
     unsigned       fps_millihz;
 
-    mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len);
+    mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len, audio_low_rate,
+                       no_audio);
     if (!mp) { printf("cannot open MPEG-1 stream\n");
                player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
                              "cannot open MPEG-1 stream");
@@ -1675,7 +1677,8 @@ int main(int argc, char **argv)
         printf("loaded %ld bytes\n", len);
 
         if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
-            int rc = play_mpeg1(buf, len, loop, want_time);
+            int rc = play_mpeg1(buf, len, loop, want_time, audio_low_rate,
+                                no_audio);
             free(buf);
             return mrplay_exit(rc);
         }
