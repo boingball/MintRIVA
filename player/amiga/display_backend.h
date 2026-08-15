@@ -44,7 +44,7 @@ typedef struct {
                           mr_display_service_fn service, void *service_opaque);
     /* Optional: report whether this handle can accept a direct YUV420P ->
      * indexed fused conversion (core/mr_yuv_dither.h's mr_yuv420_dither8())
-     * for a src_w x src_h source, filling *dst_w/*dst_h/*vscale with the
+     * for a src_w x src_h source, filling *dst_w, *dst_h and *vscale with the
      * geometry to produce - only ever true for the AGA backend when the
      * fitted display needs an exact integer *vertical-only* downscale (no
      * horizontal resize), e.g. a 640x360 source on a non-laced screen
@@ -53,7 +53,7 @@ typedef struct {
      * the two are mutually exclusive (one requires !resize, this requires
      * resize with an exact vertical ratio) and a caller queries both.
      * Produced buffers are consumed the same way as supports_indexed()'s -
-     * via show_indexed(), called with *dst_w/*dst_h instead of the source
+     * via show_indexed(), called with *dst_w and *dst_h instead of the source
      * dimensions. */
     int   (*supports_yuv_indexed)(void *handle, int src_w, int src_h,
                                   int *dst_w, int *dst_h, int *vscale);

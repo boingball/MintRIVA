@@ -675,6 +675,14 @@ static ULONG aga_wait_mask(void *handle)
 }
 
 const display_backend backend_aga = {
-    "AGA", aga_open, aga_show, NULL, aga_poll, aga_close, NULL, aga_wait_mask,
-    NULL, aga_supports_indexed, aga_show_indexed, aga_supports_yuv_indexed
+    .name = "AGA",
+    .open = aga_open,
+    .show = aga_show,
+    .poll = aga_poll,
+    .close = aga_close,
+    .wait_mask = aga_wait_mask,
+    .supports_indexed = aga_supports_indexed,
+    .show_indexed = aga_show_indexed,
+    .supports_yuv_indexed = aga_supports_yuv_indexed
+    /* timing/status/toggle_fullscreen left NULL - AGA has none of these. */
 };

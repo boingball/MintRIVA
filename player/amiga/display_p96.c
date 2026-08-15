@@ -859,6 +859,15 @@ static ULONG p96_wait_mask(void *h)
 }
 
 const display_backend backend_p96 = {
-    "RTG (P96)", p96_open, p96_show, p96_timing, p96_poll, p96_close,
-    p96_status, p96_wait_mask, p96_toggle_fullscreen
+    .name = "RTG (P96)",
+    .open = p96_open,
+    .show = p96_show,
+    .timing = p96_timing,
+    .poll = p96_poll,
+    .close = p96_close,
+    .status = p96_status,
+    .wait_mask = p96_wait_mask,
+    .toggle_fullscreen = p96_toggle_fullscreen
+    /* supports_indexed/show_indexed/supports_yuv_indexed left NULL - RTG
+     * backends don't implement the AGA-only indexed fast paths. */
 };
