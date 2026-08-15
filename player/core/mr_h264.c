@@ -61,6 +61,7 @@ typedef struct {
     void     *quit_opaque;
     mr_h264_timing timing;
     int       skip_output;
+    int       timing_enabled;
     h264_pts_entry pts_map[H264_PTS_MAP_CAP];
     uint64_t  pending_input_pts_us;
     int       pending_input_pts_set;
@@ -113,7 +114,7 @@ static int h264_default_quit_probe(void *opaque)
 
 static void h264_diag_checkpoint(h264_state *s, const char *phase,
                                  uint32_t au_ts, uint32_t off,
-                                 uint32_t remaining, unsigned long elapsed_us,
+                                 uint32_t remaining, clock_t au_mark,
                                  const ih264d_video_decode_op_t *out,
                                  IV_API_CALL_STATUS_T ret)
 {
@@ -121,8 +122,15 @@ static void h264_diag_checkpoint(h264_state *s, const char *phase,
     char buf[320];
     int n;
     ULONG fast;
+    unsigned long elapsed_us;
 
+    /* elapsed_us is computed here, after the diag_path check, rather than
+     * by the caller: this checkpoint fires twice per libavc sub-call, and
+     * on the normal (sub-720p) path diag_path is never set, so an eagerly-
+     * evaluated h264_elapsed_us(au_mark) argument would cost a clock() call
+     * every time for a value this function was about to throw away. */
     if (!s || !s->diag_path) return;
+    elapsed_us = h264_elapsed_us(au_mark);
     fh = Open((CONST_STRPTR)s->diag_path, MODE_NEWFILE);
     if (!fh) return;
 
@@ -601,9 +609,15 @@ static mr_status h264_decode(mr_decoder *dec,
     s->output_pts_valid = 0;
     memset(&s->timing, 0, sizeof s->timing);
 
-    input_mark = clock();
+    /* input_mark/call_mark/rgb_mark/stage-profile bookkeeping below only
+     * ever populate s->timing, which nothing reads unless
+     * mr_h264_set_timing_enabled() was turned on (mrplay.c does that under
+     * --time). Skipping them keeps a normal playback run from paying for
+     * several clock() calls every decoded frame for numbers nobody looks
+     * at. */
+    if (s->timing_enabled) input_mark = clock();
     st = avcc_sample_to_annexb(s, data, len, &annexb_len);
-    s->timing.input_us = h264_elapsed_us(input_mark);
+    if (s->timing_enabled) s->timing.input_us = h264_elapsed_us(input_mark);
     if (st != MR_OK) return st;
     if (s->service) s->service(s->service_opaque);
 
@@ -629,16 +643,18 @@ static mr_status h264_decode(mr_decoder *dec,
 
 #if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
             h264_diag_checkpoint(s, "sub-pre", au_ts, off,
-                                 annexb_len - off, h264_elapsed_us(au_mark),
+                                 annexb_len - off, au_mark,
                                  NULL, IV_SUCCESS);
 #endif
 
-            mr_h264_stage_profile_reset();
-            call_mark = clock();
+            if (s->timing_enabled) {
+                mr_h264_stage_profile_reset();
+                call_mark = clock();
+            }
             r = decode_annexb(s, au_ts, s->packet + off,
                               annexb_len - off, &sub_out);
-            s->timing.core_us += h264_elapsed_us(call_mark);
-            {
+            if (s->timing_enabled) {
+                s->timing.core_us += h264_elapsed_us(call_mark);
                 mr_h264_stage_us stage;
                 mr_h264_stage_profile_get(&stage);
                 s->timing.mc_us += stage.mc_us;
@@ -650,7 +666,7 @@ static mr_status h264_decode(mr_decoder *dec,
 
 #if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
             h264_diag_checkpoint(s, "sub-post", au_ts, off,
-                                 annexb_len - off, h264_elapsed_us(au_mark),
+                                 annexb_len - off, au_mark,
                                  &sub_out, r);
 #endif
 
@@ -682,10 +698,12 @@ static mr_status h264_decode(mr_decoder *dec,
                     dec->frame.dirty_y0 = dec->frame.dirty_y1 = 0;
                     captured_status = MR_OK;
                 } else {
-                    clock_t rgb_mark = clock();
+                    clock_t rgb_mark = 0;
+                    if (s->timing_enabled) rgb_mark = clock();
                     captured_status = emit_rgb(dec,
                                                &sub_out.s_ivd_video_decode_op_t);
-                    s->timing.output_us += h264_elapsed_us(rgb_mark);
+                    if (s->timing_enabled)
+                        s->timing.output_us += h264_elapsed_us(rgb_mark);
                 }
             }
 
@@ -724,6 +742,20 @@ void mr_h264_set_skip_output(mr_decoder *dec, int skip)
     if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
     s = (h264_state *)dec->priv;
     s->skip_output = skip != 0;
+}
+
+/* Off by default: h264_decode()'s per-call clock() timestamps and the
+ * mr_h264_stage_profile_reset()/_get() bookkeeping only ever feed
+ * mr_h264_frame_timing(), which nothing reads unless a caller actually
+ * wants the --time breakdown. mrplay.c turns this on when --time is
+ * passed; the host mr_decode CLI never calls this, so it stays disabled
+ * there too. */
+void mr_h264_set_timing_enabled(mr_decoder *dec, int enabled)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    s->timing_enabled = enabled != 0;
 }
 
 void mr_h264_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us)

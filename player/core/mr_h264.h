@@ -33,6 +33,12 @@ void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
 void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
 void mr_h264_set_diag(mr_decoder *dec, const char *path, int width, int height);
 void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing);
+/* Off by default. mr_h264_frame_timing() (and the per-stage mc/deblock/
+ * recon/intra breakdown under MR_H264_STAGE_PROFILE) only report real
+ * numbers once this is turned on - otherwise h264_decode() skips its
+ * clock() calls and stage-profile bookkeeping entirely, since nothing
+ * would read the result anyway. */
+void mr_h264_set_timing_enabled(mr_decoder *dec, int enabled);
 void mr_h264_set_skip_output(mr_decoder *dec, int skip);
 /* Associate the next compressed access unit with its container PTS.  Libavc
  * may emit an older access unit after display reordering; output_pts() returns
