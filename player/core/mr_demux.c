@@ -231,7 +231,12 @@ const char *mr_demux_last_open_error(void)
 
 mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
 {
-    clock_t begin = clock();
+    /* begin/the elapsed-time calculation below only ever feed d->u.ts.timing,
+     * which nothing populates or reads for any other container kind - skip
+     * the clock() call (a ReadEClock() read on Amiga) for every AVI/MOV/MKV/
+     * PS/raw packet, i.e. every container except TS, instead of paying for a
+     * timestamp this function immediately discards. */
+    clock_t begin = (d->kind == MR_CONTAINER_TS) ? clock() : 0;
     mr_status status;
     mr_demux_timing before;
     if (d->kind == MR_CONTAINER_TS) before = d->u.ts.timing;

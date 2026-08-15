@@ -520,7 +520,6 @@ typedef struct playback_stats {
     unsigned decoded, presented, late, dropped, samples;
     uint64_t rtg_prepare_us, rtg_scale_us, rtg_convert_us, rtg_copy_us;
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
-    uint64_t frame_copy_us;
     unsigned long rtg_prepare_max_us, rtg_blit_max_us;
     uint64_t h264_input_us, h264_core_us, h264_output_us;
     unsigned long h264_input_max_us, h264_core_max_us, h264_output_max_us;
@@ -693,7 +692,9 @@ static void present_service_frame(video_presenter *vp)
                                         *vp->qcount, *vp->playback_started);
         h264_pipeline_stage = 5;
     }
-    vp->stats->latency_us += monotonic_us() - front->decoded_at_us;
+    /* latency_us only ever feeds the --time report's "latency=" figure. */
+    if (vp->want_time)
+        vp->stats->latency_us += monotonic_us() - front->decoded_at_us;
     vp->stats->presented++;
     if (vp->frames) (*vp->frames)++;
     *vp->qhead = (*vp->qhead + 1) % vp->video_cap;
@@ -2333,7 +2334,12 @@ int main(int argc, char **argv)
                     }
                 }
             }
-            {
+            /* show_us/display_us/display_max_us/convert_us/latency_us only
+             * ever feed the --time report (the periodic "rtg timing:" print
+             * and the final "timing/N frames:" summary) - skip the
+             * monotonic_us() calls and display_aga_frame_timing() query on a
+             * normal run. */
+            if (want_time) {
                 unsigned long show_us = (unsigned long)(monotonic_us() - now);
                 unsigned long enc_ms = 0, blit_ms = 0;
                 display_aga_frame_timing(&enc_ms, &blit_ms);
@@ -2341,8 +2347,8 @@ int main(int argc, char **argv)
                 stats.display_us += show_us;
                 total_display_us += show_us;
                 if (show_us > stats.display_max_us) stats.display_max_us = show_us;
+                stats.latency_us += monotonic_us() - front->decoded_at_us;
             }
-            stats.latency_us += monotonic_us() - front->decoded_at_us;
             stats.presented++; frames++;
             qhead = (qhead + 1) % video_cap; qcount--;
             now = monotonic_us();
@@ -2548,15 +2554,24 @@ int main(int argc, char **argv)
                 if (next != MR_OK) input_eof = 1;
                 else if (!pkt.is_video) {
                     if (audio && audio_dec) {
-                        uint64_t audio_end;
                         trace_phase(&trace, "audio-decode");
                         service_audio_for_display(&trace);
-                        a = monotonic_us();
-                        mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
-                                              decoded_audio_sink, audio);
-                        audio_end = monotonic_us();
+                        /* stats.audio_decode_us only ever feeds the --time
+                         * report; skip both monotonic_us() calls (each a
+                         * ReadEClock() + 64-bit divide) around every
+                         * decoded audio packet when nobody asked for it. */
+                        if (want_time) {
+                            uint64_t audio_end;
+                            a = monotonic_us();
+                            mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
+                                                  decoded_audio_sink, audio);
+                            audio_end = monotonic_us();
+                            stats.audio_decode_us += audio_end - a;
+                        } else {
+                            mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
+                                                  decoded_audio_sink, audio);
+                        }
                         service_audio_for_display(&trace);
-                        stats.audio_decode_us += audio_end - a;
                         if (rescue_active) {
                             rescue_episode_audio++;
                             stats.rescue_audio_packets++;
@@ -2577,7 +2592,13 @@ int main(int argc, char **argv)
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
                     decode_end = monotonic_us();
                     if (audio) service_audio_for_display(&trace);
-                    {
+                    /* mr_h264_frame_timing()'s fields only ever feed the
+                     * --time stats report below; when timing isn't enabled
+                     * h264_decode() never populates them (they read back as
+                     * zero), so fetching and accumulating them every frame
+                     * is a wasted struct copy plus a dozen adds/compares for
+                     * numbers nobody asked for. */
+                    if (want_time) {
                         mr_h264_timing ht;
                         mr_h264_frame_timing(&dec, &ht);
                         stats.h264_input_us += ht.input_us;
@@ -2703,7 +2724,6 @@ int main(int argc, char **argv)
                                 &vq[(qhead + qcount) % video_cap];
                             trace_phase(&trace, "frame-copy");
                             if (audio) service_audio_for_display(&trace);
-                            a = monotonic_us();
                             if (!(use_indexed_queue
                                   ? queue_copy_indexed(tail, &dec.frame, pts,
                                                        monotonic_us(), decode_us)
@@ -2728,9 +2748,7 @@ int main(int argc, char **argv)
                                 decoded_index++;
                                 continue;
                             }
-                            decode_end = monotonic_us();
                             if (audio) service_audio_for_display(&trace);
-                            stats.frame_copy_us += decode_end - a;
                             qcount++;
                             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 2) {
                                 h264_pipeline_checkpoint_player("queue-copy",
@@ -2840,12 +2858,21 @@ int main(int argc, char **argv)
         }
         if (quit) break;
 
-        a = monotonic_us();
-        display_show_rgb(disp, dec.frame.data, dec.frame.width,
-                         dec.frame.height, dec.frame.stride,
-                         dec.frame.dirty_y0, dec.frame.dirty_y1);
-        player_first_frame_presented();
-        total_display_us += monotonic_us() - a;
+        /* total_display_us only ever feeds the --time "timing/N frames:"
+         * summary below - skip both monotonic_us() calls otherwise. */
+        if (want_time) {
+            a = monotonic_us();
+            display_show_rgb(disp, dec.frame.data, dec.frame.width,
+                             dec.frame.height, dec.frame.stride,
+                             dec.frame.dirty_y0, dec.frame.dirty_y1);
+            player_first_frame_presented();
+            total_display_us += monotonic_us() - a;
+        } else {
+            display_show_rgb(disp, dec.frame.data, dec.frame.width,
+                             dec.frame.height, dec.frame.stride,
+                             dec.frame.dirty_y0, dec.frame.dirty_y1);
+            player_first_frame_presented();
+        }
         frames++;
     }
     }
