@@ -21,6 +21,7 @@
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
+#include "../core/mr_dither.h"
 #include "../audio/mr_audio_decode.h"
 #include "../iptv/mr_iptv.h"
 #include "amiga_display.h"
@@ -577,6 +578,12 @@ typedef struct video_presenter {
     int                 *frames;
     playback_stats      *stats;
     int                  want_time;
+    /* Set once from display_supports_indexed() after display_open(); true
+     * only for the AGA backend's plain 256-colour configuration. When set,
+     * the queue holds pre-dithered 8-bit indexed frames (queue_copy_indexed)
+     * instead of RGB24, and this presenter must blit them with
+     * display_show_indexed() instead of display_show_rgb(). */
+    int                  use_indexed;
 } video_presenter;
 
 typedef struct scheduler_trace {
@@ -674,8 +681,12 @@ static void present_service_frame(video_presenter *vp)
                                         *vp->qcount, *vp->playback_started);
         h264_pipeline_stage = 4;
     }
-    display_show_rgb(vp->disp, front->rgb, front->width, front->height,
-                     front->stride, front->dirty_y0, front->dirty_y1);
+    if (vp->use_indexed)
+        display_show_indexed(vp->disp, front->rgb, front->width, front->height,
+                             front->stride, front->dirty_y0, front->dirty_y1);
+    else
+        display_show_rgb(vp->disp, front->rgb, front->width, front->height,
+                         front->stride, front->dirty_y0, front->dirty_y1);
     player_first_frame_presented();
     if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
         h264_pipeline_checkpoint_player("post-display-service",
@@ -789,6 +800,38 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
     }
     memcpy(q->rgb, fr->data, bytes);
     q->width = fr->width; q->height = fr->height; q->stride = fr->stride;
+    q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
+    q->pts_us = pts; q->decoded_at_us = decoded_at; q->decode_us = decode_us;
+    return 1;
+}
+
+/*
+ * Same contract as queue_copy(), but for a display that can accept an 8-bit
+ * indexed frame directly (display_supports_indexed() - see display_backend.h
+ * and aga_supports_indexed()). Dithers straight into the queue slot instead
+ * of memcpy'ing an RGB24 frame that display_show_rgb's AGA backend would only
+ * dither (again) at presentation time - cutting the ~w*h*3-byte RGB24 copy
+ * out of this pipeline stage entirely and leaving the display side a cheap
+ * per-row byte copy instead of a per-pixel LUT pass.
+ *
+ * Dithers the whole frame every call, exactly like queue_copy()'s full-buffer
+ * memcpy above: fr->data is the decoder's persistent framebuffer (every row
+ * holds valid pixel data, not just the dirty ones), and this queue slot is
+ * reused by unrelated frames between visits, so dithering only [dirty_y0,
+ * dirty_y1) would leave stale rows from whatever frame last occupied it.
+ */
+static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
+                              uint64_t decoded_at, unsigned long decode_us)
+{
+    size_t bytes = (size_t)fr->width * (size_t)fr->height;
+    if (q->capacity < bytes) {
+        unsigned char *p = (unsigned char *)realloc(q->rgb, bytes);
+        if (!p) return 0;
+        q->rgb = p; q->capacity = bytes;
+    }
+    mr_dither_rgb8(fr->data, fr->width, fr->height, fr->stride,
+                   q->rgb, fr->width, 0);
+    q->width = fr->width; q->height = fr->height; q->stride = fr->width;
     q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
     q->pts_us = pts; q->decoded_at_us = decoded_at; q->decode_us = decode_us;
     return 1;
@@ -1665,6 +1708,11 @@ int main(int argc, char **argv)
     printf("display backend: %s\n", display_backend_name(disp));
     player_status(MR_PLAYER_STATE_OPENING, codec->name,
                   "Display open; buffering first frame...");
+    /* True only for the AGA backend's plain 256-colour configuration (see
+     * display_backend.h / aga_supports_indexed()). Queried once: the display
+     * mode is fixed for the life of this session, so every queue slot below
+     * uses the same format throughout. */
+    int use_indexed_queue = display_supports_indexed(disp);
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
      * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
@@ -1882,6 +1930,7 @@ int main(int argc, char **argv)
         presenter.frames = &frames;
         presenter.stats = &stats;
         presenter.want_time = want_time;
+        presenter.use_indexed = use_indexed_queue;
         trace.presenter = &presenter;
 
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
@@ -2251,8 +2300,12 @@ int main(int argc, char **argv)
                                                 qcount, playback_started);
                 h264_pipeline_stage = 4;
             }
-            display_show_rgb(disp, front->rgb, front->width, front->height,
-                             front->stride, front->dirty_y0, front->dirty_y1);
+            if (use_indexed_queue)
+                display_show_indexed(disp, front->rgb, front->width, front->height,
+                                     front->stride, front->dirty_y0, front->dirty_y1);
+            else
+                display_show_rgb(disp, front->rgb, front->width, front->height,
+                                 front->stride, front->dirty_y0, front->dirty_y1);
             player_first_frame_presented();
             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
                 h264_pipeline_checkpoint_player("post-display-main",
@@ -2651,8 +2704,11 @@ int main(int argc, char **argv)
                             trace_phase(&trace, "frame-copy");
                             if (audio) service_audio_for_display(&trace);
                             a = monotonic_us();
-                            if (!queue_copy(tail, &dec.frame, pts, monotonic_us(),
-                                            decode_us)) {
+                            if (!(use_indexed_queue
+                                  ? queue_copy_indexed(tail, &dec.frame, pts,
+                                                       monotonic_us(), decode_us)
+                                  : queue_copy(tail, &dec.frame, pts,
+                                              monotonic_us(), decode_us))) {
                                 /* Out of RAM for another RGB slot (a backstop -
                                  * the queue is sized to fit; see main). Never
                                  * quit: drop this frame exactly as a full queue
