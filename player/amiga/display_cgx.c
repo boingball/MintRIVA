@@ -745,6 +745,15 @@ static ULONG cgx_wait_mask(void *h)
 }
 
 const display_backend backend_cgx = {
-    "RTG (CGX)", cgx_open, cgx_show, cgx_timing, cgx_poll, cgx_close,
-    cgx_status, cgx_wait_mask, cgx_toggle_fullscreen
+    .name = "RTG (CGX)",
+    .open = cgx_open,
+    .show = cgx_show,
+    .timing = cgx_timing,
+    .poll = cgx_poll,
+    .close = cgx_close,
+    .status = cgx_status,
+    .wait_mask = cgx_wait_mask,
+    .toggle_fullscreen = cgx_toggle_fullscreen
+    /* supports_indexed/show_indexed/supports_yuv_indexed left NULL - RTG
+     * backends don't implement the AGA-only indexed fast paths. */
 };

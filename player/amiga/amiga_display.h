@@ -122,7 +122,7 @@ void display_show_indexed(amiga_display *d, const unsigned char *idx,
 
 /* Non-zero when `d` can accept a direct YUV420P -> indexed fused frame
  * (core/mr_yuv_dither.h's mr_yuv420_dither8()) for a src_w x src_h source,
- * filling *dst_w/*dst_h/*vscale with the geometry to produce - true only
+ * filling *dst_w, *dst_h and *vscale with the geometry to produce - true only
  * for the AGA backend when the fitted display needs an exact integer
  * vertical-only downscale (no horizontal resize; see
  * display_backend.h's supports_yuv_indexed for the exact conditions).
