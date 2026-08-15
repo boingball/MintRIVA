@@ -38,6 +38,13 @@ void       mr_source_close(mr_source *s);
  * queried by the player only at rolling-report boundaries, never per frame. */
 void       mr_source_timing_get(mr_source_timing *timing);
 void       mr_source_timing_reset(void);
+/* Off by default: mr_source_read_at() (and the HLS playlist/segment fetch
+ * timers in mr_hls.c) only ever feed mr_source_timing_get(), read solely by
+ * the --time report - skip the clock() calls entirely otherwise. Global,
+ * like the g_timing it gates, since mr_source has no per-instance state a
+ * caller could thread a flag through. */
+void       mr_source_set_timing_enabled(int enabled);
+int        mr_source_timing_enabled(void);
 void       mr_source_timing_add_network(unsigned long ms);
 void       mr_source_mark_network(mr_source *s);
 void       mr_source_timing_add_hls_segment(unsigned long ms);

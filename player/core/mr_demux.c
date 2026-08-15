@@ -232,14 +232,15 @@ const char *mr_demux_last_open_error(void)
 mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
 {
     /* begin/the elapsed-time calculation below only ever feed d->u.ts.timing,
-     * which nothing populates or reads for any other container kind - skip
-     * the clock() call (a ReadEClock() read on Amiga) for every AVI/MOV/MKV/
-     * PS/raw packet, i.e. every container except TS, instead of paying for a
-     * timestamp this function immediately discards. */
-    clock_t begin = (d->kind == MR_CONTAINER_TS) ? clock() : 0;
+     * which nothing populates or reads unless mr_demux_set_timing_enabled()
+     * turned it on - skip the clock() call (a ReadEClock() read on Amiga)
+     * for every packet otherwise, instead of paying for a timestamp this
+     * function immediately discards. */
+    int ts_timing = d->kind == MR_CONTAINER_TS && d->u.ts.timing_enabled;
+    clock_t begin = ts_timing ? clock() : 0;
     mr_status status;
     mr_demux_timing before;
-    if (d->kind == MR_CONTAINER_TS) before = d->u.ts.timing;
+    if (ts_timing) before = d->u.ts.timing;
     if (pkt) { pkt->has_pts = 0; pkt->pts_us = 0; }
     if (d->kind == MR_CONTAINER_AVI) status = mr_avi_next_packet(&d->u.avi, pkt);
     else if (d->kind == MR_CONTAINER_MOV) status = mr_mov_next_packet(&d->u.mov, pkt);
@@ -249,7 +250,7 @@ mr_status mr_demux_next_packet(mr_demux *d, mr_packet *pkt)
     else if (d->kind == MR_CONTAINER_RAW_MJPEG)
         status = mr_raw_mjpeg_next_packet(&d->u.raw_mjpeg, pkt);
     else status = mr_raw_mpeg4_next_packet(&d->u.raw_mpeg4, pkt);
-    if (d->kind == MR_CONTAINER_TS) {
+    if (ts_timing) {
         mr_demux_timing *t = &d->u.ts.timing;
         unsigned long us = (unsigned long)((clock() - begin) * 1000000UL /
                                            CLOCKS_PER_SEC);
@@ -273,6 +274,11 @@ void mr_demux_set_service(mr_demux *d, mr_demux_service_fn fn, void *opaque)
     if (d && d->kind == MR_CONTAINER_TS) {
         d->u.ts.service = fn; d->u.ts.service_opaque = opaque;
     }
+}
+
+void mr_demux_set_timing_enabled(mr_demux *d, int enabled)
+{
+    if (d && d->kind == MR_CONTAINER_TS) d->u.ts.timing_enabled = enabled != 0;
 }
 
 void mr_demux_timing_get(mr_demux *d, mr_demux_timing *timing, int reset)

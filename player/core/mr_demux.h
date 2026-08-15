@@ -103,6 +103,13 @@ void         mr_demux_set_service(mr_demux *d, mr_demux_service_fn fn,
                                   void *opaque);
 void         mr_demux_timing_get(mr_demux *d, mr_demux_timing *timing,
                                  int reset);
+/* Off by default. mr_demux_timing_get()'s TS-specific fields (source/sync/
+ * assembly/copy/audio/video us, per-call maxima) only report real numbers
+ * once this is turned on - otherwise mr_ts_next_packet() skips its clock()
+ * reads (several per 188/192-byte packet - source read, sync parse, PES
+ * assembly, copy) entirely, since nothing would read the result. No effect
+ * on any container other than TS. */
+void         mr_demux_set_timing_enabled(mr_demux *d, int enabled);
 void         mr_demux_rewind(mr_demux *d);
 void         mr_demux_close(mr_demux *d);
 
