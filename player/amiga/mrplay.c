@@ -1933,15 +1933,26 @@ int main(int argc, char **argv)
          * playback into the smooth present-as-decoded regime (video trailing the
          * clock, no discards); a deeper queue also rides short stalls outright.
          * The clamps below keep the footprint within a safe slice of free RAM,
-         * and video_cap is the ring modulus so the footprint is exactly
-         * video_cap * frame_bytes. */
+         * and video_cap is the ring modulus so the queue's footprint is
+         * exactly video_cap * frame_bytes (RGB24, indexed or YUV-indexed,
+         * whichever this session actually queues - see frame_bytes below). */
         unsigned long cushion_ms;
-        size_t frame_bytes = (size_t)vi->width * (size_t)vi->height * 3;
+        /* Must match whichever queue_copy* the copy_ok dispatch below picks
+         * for this session (queue_copy_yuv_indexed()/queue_copy_indexed()/
+         * queue_copy() - see their declarations), or this budget either
+         * overestimates and needlessly clamps video_cap (RGB24 assumed on an
+         * indexed path is a 3x-6x overestimate), or underestimates and lets
+         * the queue overrun its RAM budget. */
+        size_t frame_bytes = use_yuv_indexed_queue
+                            ? (size_t)yuv_dst_w * (size_t)yuv_dst_h
+                            : use_indexed_queue
+                            ? (size_t)vi->width * (size_t)vi->height
+                            : (size_t)vi->width * (size_t)vi->height * 3;
         ULONG free_any = AvailMem(MEMF_ANY);
         /* Only a third of the (post-floor) free pool is a safety ceiling; the
          * shallow default is far below it, but it protects a tight machine and
-         * an explicit --net-queue. video_cap is the ring modulus below, so the
-         * RGB footprint is exactly video_cap * frame_bytes. */
+         * an explicit --net-queue. video_cap is the ring modulus below, so
+         * the queue's footprint is exactly video_cap * frame_bytes. */
         size_t budget = free_any > VIDEO_QUEUE_MEM_FLOOR
                       ? (size_t)(free_any - VIDEO_QUEUE_MEM_FLOOR) / 3 : 0;
         int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
