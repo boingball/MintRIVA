@@ -55,6 +55,7 @@ void mr_play_options_default(mr_play_options *o)
      * off. Disable with --no-live-resync. */
     o->live_resync = 1;
     o->h264_performance = MR_H264_PERF_AUTO;
+    o->audio_rate = MR_AUDIO_RATE_NORMAL;
 }
 
 static int append_text(char *out, size_t cap, const char *text)
@@ -170,6 +171,11 @@ static int append_playback_flags(char *out, size_t cap,
                          ? "--h264-speed=balanced" : "--h264-speed=fast";
         if (!append_option(out, cap, mode)) return 0;
     }
+    if (o->no_audio) {
+        if (!append_option(out, cap, "--no-audio")) return 0;
+    } else if (o->audio_rate == MR_AUDIO_RATE_LOW) {
+        if (!append_option(out, cap, "--audio-rate=low")) return 0;
+    }
     return 1;
 }
 
@@ -255,6 +261,13 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "fast")) o->h264_performance = MR_H264_PERF_FAST;
             else goto bad;
         }
+        else if (!strncmp(arg, "--audio-rate=", 13)) {
+            value = arg + 13;
+            if (!strcmp(value, "normal")) o->audio_rate = MR_AUDIO_RATE_NORMAL;
+            else if (!strcmp(value, "low")) o->audio_rate = MR_AUDIO_RATE_LOW;
+            else goto bad;
+        }
+        else if (!strcmp(arg, "--no-audio")) o->no_audio = 1;
         else if (!strncmp(arg, "--hls-max-width=", 16)) {
             if (!parse_uint(arg + 16, &o->hls_max_width)) goto bad;
         } else if (!strncmp(arg, "--hls-max-height=", 17)) {
@@ -280,26 +293,35 @@ static void hls_policy_text(const mr_play_options *o, char *out, size_t cap)
         snprintf(out, cap, "HLS best");
 }
 
+/* Short description of the audio output rate policy for the status line. */
+static const char *audio_policy_text(const mr_play_options *o)
+{
+    if (o->no_audio) return "off";
+    return o->audio_rate == MR_AUDIO_RATE_LOW ? "Low" : "Normal";
+}
+
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
     char hls[24];
-    const char *h264;
+    const char *h264, *audio;
     if (!out || !cap || !o) return;
     hls_policy_text(o, hls, sizeof hls);
     h264 = o->h264_performance == MR_H264_PERF_QUALITY ? "Quality" :
            o->h264_performance == MR_H264_PERF_BALANCED ? "Balanced" :
            o->h264_performance == MR_H264_PERF_FAST ? "Fast" : "Auto";
+    audio = audio_policy_text(o);
     if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
-        snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s%s",
+        snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s%s",
                  o->display == MR_DISPLAY_P96 ? "P96" : "WritePixel",
-                 hls, h264, o->live_resync ? " / Live-resync" : "");
+                 hls, h264, audio, o->live_resync ? " / Live-resync" : "");
     else
-        snprintf(out, cap, "Playback: %s / %s / Lace %s / 2x %s / %s / H264 %s%s",
+        snprintf(out, cap,
+                 "Playback: %s / %s / Lace %s / 2x %s / %s / H264 %s / Audio %s%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" :
                  o->display == MR_DISPLAY_AGA_ECS32 ? "ECS (32)" :
                  o->display == MR_DISPLAY_AGA_ECS16 ? "ECS (16)" : "Native planar",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
-                 o->scale_2x ? "on" : "off", hls, h264,
+                 o->scale_2x ? "on" : "off", hls, h264, audio,
                  o->live_resync ? " / Live-resync" : "");
 }

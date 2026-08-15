@@ -22,6 +22,17 @@
 #define PCM_SHORTS_MAX 4096
 #define PAULA_RATE_MAX 28000U
 
+/* Base decimation stride (1 or 2, halving anything above Paula's ~28kHz
+ * ceiling), doubled again under --audio-rate=low (mr_audio_decoder_open()'s
+ * low_rate) for a further 2:1 reduction - 48kHz->12kHz, 44.1kHz->11.025kHz,
+ * and a source already at/below 28kHz (e.g. 22.05kHz) drops to 11.025kHz
+ * rather than being forced to a fixed absolute rate. */
+static unsigned compute_stride(unsigned rate, int low_rate)
+{
+    unsigned stride = rate > PAULA_RATE_MAX ? 2 : 1;
+    return low_rate ? stride * 2 : stride;
+}
+
 enum audio_kind {
     AUDIO_KIND_PCM,
     AUDIO_KIND_MP3,
@@ -46,6 +57,7 @@ struct mr_audio_decoder {
     int he_aac;
     mr_audio_info pcm_info;
     unsigned stride;
+    int low_rate;
     unsigned char *pending;
     size_t pending_len;
     size_t pending_cap;
@@ -199,7 +211,8 @@ static int parse_aac_asc(const mr_audio_info *info,
     return 1;
 }
 
-mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
+mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
+                                        int low_rate)
 {
     mr_audio_decoder *d;
     if (!info || !info->valid) return NULL;
@@ -212,9 +225,10 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
 
     d = (mr_audio_decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
+    d->low_rate = low_rate != 0;
     d->source_rate = info->sample_rate;
     d->channels = info->channels;
-    d->stride = info->sample_rate > PAULA_RATE_MAX ? 2 : 1;
+    d->stride = compute_stride(info->sample_rate, d->low_rate);
     d->output_rate = info->sample_rate / d->stride;
 
     if (info->format_tag == MR_AUDIO_FORMAT_PCM) {
@@ -265,7 +279,7 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info)
             d->he_aac = he_aac;
             d->source_rate = output_rate;
             d->channels = channels;
-            d->stride = output_rate > PAULA_RATE_MAX ? 2 : 1;
+            d->stride = compute_stride(output_rate, d->low_rate);
             d->output_rate = output_rate / d->stride;
         } else {
             d->kind = AUDIO_KIND_AAC_ADTS;
@@ -422,7 +436,7 @@ static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
         }
         a52_dynrng(d->ac3, NULL, NULL);
         d->source_rate = (unsigned)rate;
-        d->stride = rate > (int)PAULA_RATE_MAX ? 2 : 1;
+        d->stride = compute_stride((unsigned)rate, d->low_rate);
         d->output_rate = (unsigned)rate / d->stride;
         for (block = 0; block < 6; block++) {
             sample_t *samples;

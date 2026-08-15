@@ -38,6 +38,20 @@ typedef enum {
     MR_H264_PERF_FAST
 } mr_h264_performance;
 
+/* Paula output rate policy. NORMAL keeps the existing >28kHz halving
+ * (48kHz->24kHz, 44.1kHz->22.05kHz - see mr_audio_decoder_open()'s stride).
+ * LOW halves whatever NORMAL would already produce again (48kHz->12kHz,
+ * 44.1kHz->11.025kHz, and a source already at/below 28kHz like 22.05kHz
+ * drops to 11.025kHz) - a relative reduction, not a forced absolute rate,
+ * so every source still lands on a clean integer stride of its own rate.
+ * Noticeably telephone-like, especially for music, but a real CPU saving on
+ * a 68k pushed hard by H.264 decode - fewer samples to downmix, convert to
+ * 8-bit and queue to Paula. */
+typedef enum {
+    MR_AUDIO_RATE_NORMAL = 0,
+    MR_AUDIO_RATE_LOW
+} mr_audio_rate_mode;
+
 typedef struct mr_play_options {
     mr_display_mode display;
     mr_c2p_mode c2p;
@@ -49,6 +63,8 @@ typedef struct mr_play_options {
     unsigned hls_max_fps;
     int live_resync;   /* pass --live-resync: catch up / reconnect live streams */
     mr_h264_performance h264_performance;
+    mr_audio_rate_mode audio_rate;
+    int no_audio;      /* pass --no-audio: skip the audio decoder/Paula entirely */
 } mr_play_options;
 
 void mr_play_options_default(mr_play_options *options);

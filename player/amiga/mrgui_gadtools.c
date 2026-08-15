@@ -24,7 +24,7 @@
 
 #define MRPLAY_STACK_SIZE 320000UL
 #define WIN_W 640
-#define WIN_H 130
+#define WIN_H 154
 
 #if defined(__GNUC__)
 static const char mrgui_gt_stack_cookie[] __attribute__((used))="$STACK:131072";
@@ -38,6 +38,7 @@ extern struct Library *GadToolsBase;
 
 enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_2X,
+    G_AUDIO_RATE, G_NO_AUDIO,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO
 };
 
@@ -47,6 +48,7 @@ typedef struct gt_app {
     APTR visual;
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *twox, *info;
+    struct Gadget *audio_rate, *no_audio;
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
@@ -60,6 +62,8 @@ static STRPTR c2p_labels[] = {(STRPTR)"C2P: Standard", (STRPTR)"C2P: CD32",
                              (STRPTR)"C2P: Kalms", NULL};
 static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
                               (STRPTR)"H.264: Balanced", (STRPTR)"H.264: Fast", NULL};
+static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
+                                    (STRPTR)"Audio: Low", NULL};
 static const struct TextAttr topaz = {(STRPTR)"topaz.font", 8, 0, 0};
 
 static int aga(void)
@@ -102,6 +106,7 @@ static void read_options(gt_app *app, mr_play_options *options)
     ULONG mode = gad_value(app, app->mode, GTCY_Active);
     ULONG c2p = gad_value(app, app->c2p, GTCY_Active);
     ULONG h264 = gad_value(app, app->h264, GTCY_Active);
+    ULONG audio_rate = gad_value(app, app->audio_rate, GTCY_Active);
     mr_play_options_default(options);
     options->display = mode < app->mode_count ? app->modes[mode]
                                                : MR_DISPLAY_AGA;
@@ -112,6 +117,9 @@ static void read_options(gt_app *app, mr_play_options *options)
                               : MR_H264_PERF_AUTO;
     options->laced = gad_value(app, app->lace, GTCB_Checked) != 0;
     options->scale_2x = gad_value(app, app->twox, GTCB_Checked) != 0;
+    options->audio_rate = audio_rate == 1
+                        ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
+    options->no_audio = gad_value(app, app->no_audio, GTCB_Checked) != 0;
 }
 
 static void publish_options(gt_app *app)
@@ -345,19 +353,23 @@ static int build_window(gt_app *app)
         "Laced", GTCB_Checked, FALSE);
     app->twox = g = add_gadget(app, g, CHECKBOX_KIND, G_2X, 587, 45, 45, 14,
         "2x", GTCB_Checked, FALSE);
-    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 68, 75, 18, "Play",
+    app->audio_rate = g = add_gadget(app, g, CYCLE_KIND, G_AUDIO_RATE, 8, 68,
+        145, 16, "", GTCY_Labels, (ULONG)audio_rate_labels);
+    app->no_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_NO_AUDIO, 161, 69,
+        100, 14, "No audio", GTCB_Checked, FALSE);
+    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 92, 75, 18, "Play",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 87, 68, 75, 18, "Pause",
+    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 87, 92, 75, 18, "Pause",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 166, 68, 75, 18, "Stop",
+    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 166, 92, 75, 18, "Stop",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 245, 68, 100, 18, "Fast",
+    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 245, 92, 100, 18, "Fast",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 349, 68, 132, 18, "IPTV...",
+    g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 349, 92, 132, 18, "IPTV...",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 485, 68, 142, 18,
+    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 485, 92, 142, 18,
                    "YouTube...", TAG_IGNORE, 0);
-    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 92, 619, 16,
+    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 116, 619, 16,
         "", GTTX_Text, (ULONG)"No file selected");
     if (!g)
         return 0;
@@ -460,6 +472,7 @@ int main(void)
                     publish_options(&app);
                     break;
                 case G_H264: case G_LACE: case G_2X:
+                case G_AUDIO_RATE: case G_NO_AUDIO:
                     publish_options(&app); break;
                 default: break;
                 }

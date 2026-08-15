@@ -53,7 +53,7 @@ int main(int argc, char **argv)
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
         mr_demux_close(dx); return 1;
     }
-    dec = mr_audio_decoder_open(ai);
+    dec = mr_audio_decoder_open(ai, 0);
     if (!dec) {
         fprintf(stderr, "unsupported audio setup: tag=0x%04x config=%u\n",
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
