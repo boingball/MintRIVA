@@ -145,8 +145,8 @@ echo "== building mr_yuv_dither_check.m68k =="
 # against - so on real m68k this also cross-checks the fused C path against
 # the real accelerated three-stage pipeline, not just a host-only reference.
 $CC -o "$BUILD/mr_yuv_dither_check.m68k" tests/mr_yuv_dither_check.c \
-    core/mr_yuv_dither.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_scale.c \
-    core/mr_dither.c core/mr_dither_m68k.S
+    core/mr_yuv_dither.c core/mr_yuv_dither_m68k.S core/mr_yuv.c \
+    core/mr_yuv_m68k.S core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
 
 echo "== building mr_mpeg1_blockset_check.m68k / mr_mpeg1_idct_check.m68k =="
 $CC -o "$BUILD/mr_mpeg1_blockset_check.m68k" tests/mr_mpeg1_blockset_check.c \
