@@ -17,7 +17,7 @@ struct mr_mpeg1 {
     plm_t   *plm;
     uint8_t *fb;                 /* persistent RGB24 output                 */
     int      w, h;
-    int      decim;              /* audio decimation (1 or 2) for Paula     */
+    int      decim;              /* audio decimation (1, 2 or 4) for Paula  */
     unsigned rate_eff;           /* effective audio rate after decimation   */
 };
 
@@ -66,7 +66,8 @@ int mr_mpeg2_ps_probe(const uint8_t *buf, size_t len)
     return mpeg_ps_kind(buf, len) == MR_MPEG_PS_MPEG2_VIDEO;
 }
 
-mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len)
+mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
+                        int no_audio)
 {
     mr_mpeg1 *m = (mr_mpeg1 *)calloc(1, sizeof *m);
     if (!m) return NULL;
@@ -74,16 +75,22 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len)
     m->plm = plm_create_with_memory((uint8_t *)buf, len, 0);
     if (!m->plm) { free(m); return NULL; }
     plm_set_loop(m->plm, 0);
-    plm_set_audio_enabled(m->plm, plm_get_num_audio_streams(m->plm) > 0);
+    plm_set_audio_enabled(m->plm,
+                          !no_audio && plm_get_num_audio_streams(m->plm) > 0);
     m->w = plm_get_width(m->plm);
     m->h = plm_get_height(m->plm);
     if (m->w <= 0 || m->h <= 0) { plm_destroy(m->plm); free(m); return NULL; }
     m->fb = (uint8_t *)calloc((size_t)m->w * m->h * 3, 1);
     if (!m->fb) { plm_destroy(m->plm); free(m); return NULL; }
-    { /* Paula tops out near ~28 kHz; halve higher rates (44.1/48) to fit. */
-        int raw = (plm_get_num_audio_streams(m->plm) > 0)
+    { /* Paula tops out near ~28 kHz; halve higher rates (44.1/48) to fit,
+       * doubled again under low_rate. no_audio (plm_set_audio_enabled(0)
+       * above) makes raw 0 here, so rate_eff comes out 0 exactly like a
+       * video-only stream - mr_mpeg1_samplerate() needs no separate
+       * no_audio check. */
+        int raw = (!no_audio && plm_get_num_audio_streams(m->plm) > 0)
                 ? plm_get_samplerate(m->plm) : 0;
         m->decim = (raw > 28000) ? 2 : 1;
+        if (low_rate) m->decim *= 2;
         m->rate_eff = (unsigned)(raw / m->decim);
     }
     return m;
