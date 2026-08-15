@@ -567,6 +567,185 @@ static void check_interp_hpel_hpel(void)
         }
     }
 }
+/* ---- inter_pred_luma_horz_qpel_vert_hpel (dydx 9/11) -------------------- */
+/* Independent re-derivation of ih264_inter_pred_luma_horz_qpel_vert_hpel:
+ * stages 1+2 are the same vertical-then-horizontal raw/rounded 6-tap
+ * pipeline as ref_interp_hpel_hpel above (the H(1/2,1/2) diagonal half-pel
+ * pixel, into dst). Stage 3 re-walks stage 1's raw vertical-6-tap buffer at
+ * column offset 2 + ((dydx&3)>>1) (the "+2" is the column-(-2) buffer base,
+ * matching the vendored pi2_pred1 = pu1_tmp + 2 WORD16s), applies the
+ * single-tap (+16)>>5 round+clip, and averages with the H(1/2,1/2) pixel
+ * already in dst. */
+static void ref_interp_horz_qpel_vert_hpel(const uint8_t *src, uint8_t *dst,
+                                           int src_strd, int dst_strd, int ht,
+                                           int wd, int dydx)
+{
+    int32_t tmp[16 * 21]; /* row pitch (wd+5), raw vertical 6-tap sums */
+    int xo = (dydx & 3) >> 1; /* 0 or 1 */
+    int row, col;
+    for (row = 0; row < ht; row++) {
+        for (col = -2; col < wd + 3; col++) {
+            int32_t s = 1 * (src[col - 2 * src_strd] + src[col + 3 * src_strd])
+                       - 5 * (src[col - 1 * src_strd] + src[col + 2 * src_strd])
+                       + 20 * (src[col] + src[col + 1 * src_strd]);
+            tmp[row * (wd + 5) + (col + 2)] = s;
+        }
+        src += src_strd;
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[row * (wd + 5) + 2];
+        for (col = 0; col < wd; col++) {
+            int32_t t = 1 * (p[col - 2] + p[col + 3])
+                       - 5 * (p[col - 1] + p[col + 2])
+                       + 20 * (p[col] + p[col + 1]);
+            t = (t + 512) >> 10;
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            dst[row * dst_strd + col] = (uint8_t)t;
+        }
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[row * (wd + 5) + 2 + xo];
+        for (col = 0; col < wd; col++) {
+            int32_t v = (p[col] + 16) >> 5;
+            int32_t d;
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            d = dst[row * dst_strd + col];
+            dst[row * dst_strd + col] = (uint8_t)((d + v + 1) >> 1);
+        }
+    }
+}
+
+static void check_interp_horz_qpel_vert_hpel(void)
+{
+    static const int wds[] = { 4, 4, 8, 8, 16, 16 };
+    static const int hts[] = { 4, 8, 4, 16, 8, 16 };
+    static const int dydxs[] = { 9, 11 };
+    uint32_t seed = 9;
+    unsigned i, di;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        for (di = 0; di < 2; di++) {
+            int extreme;
+            for (extreme = 0; extreme < 2; extreme++) {
+                int wd = wds[i], ht = hts[i];
+                int pad = 5, src_strd = wd + 2 * pad, dst_strd = wd + 5;
+                uint8_t src[26 * 26], dst_m68k[16 * 21], dst_ref[16 * 21];
+                uint8_t tmp_m68k[(16 + 5) * 16 * 2]; /* WORD16 scratch */
+                const uint8_t *src0 = src + pad * src_strd + pad;
+                int row, col, j;
+                for (j = 0; j < src_strd * (ht + 2 * pad); j++)
+                    src[j] = extreme ? (uint8_t)((xrand(&seed) & 1) ? 255 : 0)
+                                     : (uint8_t)(xrand(&seed) & 0xff);
+
+                memset(dst_m68k, 0xAA, sizeof dst_m68k);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(tmp_m68k, 0, sizeof tmp_m68k);
+                mr_ih264_inter_pred_luma_horz_qpel_vert_hpel_m68k(
+                    (uint8_t *)src0, dst_m68k, src_strd, dst_strd, ht, wd,
+                    tmp_m68k, dydxs[di]);
+                ref_interp_horz_qpel_vert_hpel(src0, dst_ref, src_strd,
+                                               dst_strd, ht, wd, dydxs[di]);
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < wd; col++) {
+                        int idx = row * dst_strd + col;
+                        if (dst_m68k[idx] != dst_ref[idx])
+                            report("interp_horz_qpel_vert_hpel", row, col,
+                                   dst_ref[idx], dst_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
+
+/* ---- inter_pred_luma_horz_hpel_vert_qpel (dydx 6/14) -------------------- */
+/* Independent re-derivation of ih264_inter_pred_luma_horz_hpel_vert_qpel:
+ * the row/column transpose of horz_qpel_vert_hpel above. Stage 1 is a
+ * horizontal raw 6-tap run once per source row for ht+5 rows (-2..ht+2),
+ * into a WORD16 buffer with row pitch wd (no column padding - the padding
+ * is extra *rows* this time). Stage 2 is the vertical 6-tap over those
+ * intermediates -> H(1/2,1/2) into dst. Stage 3 re-walks stage 1's raw
+ * buffer at row offset 2 + ((dydx>>2 & 3)>>1) (again "+2" is the row -2
+ * buffer base), applies (+16)>>5 round+clip, and averages with dst. */
+static void ref_interp_horz_hpel_vert_qpel(const uint8_t *src, uint8_t *dst,
+                                           int src_strd, int dst_strd, int ht,
+                                           int wd, int dydx)
+{
+    int32_t tmp[(16 + 5) * 16]; /* (ht+5) rows x wd cols, raw horiz 6-tap */
+    int yo = ((dydx >> 2) & 3) >> 1; /* 0 or 1 */
+    const uint8_t *s = src - 2 * src_strd;
+    int row, col, k;
+    for (k = 0; k < ht + 5; k++) {
+        for (col = 0; col < wd; col++) {
+            int32_t v = 1 * (s[col - 2] + s[col + 3])
+                       - 5 * (s[col - 1] + s[col + 2])
+                       + 20 * (s[col] + s[col + 1]);
+            tmp[k * wd + col] = v;
+        }
+        s += src_strd;
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[(row + 2) * wd];
+        for (col = 0; col < wd; col++) {
+            int32_t t = 1 * (p[col - 2 * wd] + p[col + 3 * wd])
+                       - 5 * (p[col - 1 * wd] + p[col + 2 * wd])
+                       + 20 * (p[col] + p[col + 1 * wd]);
+            t = (t + 512) >> 10;
+            t = t < 0 ? 0 : t > 255 ? 255 : t;
+            dst[row * dst_strd + col] = (uint8_t)t;
+        }
+    }
+    for (row = 0; row < ht; row++) {
+        const int32_t *p = &tmp[(row + 2 + yo) * wd];
+        for (col = 0; col < wd; col++) {
+            int32_t v = (p[col] + 16) >> 5;
+            int32_t d;
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+            d = dst[row * dst_strd + col];
+            dst[row * dst_strd + col] = (uint8_t)((d + v + 1) >> 1);
+        }
+    }
+}
+
+static void check_interp_horz_hpel_vert_qpel(void)
+{
+    static const int wds[] = { 4, 4, 8, 8, 16, 16 };
+    static const int hts[] = { 4, 8, 4, 16, 8, 16 };
+    static const int dydxs[] = { 6, 14 };
+    uint32_t seed = 10;
+    unsigned i, di;
+    for (i = 0; i < sizeof wds / sizeof wds[0]; i++) {
+        for (di = 0; di < 2; di++) {
+            int extreme;
+            for (extreme = 0; extreme < 2; extreme++) {
+                int wd = wds[i], ht = hts[i];
+                int pad = 5, src_strd = wd + 2 * pad, dst_strd = wd + 5;
+                uint8_t src[26 * 26], dst_m68k[16 * 21], dst_ref[16 * 21];
+                uint8_t tmp_m68k[(16 + 5) * 16 * 2]; /* WORD16 scratch */
+                const uint8_t *src0 = src + pad * src_strd + pad;
+                int row, col, j;
+                for (j = 0; j < src_strd * (ht + 2 * pad); j++)
+                    src[j] = extreme ? (uint8_t)((xrand(&seed) & 1) ? 255 : 0)
+                                     : (uint8_t)(xrand(&seed) & 0xff);
+
+                memset(dst_m68k, 0xAA, sizeof dst_m68k);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(tmp_m68k, 0, sizeof tmp_m68k);
+                mr_ih264_inter_pred_luma_horz_hpel_vert_qpel_m68k(
+                    (uint8_t *)src0, dst_m68k, src_strd, dst_strd, ht, wd,
+                    tmp_m68k, dydxs[di]);
+                ref_interp_horz_hpel_vert_qpel(src0, dst_ref, src_strd,
+                                               dst_strd, ht, wd, dydxs[di]);
+                for (row = 0; row < ht; row++)
+                    for (col = 0; col < wd; col++) {
+                        int idx = row * dst_strd + col;
+                        if (dst_m68k[idx] != dst_ref[idx])
+                            report("interp_horz_hpel_vert_qpel", row, col,
+                                   dst_ref[idx], dst_m68k[idx]);
+                    }
+            }
+        }
+    }
+}
+
 /* ---- deblk_luma_vert_bs4 / horz_bs4 (H.264 8.7.2.4, bS==4) -------------- */
 /* Independent re-derivation of ih264_deblk_luma_vert_bs4/horz_bs4 straight
  * from the filtering-decision + strong/weak formulas in the spec section
@@ -1413,6 +1592,8 @@ int main(void)
     check_interp_qpel_qpel();
     check_interp_qpel();
     check_interp_hpel_hpel();
+    check_interp_horz_qpel_vert_hpel();
+    check_interp_horz_hpel_vert_qpel();
     check_deblk_bs4();
     check_deblk_bslt4();
     check_deblk_chroma_bs4();
