@@ -625,7 +625,16 @@ static mr_status h264_decode(mr_decoder *dec,
      * consumes the Annex-B data over several sub-calls. */
     au_ts = s->timestamp++;
     h264_remember_input_pts(s, au_ts);
-    au_mark = clock();
+    /* au_mark only ever feeds h264_diag_checkpoint(), which itself no-ops
+     * unless s->diag_path is set (see that function) - i.e. only on a
+     * >=720p run with --time. Skip the clock() call on every other decode
+     * (the common case, including everything below 720p) rather than
+     * compute a value that gets thrown away. */
+#if defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)
+    au_mark = s->diag_path ? clock() : 0;
+#else
+    au_mark = 0;
+#endif
     ret = IV_SUCCESS;
 
     {
