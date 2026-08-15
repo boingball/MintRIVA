@@ -437,6 +437,7 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
 {
     ULONG selected;
     ULONG disable_chipset_options;
+    ULONG selected_c2p;
 
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
@@ -444,6 +445,20 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                               (mode_values[selected] == MR_DISPLAY_CGX ||
                                mode_values[selected] == MR_DISPLAY_P96)
                             ? TRUE : FALSE;
+
+    /* Kalms' c2p only handles a genuine 8-plane, non-HAM AGA screen (see
+     * display_aga.c's "compatible" check in aga_open) - on anything else
+     * (ECS/HAM/RTG) it silently falls back to WritePixelArray8, which from
+     * this GUI would look like Kalms was selected but is quietly doing
+     * nothing. Snap the c2p choice back to Standard whenever the mode
+     * isn't plain "AGA (256 colours)" and Kalms is currently picked. */
+    selected_c2p = 0;
+    GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
+    if (selected_c2p == 2 &&
+        !(selected < mode_count && mode_values[selected] == MR_DISPLAY_AGA)) {
+        SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
+                       CHOOSER_Selected, 0, TAG_DONE);
+    }
 
     SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                    GA_Disabled, disable_chipset_options,
@@ -834,6 +849,11 @@ int main(void)
                     break;
 
                 case G_C2P:
+                    update_mode_controls(mode, c2p, lace, twox, window);
+                    publish_play_options(master_options, mode, c2p, h264,
+                                         lace, twox);
+                    break;
+
                 case G_H264:
                 case G_LACE:
                 case G_2X:
