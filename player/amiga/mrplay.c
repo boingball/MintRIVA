@@ -509,7 +509,6 @@ typedef struct queued_video {
     int width, height, stride, dirty_y0, dirty_y1;
     uint64_t pts_us;
     uint64_t decoded_at_us;
-    unsigned long decode_us;
 } queued_video;
 
 typedef struct playback_stats {
@@ -791,7 +790,7 @@ static void paced_sleep(uint64_t usec, scheduler_trace *trace,
 }
 
 static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
-                      uint64_t decoded_at, unsigned long decode_us)
+                      uint64_t decoded_at)
 {
     size_t bytes = (size_t)fr->stride * fr->height;
     if (q->capacity < bytes) {
@@ -802,7 +801,7 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
     memcpy(q->rgb, fr->data, bytes);
     q->width = fr->width; q->height = fr->height; q->stride = fr->stride;
     q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
-    q->pts_us = pts; q->decoded_at_us = decoded_at; q->decode_us = decode_us;
+    q->pts_us = pts; q->decoded_at_us = decoded_at;
     return 1;
 }
 
@@ -822,7 +821,7 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
  * dirty_y1) would leave stale rows from whatever frame last occupied it.
  */
 static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
-                              uint64_t decoded_at, unsigned long decode_us)
+                              uint64_t decoded_at)
 {
     size_t bytes = (size_t)fr->width * (size_t)fr->height;
     if (q->capacity < bytes) {
@@ -834,7 +833,7 @@ static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
                    q->rgb, fr->width, 0);
     q->width = fr->width; q->height = fr->height; q->stride = fr->width;
     q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
-    q->pts_us = pts; q->decoded_at_us = decoded_at; q->decode_us = decode_us;
+    q->pts_us = pts; q->decoded_at_us = decoded_at;
     return 1;
 }
 
@@ -2291,9 +2290,12 @@ int main(int argc, char **argv)
             stats.calculated_lateness_us = late_us;
             stats.queue_head = (unsigned)qhead;
             if (late_us < -(int64_t)PRESENTATION_GUARD_US) continue;
-            now = monotonic_us();
+            /* now/audio_before here only ever feed the --time show_us/
+             * rtg-timing bookkeeping below - skip both otherwise. */
+            if (want_time) now = monotonic_us();
             {
-                unsigned long audio_before = audio ? audio_buffered_ms(audio) : 0;
+                unsigned long audio_before =
+                    want_time && audio ? audio_buffered_ms(audio) : 0;
             trace_phase(&trace, "cgx-prepare/transfer");
             if (audio) service_audio_for_display(&trace);
             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 4) {
@@ -2351,7 +2353,7 @@ int main(int argc, char **argv)
             }
             stats.presented++; frames++;
             qhead = (qhead + 1) % video_cap; qcount--;
-            now = monotonic_us();
+            if (want_time) now = monotonic_us();
             if (want_time && now - stats.since_us >= STATS_INTERVAL_US) {
                 trace_phase(&trace, "scheduler-diagnostics");
                 if (audio) service_audio_for_display(&trace);
@@ -2526,11 +2528,17 @@ int main(int argc, char **argv)
             if (can_decode) {
                 int ready_before = qcount > 0;
                 int64_t due_before = late_us;
-                uint64_t refill_started = monotonic_us();
-                uint64_t a;
+                /* refill_started/a/blocked only ever feed demux_us/
+                 * refill_block_us/network_us/refill_delayed_ready_us, all
+                 * --time-report-only (see report_stats() and the
+                 * ready_before/due_before check below) - skip the
+                 * monotonic_us() calls around an ordinary demux read
+                 * otherwise. */
+                uint64_t refill_started = want_time ? monotonic_us() : 0;
+                uint64_t a = 0;
                 trace_phase(&trace, "demux-read");
                 if (audio) service_audio_for_display(&trace);
-                a = monotonic_us();
+                if (want_time) a = monotonic_us();
                 /* Hand the queue to the service callback for the duration of the
                  * fetch: this is the one place the single loop blocks long enough
                  * (a segment boundary can stall ~1.7 s) to freeze video. While
@@ -2543,14 +2551,15 @@ int main(int argc, char **argv)
                 mr_status next = mr_demux_next_packet(dx, &pkt);
                 presenter.released = 0;
                 if (audio) service_audio_for_display(&trace);
-                uint64_t b = monotonic_us();
-                uint64_t blocked = b - a;
-                stats.demux_us += blocked; stats.refill_block_us += blocked;
+                if (want_time) {
+                    uint64_t blocked = monotonic_us() - a;
+                    stats.demux_us += blocked; stats.refill_block_us += blocked;
+                    if (network_source) stats.network_us += blocked;
+                }
                 stats.samples++;
                 if (rescue_active) {
                     rescue_episode_packets++; stats.rescue_packets++;
                 }
-                if (network_source) stats.network_us += blocked;
                 if (next != MR_OK) input_eof = 1;
                 else if (!pkt.is_video) {
                     if (audio && audio_dec) {
@@ -2724,11 +2733,15 @@ int main(int argc, char **argv)
                                 &vq[(qhead + qcount) % video_cap];
                             trace_phase(&trace, "frame-copy");
                             if (audio) service_audio_for_display(&trace);
+                            /* decoded_at_us only ever feeds the --time
+                             * latency stat (both readers are want_time-
+                             * gated) - skip the monotonic_us() call
+                             * otherwise. */
                             if (!(use_indexed_queue
                                   ? queue_copy_indexed(tail, &dec.frame, pts,
-                                                       monotonic_us(), decode_us)
+                                                       want_time ? monotonic_us() : 0)
                                   : queue_copy(tail, &dec.frame, pts,
-                                              monotonic_us(), decode_us))) {
+                                              want_time ? monotonic_us() : 0))) {
                                 /* Out of RAM for another RGB slot (a backstop -
                                  * the queue is sized to fit; see main). Never
                                  * quit: drop this frame exactly as a full queue
@@ -2764,7 +2777,7 @@ int main(int argc, char **argv)
                         decoded_index++;
                     }
                 }
-                if (ready_before && due_before < 0) {
+                if (want_time && ready_before && due_before < 0) {
                     uint64_t refill_elapsed = monotonic_us() - refill_started;
                     if (refill_elapsed > (uint64_t)(-due_before))
                         stats.refill_delayed_ready_us +=
