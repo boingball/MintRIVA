@@ -30,6 +30,7 @@
 #include <proto/graphics.h>
 
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #define ESC_RAWKEY 0x45
@@ -436,6 +437,53 @@ fail:
     return NULL;
 }
 
+/*
+ * Chunky-to-planar + blit only, no encode: s->chunky[ddy0..ddy0+ddh) must
+ * already hold this frame's dithered/HAM-encoded pixels (pw bytes/row, plus
+ * the Kalms x0 pad where applicable) before calling this. Shared by
+ * aga_show() (which encodes into s->chunky itself first) and
+ * aga_show_indexed() (which is handed already-dithered rows to copy
+ * straight in - see that function).
+ */
+static void aga_blit(aga_state *s, int ddy0, int ddh)
+{
+    int pw = s->pw, dw = s->dw;
+    clock_t a = 0;
+    if (g_display_want_time) a = clock();
+    {
+    const uint8_t *crow = s->chunky + (size_t)ddy0 * pw;
+    if (s->use_akiko) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        akiko_c2p(crow, pw, ddh, pw, s->depth,
+                  (uint8_t *const *)bm->Planes, bm->BytesPerRow,
+                  s->x0byte, s->y0 + ddy0);
+    } else if (s->use_kalms_c2p) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        /* This routine has no row-modulo ABI. Convert the complete persistent
+         * screen-width chunky frame; unchanged rows remain valid in it. */
+        c2p1x1_8_c5_030(s->chunky, bm->Planes[0]);
+    } else if (s->use_riva_c2p) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        mr_c2p8_riva32(crow, pw, ddh, pw, s->depth,
+                       (uint8_t *const *)bm->Planes, bm->BytesPerRow,
+                       s->x0byte, s->y0 + ddy0);
+    } else if (s->use_c2p) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        mr_c2p8(crow, pw, ddh, pw, s->depth,
+                (uint8_t *const *)bm->Planes, bm->BytesPerRow,
+                s->x0byte, s->y0 + ddy0);
+    } else {
+        WritePixelArray8(&s->scr->RastPort,
+                         (UWORD)s->x0, (UWORD)(s->y0 + ddy0),
+                         (UWORD)(s->x0 + dw - 1), (UWORD)(s->y0 + ddy0 + ddh - 1),
+                         (UBYTE *)crow, &s->temprp);
+    }
+    }
+    /* Kalms is timed and accumulated by the same counters as every other AGA
+     * blit backend. Keep diagnostics out of this frame-rendering hot path. */
+    if (g_display_want_time) { s_frame_blit = clock() - a; s_blit += s_frame_blit; }
+}
+
 static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                      int stride, int dy0, int dy1,
                      mr_display_service_fn service, void *service_opaque)
@@ -508,38 +556,51 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     }
     if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }
 
+    aga_blit(s, ddy0, ddh);
+}
+
+/*
+ * Non-zero only for the plain 256-colour AGA configuration: no HAM, no pixel
+ * doubling, no resize.  That is exactly the combination for which aga_show()
+ * would otherwise call mr_dither_rgb8() itself with a 1:1 row mapping - here
+ * the caller (mrplay.c's decode-ahead queue) has already done that dither
+ * once, earlier, into the queue slot, and hands us the indexed rows directly
+ * instead of paying for a second dither pass over the same pixels.
+ */
+static int aga_supports_indexed(void *handle)
+{
+    aga_state *s = (aga_state *)handle;
+    return s && s->depth == 8 && !s->ham && s->scale == 1 && !s->resize;
+}
+
+static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
+                             int h, int idx_stride, int dy0, int dy1,
+                             mr_display_service_fn service, void *service_opaque)
+{
+    aga_state *s = (aga_state *)handle;
+    int pw, ddy0, ddh, y;
+    (void)service; (void)service_opaque;
+    if (!s || !s->scr) return;
+    pw = s->pw;
+    if (dy0 < 0) dy0 = 0;
+    if (dy1 > h)  dy1 = h;
+    if (dy1 <= dy0) return;
+
     { clock_t a = 0;
     if (g_display_want_time) a = clock();
-    const uint8_t *crow = s->chunky + (size_t)ddy0 * pw;
-    if (s->use_akiko) {
-        struct BitMap *bm = s->scr->RastPort.BitMap;
-        akiko_c2p(crow, pw, ddh, pw, s->depth,
-                  (uint8_t *const *)bm->Planes, bm->BytesPerRow,
-                  s->x0byte, s->y0 + ddy0);
-    } else if (s->use_kalms_c2p) {
-        struct BitMap *bm = s->scr->RastPort.BitMap;
-        /* This routine has no row-modulo ABI. Convert the complete persistent
-         * screen-width chunky frame; unchanged rows remain valid in it. */
-        c2p1x1_8_c5_030(s->chunky, bm->Planes[0]);
-    } else if (s->use_riva_c2p) {
-        struct BitMap *bm = s->scr->RastPort.BitMap;
-        mr_c2p8_riva32(crow, pw, ddh, pw, s->depth,
-                       (uint8_t *const *)bm->Planes, bm->BytesPerRow,
-                       s->x0byte, s->y0 + ddy0);
-    } else if (s->use_c2p) {
-        struct BitMap *bm = s->scr->RastPort.BitMap;
-        mr_c2p8(crow, pw, ddh, pw, s->depth,
-                (uint8_t *const *)bm->Planes, bm->BytesPerRow,
-                s->x0byte, s->y0 + ddy0);
-    } else {
-        WritePixelArray8(&s->scr->RastPort,
-                         (UWORD)s->x0, (UWORD)(s->y0 + ddy0),
-                         (UWORD)(s->x0 + dw - 1), (UWORD)(s->y0 + ddy0 + ddh - 1),
-                         (UBYTE *)crow, &s->temprp);
+    /* Already-dithered rows: a plain per-row copy into the padded chunky
+     * layout, no LUT arithmetic - mr_dither_rgb8() already ran once, in
+     * queue_copy_indexed(), when this frame was queued. */
+    for (y = dy0; y < dy1; y++) {
+        const uint8_t *sr = idx + (size_t)y * idx_stride;
+        uint8_t *dr = s->chunky + (size_t)y * pw +
+                     (s->use_kalms_c2p ? s->x0 : 0);
+        memcpy(dr, sr, (size_t)w);
     }
-    /* Kalms is timed and accumulated by the same counters as every other AGA
-     * blit backend. Keep diagnostics out of this frame-rendering hot path. */
-    if (g_display_want_time) { s_frame_blit = clock() - a; s_blit += s_frame_blit; } }
+    if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }
+
+    ddy0 = dy0; ddh = dy1 - dy0;
+    aga_blit(s, ddy0, ddh);
 }
 
 static int aga_poll(void *handle)
@@ -586,5 +647,5 @@ static ULONG aga_wait_mask(void *handle)
 
 const display_backend backend_aga = {
     "AGA", aga_open, aga_show, NULL, aga_poll, aga_close, NULL, aga_wait_mask,
-    NULL
+    NULL, aga_supports_indexed, aga_show_indexed
 };

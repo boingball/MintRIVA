@@ -103,6 +103,22 @@ const char *display_backend_name(amiga_display *d);
  * source rows [dy0,dy1) are redrawn; pass 0..h to draw the whole frame. */
 void display_show_rgb(amiga_display *d, const unsigned char *rgb,
                       int w, int h, int stride, int dy0, int dy1);
+
+/* Non-zero when `d` can accept a pre-dithered 8-bit indexed frame via
+ * display_show_indexed() instead of RGB24 via display_show_rgb() - true
+ * only for the AGA backend's plain indexed configuration (see
+ * display_backend.h's supports_indexed for the exact conditions). Callers
+ * that want to skip a redundant RGB24 copy/dither pass (e.g. mrplay.c's
+ * decode-ahead queue) should query this once after display_open()
+ * succeeds and, if true, dither with core/mr_dither_rgb8() themselves and
+ * call display_show_indexed() instead of display_show_rgb() from then on. */
+int display_supports_indexed(amiga_display *d);
+
+/* Blit a pre-dithered 8-bit indexed frame (idx_stride bytes/row, one byte
+ * per pixel, already in this display's palette index space). Only valid
+ * to call when display_supports_indexed(d) returned non-zero. */
+void display_show_indexed(amiga_display *d, const unsigned char *idx,
+                          int w, int h, int idx_stride, int dy0, int dy1);
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque);
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing);
