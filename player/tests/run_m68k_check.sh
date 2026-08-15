@@ -60,6 +60,7 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_scale.c \
       core/mr_c2p.c core/mr_c2p_m68k.S \
       core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c core/mr_mpeg1_blockset_m68k.S \
+      core/mr_mpeg1_idct_m68k.S \
       core/mr_mpeg2.c \
       vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
@@ -137,9 +138,11 @@ $CC -o "$BUILD/mr_ham_check.m68k" tests/mr_ham_check.c core/mr_ham.c
 $CC -o "$BUILD/mr_dither_check.m68k" tests/mr_dither_check.c core/mr_dither.c \
     core/mr_dither_m68k.S
 
-echo "== building mr_mpeg1_blockset_check.m68k =="
+echo "== building mr_mpeg1_blockset_check.m68k / mr_mpeg1_idct_check.m68k =="
 $CC -o "$BUILD/mr_mpeg1_blockset_check.m68k" tests/mr_mpeg1_blockset_check.c \
     core/mr_mpeg1_blockset_m68k.S
+$CC -o "$BUILD/mr_mpeg1_idct_check.m68k" tests/mr_mpeg1_idct_check.c \
+    core/mr_mpeg1_idct_m68k.S
 
 run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 
@@ -152,6 +155,7 @@ run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
+run "$BUILD/mr_mpeg1_idct_check.m68k"
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \

@@ -3576,10 +3576,28 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	}
 }
 
+#if defined(MR_M68K_ASM)
+/* core/mr_mpeg1_idct_m68k.S - hand-written m68k version of the two loops
+ * below (fixed-point scaled-AAN 8x8 IDCT), operating in place on the same
+ * 64-entry int array. Matches this file's own constants (473/196/362,
+ * (+128)>>8 rounding) and premultiplier convention exactly - it is a fresh
+ * asm implementation of pl_mpeg's own algorithm, not a port of RiVA's
+ * MacrosIDCT68k.m (see src/), whose fixed-point scaling and dequant/
+ * premultiply convention are calibrated to RiVA's own bitstream pipeline,
+ * not pl_mpeg's. __asm__ binds to the bare .globl name, matching every
+ * other hand-asm entry point in this project. */
+void plm_video_idct_m68k(int *block) __asm__("plm_video_idct_m68k");
+#endif
+
 void plm_video_idct(int *block) {
 	int
 		b1, b3, b4, b6, b7, tmp1, tmp2, m0,
 		x0, x1, x2, x3, x4, y3, y4, y5, y6, y7;
+
+#if defined(MR_M68K_ASM)
+	plm_video_idct_m68k(block);
+	return;
+#endif
 
 	// Transform columns
 	for (int i = 0; i < 8; ++i) {
