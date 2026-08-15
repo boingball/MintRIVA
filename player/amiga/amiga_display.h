@@ -119,6 +119,21 @@ int display_supports_indexed(amiga_display *d);
  * to call when display_supports_indexed(d) returned non-zero. */
 void display_show_indexed(amiga_display *d, const unsigned char *idx,
                           int w, int h, int idx_stride, int dy0, int dy1);
+
+/* Non-zero when `d` can accept a direct YUV420P -> indexed fused frame
+ * (core/mr_yuv_dither.h's mr_yuv420_dither8()) for a src_w x src_h source,
+ * filling *dst_w/*dst_h/*vscale with the geometry to produce - true only
+ * for the AGA backend when the fitted display needs an exact integer
+ * vertical-only downscale (no horizontal resize; see
+ * display_backend.h's supports_yuv_indexed for the exact conditions).
+ * Distinct from display_supports_indexed(), which only covers the
+ * unscaled case - the two are mutually exclusive, and a caller (e.g.
+ * mrplay.c's H.264 decode-ahead queue) queries both once after
+ * display_open() succeeds. When true, dither with mr_yuv420_dither8()
+ * into a *dst_w x *dst_h buffer and call display_show_indexed() with
+ * those dimensions (not the source's). */
+int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
+                                 int *dst_w, int *dst_h, int *vscale);
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque);
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing);

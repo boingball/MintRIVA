@@ -573,6 +573,35 @@ static int aga_supports_indexed(void *handle)
     return s && s->depth == 8 && !s->ham && s->scale == 1 && !s->resize;
 }
 
+/*
+ * Non-zero only when the fitted AGA geometry needs an exact integer
+ * *vertical-only* downscale from src_w x src_h: width unchanged (s->dw ==
+ * src_w) and height an exact multiple of s->dh (no remainder - anything
+ * else falls through to the ordinary RGB24 resize path, which handles any
+ * ratio). This is exactly the case aga_open()'s own resize computation
+ * produces for typical HIRES non-laced playback (e.g. a 640x360 source
+ * fits 640x180 - HIRES keeps the raster width, non-laced halves the
+ * height), and the specific geometry core/mr_yuv_dither.h's
+ * mr_yuv420_dither8() is documented to match the RGB24 resize+dither
+ * pipeline bit-exactly for. Mutually exclusive with aga_supports_indexed()
+ * above (that one requires !resize; this one requires resize with this
+ * exact shape) - a caller queries both.
+ */
+static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
+                                    int *dst_w, int *dst_h, int *vscale)
+{
+    aga_state *s = (aga_state *)handle;
+    int vs;
+    if (!s || s->depth != 8 || s->ham || s->scale != 1 || !s->resize)
+        return 0;
+    if (s->dw != src_w || s->dh <= 0 || src_h <= 0) return 0;
+    if (src_h % s->dh != 0) return 0;
+    vs = src_h / s->dh;
+    if (vs <= 1) return 0;
+    *dst_w = s->dw; *dst_h = s->dh; *vscale = vs;
+    return 1;
+}
+
 static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
                              int h, int idx_stride, int dy0, int dy1,
                              mr_display_service_fn service, void *service_opaque)
@@ -647,5 +676,5 @@ static ULONG aga_wait_mask(void *handle)
 
 const display_backend backend_aga = {
     "AGA", aga_open, aga_show, NULL, aga_poll, aga_close, NULL, aga_wait_mask,
-    NULL, aga_supports_indexed, aga_show_indexed
+    NULL, aga_supports_indexed, aga_show_indexed, aga_supports_yuv_indexed
 };

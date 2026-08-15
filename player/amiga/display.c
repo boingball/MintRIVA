@@ -136,6 +136,13 @@ void display_show_indexed(amiga_display *d, const unsigned char *idx,
                             d->service, d->service_opaque);
 }
 
+int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
+                                 int *dst_w, int *dst_h, int *vscale)
+{
+    return d && d->be->supports_yuv_indexed &&
+           d->be->supports_yuv_indexed(d->h, src_w, src_h, dst_w, dst_h, vscale);
+}
+
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing)
 {
     return d && d->be->timing ? d->be->timing(d->h, timing) : 0;
