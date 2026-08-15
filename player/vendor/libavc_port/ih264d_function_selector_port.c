@@ -75,6 +75,14 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->pf_deblk_chroma_vert_bslt4 = mr_ih264_deblk_chroma_vert_bslt4_m68k;
     codec->pf_deblk_chroma_horz_bslt4 = mr_ih264_deblk_chroma_horz_bslt4_m68k;
     codec->pf_inter_pred_chroma = mr_ih264_inter_pred_chroma_m68k;
+    codec->pf_iquant_itrans_recon_luma_4x4 =
+        mr_ih264_iquant_itrans_recon_4x4_m68k;
+    codec->pf_iquant_itrans_recon_luma_4x4_dc =
+        mr_ih264_iquant_itrans_recon_4x4_dc_m68k;
+    codec->pf_iquant_itrans_recon_chroma_4x4 =
+        mr_ih264_iquant_itrans_recon_chroma_4x4_m68k;
+    codec->pf_iquant_itrans_recon_chroma_4x4_dc =
+        mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k;
 #endif
 #if defined(MR_H264_STAGE_PROFILE)
     /* Diagnostic-only, opt-in: wraps whatever is now sitting in the

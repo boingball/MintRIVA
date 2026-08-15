@@ -82,6 +82,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264d_mvpred_dispatch_port.c \
     vendor/libavc_port/ih264_m68k_cabac_coeff.S \
     vendor/libavc_port/ih264d_parse_cabac_coeff_port.c \
+    vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
     vendor/libavc_port/ithread_port.c \
     vendor/libavc_port/compat.c"
 
@@ -112,7 +113,8 @@ $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_deblk.S \
     vendor/libavc_port/ih264_m68k_cabac.S \
     vendor/libavc_port/ih264_m68k_chroma_mc.S \
-    vendor/libavc_port/ih264_m68k_mvpred.S
+    vendor/libavc_port/ih264_m68k_mvpred.S \
+    vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S
 
 echo "== building mr_h264_cabac_coeff_check.m68k (real ih264d_read_coeff4x4_cabac vs asm) =="
 $CC -o "$BUILD/mr_h264_cabac_coeff_check.m68k" tests/mr_h264_cabac_coeff_check.c $LIBAVC_SRC
