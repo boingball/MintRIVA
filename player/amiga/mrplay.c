@@ -770,12 +770,18 @@ static void paced_sleep(uint64_t usec, scheduler_trace *trace,
     trace->delay_ticks = 0;
     st->sleep_requested_us += usec;
     /* Delay is only the coarse backoff. Recheck the absolute deadline so an
-     * oversleep is measured rather than carried into the next frame. */
+     * oversleep is measured rather than carried into the next frame.
+     * service_audio_for_display() calls used to bracket this spin, but
+     * presenter.released (the only thing that makes that call do anything
+     * beyond a no-op audio_service()) is set only around the one blocking
+     * mr_demux_next_packet() call far below - never while pacing a sleep -
+     * so they never presented a frame or fed audio here; Paula's own
+     * worker task keeps running regardless. See trace_phase()'s own
+     * comment for the matching monotonic_us() reasoning. */
     while ((end = monotonic_us()) - begin < usec) {
         uint64_t left = usec - (end - begin);
-        if (trace->audio) service_audio_for_display(trace);
         /* A one-tick Delay is a forced 20 ms oversleep for short deadlines.
-         * Spin on EClock and service Paula until at least two ticks remain. */
+         * Spin on EClock until at least two ticks remain. */
         if (left > 40000) {
             LONG ticks = (LONG)((left - 20000) / 20000);
             uint64_t delay_begin = monotonic_us();
@@ -783,7 +789,6 @@ static void paced_sleep(uint64_t usec, scheduler_trace *trace,
             trace->delay_ticks = (unsigned long)ticks;
             Delay(ticks);
             trace->sleep_actual_us += monotonic_us() - delay_begin;
-            if (trace->audio) service_audio_for_display(trace);
         }
     }
     end = monotonic_us();
@@ -2044,7 +2049,6 @@ int main(int argc, char **argv)
          * Paula; otherwise each small packet starts playing immediately and
          * the prebuffer can never grow to the warning threshold. */
         trace_phase(&trace, "scheduler");
-        if (audio && playback_started) service_audio_for_display(&trace);
         if (audio) audio_ms = audio_buffered_ms(audio);
         startup_refill = audio && !playback_started &&
                          audio_ms < AUDIO_STARTUP_TARGET_MS;
@@ -2176,7 +2180,6 @@ int main(int argc, char **argv)
                            rescue_entry_threshold, margin_ms,
                            rd.hardware_starvations - rescue_hw_before);
                 }
-                if (audio) service_audio_for_display(&trace);
             }
         }
         if (playback_started && front) {
@@ -2240,7 +2243,6 @@ int main(int argc, char **argv)
                              pkt.pts_us - base_pts >= want) break;
                 }
                 if (monotonic_us() - cu_start > LIVE_RESYNC_MAX_US) break;
-                service_audio_for_display(&trace);
             }
             mr_h264_set_skip_output(&dec, 0);
             audio_flush(audio);
@@ -2274,10 +2276,7 @@ int main(int argc, char **argv)
          * the drop loop keep the queue near-live every iteration regardless
          * of whether a rescue is concurrently in flight, and RTG/CGX blits
          * do not contend with Paula's audio DMA the way a custom-chip
-         * blitter would, so there is no hardware reason to hold it back.
-         * service_audio_for_display() calls remain wrapped around the blit
-         * below either way, exactly as they already were for the non-rescue
-         * path. */
+         * blitter would, so there is no hardware reason to hold it back. */
         if (have_deadline &&
             late_us >= -(int64_t)PRESENTATION_GUARD_US) {
             int ev;
@@ -2301,7 +2300,6 @@ int main(int argc, char **argv)
                         audio_set_running(audio, 1);
                     }
                 }
-                if (audio) service_audio_for_display(&trace);
                 {
                     uint64_t delay_begin = monotonic_us();
                     Delay(1);
@@ -2383,7 +2381,6 @@ int main(int argc, char **argv)
                 unsigned long audio_before =
                     want_time && audio ? audio_buffered_ms(audio) : 0;
             trace_phase(&trace, "cgx-prepare/transfer");
-            if (audio) service_audio_for_display(&trace);
             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 4) {
                 h264_pipeline_checkpoint_player("pre-display-main",
                                                 qcount, playback_started);
@@ -2406,7 +2403,6 @@ int main(int argc, char **argv)
                                                 qcount, playback_started);
                 h264_pipeline_stage = 5;
             }
-                if (audio) service_audio_for_display(&trace);
                 if (want_time) {
                     mr_display_timing rt;
                     if (display_rtg_frame_timing(disp, &rt)) {
@@ -2630,20 +2626,24 @@ int main(int argc, char **argv)
                 uint64_t refill_started = want_time ? monotonic_us() : 0;
                 uint64_t a = 0;
                 trace_phase(&trace, "demux-read");
-                if (audio) service_audio_for_display(&trace);
                 if (want_time) a = monotonic_us();
                 /* Hand the queue to the service callback for the duration of the
                  * fetch: this is the one place the single loop blocks long enough
                  * (a segment boundary can stall ~1.7 s) to freeze video. While
                  * released, the demux service hook presents due frames from the
-                 * decode queue; we reclaim it the instant the read returns and
+                 * decode queue - via mr_demux_set_service()'s registered callback,
+                 * invoked from deep inside mr_ts.c/mr_http.c during their own
+                 * blocking reads, not from any direct call here (this function's
+                 * own service_audio_for_display() calls all run outside this
+                 * window, before released is set or after it is cleared, so they
+                 * were provably no-ops - see present_service_frame()'s released
+                 * guard). We reclaim the queue the instant the read returns and
                  * read qhead/qcount fresh below. Network sources only - a local
                  * read never stalls, so nothing is released and behaviour there
                  * is unchanged. */
                 if (network_source) presenter.released = 1;
                 mr_status next = mr_demux_next_packet(dx, &pkt);
                 presenter.released = 0;
-                if (audio) service_audio_for_display(&trace);
                 if (want_time) {
                     uint64_t blocked = monotonic_us() - a;
                     stats.demux_us += blocked; stats.refill_block_us += blocked;
@@ -2657,7 +2657,6 @@ int main(int argc, char **argv)
                 else if (!pkt.is_video) {
                     if (audio && audio_dec) {
                         trace_phase(&trace, "audio-decode");
-                        service_audio_for_display(&trace);
                         /* stats.audio_decode_us only ever feeds the --time
                          * report; skip both monotonic_us() calls (each a
                          * ReadEClock() + 64-bit divide) around every
@@ -2673,7 +2672,6 @@ int main(int argc, char **argv)
                             mr_audio_decoder_feed(audio_dec, pkt.data, pkt.len,
                                                   decoded_audio_sink, audio);
                         }
-                        service_audio_for_display(&trace);
                         if (rescue_active) {
                             rescue_episode_audio++;
                             stats.rescue_audio_packets++;
@@ -2689,11 +2687,9 @@ int main(int argc, char **argv)
                      * This is what makes the audio-cushion top-up above cheap. */
                     mr_h264_set_skip_output(&dec, qcount >= video_cap);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
-                    if (audio) service_audio_for_display(&trace);
                     a = monotonic_us();
                     decode_status = mr_decoder_decode(&dec, pkt.data, pkt.len);
                     decode_end = monotonic_us();
-                    if (audio) service_audio_for_display(&trace);
                     /* mr_h264_frame_timing()'s fields only ever feed the
                      * --time stats report below; when timing isn't enabled
                      * h264_decode() never populates them (they read back as
@@ -2825,7 +2821,6 @@ int main(int argc, char **argv)
                             queued_video *tail =
                                 &vq[(qhead + qcount) % video_cap];
                             trace_phase(&trace, "frame-copy");
-                            if (audio) service_audio_for_display(&trace);
                             /* decoded_at_us only ever feeds the --time
                              * latency stat (both readers are want_time-
                              * gated) - skip the monotonic_us() call
@@ -2879,7 +2874,6 @@ int main(int argc, char **argv)
                                 decoded_index++;
                                 continue;
                             }
-                            if (audio) service_audio_for_display(&trace);
                             qcount++;
                             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 2) {
                                 h264_pipeline_checkpoint_player("queue-copy",
@@ -2911,10 +2905,7 @@ int main(int argc, char **argv)
                         mono_base_us = now - vq[qhead].pts_us;
                         if (audio)
                             media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
-                        if (audio) {
-                            service_audio_for_display(&trace);
-                            audio_set_running(audio, 1);
-                        }
+                        if (audio) audio_set_running(audio, 1);
                         display_set_status(disp, NULL);  /* clear Buffering... */
                         if (h264_pipeline_diag_enabled && h264_pipeline_stage < 3) {
                             h264_pipeline_checkpoint_player("playback-start",
@@ -2930,13 +2921,11 @@ int main(int argc, char **argv)
         if (audio && audio_buffered_ms(audio) < AUDIO_REFILL_WARNING_MS &&
             !input_eof && qcount < target_depth) {
             /* Do not burn a 20 ms DOS tick while audio is in refill mode. */
-            service_audio_for_display(&trace);
             continue;
         } else if (qcount && playback_started) {
             uint64_t wait_us = late_us < -(int64_t)PRESENTATION_GUARD_US
                 ? (uint64_t)(-late_us) - PRESENTATION_GUARD_US : 0;
             if (wait_us > 20000) wait_us = 20000;
-            if (audio) service_audio_for_display(&trace);
             paced_sleep(wait_us, &trace, &stats);
         } else {
             int ev = player_event(disp);
