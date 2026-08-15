@@ -3341,6 +3341,34 @@ void plm_video_interpolate_macroblock(plm_video_t *self, plm_frame_t *s, int mot
 		DEST_INDEX += dest_scan; \
 	}} while(FALSE)
 
+#if defined(MR_M68K_ASM)
+/* core/mr_mpeg1_blockset_m68k.S - hand-written m68k versions of the 8
+ * PLM_MB_CASE bodies below (block_size x block_size, block_size is always
+ * 8 or 16: luma macroblocks call with 16, chroma with 8). Each function has
+ * the signature void NAME(uint8_t *dest, const uint8_t *src, int dw, int
+ * block_size), where dest/src are already offset to d[di]/s[si] - the
+ * struct-layout-dependent bounds-check arithmetic above stays in portable C
+ * (cheap, once per macroblock call) and only the O(block_size^2) per-pixel
+ * copy/average loop is hand-asm. __asm__ binds to the bare .globl name,
+ * matching every other hand-asm entry point in this project. */
+void plm_bs_copy_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_copy_m68k");
+void plm_bs_avg_v_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_avg_v_m68k");
+void plm_bs_avg_h_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_avg_h_m68k");
+void plm_bs_avg_hv_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_avg_hv_m68k");
+void plm_bs_interp_copy_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_interp_copy_m68k");
+void plm_bs_interp_avg_v_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_interp_avg_v_m68k");
+void plm_bs_interp_avg_h_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_interp_avg_h_m68k");
+void plm_bs_interp_avg_hv_m68k(uint8_t *dest, const uint8_t *src, int dw, int block_size)
+    __asm__("plm_bs_interp_avg_hv_m68k");
+#endif
+
 void plm_video_process_macroblock(
 	plm_video_t *self, uint8_t *s, uint8_t *d,
 	int motion_h, int motion_v, int block_size, int interpolate
@@ -3354,11 +3382,25 @@ void plm_video_process_macroblock(
 
 	unsigned int si = ((self->mb_row * block_size) + vp) * dw + (self->mb_col * block_size) + hp;
 	unsigned int di = (self->mb_row * dw + self->mb_col) * block_size;
-	
+
 	unsigned int max_address = (dw * (self->mb_height * block_size - block_size + 1) - block_size);
 	if (si > max_address || di > max_address) {
 		return; // corrupt video
 	}
+
+#if defined(MR_M68K_ASM)
+	switch ((interpolate << 2) | (odd_h << 1) | (odd_v)) {
+		case 0: plm_bs_copy_m68k(d + di, s + si, dw, block_size); return;
+		case 1: plm_bs_avg_v_m68k(d + di, s + si, dw, block_size); return;
+		case 2: plm_bs_avg_h_m68k(d + di, s + si, dw, block_size); return;
+		case 3: plm_bs_avg_hv_m68k(d + di, s + si, dw, block_size); return;
+		case 4: plm_bs_interp_copy_m68k(d + di, s + si, dw, block_size); return;
+		case 5: plm_bs_interp_avg_v_m68k(d + di, s + si, dw, block_size); return;
+		case 6: plm_bs_interp_avg_h_m68k(d + di, s + si, dw, block_size); return;
+		case 7: plm_bs_interp_avg_hv_m68k(d + di, s + si, dw, block_size); return;
+	}
+	return;
+#endif
 
 	#define PLM_MB_CASE(INTERPOLATE, ODD_H, ODD_V, OP) \
 		case ((INTERPOLATE << 2) | (ODD_H << 1) | (ODD_V)): \
