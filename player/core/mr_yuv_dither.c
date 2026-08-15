@@ -16,6 +16,23 @@
  */
 #include "mr_yuv_dither.h"
 
+#if defined(MR_M68K_ASM)
+/* core/mr_yuv_dither_m68k.S - hand-written m68k version of
+ * mr_yuv420_dither8 below, unrolled by pixel pairs (matching the chroma
+ * subsampling) with the per-row Bayer tap table and per-pair red/green/
+ * blue_add precomputed exactly as the C does - see that file's header. */
+void mr_yuv420_dither8_m68k(const uint8_t *y_plane, int y_stride,
+                            const uint8_t *u_plane, int u_stride,
+                            const uint8_t *v_plane, int v_stride,
+                            int width, int dst_h, int vscale,
+                            uint8_t *out, int out_stride, int y_base,
+                            const int *luma_x298, const int *e_x409,
+                            const int *d_xm100, const int *e_xm208,
+                            const int *d_x516, const uint8_t *lut_r,
+                            const uint8_t *lut_g, const uint8_t *lut_b)
+    __asm__("mr_yuv420_dither8_m68k");
+#endif
+
 /* ---- YCbCr -> RGB tables (mirrors core/mr_yuv.c's build_tables()) ---- */
 static int g_luma_x298[256];
 static int g_e_x409[256];
@@ -85,6 +102,14 @@ void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
     if (!dither_lut_ready) build_dither_lut();
 
     dst_h = height / vscale;
+#if defined(MR_M68K_ASM)
+    mr_yuv420_dither8_m68k(y_plane, y_stride, u_plane, u_stride, v_plane,
+                           v_stride, width, dst_h, vscale, out, out_stride,
+                           y_base, g_luma_x298, g_e_x409, g_d_xm100,
+                           g_e_xm208, g_d_x516, &lut_r[0][0], &lut_g[0][0],
+                           &lut_b[0][0]);
+    return;
+#endif
     for (oy = 0; oy < dst_h; oy++) {
         int src_row = vscale * oy + vscale / 2;
         int chroma_row = src_row >> 1;
