@@ -110,6 +110,8 @@ static inline int mr_master_options_apply(mr_play_options *options)
     options->laced = master.laced;
     options->scale_2x = master.scale_2x;
     options->h264_performance = master.h264_performance;
+    options->audio_rate = master.audio_rate;
+    options->no_audio = master.no_audio;
     return 1;
 }
 

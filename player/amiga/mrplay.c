@@ -1412,6 +1412,8 @@ int main(int argc, char **argv)
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
     int h264_speed = -1; /* automatic: always Fast - see effective_h264_speed() */
+    int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
+    int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -1472,6 +1474,7 @@ int main(int argc, char **argv)
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--h264-speed=auto|quality|balanced|fast] "
+               "[--audio-rate=normal|low] [--no-audio] "
                "[--time]\n");
         return mrplay_exit(5);
     }
@@ -1532,6 +1535,16 @@ int main(int argc, char **argv)
                     return mrplay_exit(5);
                 }
             }
+            else if (!strncmp(argv[i], "--audio-rate=", 13)) {
+                const char *mode = argv[i] + 13;
+                if (!strcmp(mode, "normal")) audio_low_rate = 0;
+                else if (!strcmp(mode, "low")) audio_low_rate = 1;
+                else {
+                    printf("invalid audio rate mode: %s\n", mode);
+                    return mrplay_exit(5);
+                }
+            }
+            else if (!strcmp(argv[i], "--no-audio")) no_audio = 1;
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -1784,8 +1797,10 @@ int main(int argc, char **argv)
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
      * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
     {
-        if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
-            audio_dec = mr_audio_decoder_open(ai);
+        if (no_audio) {
+            printf("audio: disabled (--no-audio)\n");
+        } else if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
+            audio_dec = mr_audio_decoder_open(ai, audio_low_rate);
             if (want_time && audio_dec) {
                 if (ai->codec_tag > 0xffff)
                     printf("audio: %s %s %lu Hz (%c%c%c%c)\n",
@@ -1826,7 +1841,7 @@ int main(int argc, char **argv)
                     ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
                     ai->format_tag == MR_AUDIO_FORMAT_AAC ||
                     ai->format_tag == MR_AUDIO_FORMAT_AC3)) {
-            audio_dec = mr_audio_decoder_open(ai);
+            audio_dec = mr_audio_decoder_open(ai, audio_low_rate);
             if (audio_dec)
                 audio = audio_open(mr_audio_decoder_rate(audio_dec),
                                    (int)mr_audio_decoder_channels(audio_dec), 16);
@@ -1858,7 +1873,10 @@ int main(int argc, char **argv)
     }
     {
         size_t used = strlen(playing_detail);
-        if (audio_unavailable)
+        if (no_audio)
+            snprintf(playing_detail + used, sizeof playing_detail - used,
+                     "; audio disabled (--no-audio)");
+        else if (audio_unavailable)
             snprintf(playing_detail + used, sizeof playing_detail - used,
                      "; audio %s unavailable: %s (silent)", audio_description,
                      audio_failure ? audio_failure : "initialisation failed");
