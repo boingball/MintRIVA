@@ -446,7 +446,14 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     if (!s || !s->scr) return;
     s_frame_enc = s_frame_blit = 0;
 
-    { clock_t a = clock();
+    /* clock() around encode/blit only ever feeds display_aga_timing()/
+     * display_aga_frame_timing(), read solely by mrplay.c's --time report -
+     * see display_cgx.c/display_p96.c, which already gate their own timing
+     * on g_display_want_time. Skip both clock() calls on a normal run so
+     * every frame's encode+blit is not paying for two clock() reads nobody
+     * asked for. */
+    { clock_t a = 0;
+    if (g_display_want_time) a = clock();
     if (s->resize) {
         /* Resize the whole frame, then encode it. Dirty rows do not map
          * cleanly through arbitrary scaling, and the fitted image is small. */
@@ -469,7 +476,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         if (dy0 < 0) dy0 = 0;
         if (dy1 > h)  dy1 = h;
         if (dy1 <= dy0) {
-            s_frame_enc = clock() - a; s_enc += s_frame_enc; return;
+            if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; }
+            return;
         }
         src = rgb + (size_t)dy0 * stride;
         rows = dy1 - dy0;
@@ -498,9 +506,10 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             ddy0 = dy0; ddh = rows;
         }
     }
-    s_frame_enc = clock() - a; s_enc += s_frame_enc; }
+    if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }
 
-    { clock_t a = clock();
+    { clock_t a = 0;
+    if (g_display_want_time) a = clock();
     const uint8_t *crow = s->chunky + (size_t)ddy0 * pw;
     if (s->use_akiko) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
@@ -530,7 +539,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     }
     /* Kalms is timed and accumulated by the same counters as every other AGA
      * blit backend. Keep diagnostics out of this frame-rendering hot path. */
-    s_frame_blit = clock() - a; s_blit += s_frame_blit; }
+    if (g_display_want_time) { s_frame_blit = clock() - a; s_blit += s_frame_blit; } }
 }
 
 static int aga_poll(void *handle)

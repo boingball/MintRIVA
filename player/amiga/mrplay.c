@@ -596,7 +596,13 @@ static uint64_t monotonic_us(void);
 static void trace_phase(scheduler_trace *trace, const char *phase)
 {
     uint64_t now;
-    if (!trace) return;
+    /* trace->phase/phase_started_us/previous_phase/previous_duration_us are
+     * only ever read by service_audio_for_display's --time audio-gap
+     * message - never by real scheduling/pacing logic - so there is no
+     * reason to pay for a monotonic_us() (ReadEClock + 64-bit divide) on
+     * every one of this function's many per-frame call sites when --time
+     * was not requested. */
+    if (!trace || !trace->enabled) return;
     now = monotonic_us();
     if (trace->phase) {
         trace->previous_phase = trace->phase;
@@ -687,28 +693,39 @@ static void present_service_frame(video_presenter *vp)
 static void service_audio_for_display(void *opaque)
 {
     scheduler_trace *trace = (scheduler_trace *)opaque;
-    uint64_t now = monotonic_us();
-    /* monotonic_us() can land one tick's worth of rounding behind its own
-     * previous reading (EClock ticks converted with integer division). Guard
-     * the subtraction so that never-quite-monotonic hair does not underflow
-     * into an "impossible" multi-day gap - as seen in the field as
-     * audio-gap=1271310319 ms, i.e. (uint64_t)-1us truncated to 32 bits. */
-    if (trace->enabled && trace->last_service_us && now > trace->last_service_us &&
-        now - trace->last_service_us > 40000ULL) {
-        printf("audio-gap=%lu ms phase=%s phase-duration=%lu ms previous-phase=%s "
-               "previous-duration=%lu ms sleep-request=%lu ms "
-               "sleep-actual=%lu ms delay-ticks=%lu\n",
-               (unsigned long)((now - trace->last_service_us) / 1000),
-               trace->phase ? trace->phase : "unknown",
-               (unsigned long)((now - trace->phase_started_us) / 1000),
-               trace->previous_phase ? trace->previous_phase : "none",
-               (unsigned long)(trace->previous_duration_us / 1000),
-               (unsigned long)(trace->sleep_requested_us / 1000),
-               (unsigned long)(trace->sleep_actual_us / 1000),
-               trace->delay_ticks);
+    /* now/last_service_us only ever feed the --time audio-gap diagnostic
+     * below - monotonic_us() is a ReadEClock() call plus a 64-bit tick-to-
+     * microsecond divide, and this callback runs from deep inside the YUV
+     * conversion loop (about 22 times per decoded frame at 360p), so paying
+     * for two of those per call on a normal (non---time) run is a real,
+     * pointless tax on a 50 MHz 060. Skip both when nobody is watching. */
+    if (trace->enabled) {
+        uint64_t now = monotonic_us();
+        /* monotonic_us() can land one tick's worth of rounding behind its
+         * own previous reading (EClock ticks converted with integer
+         * division). Guard the subtraction so that never-quite-monotonic
+         * hair does not underflow into an "impossible" multi-day gap - as
+         * seen in the field as audio-gap=1271310319 ms, i.e. (uint64_t)-1us
+         * truncated to 32 bits. */
+        if (trace->last_service_us && now > trace->last_service_us &&
+            now - trace->last_service_us > 40000ULL) {
+            printf("audio-gap=%lu ms phase=%s phase-duration=%lu ms previous-phase=%s "
+                   "previous-duration=%lu ms sleep-request=%lu ms "
+                   "sleep-actual=%lu ms delay-ticks=%lu\n",
+                   (unsigned long)((now - trace->last_service_us) / 1000),
+                   trace->phase ? trace->phase : "unknown",
+                   (unsigned long)((now - trace->phase_started_us) / 1000),
+                   trace->previous_phase ? trace->previous_phase : "none",
+                   (unsigned long)(trace->previous_duration_us / 1000),
+                   (unsigned long)(trace->sleep_requested_us / 1000),
+                   (unsigned long)(trace->sleep_actual_us / 1000),
+                   trace->delay_ticks);
+        }
+        audio_service(trace->audio);
+        trace->last_service_us = monotonic_us();
+    } else {
+        audio_service(trace->audio);
     }
-    audio_service(trace->audio);
-    trace->last_service_us = monotonic_us();
     /* Audio first (it is the master clock), then advance video against it if the
      * scheduler has released the queue for a blocking fetch. */
     if (trace->presenter) present_service_frame(trace->presenter);
@@ -1605,6 +1622,11 @@ int main(int argc, char **argv)
         free(buf); return mrplay_exit(10);
     }
 
+    /* No-ops for a non-H.264 codec (mr_h264_set_timing_enabled checks
+     * dec->codec internally) - only worth turning on when --time is
+     * actually going to print the h264-stages breakdown it feeds. */
+    mr_h264_set_timing_enabled(&dec, want_time);
+
     h264_pipeline_diag_enabled = want_time && codec == &mr_codec_h264 &&
         (uint64_t)vi->width * (uint64_t)vi->height >= 1280ULL * 720ULL;
     h264_pipeline_width = vi->width;
@@ -2319,6 +2341,10 @@ int main(int argc, char **argv)
             mr_demux_rewind(dx);
             if (mr_decoder_reset(&dec) != MR_OK ||
                 !apply_h264_speed(&dec, h264_speed, 0)) break;
+            /* mr_decoder_reset() closes and reopens the codec, so a fresh
+             * h264_state comes back with timing_enabled at its default
+             * (off) - reapply, same as apply_h264_speed just above. */
+            mr_h264_set_timing_enabled(&dec, want_time);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2389,6 +2415,10 @@ int main(int argc, char **argv)
             vi = nvi;
             if (mr_decoder_reset(&dec) != MR_OK ||
                 !apply_h264_speed(&dec, h264_speed, 0)) break;
+            /* mr_decoder_reset() closes and reopens the codec, so a fresh
+             * h264_state comes back with timing_enabled at its default
+             * (off) - reapply, same as apply_h264_speed just above. */
+            mr_h264_set_timing_enabled(&dec, want_time);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
