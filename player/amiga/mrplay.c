@@ -1855,6 +1855,13 @@ int main(int argc, char **argv)
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
     mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
+    /* Off by default: mr_ts_next_packet() (several clock() reads per
+     * 188/192-byte TS packet) and mr_source_read_at()/the HLS playlist and
+     * segment fetch timers (two clock() reads per source read) only ever
+     * feed the --time report. No-ops for any non-TS container / non-network
+     * source. */
+    mr_demux_set_timing_enabled(dx, want_time);
+    mr_source_set_timing_enabled(want_time);
     /* Keep audio/video/UI alive (and quit responsive) while the HLS live path
      * polls for new segments at the edge; see hls_wait_service. */
     mr_hls_set_wait(hls_wait_service, &trace);

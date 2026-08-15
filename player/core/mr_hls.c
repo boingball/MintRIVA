@@ -99,7 +99,8 @@ int mr_source_is_hls(const char *url)
 
 static char *fetch_text(const char *url, const mr_http_options *options)
 {
-    clock_t started = clock();
+    int timing = mr_source_timing_enabled();
+    clock_t started = timing ? clock() : 0;
     size_t len;
     char *buf;
     /* The complete-response reader accepts chunked playlists with no
@@ -107,8 +108,9 @@ static char *fetch_text(const char *url, const mr_http_options *options)
      * bounded text body in full. */
     if (!mr_http_fetch_text(url, options, &buf, &len, HLS_PLAYLIST_MAX))
         return NULL;
-    mr_source_timing_add_hls_playlist((unsigned long)
-        ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
+    if (timing)
+        mr_source_timing_add_hls_playlist((unsigned long)
+            ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
     return buf;
 }
 
@@ -398,7 +400,8 @@ static mr_status merge_playlist(char *text, const char *base_url,
  * be opened in order for its start offset to be known. */
 static int open_seg(hls_source *h, size_t i)
 {
-    clock_t started = clock();
+    int timing = mr_source_timing_enabled();
+    clock_t started = timing ? clock() : 0;
     mr_source *s;
     size_t len;
     if (i >= h->nsegs) return 0;
@@ -440,8 +443,9 @@ static int open_seg(hls_source *h, size_t i)
     h->cur_seg = i;
     h->seg_start[i + 1] = h->seg_start[i] + len;
     if (i + 1 > h->discovered) h->discovered = i + 1;
-    mr_source_timing_add_hls_segment((unsigned long)
-        ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
+    if (timing)
+        mr_source_timing_add_hls_segment((unsigned long)
+            ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
     return 1;
 }
 

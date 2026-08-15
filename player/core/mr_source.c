@@ -32,6 +32,10 @@ typedef struct {
 
 static char g_source_error[MR_SOURCE_ERROR_MAX];
 static mr_source_timing g_timing;
+static int g_timing_enabled = 0;
+
+void mr_source_set_timing_enabled(int enabled) { g_timing_enabled = enabled != 0; }
+int  mr_source_timing_enabled(void) { return g_timing_enabled; }
 
 static unsigned long elapsed_ms(clock_t start)
 {
@@ -208,6 +212,8 @@ int mr_source_read_at(mr_source *s, size_t off, void *dst, size_t len)
     if (s->len != MR_SOURCE_LEN_UNKNOWN &&
         (off > s->len || len > s->len - off))
         return 0;
+    if (!g_timing_enabled)
+        return s->read_at(s->ctx, off, dst, len);
     {
         clock_t started = clock();
         int ok = s->read_at(s->ctx, off, dst, len);
