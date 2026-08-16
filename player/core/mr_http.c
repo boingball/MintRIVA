@@ -634,6 +634,21 @@ static void connect_poll_sleep(void)
 #endif
 }
 
+/* bsdsocket.library reports the last socket-call error through Errno(), not
+ * through libc's plain errno - this codebase never wires SocketBaseTagList's
+ * SBTC_ERRNOPTR to redirect it, so plain errno after a raw socket call is
+ * unreliable on real Amiga stacks (AmiTCP/Miami/Roadshow) even though it
+ * happens to work on the host. Matches
+ * vendor/MintAMP/radio_stream.c's radio_sock_errno(). */
+static long connect_last_errno(void)
+{
+#if MR_HTTP_AMIGA
+    return Errno();
+#else
+    return errno;
+#endif
+}
+
 static int connect_with_timeout(int sock, const struct sockaddr *addr,
                                 socklen_t addrlen)
 {
@@ -648,7 +663,7 @@ static int connect_with_timeout(int sock, const struct sockaddr *addr,
 #endif
     for (tries = 0; tries < budget; tries++) {
         int cr = connect(sock, addr, addrlen);
-        if (cr == 0 || errno == EISCONN) { ok = 1; break; }
+        if (cr == 0 || connect_last_errno() == EISCONN) { ok = 1; break; }
         if (g_http_service && g_http_service(g_http_service_opaque))
             break;                              /* caller asked to abort        */
         connect_poll_sleep();
