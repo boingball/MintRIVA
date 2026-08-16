@@ -76,23 +76,30 @@ static int  ensure_scaled(cgx_state *s, int w);
 static int  cgx_toggle_fullscreen(void *h);
 
 /* CloseScreen() may temporarily refuse while Intuition still sees a window or
- * screen lock.  Never forget a screen merely because the first close failed:
- * retry across vertical blanks, then put it behind Workbench and retain it for
- * the next toggle/shutdown attempt. */
+ * screen lock.  Real PiStorm/Workbench testing has shown that a few VBlanks are
+ * not always enough after a fullscreen/private-window teardown.  Keep the
+ * screen pointer until CloseScreen() actually succeeds and make a stubborn
+ * shutdown visible in the log instead of silently forgetting the screen. */
 static int cgx_close_private_screen(struct Screen **screen, const char *reason)
 {
     int attempt;
     if (!screen || !*screen) return 1;
-    for (attempt = 0; attempt < 3; attempt++) {
+
+    WaitBlit();
+    for (attempt = 0; attempt < 50; attempt++) {
         if (CloseScreen(*screen)) {
             *screen = NULL;
+            if (attempt > 0)
+                printf("rtg-fullscreen: private screen closed after %d "
+                       "VBlank(s) (%s)\n", attempt,
+                       reason ? reason : "unknown");
             return 1;
         }
         WaitTOF();
     }
     ScreenToBack(*screen);
-    printf("rtg-fullscreen: private screen close deferred (%s)\n",
-           reason ? reason : "unknown");
+    printf("rtg-fullscreen: WARNING private screen still busy after "
+           "50 VBlanks (%s)\n", reason ? reason : "unknown");
     return 0;
 }
 
@@ -754,11 +761,32 @@ static void cgx_status(void *h, const char *text)
 static void cgx_close(void *h)
 {
     cgx_state *s = (cgx_state *)h;
+    struct IntuiMessage *msg;
+
     if (!s) return;
-    if (s->scaled) FreeVec(s->scaled);
-    if (s->win) { CloseWindow(s->win); s->win = NULL; }
+
+    if (s->win) {
+        /*
+         * Stop new IDCMP traffic, reply anything already queued, then wait for
+         * graphics activity before destroying the window/private screen.
+         */
+        ModifyIDCMP(s->win, 0);
+        if (s->win->UserPort) {
+            while ((msg = (struct IntuiMessage *)GetMsg(s->win->UserPort)))
+                ReplyMsg((struct Message *)msg);
+        }
+        WaitBlit();
+        CloseWindow(s->win);
+        s->win = NULL;
+        WaitTOF();
+        WaitTOF();
+    }
+
     cgx_close_private_screen(&s->screen, "shutdown");
     cgx_close_private_screen(&s->retired_screen, "shutdown retry");
+
+    /* WritePixelArray source storage stays valid until teardown is quiescent. */
+    if (s->scaled) FreeVec(s->scaled);
     FreeVec(s);
 }
 

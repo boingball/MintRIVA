@@ -128,16 +128,22 @@ static int p96_close_private_screen(struct Screen **screen, const char *reason)
 {
     int attempt;
     if (!screen || !*screen) return 1;
-    for (attempt = 0; attempt < 3; attempt++) {
+
+    WaitBlit();
+    for (attempt = 0; attempt < 50; attempt++) {
         if (CloseScreen(*screen)) {
             *screen = NULL;
+            if (attempt > 0)
+                printf("p96-fullscreen: private screen closed after %d "
+                       "VBlank(s) (%s)\n", attempt,
+                       reason ? reason : "unknown");
             return 1;
         }
         WaitTOF();
     }
     ScreenToBack(*screen);
-    printf("p96-fullscreen: private screen close deferred (%s)\n",
-           reason ? reason : "unknown");
+    printf("p96-fullscreen: WARNING private screen still busy after "
+           "50 VBlanks (%s)\n", reason ? reason : "unknown");
     return 0;
 }
 
@@ -869,11 +875,31 @@ static void p96_status(void *h, const char *text)
 static void p96_close(void *h)
 {
     p96_state *s = (p96_state *)h;
+    struct IntuiMessage *msg;
+
     if (!s) return;
-    if (s->scaled) FreeVec(s->scaled);
-    if (s->win) { CloseWindow(s->win); s->win = NULL; }
+
+    if (s->win) {
+        ModifyIDCMP(s->win, 0);
+        if (s->win->UserPort) {
+            while ((msg = (struct IntuiMessage *)GetMsg(s->win->UserPort)))
+                ReplyMsg((struct Message *)msg);
+        }
+        /*
+         * p96LockBitMap is released per strip, but wait for any graphics-side
+         * work to settle before dropping the fullscreen window/screen.
+         */
+        WaitBlit();
+        CloseWindow(s->win);
+        s->win = NULL;
+        WaitTOF();
+        WaitTOF();
+    }
+
     p96_close_private_screen(&s->screen, "shutdown");
     p96_close_private_screen(&s->retired_screen, "shutdown retry");
+
+    if (s->scaled) FreeVec(s->scaled);
     FreeVec(s);
 }
 

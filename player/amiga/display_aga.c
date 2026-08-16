@@ -596,13 +596,59 @@ static int aga_poll(void *handle)
 static void aga_close(void *handle)
 {
     aga_state *s = (aga_state *)handle;
+    struct IntuiMessage *msg;
+    int attempt;
+
     if (!s) return;
+
+    /*
+     * Custom planar screens are shared Intuition/graphics objects.  On real
+     * hardware CloseWindow() returning does not guarantee that the last IDCMP
+     * message or blit/screen reference has disappeared on the same instruction.
+     * Losing the Screen pointer after a failed CloseScreen() leaves Workbench
+     * in a very unhappy state, so make shutdown deliberately conservative.
+     */
+    if (s->win) {
+        ModifyIDCMP(s->win, 0);
+        if (s->win->UserPort) {
+            while ((msg = (struct IntuiMessage *)GetMsg(s->win->UserPort)))
+                ReplyMsg((struct Message *)msg);
+        }
+    }
+
+    WaitBlit();
+
+    if (s->win) {
+        CloseWindow(s->win);
+        s->win = NULL;
+        /* Give Intuition two frames to retire window/layer references. */
+        WaitTOF();
+        WaitTOF();
+    }
+
+    if (s->scr) {
+        for (attempt = 0; attempt < 50; attempt++) {
+            if (CloseScreen(s->scr)) {
+                s->scr = NULL;
+                break;
+            }
+            WaitTOF();
+        }
+        if (s->scr) {
+            ScreenToBack(s->scr);
+            printf("planar: WARNING custom screen still busy after "
+                   "50 VBlanks (shutdown)\n");
+        } else if (attempt > 0) {
+            printf("planar: custom screen closed after %d VBlank(s) "
+                   "(shutdown)\n", attempt);
+        }
+    }
+
+    /* Keep all frame/blit storage alive until graphics has quiesced above. */
     if (s->enc) free(s->enc);
     if (s->scaled) free(s->scaled);
     if (s->chunky) free(s->chunky);
     if (s->tempbm) FreeBitMap(s->tempbm);
-    if (s->win) CloseWindow(s->win);
-    if (s->scr) CloseScreen(s->scr);
     s_kalms_active = 0;
     free(s);
 }
