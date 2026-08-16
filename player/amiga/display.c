@@ -123,9 +123,10 @@ void display_set_service(amiga_display *d, mr_display_service_fn fn,
     if (d) { d->service = fn; d->service_opaque = opaque; }
 }
 
-int display_supports_indexed(amiga_display *d)
+int display_supports_indexed(amiga_display *d, int *indexed_depth)
 {
-    return d && d->be->supports_indexed && d->be->supports_indexed(d->h);
+    return d && d->be->supports_indexed &&
+           d->be->supports_indexed(d->h, indexed_depth);
 }
 
 void display_show_indexed(amiga_display *d, const unsigned char *idx,
@@ -137,10 +138,12 @@ void display_show_indexed(amiga_display *d, const unsigned char *idx,
 }
 
 int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
-                                 int *dst_w, int *dst_h, int *vscale)
+                                 int *dst_w, int *dst_h, int *vscale,
+                                 int *indexed_depth)
 {
     return d && d->be->supports_yuv_indexed &&
-           d->be->supports_yuv_indexed(d->h, src_w, src_h, dst_w, dst_h, vscale);
+           d->be->supports_yuv_indexed(d->h, src_w, src_h, dst_w, dst_h,
+                                       vscale, indexed_depth);
 }
 
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing)

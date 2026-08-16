@@ -1,5 +1,5 @@
 /*
- * MintVID - direct YUV420P -> 8-bit indexed conversion (see the header for
+ * MintVID - direct YUV420P -> indexed conversion (see the header for
  * the geometry contract this relies on).
  *
  * This is a straight algebraic fusion of two existing, independently
@@ -70,36 +70,51 @@ static const uint8_t bayer4[4][4] = {
     { 15,  7, 13,  5 }
 };
 static uint8_t lut_r[16][256], lut_g[16][256], lut_b[16][256];
-static int     dither_lut_ready = 0;
+static int     dither_lut_depth = 0;
 
-static void build_dither_lut(void)
+static void indexed_shape(int depth, int *rl, int *gl, int *bl)
 {
-    int t, v;
-    for (t = 0; t < 16; t++)
-        for (v = 0; v < 256; v++) {
-            int val = v + (t - 8) * 51 / 16;
-            int q;
-            if (val < 0) val = 0; else if (val > 255) val = 255;
-            q = (val * 5 + 127) / 255;
-            lut_r[t][v] = (uint8_t)(q * 36);
-            lut_g[t][v] = (uint8_t)(q * 6);
-            lut_b[t][v] = (uint8_t)q;
-        }
-    dither_lut_ready = 1;
+    if (depth == 4) { *rl = 2; *gl = 4; *bl = 2; }
+    else if (depth == 5) { *rl = 4; *gl = 4; *bl = 2; }
+    else { *rl = 6; *gl = 6; *bl = 6; }
 }
 
-void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
-                       const uint8_t *u_plane, int u_stride,
-                       const uint8_t *v_plane, int v_stride,
-                       int width, int height, int vscale,
-                       uint8_t *out, int out_stride, int y_base)
+static void build_dither_lut(int depth)
+{
+    int rl, gl, bl, t, v;
+    indexed_shape(depth, &rl, &gl, &bl);
+    for (t = 0; t < 16; t++)
+        for (v = 0; v < 256; v++) {
+            int rv = v + (t - 8) * (255 / (rl - 1)) / 16;
+            int gv = v + (t - 8) * (255 / (gl - 1)) / 16;
+            int bv = v + (t - 8) * (255 / (bl - 1)) / 16;
+            int rq, gq, bq;
+            if (rv < 0) rv = 0; else if (rv > 255) rv = 255;
+            if (gv < 0) gv = 0; else if (gv > 255) gv = 255;
+            if (bv < 0) bv = 0; else if (bv > 255) bv = 255;
+            rq = (rv * (rl - 1) + 127) / 255;
+            gq = (gv * (gl - 1) + 127) / 255;
+            bq = (bv * (bl - 1) + 127) / 255;
+            lut_r[t][v] = (uint8_t)(rq * gl * bl);
+            lut_g[t][v] = (uint8_t)(gq * bl);
+            lut_b[t][v] = (uint8_t)bq;
+        }
+    dither_lut_depth = depth;
+}
+
+void mr_yuv420_dither_indexed(const uint8_t *y_plane, int y_stride,
+                              const uint8_t *u_plane, int u_stride,
+                              const uint8_t *v_plane, int v_stride,
+                              int width, int height, int vscale, int depth,
+                              uint8_t *out, int out_stride, int y_base)
 {
     int dst_h, oy;
     if (!y_plane || !u_plane || !v_plane || !out ||
         width <= 0 || height <= 0 || vscale <= 0)
         return;
+    if (depth != 4 && depth != 5) depth = 8;
     if (!g_yuv_tables_ready) build_yuv_tables();
-    if (!dither_lut_ready) build_dither_lut();
+    if (dither_lut_depth != depth) build_dither_lut(depth);
 
     dst_h = height / vscale;
 #if defined(MR_M68K_ASM)
@@ -163,6 +178,17 @@ void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
     }
 }
 
+void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
+                       const uint8_t *u_plane, int u_stride,
+                       const uint8_t *v_plane, int v_stride,
+                       int width, int height, int vscale,
+                       uint8_t *out, int out_stride, int y_base)
+{
+    mr_yuv420_dither_indexed(y_plane, y_stride, u_plane, u_stride, v_plane,
+                             v_stride, width, height, vscale, 8, out,
+                             out_stride, y_base);
+}
+
 static uint8_t yuv420_pixel_index(const uint8_t *y_plane, int y_stride,
                                   const uint8_t *u_plane, int u_stride,
                                   const uint8_t *v_plane, int v_stride,
@@ -187,19 +213,20 @@ static uint8_t yuv420_pixel_index(const uint8_t *y_plane, int y_stride,
                      lut_b[threshold][b]);
 }
 
-void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
-                              const uint8_t *u_plane, int u_stride,
-                              const uint8_t *v_plane, int v_stride,
-                              int width, int height,
-                              uint8_t *out, int dst_w, int dst_h,
-                              int out_stride, int y_base)
+void mr_yuv420_dither_indexed_resize(const uint8_t *y_plane, int y_stride,
+                                     const uint8_t *u_plane, int u_stride,
+                                     const uint8_t *v_plane, int v_stride,
+                                     int width, int height, int depth,
+                                     uint8_t *out, int dst_w, int dst_h,
+                                     int out_stride, int y_base)
 {
     int xq, xr, sx0, xerr0, yq, yr, sy, yerr, oy;
     if (!y_plane || !u_plane || !v_plane || !out ||
         width <= 0 || height <= 0 || dst_w <= 0 || dst_h <= 0)
         return;
+    if (depth != 4 && depth != 5) depth = 8;
     if (!g_yuv_tables_ready) build_yuv_tables();
-    if (!dither_lut_ready) build_dither_lut();
+    if (dither_lut_depth != depth) build_dither_lut(depth);
 
     xq = width / dst_w; xr = width % dst_w;
     sx0 = (width / 2) / dst_w; xerr0 = (width / 2) % dst_w;
@@ -224,4 +251,16 @@ void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
         yerr += yr;
         if (yerr >= dst_h) { yerr -= dst_h; sy++; }
     }
+}
+
+void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
+                              const uint8_t *u_plane, int u_stride,
+                              const uint8_t *v_plane, int v_stride,
+                              int width, int height,
+                              uint8_t *out, int dst_w, int dst_h,
+                              int out_stride, int y_base)
+{
+    mr_yuv420_dither_indexed_resize(y_plane, y_stride, u_plane, u_stride,
+                                    v_plane, v_stride, width, height, 8, out,
+                                    dst_w, dst_h, out_stride, y_base);
 }

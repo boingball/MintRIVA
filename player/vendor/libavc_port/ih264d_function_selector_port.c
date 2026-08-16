@@ -9,6 +9,7 @@
 #include "ih264d_structs.h"
 #include "ih264d_function_selector.h"
 #include "ih264_m68k_optim.h"
+#include "ih264_m68k_bs.h"
 #include "ih264d_stage_profile.h"
 
 void ih264d_init_function_ptr(dec_struct_t *codec)
@@ -120,6 +121,14 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_iquant_itrans_recon_8x8_m68k;
     codec->pf_iquant_itrans_recon_luma_8x8_dc =
         mr_ih264_iquant_itrans_recon_8x8_dc_m68k;
+    codec->pf_fill_bs1[0][0] =
+        mr_ih264d_fill_bs1_16x16mb_pslice_m68k;
+    codec->pf_fill_bs1[0][1] =
+        mr_ih264d_fill_bs1_non16x16mb_pslice_m68k;
+    codec->pf_fill_bs1[1][0] =
+        mr_ih264d_fill_bs1_16x16mb_bslice_m68k;
+    codec->pf_fill_bs1[1][1] =
+        mr_ih264d_fill_bs1_non16x16mb_bslice_m68k;
 #endif
 #if defined(MR_H264_STAGE_PROFILE)
     /* Diagnostic-only, opt-in: wraps whatever is now sitting in the

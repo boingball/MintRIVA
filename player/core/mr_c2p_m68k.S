@@ -18,9 +18,11 @@
  * transpose8() (2,000,000 random 8-byte inputs, zero mismatches) as portable
  * C before being transliterated here, and the full grouping/packing loop
  * (four transpose8 calls per 32-pixel group, MSB-first - matching
- * transpose32()'s own documented contract) was separately verified against
- * mr_c2p8() for nplanes in {5, 6, 8} - see the session notes / commit
- * message for that prototype. This file is a mechanical translation of
+ * transpose32()'s own documented contract) is differentially verified against
+ * mr_c2p8() for nplanes in {4, 5, 6, 8} - see tests/mr_c2p_check.c (including
+ * its real-m68k execution in tests/run_m68k_check.sh). The 4-plane case is the
+ * ECS16/--ecs-fast path used by both ECS and AGA screens. This file is a
+ * mechanical translation of
  * already-proven-correct C, not new bit-manipulation designed directly in
  * asm.
  *

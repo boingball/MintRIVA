@@ -112,36 +112,30 @@ const char *display_backend_name(amiga_display *d);
 void display_show_rgb(amiga_display *d, const unsigned char *rgb,
                       int w, int h, int stride, int dy0, int dy1);
 
-/* Non-zero when `d` can accept a pre-dithered 8-bit indexed frame via
+/* Non-zero when `d` can accept a pre-dithered indexed frame via
  * display_show_indexed() instead of RGB24 via display_show_rgb() - true
  * only for the AGA backend's plain indexed configuration (see
  * display_backend.h's supports_indexed for the exact conditions). Callers
  * that want to skip a redundant RGB24 copy/dither pass (e.g. mrplay.c's
  * decode-ahead queue) should query this once after display_open()
- * succeeds and, if true, dither with core/mr_dither_rgb8() themselves and
- * call display_show_indexed() instead of display_show_rgb() from then on. */
-int display_supports_indexed(amiga_display *d);
+ * succeeds and, if true, dither with core/mr_dither_rgb_indexed() at the
+ * returned 4/5/8-plane depth and call display_show_indexed(). */
+int display_supports_indexed(amiga_display *d, int *indexed_depth);
 
-/* Blit a pre-dithered 8-bit indexed frame (idx_stride bytes/row, one byte
+/* Blit a pre-dithered indexed frame (idx_stride bytes/row, one byte
  * per pixel, already in this display's palette index space). Only valid
- * to call when display_supports_indexed(d) returned non-zero. */
+ * to call when display_supports_indexed(d, ...) returned non-zero. */
 void display_show_indexed(amiga_display *d, const unsigned char *idx,
                           int w, int h, int idx_stride, int dy0, int dy1);
 
-/* Non-zero when `d` can accept a direct YUV420P -> indexed fused frame
- * (core/mr_yuv_dither.h's mr_yuv420_dither8()) for a src_w x src_h source,
- * filling *dst_w, *dst_h and *vscale with the geometry to produce - true only
- * for the AGA backend when the fitted display needs an exact integer
- * vertical-only downscale (no horizontal resize; see
- * display_backend.h's supports_yuv_indexed for the exact conditions).
- * Distinct from display_supports_indexed(), which only covers the
- * unscaled case - the two are mutually exclusive, and a caller (e.g.
- * mrplay.c's H.264 decode-ahead queue) queries both once after
- * display_open() succeeds. When true, dither with mr_yuv420_dither8()
- * into a *dst_w x *dst_h buffer and call display_show_indexed() with
- * those dimensions (not the source's). */
+/* Non-zero when `d` can accept a direct YUV420P -> indexed frame. Fills the
+ * fitted geometry, fast-path vscale (0 means general two-axis resize), and
+ * active 4/5/8-plane palette depth. Dither with the matching generic function
+ * in core/mr_yuv_dither.h and pass the resulting one-byte indices to
+ * display_show_indexed(). */
 int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
-                                 int *dst_w, int *dst_h, int *vscale);
+                                 int *dst_w, int *dst_h, int *vscale,
+                                 int *indexed_depth);
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque);
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing);

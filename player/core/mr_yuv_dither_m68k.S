@@ -1,13 +1,13 @@
 /*
- * MintVID - hand-tuned m68k fused YUV420P -> 8-bit indexed dither.
+ * MintVID - hand-tuned m68k fused YUV420P -> indexed dither.
  *
  * mr_yuv420_dither8_m68k() implements the exact same contract as the
  * portable C mr_yuv420_dither8() (core/mr_yuv_dither.c): for each output
  * row, pick source row `vscale*oy + vscale/2` (destination-pixel-centre
  * nearest-neighbour, matching mr_scale_resize_rgb24()'s DDA - see that
  * file's header), convert YUV420 -> RGB using the same five pre-multiplied
- * tables as mr_yuv420_to_rgb24_m68k, then dither straight to an 8-bit
- * palette index using the same three per-threshold LUTs as
+ * tables as mr_yuv420_to_rgb24_m68k, then dither straight to a palette
+ * index using the same three per-threshold LUTs as
  * mr_dither_rgb8_m68k - one pass, no intermediate RGB24 buffer.
  *
  * dst_h (= height/vscale) is computed by the C caller and passed in

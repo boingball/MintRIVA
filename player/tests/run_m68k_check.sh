@@ -88,6 +88,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264d_parse_cabac_coeff_port.c \
     vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
     vendor/libavc_port/ih264_m68k_intra_pred.S \
+    vendor/libavc_port/ih264_m68k_bs.S \
     vendor/libavc_port/ithread_port.c \
     vendor/libavc_port/compat.c"
 
@@ -138,6 +139,9 @@ $CC -o "$BUILD/mr_h264_intra8x8_check.m68k" tests/mr_h264_intra8x8_check.c $LIBA
 echo "== building mr_h264_intra_chroma_check.m68k (real chroma_8x8 intra pred modes vs asm) =="
 $CC -o "$BUILD/mr_h264_intra_chroma_check.m68k" tests/mr_h264_intra_chroma_check.c $LIBAVC_SRC
 
+echo "== building mr_h264_bs_check.m68k (real P-16x16 boundary strength vs asm) =="
+$CC -o "$BUILD/mr_h264_bs_check.m68k" tests/mr_h264_bs_check.c $LIBAVC_SRC
+
 echo "== building mr_yuv_check.m68k =="
 $CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c \
     core/mr_yuv_m68k.S
@@ -166,6 +170,10 @@ $CC -o "$BUILD/mr_mpeg1_blockset_check.m68k" tests/mr_mpeg1_blockset_check.c \
 $CC -o "$BUILD/mr_mpeg1_idct_check.m68k" tests/mr_mpeg1_idct_check.c \
     core/mr_mpeg1_idct_m68k.S
 
+echo "== building mr_media_clock_check.m68k =="
+$CC -o "$BUILD/mr_media_clock_check.m68k" tests/mr_media_clock_check.c \
+    core/mr_media_clock.c
+
 run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 
 run "$BUILD/mr_h264_m68k_check.m68k"
@@ -174,6 +182,7 @@ run "$BUILD/mr_h264_mvpred_dispatch_check.m68k"
 run "$BUILD/mr_h264_recon8x8_check.m68k"
 run "$BUILD/mr_h264_intra8x8_check.m68k"
 run "$BUILD/mr_h264_intra_chroma_check.m68k"
+run "$BUILD/mr_h264_bs_check.m68k"
 run "$BUILD/mr_yuv_check.m68k"
 run "$BUILD/mr_scale_check.m68k"
 run "$BUILD/mr_c2p_check.m68k"
@@ -182,6 +191,7 @@ run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
 run "$BUILD/mr_mpeg1_idct_check.m68k"
+run "$BUILD/mr_media_clock_check.m68k"
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \
