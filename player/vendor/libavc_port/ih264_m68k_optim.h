@@ -124,6 +124,26 @@ void mr_ih264_inter_pred_chroma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
                                      WORD32, WORD32, WORD32, WORD32)
     __asm__("mr_ih264_inter_pred_chroma_m68k");
 
+/* ih264_m68k_weighted_pred.S - explicit weighted prediction for P/B slices
+ * (spec 8.4.2.3.2).  Chroma weights/offsets use libavc's packed U/V ABI. */
+void mr_ih264_weighted_pred_luma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
+                                      WORD32, WORD32, WORD32, WORD32, WORD32)
+    __asm__("mr_ih264_weighted_pred_luma_m68k");
+void mr_ih264_weighted_pred_chroma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
+                                        WORD32, WORD32, WORD32, WORD32,
+                                        WORD32)
+    __asm__("mr_ih264_weighted_pred_chroma_m68k");
+void mr_ih264_weighted_bi_pred_luma_m68k(UWORD8 *, UWORD8 *, UWORD8 *,
+                                         WORD32, WORD32, WORD32, WORD32,
+                                         WORD32, WORD32, WORD32, WORD32,
+                                         WORD32, WORD32)
+    __asm__("mr_ih264_weighted_bi_pred_luma_m68k");
+void mr_ih264_weighted_bi_pred_chroma_m68k(UWORD8 *, UWORD8 *, UWORD8 *,
+                                           WORD32, WORD32, WORD32, WORD32,
+                                           WORD32, WORD32, WORD32, WORD32,
+                                           WORD32, WORD32)
+    __asm__("mr_ih264_weighted_bi_pred_chroma_m68k");
+
 /* ih264_m68k_mvpred.S - motion vector prediction (spec 8.4.1.2.1), ported
  * from ih264d_get_motion_vector_predictor(). Struct layouts are opaque
  * here deliberately (see ih264_m68k_cabac.S's declaration above for why),

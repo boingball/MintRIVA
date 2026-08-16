@@ -62,6 +62,10 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_default_weighted_pred_luma_m68k;
     codec->pf_default_weighted_pred_chroma =
         mr_ih264_default_weighted_pred_chroma_m68k;
+    codec->pf_weighted_pred_luma = mr_ih264_weighted_pred_luma_m68k;
+    codec->pf_weighted_pred_chroma = mr_ih264_weighted_pred_chroma_m68k;
+    codec->pf_weighted_bi_pred_luma = mr_ih264_weighted_bi_pred_luma_m68k;
+    codec->pf_weighted_bi_pred_chroma = mr_ih264_weighted_bi_pred_chroma_m68k;
     codec->apf_intra_pred_luma_16x16[0] =
         mr_ih264_intra_pred_luma_16x16_vert_m68k;
     codec->apf_intra_pred_luma_16x16[1] =

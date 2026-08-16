@@ -366,10 +366,256 @@ static void check_intra4(void)
 /* mr_ih264_inter_pred_luma_horz_m68k/vert_m68k (ih264_m68k_interp.S) only
  * exist on an m68k build (see ih264_m68k_optim.h) - the hand-written .S is
  * guarded on MR_M68K_ASM so it preprocesses to an empty translation unit
- * everywhere else. This is the only pair of checks in this file that can't
- * run on the host build; `make check-m68k` (real m68k, big-endian, under
- * qemu-m68k) is what exercises it. */
+ * everywhere else. These asm-only checks cannot run on the host build;
+ * `make check-m68k` (real m68k, big-endian, under qemu-m68k) is what
+ * exercises them. */
 #if defined(MR_M68K_ASM)
+/* ---- explicit weighted prediction (H.264 8.4.2.3.2) ------------------- */
+static int32_t ref_asr(int32_t value, unsigned shift)
+{
+    int64_t magnitude;
+    if (!shift || value >= 0) return value >> shift;
+    magnitude = -(int64_t)value;
+    return (int32_t)-((magnitude + (((int64_t)1 << shift) - 1)) >> shift);
+}
+
+static uint8_t ref_clip_u8(int32_t value)
+{
+    return (uint8_t)(value < 0 ? 0 : value > 255 ? 255 : value);
+}
+
+static int16_t test_rand_s16(uint32_t *seed)
+{
+    uint32_t value = xrand(seed) | (xrand(seed) << 15);
+    return (int16_t)value;
+}
+
+static int8_t test_rand_s8(uint32_t *seed)
+{
+    return (int8_t)xrand(seed);
+}
+
+static int32_t pack_weights(int16_t u, int16_t v)
+{
+    return (int32_t)(((uint32_t)(uint16_t)v << 16) | (uint16_t)u);
+}
+
+static int32_t pack_offsets(int8_t u, int8_t v)
+{
+    return (int32_t)(((uint32_t)(uint8_t)v << 8) | (uint8_t)u);
+}
+
+static void ref_explicit_weight_luma(const uint8_t *src, uint8_t *dst,
+                                     int src_strd, int dst_strd, int log_wd,
+                                     int16_t wt, int8_t ofst, int ht, int wd)
+{
+    int bias = ofst;
+    int row, col;
+    if (log_wd >= 1)
+        bias = (1 << (log_wd - 1)) + ofst * (1 << log_wd);
+    for (row = 0; row < ht; row++)
+        for (col = 0; col < wd; col++) {
+            int value = wt * src[row * src_strd + col] + bias;
+            if (log_wd >= 1) value = ref_asr(value, (unsigned)log_wd);
+            dst[row * dst_strd + col] = ref_clip_u8(value);
+        }
+}
+
+static void ref_explicit_weight_chroma(const uint8_t *src, uint8_t *dst,
+                                       int src_strd, int dst_strd, int log_wd,
+                                       int16_t wt_u, int16_t wt_v,
+                                       int8_t ofst_u, int8_t ofst_v,
+                                       int ht, int wd)
+{
+    int bias_u = ofst_u, bias_v = ofst_v;
+    int row, pair;
+    if (log_wd >= 1) {
+        int rounding = 1 << (log_wd - 1);
+        bias_u = rounding + ofst_u * (1 << log_wd);
+        bias_v = rounding + ofst_v * (1 << log_wd);
+    }
+    for (row = 0; row < ht; row++)
+        for (pair = 0; pair < wd; pair++) {
+            int idx = row * src_strd + 2 * pair;
+            int out = row * dst_strd + 2 * pair;
+            int u = wt_u * src[idx] + bias_u;
+            int v = wt_v * src[idx + 1] + bias_v;
+            if (log_wd >= 1) {
+                u = ref_asr(u, (unsigned)log_wd);
+                v = ref_asr(v, (unsigned)log_wd);
+            }
+            dst[out] = ref_clip_u8(u);
+            dst[out + 1] = ref_clip_u8(v);
+        }
+}
+
+static int ref_offset_average(int8_t a, int8_t b)
+{
+    return ref_asr((int32_t)a + b + 1, 1);
+}
+
+static void ref_explicit_bi_weight_luma(const uint8_t *src1,
+                                        const uint8_t *src2, uint8_t *dst,
+                                        int src_strd1, int src_strd2,
+                                        int dst_strd, int log_wd,
+                                        int16_t wt1, int16_t wt2,
+                                        int8_t ofst1, int8_t ofst2,
+                                        int ht, int wd)
+{
+    int shift = log_wd + 1;
+    int bias = (1 << log_wd) +
+               ref_offset_average(ofst1, ofst2) * (1 << shift);
+    int row, col;
+    for (row = 0; row < ht; row++)
+        for (col = 0; col < wd; col++) {
+            int value = wt1 * src1[row * src_strd1 + col] +
+                        wt2 * src2[row * src_strd2 + col] + bias;
+            dst[row * dst_strd + col] =
+                ref_clip_u8(ref_asr(value, (unsigned)shift));
+        }
+}
+
+static void ref_explicit_bi_weight_chroma(
+    const uint8_t *src1, const uint8_t *src2, uint8_t *dst,
+    int src_strd1, int src_strd2, int dst_strd, int log_wd,
+    int16_t wt1_u, int16_t wt1_v, int16_t wt2_u, int16_t wt2_v,
+    int8_t ofst1_u, int8_t ofst1_v, int8_t ofst2_u, int8_t ofst2_v,
+    int ht, int wd)
+{
+    int shift = log_wd + 1;
+    int bias_u = (1 << log_wd) +
+        ref_offset_average(ofst1_u, ofst2_u) * (1 << shift);
+    int bias_v = (1 << log_wd) +
+        ref_offset_average(ofst1_v, ofst2_v) * (1 << shift);
+    int row, pair;
+    for (row = 0; row < ht; row++)
+        for (pair = 0; pair < wd; pair++) {
+            int i1 = row * src_strd1 + 2 * pair;
+            int i2 = row * src_strd2 + 2 * pair;
+            int out = row * dst_strd + 2 * pair;
+            int u = wt1_u * src1[i1] + wt2_u * src2[i2] + bias_u;
+            int v = wt1_v * src1[i1 + 1] + wt2_v * src2[i2 + 1] + bias_v;
+            dst[out] = ref_clip_u8(ref_asr(u, (unsigned)shift));
+            dst[out + 1] = ref_clip_u8(ref_asr(v, (unsigned)shift));
+        }
+}
+
+static void report_buffer_mismatch(const char *name, const uint8_t *ref,
+                                   const uint8_t *got, size_t size,
+                                   int stride)
+{
+    size_t i;
+    for (i = 0; i < size; i++)
+        if (ref[i] != got[i]) {
+            report(name, (int)(i / (size_t)stride),
+                   (int)(i % (size_t)stride), ref[i], got[i]);
+            return;
+        }
+}
+
+static void check_explicit_weighted_pred(void)
+{
+    static const uint8_t luma_wd[] = { 4, 8, 4, 8, 16, 8, 16 };
+    static const uint8_t luma_ht[] = { 4, 4, 8, 8, 8, 16, 16 };
+    static const uint8_t chroma_wd[] = { 2, 4, 2, 4, 8, 4, 8 };
+    static const uint8_t chroma_ht[] = { 2, 2, 4, 4, 4, 8, 8 };
+    uint32_t seed = 0x57454947u;
+    unsigned size_i, log_wd, iter;
+
+    for (size_i = 0; size_i < sizeof luma_wd; size_i++)
+        for (log_wd = 0; log_wd <= 7; log_wd++)
+            for (iter = 0; iter < 10; iter++) {
+                enum { BUF_SIZE = 16 * 32 };
+                uint8_t src1[BUF_SIZE], src2[BUF_SIZE];
+                uint8_t dst_ref[BUF_SIZE], dst_asm[BUF_SIZE];
+                int wd = luma_wd[size_i], ht = luma_ht[size_i];
+                int strd1 = wd + 5, strd2 = wd + 9, dst_strd = wd + 13;
+                int16_t wt1 = iter == 0 ? INT16_MAX :
+                              iter == 1 ? INT16_MIN : test_rand_s16(&seed);
+                int16_t wt2 = iter == 0 ? INT16_MIN :
+                              iter == 1 ? INT16_MAX : test_rand_s16(&seed);
+                int8_t ofst1 = iter == 0 ? INT8_MIN :
+                               iter == 1 ? INT8_MAX : test_rand_s8(&seed);
+                int8_t ofst2 = iter == 0 ? INT8_MAX :
+                               iter == 1 ? INT8_MIN : test_rand_s8(&seed);
+
+                fill_random(src1, sizeof src1, &seed);
+                fill_random(src2, sizeof src2, &seed);
+                if (iter == 0) memset(src1, 0, sizeof src1);
+                if (iter == 1) memset(src1, 255, sizeof src1);
+
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(dst_asm, 0xAA, sizeof dst_asm);
+                ref_explicit_weight_luma(src1, dst_ref, strd1, dst_strd,
+                                         (int)log_wd, wt1, ofst1, ht, wd);
+                mr_ih264_weighted_pred_luma_m68k(
+                    src1, dst_asm, strd1, dst_strd, (int)log_wd, wt1,
+                    ofst1, ht, wd);
+                report_buffer_mismatch("explicit_weight_luma", dst_ref,
+                                       dst_asm, sizeof dst_ref, dst_strd);
+
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(dst_asm, 0xAA, sizeof dst_asm);
+                ref_explicit_bi_weight_luma(
+                    src1, src2, dst_ref, strd1, strd2, dst_strd,
+                    (int)log_wd, wt1, wt2, ofst1, ofst2, ht, wd);
+                mr_ih264_weighted_bi_pred_luma_m68k(
+                    src1, src2, dst_asm, strd1, strd2, dst_strd,
+                    (int)log_wd, wt1, wt2, ofst1, ofst2, ht, wd);
+                report_buffer_mismatch("explicit_bi_weight_luma", dst_ref,
+                                       dst_asm, sizeof dst_ref, dst_strd);
+            }
+
+    for (size_i = 0; size_i < sizeof chroma_wd; size_i++)
+        for (log_wd = 0; log_wd <= 7; log_wd++)
+            for (iter = 0; iter < 10; iter++) {
+                enum { BUF_SIZE = 16 * 32 };
+                uint8_t src1[BUF_SIZE], src2[BUF_SIZE];
+                uint8_t dst_ref[BUF_SIZE], dst_asm[BUF_SIZE];
+                int wd = chroma_wd[size_i], ht = chroma_ht[size_i];
+                int bytes = 2 * wd;
+                int strd1 = bytes + 4, strd2 = bytes + 8;
+                int dst_strd = bytes + 12;
+                int16_t wt1_u = iter == 0 ? INT16_MAX : test_rand_s16(&seed);
+                int16_t wt1_v = iter == 1 ? INT16_MIN : test_rand_s16(&seed);
+                int16_t wt2_u = iter == 0 ? INT16_MIN : test_rand_s16(&seed);
+                int16_t wt2_v = iter == 1 ? INT16_MAX : test_rand_s16(&seed);
+                int8_t o1u = iter == 0 ? INT8_MIN : test_rand_s8(&seed);
+                int8_t o1v = iter == 1 ? INT8_MAX : test_rand_s8(&seed);
+                int8_t o2u = iter == 0 ? INT8_MAX : test_rand_s8(&seed);
+                int8_t o2v = iter == 1 ? INT8_MIN : test_rand_s8(&seed);
+                int32_t wt1 = pack_weights(wt1_u, wt1_v);
+                int32_t wt2 = pack_weights(wt2_u, wt2_v);
+                int32_t ofst1 = pack_offsets(o1u, o1v);
+                int32_t ofst2 = pack_offsets(o2u, o2v);
+
+                fill_random(src1, sizeof src1, &seed);
+                fill_random(src2, sizeof src2, &seed);
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(dst_asm, 0xAA, sizeof dst_asm);
+                ref_explicit_weight_chroma(
+                    src1, dst_ref, strd1, dst_strd, (int)log_wd, wt1_u,
+                    wt1_v, o1u, o1v, ht, wd);
+                mr_ih264_weighted_pred_chroma_m68k(
+                    src1, dst_asm, strd1, dst_strd, (int)log_wd, wt1,
+                    ofst1, ht, wd);
+                report_buffer_mismatch("explicit_weight_chroma", dst_ref,
+                                       dst_asm, sizeof dst_ref, dst_strd);
+
+                memset(dst_ref, 0xAA, sizeof dst_ref);
+                memset(dst_asm, 0xAA, sizeof dst_asm);
+                ref_explicit_bi_weight_chroma(
+                    src1, src2, dst_ref, strd1, strd2, dst_strd,
+                    (int)log_wd, wt1_u, wt1_v, wt2_u, wt2_v,
+                    o1u, o1v, o2u, o2v, ht, wd);
+                mr_ih264_weighted_bi_pred_chroma_m68k(
+                    src1, src2, dst_asm, strd1, strd2, dst_strd,
+                    (int)log_wd, wt1, wt2, ofst1, ofst2, ht, wd);
+                report_buffer_mismatch("explicit_bi_weight_chroma", dst_ref,
+                                       dst_asm, sizeof dst_ref, dst_strd);
+            }
+}
+
 static void ref_interp_horz(const uint8_t *src, uint8_t *dst, int src_strd,
                             int dst_strd, int ht, int wd)
 {
@@ -2106,6 +2352,7 @@ int main(void)
     check_intra16_dc();
     check_intra4();
 #if defined(MR_M68K_ASM)
+    check_explicit_weighted_pred();
     check_interp();
     check_interp_qpel_qpel();
     check_interp_qpel();

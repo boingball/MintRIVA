@@ -161,6 +161,7 @@ mr_h264_m68k_check: tests/mr_h264_m68k_check.c \
                      vendor/libavc_port/ih264_m68k_deblk.S \
                      vendor/libavc_port/ih264_m68k_cabac.S \
                      vendor/libavc_port/ih264_m68k_chroma_mc.S \
+                     vendor/libavc_port/ih264_m68k_weighted_pred.S \
                      vendor/libavc_port/ih264_m68k_mvpred.S \
                      vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
                      vendor/libavc_port/ih264_m68k_intra_pred.S
@@ -170,6 +171,7 @@ mr_h264_m68k_check: tests/mr_h264_m68k_check.c \
 	    vendor/libavc_port/ih264_m68k_deblk.S \
 	    vendor/libavc_port/ih264_m68k_cabac.S \
 	    vendor/libavc_port/ih264_m68k_chroma_mc.S \
+	    vendor/libavc_port/ih264_m68k_weighted_pred.S \
 	    vendor/libavc_port/ih264_m68k_mvpred.S \
 	    vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
 	    vendor/libavc_port/ih264_m68k_intra_pred.S
