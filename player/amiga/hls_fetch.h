@@ -34,6 +34,14 @@ typedef int (*hls_fetch_service_fn)(void *opaque);
 int  hls_fetch_start(int verbose);
 int  hls_fetch_active(void);
 
+/* True once a worker has ever had to be abandoned (hls_fetch_stop()'s
+ * bounded-wait timeout) - permanent for the rest of this process's life.
+ * The caller MUST check this after hls_fetch_stop() and skip its own
+ * mr_http_net_shutdown()/any other close of bsdsocket.library/AmiSSL when
+ * it is true: the abandoned worker may still be executing inside those
+ * libraries, and closing them out from under it is not a safe cleanup. */
+int  hls_fetch_leaked(void);
+
 void hls_fetch_set_service(hls_fetch_service_fn fn, void *opaque);
 
 /* Bump the request generation: any reply belonging to an earlier generation

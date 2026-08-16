@@ -777,6 +777,17 @@ static int connect_socket(http_source *h, const http_url *url)
          * with an abbreviated handshake. */
         if (g_tls_session && !strcmp(g_tls_session_host, url->host))
             SSL_set_session(h->ssl, g_tls_session);
+        /* SSL_connect() has no cancellation hook of its own, unlike
+         * gethostbyname() above - deliberately: MintAMP's own hard-won
+         * finding (see the comment above connect_socket()'s gethostbyname()
+         * call) is that signal-interrupting AmiSSL's internal blocking
+         * calls risks corrupting its state rather than cleanly cancelling
+         * it, since AmiSSL was never written to expect an external abort
+         * mid-call. It is still bounded, just less precisely: h->sock
+         * already has SO_RCVTIMEO/SO_SNDTIMEO (20s) set above, and
+         * SSL_connect()'s own internal reads/writes go through that same
+         * fd, so a full stuck handshake costs at most a handful of 20s
+         * increments, not an unbounded wait. */
         if (SSL_set_fd(h->ssl, h->sock) != 1 ||
             SSL_connect(h->ssl) != 1) {
             mr_source_set_error("HTTPS TLS handshake failed");

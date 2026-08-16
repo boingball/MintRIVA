@@ -412,6 +412,11 @@ int hls_fetch_active(void)
     return g_active;
 }
 
+int hls_fetch_leaked(void)
+{
+    return g_poisoned;
+}
+
 void hls_fetch_set_service(hls_fetch_service_fn fn, void *opaque)
 {
     g_service = fn;
