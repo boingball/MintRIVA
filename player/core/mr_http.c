@@ -18,6 +18,8 @@
 #define MR_HTTP_AMIGA 1
 #include <exec/types.h>
 #include <exec/libraries.h>
+#include <dos/dos.h>
+#include <dos/dostags.h>
 #include <proto/exec.h>
 #include <proto/bsdsocket.h>
 #include <sys/socket.h>
@@ -27,6 +29,7 @@
 #else
 #define MR_HTTP_AMIGA 0
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/select.h>
@@ -428,6 +431,35 @@ void mr_http_set_service(mr_http_service_fn fn, void *opaque)
     g_http_service_opaque = opaque;
 }
 
+/* Fetch override + prefetch hint (see mr_http.h). Lets a platform route every
+ * complete-body fetch (mr_http_fetch_text()/mr_http_fetch_buffer()/
+ * mr_http_post_json()) through a single task instead of whichever caller
+ * happens to run first - see the design note above connect_socket() for why
+ * that matters on Amiga (this file's socket/TLS state is process-wide, not
+ * per-task). */
+static mr_http_fetch_override_fn g_fetch_override;
+static mr_http_prefetch_hint_fn  g_prefetch_hint;
+
+void mr_http_set_fetch_override(mr_http_fetch_override_fn fn)
+{
+    g_fetch_override = fn;
+}
+
+int mr_http_fetch_override_active(void)
+{
+    return g_fetch_override != NULL;
+}
+
+void mr_http_set_prefetch_hint(mr_http_prefetch_hint_fn fn)
+{
+    g_prefetch_hint = fn;
+}
+
+void mr_http_prefetch_hint(const char *url, const mr_http_options *options)
+{
+    if (g_prefetch_hint) g_prefetch_hint(url, options);
+}
+
 static int platform_open(http_source *h)
 {
     http_register_shutdown();
@@ -569,12 +601,126 @@ static void close_connection(http_source *h, int healthy)
     h->prefetch_pos = h->prefetch_len = 0;
 }
 
+/* connect() blocks until the underlying stack's own TCP timeout - which can
+ * run far longer than the 20s SO_RCVTIMEO/SO_SNDTIMEO below cover, since
+ * those only bound recv()/send() once a connection exists, not the connect
+ * itself. Make the socket non-blocking and re-issue connect() on a short
+ * poll rather than block on it once: this mirrors
+ * vendor/MintAMP/radio_stream.c's radio_wait_connected(), which documents
+ * that a single connect()+select()-for-writability is not reliably
+ * portable across every AmigaOS TCP stack (AmiTCP/Miami/Roadshow), and that
+ * success shows up as either connect()==0 immediately or errno==EISCONN on
+ * a later retry. FIONBIO's value is hard-coded rather than pulled from
+ * <sys/ioctl.h>, whose presence varies across the m68k netinclude - same
+ * reasoning as that file's own local fallback. */
+#if MR_HTTP_AMIGA
+#ifndef FIONBIO
+#define FIONBIO 0x8004667EUL
+#endif
+#ifndef EISCONN
+#define EISCONN 56
+#endif
+#endif
+#define HTTP_CONNECT_TIMEOUT_MS 20000  /* matches SO_RCVTIMEO/SO_SNDTIMEO   */
+#define HTTP_CONNECT_POLL_MS    40
+
+static void connect_poll_sleep(void)
+{
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = HTTP_CONNECT_POLL_MS * 1000;
+#if MR_HTTP_AMIGA
+    WaitSelect(0, NULL, NULL, NULL, &tv, NULL);
+#else
+    select(0, NULL, NULL, NULL, &tv);
+#endif
+}
+
+/* bsdsocket.library reports the last socket-call error through Errno(), not
+ * through libc's plain errno - this codebase never wires SocketBaseTagList's
+ * SBTC_ERRNOPTR to redirect it, so plain errno after a raw socket call is
+ * unreliable on real Amiga stacks (AmiTCP/Miami/Roadshow) even though it
+ * happens to work on the host. Matches
+ * vendor/MintAMP/radio_stream.c's radio_sock_errno(). */
+static long connect_last_errno(void)
+{
+#if MR_HTTP_AMIGA
+    return Errno();
+#else
+    return errno;
+#endif
+}
+
+static int connect_with_timeout(int sock, const struct sockaddr *addr,
+                                socklen_t addrlen)
+{
+    int tries, budget = HTTP_CONNECT_TIMEOUT_MS / HTTP_CONNECT_POLL_MS;
+    int ok = 0;
+#if MR_HTTP_AMIGA
+    ULONG nb = 1, blk = 0;
+    IoctlSocket(sock, FIONBIO, (char *)&nb);
+#else
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+#endif
+    for (tries = 0; tries < budget; tries++) {
+        int cr = connect(sock, addr, addrlen);
+        if (cr == 0 || connect_last_errno() == EISCONN) { ok = 1; break; }
+        if (g_http_service && g_http_service(g_http_service_opaque))
+            break;                              /* caller asked to abort        */
+        connect_poll_sleep();
+    }
+    /* net_read_some()/net_write_all() assume a blocking socket governed by
+     * SO_RCVTIMEO/SO_SNDTIMEO - restore that before returning, success or
+     * not, so a non-blocking EWOULDBLOCK from this phase can never leak into
+     * the rest of this file's send()/recv() calls. */
+#if MR_HTTP_AMIGA
+    IoctlSocket(sock, FIONBIO, (char *)&blk);
+#else
+    fcntl(sock, F_SETFL, flags);
+#endif
+    return ok;
+}
+
 static int connect_socket(http_source *h, const http_url *url)
 {
     struct hostent *he;
     struct sockaddr_in sa;
     struct timeval timeout;
+    /* gethostbyname() is a genuinely blocking bsdsocket.library call with no
+     * non-blocking mode of its own, unlike connect() above - a stuck/slow
+     * resolver can leave the calling task sitting inside it far longer than
+     * this file's other timeouts, with no way for another task to unstick
+     * it. SBTC_BREAKMASK tells bsdsocket.library which signals should abort
+     * a blocking call early for the calling task; hls_fetch.c's
+     * hls_fetch_cancel()/hls_fetch_kick() send SIGBREAKF_CTRL_C to unstick
+     * exactly this call when a fetch is cancelled or the worker needs to
+     * stop. Mirrors vendor/MintAMP/radio_stream.c's proven pattern there
+     * (same comment, same reasoning) exactly:
+     *
+     * Scoped tightly to just this one call, cleared again immediately below
+     * win or lose - leaving it set would also apply to every later blocking
+     * bsdsocket call this task makes, including whatever AmiSSL does
+     * internally inside SSL_connect()/SSL_read(), which MintAMP found
+     * sensitive to exactly this kind of external signal interference (an
+     * unexpected abort deep inside a library that never expected one is a
+     * plausible way to corrupt its state rather than cleanly cancel it).
+     *
+     * The mask alone only says which signal would abort this call - nothing
+     * sends SIGBREAKF_CTRL_C otherwise, so this is inert unless a caller
+     * explicitly kicks it. Clear any stale pending CTRL_C first: a signal
+     * left over from an earlier, unrelated cancel would otherwise sit
+     * pending and immediately abort *this* call the moment the mask goes
+     * live. */
+#if MR_HTTP_AMIGA
+    SetSignal(0, SIGBREAKF_CTRL_C);
+    SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), (ULONG)SIGBREAKF_CTRL_C,
+                   TAG_DONE);
     he = gethostbyname(url->host);
+    SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), 0UL, TAG_DONE);
+#else
+    he = gethostbyname(url->host);
+#endif
     if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
         mr_source_set_error("HTTP DNS lookup failed");
         return 0;
@@ -601,7 +747,7 @@ static int connect_socket(http_source *h, const http_url *url)
     sa.sin_family = AF_INET;
     sa.sin_port = htons(url->port);
     memcpy(&sa.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
-    if (connect(h->sock, (struct sockaddr *)&sa, sizeof sa) != 0) {
+    if (!connect_with_timeout(h->sock, (struct sockaddr *)&sa, sizeof sa)) {
         mr_source_set_error("HTTP connection failed");
         close_socket_only(h);
         return 0;
@@ -631,6 +777,17 @@ static int connect_socket(http_source *h, const http_url *url)
          * with an abbreviated handshake. */
         if (g_tls_session && !strcmp(g_tls_session_host, url->host))
             SSL_set_session(h->ssl, g_tls_session);
+        /* SSL_connect() has no cancellation hook of its own, unlike
+         * gethostbyname() above - deliberately: MintAMP's own hard-won
+         * finding (see the comment above connect_socket()'s gethostbyname()
+         * call) is that signal-interrupting AmiSSL's internal blocking
+         * calls risks corrupting its state rather than cleanly cancelling
+         * it, since AmiSSL was never written to expect an external abort
+         * mid-call. It is still bounded, just less precisely: h->sock
+         * already has SO_RCVTIMEO/SO_SNDTIMEO (20s) set above, and
+         * SSL_connect()'s own internal reads/writes go through that same
+         * fd, so a full stuck handshake costs at most a handful of 20s
+         * increments, not an unbounded wait. */
         if (SSL_set_fd(h->ssl, h->sock) != 1 ||
             SSL_connect(h->ssl) != 1) {
             mr_source_set_error("HTTPS TLS handshake failed");
@@ -1676,6 +1833,15 @@ mr_source *mr_http_source_open(const char *url)
 int mr_http_fetch_text(const char *url, const mr_http_options *options,
                        char **out, size_t *out_len, size_t max_size)
 {
+    if (g_fetch_override)
+        return g_fetch_override(url, options, NULL,
+                                (unsigned char **)out, out_len, max_size);
+    return mr_http_fetch_text_direct(url, options, out, out_len, max_size);
+}
+
+int mr_http_fetch_text_direct(const char *url, const mr_http_options *options,
+                              char **out, size_t *out_len, size_t max_size)
+{
     http_source *h;
     unsigned char *buf = NULL;
     size_t total = 0, cap = 0;
@@ -1777,6 +1943,17 @@ int mr_http_fetch_buffer(const char *url, const mr_http_options *options,
 int mr_http_post_json(const char *url, const mr_http_options *options,
                       const char *json, char **out, size_t *out_len,
                       size_t max_size)
+{
+    if (g_fetch_override)
+        return g_fetch_override(url, options, json,
+                                (unsigned char **)out, out_len, max_size);
+    return mr_http_post_json_direct(url, options, json, out, out_len,
+                                    max_size);
+}
+
+int mr_http_post_json_direct(const char *url, const mr_http_options *options,
+                             const char *json, char **out, size_t *out_len,
+                             size_t max_size)
 {
     http_source *h;
     unsigned char *buf = NULL;

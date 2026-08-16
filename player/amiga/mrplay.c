@@ -17,6 +17,7 @@
 #include "../core/mr_hls.h"
 #include "../core/mr_http.h"
 #include "../core/mr_youtube.h"
+#include "hls_fetch.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
@@ -139,6 +140,11 @@ static mr_player_control_port *control_block;
 static mr_audio *control_audio;
 static int control_volume = 64;
 static int deferred_player_event;
+/* Set once, first thing in main(). service_player_during_io() checks this
+ * to refuse to touch display/audio/queue state when called from any task
+ * other than this one - see that function's comment for why that check is
+ * required, not optional, once the HLS fetch worker exists. */
+static struct Task *g_main_task;
 static ULONG status_file_seq;
 static int playing_status_published;
 static char playing_status_codec[MR_PLAYER_CODEC_MAX];
@@ -307,7 +313,19 @@ static void playback_timer_close(void)
 static int mrplay_exit(int code)
 {
     playback_timer_close();
-    mr_http_net_shutdown();
+    /* Stop the fetch worker (idempotent, safe even if never started) before
+     * releasing this task's own bsdsocket/AmiSSL state below - it must
+     * release its own first, from its own task. If it had to be abandoned
+     * instead (hls_fetch_stop()'s bounded-wait timeout - see hls_fetch_
+     * leaked()), it may still be executing inside those exact libraries;
+     * closing them here regardless would be a delayed version of the same
+     * use-after-free hls_fetch_stop()'s leak-not-free path exists to avoid,
+     * not a safe cleanup. Skip this task's own shutdown in that case - the
+     * (leaked) worker keeps the libraries open for as long as it needs
+     * them, and the process's own exit still reclaims everything else. */
+    hls_fetch_stop();
+    if (!hls_fetch_leaked())
+        mr_http_net_shutdown();
     control_port_close();
     return code;
 }
@@ -974,6 +992,13 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
            demux_timing.scanned_max, demux_timing.service_calls);
     if (audio) service_audio_for_display(trace);
+    if (hls_fetch_active()) {
+        unsigned long hits, misses, worst_wait_ms;
+        hls_fetch_stats(&hits, &misses, &worst_wait_ms);
+        printf("hls fetch: hits=%lu misses=%lu worst-wait=%lu ms\n",
+               hits, misses, worst_wait_ms);
+    }
+    if (audio) service_audio_for_display(trace);
     if (st->decoded) {
 #if defined(MR_H264_STAGE_PROFILE)
         printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
@@ -1190,16 +1215,45 @@ static int player_event(amiga_display *disp)
     return ev;
 }
 
+/* Minimal service hook for the fetch worker during the very first HLS
+ * fetch(es) - before any display/decoder/trace state exists for the full
+ * service_player_during_io() below to safely touch (see the call site in
+ * main() for why). Only checks for the quit signal, nothing else: no
+ * fullscreen/pause/volume handling, no trace dereference. opaque is unused
+ * (always NULL here) - the signature matches hls_fetch_service_fn only so
+ * it can be installed the same way. */
+static int service_early_quit_check(void *opaque)
+{
+    (void)opaque;
+    return (SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F) &
+            (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) != 0;
+}
+
 /* HTTP's synchronous reader runs on the player task.  Pump fresh Intuition
  * input while it waits, but leave pause/seek/quit queued for the scheduler to
  * perform at its normal safe point.  Fullscreen is handled immediately by the
- * display backend, so its replacement window starts being drained at once. */
+ * display backend, so its replacement window starts being drained at once.
+ *
+ * MUST NOT run on any task but the main one. core/mr_http.c's own internal
+ * service hook (mr_http_set_service()) and this file's hls_fetch_set_
+ * service() are BOTH set to this same function with the same &trace, but
+ * they are consulted from two different tasks once the HLS fetch worker is
+ * active: mr_http.c's hook fires from inside whichever task is currently
+ * calling into its connect/read code - which, for every HLS fetch, is the
+ * worker task, not this one - while hls_fetch_wait_busy() calls it from
+ * this (main) task while polling for that same worker's reply. Without this
+ * check both tasks could call display_poll_event()/present_service_frame()/
+ * service_audio_for_display() concurrently, on state (the video queue in
+ * particular) that is explicitly documented as single-task with no lock.
+ * Refuse to do any of that unless FindTask(NULL) is the main task; the
+ * worker's own calls become a safe no-op instead. */
 static int service_player_during_io(void *opaque)
 {
     scheduler_trace *trace = (scheduler_trace *)opaque;
-    amiga_display *disp = trace && trace->presenter ? trace->presenter->disp
-                                                    : NULL;
+    amiga_display *disp;
     int ev = MR_EV_NONE;
+    if (FindTask(NULL) != g_main_task) return 0;
+    disp = trace && trace->presenter ? trace->presenter->disp : NULL;
     if (disp && (!trace->presenter || !trace->presenter->presenting)) {
         ev = control_signal_event(disp);
         if (ev == MR_EV_NONE) ev = display_poll_event(disp);
@@ -1400,6 +1454,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
 
 int main(int argc, char **argv)
 {
+    g_main_task = FindTask(NULL);
     long len = 0;
     unsigned char *buf = NULL;
     mr_demux *dx;
@@ -1576,6 +1631,27 @@ int main(int argc, char **argv)
     http_options.hls_max_fps = hls_max_fps;
     have_http_options = user_agent || referer || hls_low || hls_max_width ||
                         hls_max_height || hls_max_fps;
+    /* Start the background fetch worker before any network call this session
+     * might make (including YouTube URL resolution just below) so it is
+     * always the first task to open bsdsocket/AmiSSL state, never a second
+     * task adopting state another task already opened - see hls_fetch.c's
+     * design note. No-op (and harmless) for local files.
+     *
+     * The playlist/first-segment fetch this can trigger (via mr_youtube_
+     * resolve_media() below, or directly once mr_demux_open_file_ex() is
+     * reached further down) happens before any display/decoder/trace state
+     * exists - service_player_during_io() is not safe to hand a service
+     * hook this early (it can reach display_toggle_fullscreen(disp) with a
+     * NULL disp, and its scheduler_trace pointer would be dangling before
+     * that local is ever initialised). Use the minimal quit-only check
+     * below instead, purely so a stuck initial connect can actually be
+     * interrupted rather than only ever timing out on its own; the full
+     * hook takes over once real playback state exists (see the
+     * hls_fetch_set_service() call further down). */
+    if (mr_source_is_url(media_path)) {
+        hls_fetch_start(want_time);
+        hls_fetch_set_service(service_early_quit_check, NULL);
+    }
     if (mr_youtube_is_url(media_path)) {
         mr_http_options youtube_options;
         if (!mr_youtube_http_options_init(&youtube_options, &http_options)) {
@@ -1633,6 +1709,20 @@ int main(int argc, char **argv)
             printf("YouTube: source client %s\n",
                    mr_youtube_last_client());
     }
+    /* Resolution (if any) is done, so we now know definitively whether this
+     * session is HLS. If it is not, the worker started above (for "any
+     * URL", before we could know) is not actually going to be used: stop it
+     * now, before mr_demux_open_file_ex() below opens its own connection on
+     * this task for progressive/direct playback. Otherwise that connection
+     * would adopt whatever bsdsocket/AmiSSL state the worker already opened
+     * (e.g. during YouTube resolution above) instead of being this
+     * session's sole, fresh owner of it - see hls_fetch.c's design note on
+     * why a second task touching that state is unsafe. Safe/idempotent even
+     * when the worker was never started (a local file, or mr_source_is_url()
+     * was already false). */
+    if (!mr_source_is_hls(media_path))
+        hls_fetch_stop();
+
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
     mr_hls_set_verbose(want_time);
@@ -1946,6 +2036,9 @@ int main(int argc, char **argv)
      * segment fetch, so an ordinary ~350 ms download no longer freezes video for
      * its whole duration. Fires while released is set around the demux read. */
     mr_http_set_service(service_player_during_io, &trace);
+    /* Same contract, for whichever fetches the background worker performs on
+     * our behalf while we wait on it (see hls_fetch_wait_busy()). */
+    hls_fetch_set_service(service_player_during_io, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -2589,6 +2682,9 @@ int main(int argc, char **argv)
             }
             if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
             display_set_status(disp, "Reconnecting...");
+            /* Discard any in-flight/cached fetch for the stream we're leaving
+             * before it can be handed to (or cached for) the reopened one. */
+            hls_fetch_cancel();
             mr_demux_close(dx);
             dx = NULL;
             for (tries = 0; tries < LIVE_RECONNECT_TRIES && !quit; tries++) {
@@ -3003,6 +3099,7 @@ int main(int argc, char **argv)
      * die. */
     mr_hls_set_wait(NULL, NULL);
     mr_http_set_service(NULL, NULL);
+    hls_fetch_set_service(NULL, NULL);
 
     /* This drain loop calls display_show_rgb() directly on dec.frame.data,
      * bypassing the queue (and so bypassing queue_copy_yuv_indexed()'s
