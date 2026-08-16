@@ -22,6 +22,7 @@ LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_mvpred.S \
                  $(LIBAVC_PORT)/ih264d_mvpred_dispatch_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_cabac_coeff.S \
+                 $(LIBAVC_PORT)/ih264_m68k_cabac_coeff8x8.S \
                  $(LIBAVC_PORT)/ih264d_parse_cabac_coeff_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_iquant_itrans_recon.S \
                  $(LIBAVC_PORT)/ih264_m68k_intra_pred.S \
