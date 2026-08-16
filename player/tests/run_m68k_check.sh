@@ -83,6 +83,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264_m68k_mvpred.S \
     vendor/libavc_port/ih264d_mvpred_dispatch_port.c \
     vendor/libavc_port/ih264_m68k_cabac_coeff.S \
+    vendor/libavc_port/ih264_m68k_cabac_coeff8x8.S \
     vendor/libavc_port/ih264d_parse_cabac_coeff_port.c \
     vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
     vendor/libavc_port/ih264_m68k_intra_pred.S \
