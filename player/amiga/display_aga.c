@@ -48,6 +48,27 @@ void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms)
     if (enc_ms)  *enc_ms  = (unsigned long)(s_frame_enc  * 1000 / CLOCKS_PER_SEC);
     if (blit_ms) *blit_ms = (unsigned long)(s_frame_blit * 1000 / CLOCKS_PER_SEC);
 }
+
+/* Effective (post-negotiation) mode of the currently-open AGA screen, for
+ * mrplay --time's "AGA path:" diagnostic. Deliberately captures what
+ * aga_open() actually settled on (e.g. HAM8 downgraded to HAM6 on non-AGA
+ * chipset, ECS/OCS forcing depth 5, a requested resolution that did or did
+ * not need a resize) rather than the raw --ham/--2x/--c2p command-line
+ * request, since aga_supports_indexed()/aga_supports_yuv_indexed() gate on
+ * exactly these effective fields and a mismatch between what was asked for
+ * and what was granted is the whole point of the diagnostic. */
+static int s_diag_depth = -1, s_diag_ham = 0, s_diag_scale = 1, s_diag_resize = 0;
+static const char *s_diag_c2p = "standard";
+void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
+                          const char **c2p)
+{
+    if (depth)  *depth  = s_diag_depth;
+    if (ham)    *ham    = s_diag_ham;
+    if (scale)  *scale  = s_diag_scale;
+    if (resize) *resize = s_diag_resize;
+    if (c2p)    *c2p    = s_diag_c2p;
+}
+
 int display_aga_kalms_timing(unsigned long *conversion_ms)
 {
     if (conversion_ms)
@@ -423,6 +444,12 @@ static void *aga_open(int w, int h, const char *title)
         InitRastPort(&s->temprp);
         s->temprp.BitMap = s->tempbm;
     }
+    s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_scale = s->scale;
+    s_diag_resize = s->resize;
+    s_diag_c2p = s->use_kalms_c2p ? "kalms" :
+                s->use_akiko      ? "akiko" :
+                s->use_riva_c2p   ? "riva"  :
+                s->use_c2p        ? "c2p"   : "wpa";
     return s;
 
 fail:
@@ -577,13 +604,21 @@ static int aga_supports_indexed(void *handle)
 }
 
 /*
- * Non-zero whenever the fitted AGA geometry needs *any* resize from
- * src_w x src_h (any ratio, either axis, upscale or downscale) for the
- * plain 256-colour AGA configuration. Two shapes exist, both handled by
- * core/mr_yuv_dither.h's direct YUV420P -> indexed fusion instead of the
+ * Non-zero whenever this AGA geometry can go straight from H.264's decoded
+ * YUV420P planes to indexed pixels (core/mr_yuv_dither.h) instead of the
  * ordinary mr_yuv420_to_rgb24() -> mr_scale_resize_rgb24() -> mr_dither_rgb8()
- * pipeline:
+ * pipeline, for the plain 256-colour AGA configuration. Three shapes exist:
  *
+ *   - identity, no resize at all (s->dw==src_w, s->dh==src_h) - reported as
+ *     vscale == 1 (mr_yuv420_dither8() documents vscale=1 as a valid no-op,
+ *     already covered by tests/mr_yuv_dither_check.c and its m68k asm).
+ *     Skipping straight from decode to indexed is strictly cheaper than
+ *     decoding to RGB24 first and dithering that (aga_supports_indexed()'s
+ *     queue_copy_indexed() path) even when nothing needs to shrink or grow,
+ *     so a caller should prefer this over aga_supports_indexed() whenever
+ *     both apply - the two are no longer mutually exclusive at 1:1, unlike
+ *     the two resize shapes below (which do require s->resize, hence still
+ *     exclude aga_supports_indexed()'s !resize);
  *   - the exact *vertical-only* integer downscale (width unchanged, height
  *     an exact multiple of s->dh) that aga_open()'s resize computation
  *     produces for typical HIRES non-laced playback (e.g. a 640x360 source
@@ -594,17 +629,18 @@ static int aga_supports_indexed(void *handle)
  *     variant's 192x108 fitted up to a 320x180 AGA screen) - reported as
  *     vscale == 0, for mr_yuv420_dither8_resize()'s general 2D
  *     nearest-neighbour path (portable C only, no asm yet).
- *
- * Mutually exclusive with aga_supports_indexed() above (that one requires
- * !resize; this one requires resize) - a caller queries both.
  */
 static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
                                     int *dst_w, int *dst_h, int *vscale)
 {
     aga_state *s = (aga_state *)handle;
-    if (!s || s->depth != 8 || s->ham || s->scale != 1 || !s->resize)
-        return 0;
-    if (s->dw <= 0 || s->dh <= 0 || src_w <= 0 || src_h <= 0) return 0;
+    if (!s || s->depth != 8 || s->ham || s->scale != 1) return 0;
+    if (src_w <= 0 || src_h <= 0) return 0;
+    if (!s->resize) {
+        *dst_w = s->w; *dst_h = s->h; *vscale = 1;
+        return 1;
+    }
+    if (s->dw <= 0 || s->dh <= 0) return 0;
     *dst_w = s->dw; *dst_h = s->dh;
     if (s->dw == src_w && s->dh > 0 && src_h % s->dh == 0) {
         int vs = src_h / s->dh;

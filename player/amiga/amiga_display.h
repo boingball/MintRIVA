@@ -92,6 +92,14 @@ void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms);
  * returning its accumulated conversion time. */
 int display_aga_kalms_timing(unsigned long *conversion_ms);
 
+/* The most recently opened AGA screen's effective (post-negotiation) mode -
+ * depth (bits/pixel), ham (0/6/8), scale (1 or 2), resize (0/1) and the c2p
+ * backend name ("wpa"/"c2p"/"riva"/"kalms"/"akiko") - for mrplay --time's
+ * "AGA path:" diagnostic. depth is -1 if no AGA screen has been opened yet.
+ * Every out-parameter is optional (pass NULL to skip it). */
+void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
+                          const char **c2p);
+
 /* Open a display able to show w*h frames: tries RTG (cybergraphics) first, then
  * falls back to AGA. Returns NULL only if neither works. */
 amiga_display *display_open(int w, int h, const char *title);

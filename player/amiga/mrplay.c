@@ -1781,37 +1781,53 @@ int main(int argc, char **argv)
     printf("display backend: %s\n", display_backend_name(disp));
     player_status(MR_PLAYER_STATE_OPENING, codec->name,
                   "Display open; buffering first frame...");
-    /* True only for the AGA backend's plain 256-colour configuration (see
-     * display_backend.h / aga_supports_indexed()). Queried once: the display
-     * mode is fixed for the life of this session, so every queue slot below
-     * uses the same format throughout. */
-    int use_indexed_queue = display_supports_indexed(disp);
-    /* True whenever the fitted AGA geometry needs any resize from the
-     * source (aga_supports_yuv_indexed()) that use_indexed_queue's !resize
-     * requirement excludes - the common non-laced-HIRES vertical-only
-     * downscale (e.g. 640x360 -> 640x180, yuv_vscale > 0, hand-tuned m68k
-     * asm) as well as every other resize shape, including an upscale (e.g.
-     * a 192x108 mobile HLS source fitted up to a 320x180 AGA screen,
-     * yuv_vscale == 0, portable C - see queue_copy_yuv_indexed()). H.264-
-     * only: that is the only decoder mr_h264_set_yuv_output()/
-     * mr_yuv420_dither8*() support so far. Mutually exclusive with
-     * use_indexed_queue by construction (aga_supports_indexed requires
-     * !resize, aga_supports_yuv_indexed requires resize), so at most one is
-     * ever set. */
+    /* True whenever this (H.264-only) session can go straight from the
+     * decoder's YUV420P planes to indexed pixels (aga_supports_yuv_indexed()
+     * - core/mr_yuv_dither.h), which now covers three shapes: 1:1 identity
+     * (yuv_vscale==1, skips mr_dither_rgb8() entirely - strictly cheaper
+     * than decoding through RGB24 first even with no resize needed), the
+     * common non-laced-HIRES vertical-only downscale (e.g. 640x360 -> 640x180,
+     * yuv_vscale>1, hand-tuned m68k asm), and every other resize shape
+     * including an upscale (e.g. 192x108 -> 320x180, yuv_vscale==0, portable
+     * C - see queue_copy_yuv_indexed()). Checked first, ahead of
+     * use_indexed_queue below: at 1:1 both would otherwise apply, and this
+     * is strictly the cheaper of the two. */
     int use_yuv_indexed_queue = 0, yuv_dst_w = 0, yuv_dst_h = 0, yuv_vscale = 1;
-    if (!use_indexed_queue && codec == &mr_codec_h264)
+    if (codec == &mr_codec_h264)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
             disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale);
     if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
-    if (want_time && use_yuv_indexed_queue)
-        printf("video path: YUV420P %dx%d -> INDEX8 %dx%d %s\n",
-               vi->width, vi->height, yuv_dst_w, yuv_dst_h,
-               yuv_vscale > 0 ? "(vscale asm path)" : "(general resize path)");
-    else if (want_time && use_indexed_queue)
-        printf("video path: RGB24 %dx%d -> INDEX8 (queue_copy_indexed)\n",
-               vi->width, vi->height);
-    else if (want_time)
-        printf("video path: RGB24 %dx%d (queue_copy)\n", vi->width, vi->height);
+    /* True only for the AGA backend's plain 256-colour configuration (see
+     * display_backend.h / aga_supports_indexed()) when the YUV path above
+     * doesn't already cover this (non-H.264, or an AGA mode
+     * aga_supports_yuv_indexed() itself rejects) session. Queried once: the
+     * display mode is fixed for the life of this session, so every queue
+     * slot below uses the same format throughout. */
+    int use_indexed_queue = !use_yuv_indexed_queue &&
+                            display_supports_indexed(disp);
+    if (want_time) {
+        int diag_depth, diag_ham, diag_scale, diag_resize;
+        const char *diag_c2p;
+        display_aga_describe(&diag_depth, &diag_ham, &diag_scale,
+                             &diag_resize, &diag_c2p);
+        if (diag_depth >= 0)
+            printf("AGA path: depth=%d ham=%d scale=%d resize=%d c2p=%s "
+                   "yuv=%s\n", diag_depth, diag_ham, diag_scale, diag_resize,
+                   diag_c2p, use_yuv_indexed_queue ? "supported"
+                                                   : "unsupported");
+        if (use_yuv_indexed_queue)
+            printf("video path: YUV420P %dx%d -> INDEX8 %dx%d %s\n",
+                   vi->width, vi->height, yuv_dst_w, yuv_dst_h,
+                   yuv_vscale == 1 ? "(1:1 identity)" :
+                   yuv_vscale > 1  ? "(vscale asm path)" :
+                                     "(general resize path)");
+        else if (use_indexed_queue)
+            printf("video path: RGB24 %dx%d -> INDEX8 (queue_copy_indexed)\n",
+                   vi->width, vi->height);
+        else
+            printf("video path: RGB24 %dx%d (queue_copy)\n",
+                   vi->width, vi->height);
+    }
 
     /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
      * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
