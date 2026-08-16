@@ -83,6 +83,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264_m68k_mvpred.S \
     vendor/libavc_port/ih264d_mvpred_dispatch_port.c \
     vendor/libavc_port/ih264_m68k_cabac_coeff.S \
+    vendor/libavc_port/ih264_m68k_cabac_coeff8x8.S \
     vendor/libavc_port/ih264d_parse_cabac_coeff_port.c \
     vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
     vendor/libavc_port/ih264_m68k_intra_pred.S \
@@ -126,6 +127,9 @@ $CC -o "$BUILD/mr_h264_cabac_coeff_check.m68k" tests/mr_h264_cabac_coeff_check.c
 echo "== building mr_h264_mvpred_dispatch_check.m68k (real ih264d_mvpred_nonmbaff/_nonmbaffB vs asm) =="
 $CC -o "$BUILD/mr_h264_mvpred_dispatch_check.m68k" tests/mr_h264_mvpred_dispatch_check.c $LIBAVC_SRC
 
+echo "== building mr_h264_recon8x8_check.m68k (real ih264_iquant_itrans_recon_8x8/_dc vs asm) =="
+$CC -o "$BUILD/mr_h264_recon8x8_check.m68k" tests/mr_h264_recon8x8_check.c $LIBAVC_SRC
+
 echo "== building mr_h264_intra_chroma_check.m68k (real chroma_8x8 intra pred modes vs asm) =="
 $CC -o "$BUILD/mr_h264_intra_chroma_check.m68k" tests/mr_h264_intra_chroma_check.c $LIBAVC_SRC
 
@@ -162,6 +166,7 @@ run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 run "$BUILD/mr_h264_m68k_check.m68k"
 run "$BUILD/mr_h264_cabac_coeff_check.m68k"
 run "$BUILD/mr_h264_mvpred_dispatch_check.m68k"
+run "$BUILD/mr_h264_recon8x8_check.m68k"
 run "$BUILD/mr_h264_intra_chroma_check.m68k"
 run "$BUILD/mr_yuv_check.m68k"
 run "$BUILD/mr_scale_check.m68k"

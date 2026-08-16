@@ -34,23 +34,27 @@
  * its own. __wrap_ih264d_parse_residual4x4_cabac() is a straight
  * transcription of ih264d_parse_residual4x4_cabac() (same file, lines
  * 1161-1606) - CBP-gated calls into the above (or, for the transform8x8
- * path, into the vendored ih264d_read_coeff8x8_cabac() completely
- * unmodified - see below) plus the Chroma DC/AC decode tail. Both were
- * mechanically diffed against the vendored source (comments/whitespace
- * stripped) to confirm byte-for-byte equivalence except for the two
- * intentional changes: calls to ih264d_read_coeff4x4_cabac /
- * ih264d_cabac_parse_8x8block redirected to the reimplementations below.
+ * path, into mr_ih264d_read_coeff8x8_cabac_m68k() - see below) plus the
+ * Chroma DC/AC decode tail. Both were mechanically diffed against the
+ * vendored source (comments/whitespace stripped) to confirm byte-for-byte
+ * equivalence except for the three intentional changes: calls to
+ * ih264d_read_coeff4x4_cabac / ih264d_cabac_parse_8x8block /
+ * ih264d_read_coeff8x8_cabac redirected to the reimplementation/primitives
+ * below and in ih264_m68k_cabac_coeff8x8.S.
  *
  * ih264d_read_coeff8x8_cabac() (the transform_8x8_flag / High Profile
- * sibling primitive, ih264d_parse_cabac.c lines 582-1065) is deliberately
- * NOT touched or reimplemented - it is called here exactly as the
- * vendored ih264d_parse_residual4x4_cabac() calls it, a completely
- * ordinary cross-file reference to the real, unmodified vendored
- * function. This project has no High-Profile/transform8x8 test content
- * and no way to verify a from-scratch reimplementation of that sibling
- * function right now; leaving it alone is always safe regardless -
- * transform8x8-coded macroblocks simply keep using the original,
- * correct, unoptimised C path, unaffected by anything in this file.
+ * sibling primitive, ih264d_parse_cabac.c lines 582-1025) was originally
+ * left untouched here on the assumption that "this project has no High-
+ * Profile/transform8x8 test content" - that assumption turned out to be
+ * false (libx264's High Profile preset enables 8x8dct by default,
+ * including for this project's own test_h264_high.mp4 fixture) and a
+ * stage-profiled run showed real, non-trivial call volume on High Profile
+ * content, so it is now ported too: see ih264_m68k_cabac_coeff8x8.S for
+ * the primitive and its own derivation notes (in particular, why it is
+ * *not* just the 4x4 primitive with a different context-array pointer -
+ * the 8x8 significance/last-coefficient context indexing is table-driven,
+ * not a flat per-position stride, and getting that specific piece wrong
+ * would not have failed loudly).
  *
  * Verification: the primitive itself (mr_ih264d_read_coeff4x4_cabac_
  * m68k) is fuzz-tested directly against the real vendored
@@ -256,7 +260,7 @@ WORD32 __wrap_ih264d_parse_residual4x4_cabac(dec_struct_t *ps_dec,
                 *(UWORD16 *)(pu1_top_nnz) = 0;
                 *(UWORD16 *)(pu1_left_nnz) = 0;
             } else {
-                ih264d_read_coeff8x8_cabac(ps_bitstrm, ps_dec, ps_cur_mb_info);
+                mr_ih264d_read_coeff8x8_cabac_m68k(ps_bitstrm, ps_dec, ps_cur_mb_info);
                 pu1_left_nnz[0] = 1;
                 pu1_left_nnz[1] = 1;
                 pu1_top_nnz[0] = 1;
@@ -269,7 +273,7 @@ WORD32 __wrap_ih264d_parse_residual4x4_cabac(dec_struct_t *ps_dec,
                 *(UWORD16 *)(pu1_top_nnz + 2) = 0;
                 *(UWORD16 *)(pu1_left_nnz) = 0;
             } else {
-                ih264d_read_coeff8x8_cabac(ps_bitstrm, ps_dec, ps_cur_mb_info);
+                mr_ih264d_read_coeff8x8_cabac_m68k(ps_bitstrm, ps_dec, ps_cur_mb_info);
                 pu1_left_nnz[0] = 1;
                 pu1_left_nnz[1] = 1;
                 pu1_top_nnz[2] = 1;
@@ -282,7 +286,7 @@ WORD32 __wrap_ih264d_parse_residual4x4_cabac(dec_struct_t *ps_dec,
                 *(UWORD16 *)(pu1_top_nnz) = 0;
                 *(UWORD16 *)(pu1_left_nnz + 2) = 0;
             } else {
-                ih264d_read_coeff8x8_cabac(ps_bitstrm, ps_dec, ps_cur_mb_info);
+                mr_ih264d_read_coeff8x8_cabac_m68k(ps_bitstrm, ps_dec, ps_cur_mb_info);
                 pu1_left_nnz[2] = 1;
                 pu1_left_nnz[3] = 1;
                 pu1_top_nnz[0] = 1;
@@ -295,7 +299,7 @@ WORD32 __wrap_ih264d_parse_residual4x4_cabac(dec_struct_t *ps_dec,
                 *(UWORD16 *)(pu1_top_nnz + 2) = 0;
                 *(UWORD16 *)(pu1_left_nnz + 2) = 0;
             } else {
-                ih264d_read_coeff8x8_cabac(ps_bitstrm, ps_dec, ps_cur_mb_info);
+                mr_ih264d_read_coeff8x8_cabac_m68k(ps_bitstrm, ps_dec, ps_cur_mb_info);
                 pu1_left_nnz[2] = 1;
                 pu1_left_nnz[3] = 1;
                 pu1_top_nnz[2] = 1;

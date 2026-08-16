@@ -144,6 +144,14 @@ UWORD8 mr_ih264d_read_coeff4x4_cabac_m68k(void *ps_bitstrm, UWORD32 u4_ctxcat,
                                           UWORD8 *ps_ctxt_coded)
     __asm__("mr_ih264d_read_coeff4x4_cabac_m68k");
 
+/* ih264_m68k_cabac_coeff8x8.S - CABAC 8x8-transform residual coefficient
+ * parsing (High Profile transform_size_8x8_flag path), ported from
+ * ih264d_read_coeff8x8_cabac(). ps_bitstrm/ps_dec/ps_cur_mb_info are
+ * opaque void* for the same reason as the 4x4 declaration above. */
+void mr_ih264d_read_coeff8x8_cabac_m68k(void *ps_bitstrm, void *ps_dec,
+                                        void *ps_cur_mb_info)
+    __asm__("mr_ih264d_read_coeff8x8_cabac_m68k");
+
 /* ih264_m68k_iquant_itrans_recon.S - 4x4 inverse quant/transform/recon
  * (ih264_iquant_itrans_recon_4x4/_dc and _chroma_4x4/_dc). Plain function-
  * pointer fields, overridden directly in ih264d_function_selector_port.c -
@@ -192,6 +200,28 @@ void mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k(WORD16 *pi2_src,
                                                      WORD16 *pi2_tmp,
                                                      WORD16 *pi2_dc_src)
     __asm__("mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k");
+void mr_ih264_iquant_itrans_recon_8x8_m68k(WORD16 *pi2_src, UWORD8 *pu1_pred,
+                                           UWORD8 *pu1_out, WORD32 pred_strd,
+                                           WORD32 out_strd,
+                                           const UWORD16 *pu2_iscal_mat,
+                                           const UWORD16 *pu2_weigh_mat,
+                                           UWORD32 u4_qp_div_6,
+                                           WORD16 *pi2_tmp,
+                                           WORD32 iq_start_idx,
+                                           WORD16 *pi2_dc_ld_addr)
+    __asm__("mr_ih264_iquant_itrans_recon_8x8_m68k");
+void mr_ih264_iquant_itrans_recon_8x8_dc_m68k(WORD16 *pi2_src,
+                                              UWORD8 *pu1_pred,
+                                              UWORD8 *pu1_out,
+                                              WORD32 pred_strd,
+                                              WORD32 out_strd,
+                                              const UWORD16 *pu2_iscal_mat,
+                                              const UWORD16 *pu2_weigh_mat,
+                                              UWORD32 u4_qp_div_6,
+                                              WORD16 *pi2_tmp,
+                                              WORD32 iq_start_idx,
+                                              WORD16 *pi2_dc_ld_addr)
+    __asm__("mr_ih264_iquant_itrans_recon_8x8_dc_m68k");
 
 /* ih264_m68k_intra_pred.S - H.264 8.3.3.4 luma 16x16 plane intra
  * prediction (ih264_intra_pred_luma_16x16_mode_plane). Genuine hand asm

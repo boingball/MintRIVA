@@ -211,12 +211,164 @@ static void check_read_coeff4x4_cabac(void)
         free_run(&rs_asm);
     }
 }
+
+/*
+ * Same approach, for mr_ih264d_read_coeff8x8_cabac_m68k() (ih264_m68k_
+ * cabac_coeff8x8.S) vs the real vendored ih264d_read_coeff8x8_cabac() -
+ * see that file's header for why this function needed its own port
+ * rather than reusing the 4x4 primitive with a different context array
+ * (the significance/last-coefficient context indexing is table-driven,
+ * not a flat stride, and that is exactly the kind of thing this
+ * differential test is positioned to catch: a plausible-looking but
+ * wrong context selection still produces *a* result, just against the
+ * wrong CABAC state).
+ */
+enum { N_SIG8X8_CTX = 64, N_LEVEL8X8_CTX = 16 };
+
+typedef struct {
+    dec_struct_t *ps_dec;
+    dec_mb_info_t s_cur_mb_info;
+    mb_neigbour_params_t s_curmb;
+    dec_bit_stream_t s_bitstrm;
+    UWORD32 au4_buf[N_BUF_WORDS];
+    UWORD8 au1_sig_ctx[N_SIG8X8_CTX];
+    UWORD8 au1_level_ctx[N_LEVEL8X8_CTX];
+    tu_blk8x8_coeff_data_t s_tu8x8;
+} run_state8x8_t;
+
+static void setup_run8x8(run_state8x8_t *rs, uint32_t *seed,
+                         const UWORD32 *table, UWORD32 start_range,
+                         UWORD32 start_val_ofst, UWORD32 start_offset,
+                         UWORD8 u1_mb_fld)
+{
+    int i;
+
+    memset(rs, 0, sizeof *rs);
+    /* Poison the coefficient output buffer - same reasoning as setup_run():
+     * catch an unconditional write (the sig-coeff bitmap) an asm port
+     * might accidentally skip. */
+    memset(&rs->s_tu8x8, 0xAA, sizeof rs->s_tu8x8);
+    rs->ps_dec = (dec_struct_t *)calloc(1, sizeof(dec_struct_t));
+
+    for (i = 0; i < N_BUF_WORDS; i++)
+        rs->au4_buf[i] = xrand(seed) | (xrand(seed) << 15) | (xrand(seed) << 30);
+    for (i = 0; i < N_SIG8X8_CTX; i++)
+        rs->au1_sig_ctx[i] = (UWORD8)(xrand(seed) & 0x7f);
+    for (i = 0; i < N_LEVEL8X8_CTX; i++)
+        rs->au1_level_ctx[i] = (UWORD8)(xrand(seed) & 0x7f);
+
+    rs->s_bitstrm.u4_ofst = start_offset;
+    rs->s_bitstrm.pu4_buffer = rs->au4_buf;
+
+    rs->ps_dec->s_cab_dec_env.u4_code_int_range = start_range;
+    rs->ps_dec->s_cab_dec_env.u4_code_int_val_ofst = start_val_ofst;
+    rs->ps_dec->s_cab_dec_env.cabac_table = (const void *)table;
+    rs->ps_dec->pv_parse_tu_coeff_data = (void *)&rs->s_tu8x8;
+    rs->ps_dec->p_coeff_abs_level_minus1_t[LUMA_8X8_CTXCAT] =
+        (bin_ctxt_model_t *)rs->au1_level_ctx;
+    rs->ps_dec->s_high_profile.ps_sigcoeff_8x8_frame =
+        (bin_ctxt_model_t *)rs->au1_sig_ctx;
+    rs->ps_dec->s_high_profile.ps_sigcoeff_8x8_field =
+        (bin_ctxt_model_t *)rs->au1_sig_ctx;
+
+    rs->s_curmb.u1_mb_fld = u1_mb_fld;
+    rs->s_cur_mb_info.ps_curmb = &rs->s_curmb;
+}
+
+static void free_run8x8(run_state8x8_t *rs)
+{
+    free(rs->ps_dec);
+}
+
+static void check_read_coeff8x8_cabac(void)
+{
+    enum { N_ITER = 20000 };
+    uint32_t seed = 8181;
+    int iter;
+
+    for (iter = 0; iter < N_ITER; iter++) {
+        UWORD32 table[N_TABLE];
+        UWORD32 start_range = 256u + (xrand(&seed) % 255u);
+        UWORD32 start_val_ofst = xrand(&seed) % (start_range * 2u + 1u);
+        UWORD32 start_offset = xrand(&seed) % 64u;
+        UWORD8 u1_mb_fld = (UWORD8)(xrand(&seed) & 1u);
+        uint32_t seed_snapshot;
+        run_state8x8_t rs_real, rs_asm;
+        int i;
+
+        for (i = 0; i < N_TABLE; i++)
+            table[i] = xrand(&seed) | (xrand(&seed) << 15) | (xrand(&seed) << 30);
+
+        seed_snapshot = seed;
+        setup_run8x8(&rs_real, &seed, table, start_range, start_val_ofst,
+                    start_offset, u1_mb_fld);
+        seed = seed_snapshot;
+        setup_run8x8(&rs_asm, &seed, table, start_range, start_val_ofst,
+                    start_offset, u1_mb_fld);
+
+        ih264d_read_coeff8x8_cabac(&rs_real.s_bitstrm, rs_real.ps_dec,
+                                   &rs_real.s_cur_mb_info);
+        mr_ih264d_read_coeff8x8_cabac_m68k(&rs_asm.s_bitstrm, rs_asm.ps_dec,
+                                           &rs_asm.s_cur_mb_info);
+
+        if (rs_real.ps_dec->s_cab_dec_env.u4_code_int_range !=
+            rs_asm.ps_dec->s_cab_dec_env.u4_code_int_range)
+            report("coeff8x8(range)", iter, (int)u1_mb_fld,
+                  (long)rs_real.ps_dec->s_cab_dec_env.u4_code_int_range,
+                  (long)rs_asm.ps_dec->s_cab_dec_env.u4_code_int_range);
+        if (rs_real.ps_dec->s_cab_dec_env.u4_code_int_val_ofst !=
+            rs_asm.ps_dec->s_cab_dec_env.u4_code_int_val_ofst)
+            report("coeff8x8(val_ofst)", iter, (int)u1_mb_fld,
+                  (long)rs_real.ps_dec->s_cab_dec_env.u4_code_int_val_ofst,
+                  (long)rs_asm.ps_dec->s_cab_dec_env.u4_code_int_val_ofst);
+        if (rs_real.s_bitstrm.u4_ofst != rs_asm.s_bitstrm.u4_ofst)
+            report("coeff8x8(bitstrm_ofst)", iter, (int)u1_mb_fld,
+                  (long)rs_real.s_bitstrm.u4_ofst, (long)rs_asm.s_bitstrm.u4_ofst);
+        for (i = 0; i < N_SIG8X8_CTX; i++)
+            if (rs_real.au1_sig_ctx[i] != rs_asm.au1_sig_ctx[i])
+                report("coeff8x8(sig_ctx)", iter, i,
+                      rs_real.au1_sig_ctx[i], rs_asm.au1_sig_ctx[i]);
+        for (i = 0; i < N_LEVEL8X8_CTX; i++)
+            if (rs_real.au1_level_ctx[i] != rs_asm.au1_level_ctx[i])
+                report("coeff8x8(level_ctx)", iter, i,
+                      rs_real.au1_level_ctx[i], rs_asm.au1_level_ctx[i]);
+        /* au4_sig_coeff_map is written unconditionally, same reasoning as
+         * the 4x4 test's u2_sig_coeff_map check. */
+        if (rs_real.s_tu8x8.au4_sig_coeff_map[0] !=
+            rs_asm.s_tu8x8.au4_sig_coeff_map[0])
+            report("coeff8x8(sig_coeff_map0)", iter, (int)u1_mb_fld,
+                  rs_real.s_tu8x8.au4_sig_coeff_map[0],
+                  rs_asm.s_tu8x8.au4_sig_coeff_map[0]);
+        if (rs_real.s_tu8x8.au4_sig_coeff_map[1] !=
+            rs_asm.s_tu8x8.au4_sig_coeff_map[1])
+            report("coeff8x8(sig_coeff_map1)", iter, (int)u1_mb_fld,
+                  rs_real.s_tu8x8.au4_sig_coeff_map[1],
+                  rs_asm.s_tu8x8.au4_sig_coeff_map[1]);
+        for (i = 0; i < 64; i++)
+            if (rs_real.s_tu8x8.ai2_level[i] != rs_asm.s_tu8x8.ai2_level[i])
+                report("coeff8x8(level)", iter, i,
+                      rs_real.s_tu8x8.ai2_level[i], rs_asm.s_tu8x8.ai2_level[i]);
+        {
+            long off_real = (UWORD8 *)rs_real.ps_dec->pv_parse_tu_coeff_data -
+                            (UWORD8 *)&rs_real.s_tu8x8;
+            long off_asm = (UWORD8 *)rs_asm.ps_dec->pv_parse_tu_coeff_data -
+                           (UWORD8 *)&rs_asm.s_tu8x8;
+            if (off_real != off_asm)
+                report("coeff8x8(tu_data_advance)", iter, (int)u1_mb_fld,
+                      off_real, off_asm);
+        }
+
+        free_run8x8(&rs_real);
+        free_run8x8(&rs_asm);
+    }
+}
 #endif /* MR_M68K_ASM */
 
 int main(void)
 {
 #if defined(MR_M68K_ASM)
     check_read_coeff4x4_cabac();
+    check_read_coeff8x8_cabac();
 #endif
     if (g_failures) {
         fprintf(stderr, "mr_h264_cabac_coeff_check: %d mismatches\n", g_failures);
