@@ -138,6 +138,14 @@ UWORD8 mr_ih264d_read_coeff4x4_cabac_m68k(void *ps_bitstrm, UWORD32 u4_ctxcat,
                                           UWORD8 *ps_ctxt_coded)
     __asm__("mr_ih264d_read_coeff4x4_cabac_m68k");
 
+/* ih264_m68k_cabac_coeff8x8.S - CABAC 8x8-transform residual coefficient
+ * parsing (High Profile transform_size_8x8_flag path), ported from
+ * ih264d_read_coeff8x8_cabac(). ps_bitstrm/ps_dec/ps_cur_mb_info are
+ * opaque void* for the same reason as the 4x4 declaration above. */
+void mr_ih264d_read_coeff8x8_cabac_m68k(void *ps_bitstrm, void *ps_dec,
+                                        void *ps_cur_mb_info)
+    __asm__("mr_ih264d_read_coeff8x8_cabac_m68k");
+
 /* ih264_m68k_iquant_itrans_recon.S - 4x4 inverse quant/transform/recon
  * (ih264_iquant_itrans_recon_4x4/_dc and _chroma_4x4/_dc). Plain function-
  * pointer fields, overridden directly in ih264d_function_selector_port.c -
