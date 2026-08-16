@@ -51,21 +51,65 @@ mr_source *mr_http_source_open_ex(const char *url,
 
 /* Download a complete text response into a task-safe allocated buffer. The
  * caller owns *out and releases it with mr_free(). One NUL byte is appended but
- * is not included in *out_len. Both fixed-length and chunked bodies work. */
+ * is not included in *out_len. Both fixed-length and chunked bodies work.
+ * Routed through the installed fetch override, if any - see
+ * mr_http_set_fetch_override() below. */
 int mr_http_fetch_text(const char *url, const mr_http_options *options,
                        char **out, size_t *out_len, size_t max_size);
 
 /* Binary-safe complete-response variant. The returned task-safe buffer belongs
- * to the caller and must be released with mr_free(). */
+ * to the caller and must be released with mr_free(). Implemented as
+ * mr_http_fetch_text(), so it is covered by the fetch override too. */
 int mr_http_fetch_buffer(const char *url, const mr_http_options *options,
                          unsigned char **out, size_t *out_len,
                          size_t max_size);
 
 /* POST a small JSON document and return the complete text response. Used by
- * lightweight resolver APIs that cannot be represented as a media GET. */
+ * lightweight resolver APIs that cannot be represented as a media GET. Routed
+ * through the installed fetch override, if any. */
 int mr_http_post_json(const char *url, const mr_http_options *options,
                       const char *json, char **out, size_t *out_len,
                       size_t max_size);
+
+/* Unconditional variants of the two functions above: always perform the fetch
+ * on the calling task, ignoring any installed override. Only the override's
+ * own implementation should call these - everyone else wants the (possibly
+ * redirected) public functions above. See mr_http_set_fetch_override(). */
+int mr_http_fetch_text_direct(const char *url, const mr_http_options *options,
+                              char **out, size_t *out_len, size_t max_size);
+int mr_http_post_json_direct(const char *url, const mr_http_options *options,
+                             const char *json, char **out, size_t *out_len,
+                             size_t max_size);
+
+/*
+ * Redirect every mr_http_fetch_text()/mr_http_post_json()/
+ * mr_http_fetch_buffer() call through `fn` instead of performing the fetch
+ * directly on the calling task. Intended for a platform that wants exactly
+ * one task to ever touch this file's socket/TLS state (see the design note
+ * in mr_http.c above connect_socket()) - e.g. amiga/hls_fetch.c's background
+ * worker, installed once before any other network call in the session so it
+ * is that task, not whichever caller happened to run first. `post_json` is
+ * NULL for a GET-shaped fetch (mr_http_fetch_text()/mr_http_fetch_buffer())
+ * and non-NULL for mr_http_post_json(). Pass NULL to restore direct
+ * per-caller-task fetching (the default; host builds and callers that never
+ * install one are unaffected). Not reentrant with itself - `fn` must not
+ * call back into mr_http_fetch_text()/mr_http_post_json() (use the _direct
+ * variants above from inside it, which is exactly what a fetch override
+ * needs anyway: perform the real fetch on whichever task is running `fn`). */
+typedef int (*mr_http_fetch_override_fn)(const char *url,
+    const mr_http_options *options, const char *post_json,
+    unsigned char **out, size_t *out_len, size_t max_size);
+void mr_http_set_fetch_override(mr_http_fetch_override_fn fn);
+int  mr_http_fetch_override_active(void);
+
+/* Best-effort background-lookahead hint for the next fetch this session is
+ * likely to need (e.g. the next HLS segment) - a no-op unless a fetch
+ * override has installed one via mr_http_set_prefetch_hint(). Never blocks;
+ * never guarantees anything is actually prefetched. */
+typedef void (*mr_http_prefetch_hint_fn)(const char *url,
+                                         const mr_http_options *options);
+void mr_http_set_prefetch_hint(mr_http_prefetch_hint_fn fn);
+void mr_http_prefetch_hint(const char *url, const mr_http_options *options);
 
 /* Download a complete response to a file using the shared redirect, TLS,
  * timeout and chunk decoder. The destination is removed on failure. */

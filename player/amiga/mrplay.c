@@ -17,6 +17,7 @@
 #include "../core/mr_hls.h"
 #include "../core/mr_http.h"
 #include "../core/mr_youtube.h"
+#include "hls_fetch.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
@@ -307,6 +308,10 @@ static void playback_timer_close(void)
 static int mrplay_exit(int code)
 {
     playback_timer_close();
+    /* Stop the fetch worker (idempotent, safe even if never started) before
+     * releasing this task's own bsdsocket/AmiSSL state below - it must
+     * release its own first, from its own task. */
+    hls_fetch_stop();
     mr_http_net_shutdown();
     control_port_close();
     return code;
@@ -974,6 +979,13 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
            demux_timing.scanned_max, demux_timing.service_calls);
     if (audio) service_audio_for_display(trace);
+    if (hls_fetch_active()) {
+        unsigned long hits, misses, worst_wait_ms;
+        hls_fetch_stats(&hits, &misses, &worst_wait_ms);
+        printf("hls fetch: hits=%lu misses=%lu worst-wait=%lu ms\n",
+               hits, misses, worst_wait_ms);
+    }
+    if (audio) service_audio_for_display(trace);
     if (st->decoded) {
 #if defined(MR_H264_STAGE_PROFILE)
         printf("h264 stages: input=%lu/%lu us libavc-core=%lu/%lu us "
@@ -1576,6 +1588,13 @@ int main(int argc, char **argv)
     http_options.hls_max_fps = hls_max_fps;
     have_http_options = user_agent || referer || hls_low || hls_max_width ||
                         hls_max_height || hls_max_fps;
+    /* Start the background fetch worker before any network call this session
+     * might make (including YouTube URL resolution just below) so it is
+     * always the first task to open bsdsocket/AmiSSL state, never a second
+     * task adopting state another task already opened - see hls_fetch.c's
+     * design note. No-op (and harmless) for local files. */
+    if (mr_source_is_url(media_path))
+        hls_fetch_start(want_time);
     if (mr_youtube_is_url(media_path)) {
         mr_http_options youtube_options;
         if (!mr_youtube_http_options_init(&youtube_options, &http_options)) {
@@ -1946,6 +1965,9 @@ int main(int argc, char **argv)
      * segment fetch, so an ordinary ~350 ms download no longer freezes video for
      * its whole duration. Fires while released is set around the demux read. */
     mr_http_set_service(service_player_during_io, &trace);
+    /* Same contract, for whichever fetches the background worker performs on
+     * our behalf while we wait on it (see hls_fetch_wait_busy()). */
+    hls_fetch_set_service(service_player_during_io, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -2589,6 +2611,9 @@ int main(int argc, char **argv)
             }
             if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
             display_set_status(disp, "Reconnecting...");
+            /* Discard any in-flight/cached fetch for the stream we're leaving
+             * before it can be handed to (or cached for) the reopened one. */
+            hls_fetch_cancel();
             mr_demux_close(dx);
             dx = NULL;
             for (tries = 0; tries < LIVE_RECONNECT_TRIES && !quit; tries++) {
@@ -3003,6 +3028,7 @@ int main(int argc, char **argv)
      * die. */
     mr_hls_set_wait(NULL, NULL);
     mr_http_set_service(NULL, NULL);
+    hls_fetch_set_service(NULL, NULL);
 
     /* This drain loop calls display_show_rgb() directly on dec.frame.data,
      * bypassing the queue (and so bypassing queue_copy_yuv_indexed()'s

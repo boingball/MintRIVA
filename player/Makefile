@@ -192,15 +192,21 @@ mr_youtube_check: tests/mr_youtube_check.c core/mr_youtube.c core/mr_http.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_check.c core/mr_youtube.c \
 	    core/mr_http.c core/mr_source.c core/mr_hls.c
 
+mr_hls_override_check: tests/mr_hls_override_check.c core/mr_hls.c \
+                       core/mr_http.c core/mr_source.c core/mr_youtube.c
+	$(CC) $(CFLAGS) -o $@ tests/mr_hls_override_check.c core/mr_hls.c \
+	    core/mr_http.c core/mr_source.c core/mr_youtube.c
+
 mr_youtube_search_check: tests/mr_youtube_search_check.c \
                          youtube/mr_youtube_search.c \
                          youtube/mr_youtube_search.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_h264_m68k_check mr_iptv_check mr_youtube_check mr_youtube_search_check
+check: mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_h264_m68k_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
+	./mr_hls_override_check
 	./mr_iptv_check
 	./mr_codec_registry_check
 	./mr_pcm_u8_check
