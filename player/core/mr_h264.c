@@ -809,8 +809,9 @@ void mr_h264_set_timing_enabled(mr_decoder *dec, int enabled)
  * opts in, in which case it hands back libavc's own Y/Cb/Cr display-buffer
  * pointers directly (dec->frame.fmt = MR_PIX_YUV420P) and skips both the
  * RGB24 allocation and mr_yuv420_to_rgb24() call entirely - for a consumer
- * (e.g. the AGA backend's direct-to-indexed dither) that wants the raw
- * planes instead of an RGB24 intermediate. Those pointers are borrowed from
+ * (e.g. the AGA direct-to-indexed dither or mrplay's direct-to-RTG-queue
+ * conversion) that wants the raw planes instead of an RGB24 intermediate.
+ * Those pointers are borrowed from
  * libavc's own display picture buffer, exactly like the RGB path already
  * borrows them for the synchronous conversion call - valid until the next
  * decode, same lifetime mr_frame's own contract already documents. */

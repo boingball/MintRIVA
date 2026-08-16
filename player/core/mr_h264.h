@@ -44,7 +44,8 @@ void mr_h264_set_skip_output(mr_decoder *dec, int skip);
  * MR_PIX_YUV420P (dec->frame.data/stride = Y, u_data/u_stride = Cb,
  * v_data/v_stride = Cr) instead of MR_PIX_RGB24 - no RGB24 buffer is
  * allocated or written. For a caller (e.g. an AGA direct-to-indexed
- * dither path) that wants the raw decoded planes instead of an RGB24
+ * dither path, or an RTG player converting directly into its retained queue
+ * slot) that wants the raw decoded planes instead of a decoder-owned RGB24
  * intermediate. See core/mr_yuv_dither.h for a fused YUV420P -> 8-bit
  * indexed conversion matching mr_yuv420_to_rgb24() + a nearest-neighbour
  * resize + mr_dither_rgb8() bit-exactly, without either intermediate

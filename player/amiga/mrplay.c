@@ -23,6 +23,7 @@
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
 #include "../core/mr_dither.h"
+#include "../core/mr_yuv.h"
 #include "../core/mr_yuv_dither.h"
 #include "../audio/mr_audio_decode.h"
 #include "../iptv/mr_iptv.h"
@@ -563,6 +564,9 @@ typedef struct playback_stats {
     uint64_t yuv_indexed_us;
     unsigned long yuv_indexed_max_us;
     unsigned yuv_indexed_frames;
+    uint64_t yuv_rgb_us;
+    unsigned long yuv_rgb_max_us;
+    unsigned yuv_rgb_frames;
 } playback_stats;
 
 /*
@@ -832,6 +836,47 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
     return 1;
 }
 
+/* H.264 RGB-display path: convert libavc's borrowed YUV420P planes directly
+ * into the queue slot.  The old path converted into mr_h264.c's persistent
+ * full-frame RGB buffer and immediately memcpy'd that whole buffer here.
+ * Writing the conversion result straight to q->rgb removes that extra RGB
+ * framebuffer and one complete RGB24 read+write pass per queued frame while
+ * preserving the display-facing queue format and all CGX/P96 code unchanged.
+ * It also defers conversion until after the scheduler's retain/drop decision,
+ * so an overload frame discarded before queueing never pays RGB conversion.
+ * The service hook is the same audio/presenter callback formerly used inside
+ * mr_h264.c's conversion and remains safe here: the queue is not published
+ * (qcount is not incremented) until this function returns. */
+static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
+                                uint64_t pts, uint64_t decoded_at,
+                                mr_yuv_service_fn service,
+                                void *service_opaque)
+{
+    size_t stride, bytes;
+    if (!q || !fr || fr->fmt != MR_PIX_YUV420P ||
+        !fr->data || !fr->u_data || !fr->v_data ||
+        fr->width <= 0 || fr->height <= 0)
+        return 0;
+    if ((size_t)fr->width > (size_t)-1 / 3u) return 0;
+    stride = (size_t)fr->width * 3u;
+    if ((size_t)fr->height > (size_t)-1 / stride) return 0;
+    bytes = stride * (size_t)fr->height;
+    if (q->capacity < bytes) {
+        unsigned char *p = (unsigned char *)realloc(q->rgb, bytes);
+        if (!p) return 0;
+        q->rgb = p; q->capacity = bytes;
+    }
+    mr_yuv420_to_rgb24(q->rgb, (int)stride,
+                       fr->data, fr->stride,
+                       fr->u_data, fr->u_stride,
+                       fr->v_data, fr->v_stride,
+                       fr->width, fr->height, service, service_opaque);
+    q->width = fr->width; q->height = fr->height; q->stride = (int)stride;
+    q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
+    q->pts_us = pts; q->decoded_at_us = decoded_at;
+    return 1;
+}
+
 /*
  * Same contract as queue_copy(), but for a display that can accept an 8-bit
  * indexed frame directly (display_supports_indexed() - see display_backend.h
@@ -926,6 +971,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     unsigned long sc = average_hundredths(st->scale_us, st->presented);
     unsigned long yi = average_hundredths(st->yuv_indexed_us,
                                           st->yuv_indexed_frames);
+    unsigned long yr = average_hundredths(st->yuv_rgb_us,
+                                          st->yuv_rgb_frames);
     unsigned long ds = average_hundredths(st->display_us, st->presented);
     unsigned long la = average_hundredths(st->latency_us, st->presented);
     unsigned long pf = rate_hundredths(st->presented, elapsed_us);
@@ -939,7 +986,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     printf("rtg timing: vdecode=%lu.%02lu/%lu ms network-blocked=%lu ms "
            "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
            "convert=%lu.%02lu ms scale=%lu.%02lu ms "
-           "yuv-indexed=%lu.%02lu/%lu ms display=%lu.%02lu/%lu ms "
+           "yuv-indexed=%lu.%02lu/%lu ms yuv-rgb=%lu.%02lu/%lu ms "
+           "display=%lu.%02lu/%lu ms "
            "audio-buffered=%lu ms vqueue=%d late=%u dropped=%u "
            "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
            "sleep-max-error=%lu us latency=%lu.%02lu ms "
@@ -949,6 +997,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            io.hls_segment_ms, dm / 100, dm % 100, ad / 100, ad % 100,
            cv / 100, cv % 100, sc / 100, sc % 100,
            yi / 100, yi % 100, st->yuv_indexed_max_us / 1000,
+           yr / 100, yr % 100, st->yuv_rgb_max_us / 1000,
            ds / 100, ds % 100, st->display_max_us / 1000,
            audio ? audio_buffered_ms(audio) : 0, depth, st->late, st->dropped,
            pf / 100, pf % 100, df / 100, df % 100,
@@ -1366,7 +1415,12 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
         if (quit) break;
 
-        { clock_t a = clock(); got = mr_mpeg1_next(mp, &fr, &pts_us); t_dec += clock() - a; }
+        {
+            clock_t a = 0;
+            if (want_time) a = clock();
+            got = mr_mpeg1_next(mp, &fr, &pts_us);
+            if (want_time) t_dec += clock() - a;
+        }
         if (!got) {
             if (loop) { mr_mpeg1_rewind(mp); frames = 0;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
@@ -1414,10 +1468,13 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
         if (quit) break;
 
-        { clock_t a = clock();
-          display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
-                           fr.dirty_y0, fr.dirty_y1);
-          t_show += clock() - a; }
+        {
+            clock_t a = 0;
+            if (want_time) a = clock();
+            display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
+                             fr.dirty_y0, fr.dirty_y1);
+            if (want_time) t_show += clock() - a;
+        }
         frames++;
         if (audio) audio_service(audio);
     }
@@ -1886,7 +1943,6 @@ int main(int argc, char **argv)
     if (codec == &mr_codec_h264)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
             disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale);
-    if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
     /* True only for the AGA backend's plain 256-colour configuration (see
      * display_backend.h / aga_supports_indexed()) when the YUV path above
      * doesn't already cover this (non-H.264, or an AGA mode
@@ -1895,6 +1951,15 @@ int main(int argc, char **argv)
      * slot below uses the same format throughout. */
     int use_indexed_queue = !use_yuv_indexed_queue &&
                             display_supports_indexed(disp);
+    /* Every remaining H.264 display path consumes RGB24.  Keep libavc's
+     * output planar and convert it directly into each queue slot instead of
+     * first allocating/filling the decoder's private RGB framebuffer and
+     * immediately copying that full frame into the queue.  This is primarily
+     * the RTG CGX/P96 path, but is equally correct for an AGA RGB fallback. */
+    int use_yuv_rgb_queue = codec == &mr_codec_h264 &&
+                            !use_yuv_indexed_queue && !use_indexed_queue;
+    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+        mr_h264_set_yuv_output(&dec, 1);
     if (want_time) {
         int diag_depth, diag_ham, diag_scale, diag_resize;
         const char *diag_c2p;
@@ -1914,6 +1979,9 @@ int main(int argc, char **argv)
         else if (use_indexed_queue)
             printf("video path: RGB24 %dx%d -> INDEX8 (queue_copy_indexed)\n",
                    vi->width, vi->height);
+        else if (use_yuv_rgb_queue)
+            printf("video path: YUV420P %dx%d -> RGB24 "
+                   "(direct-to-queue)\n", vi->width, vi->height);
         else
             printf("video path: RGB24 %dx%d (queue_copy)\n",
                    vi->width, vi->height);
@@ -2090,11 +2158,13 @@ int main(int argc, char **argv)
          * The clamps below keep the footprint within a safe slice of free RAM,
          * and video_cap is the ring modulus so the queue's footprint is
          * exactly video_cap * frame_bytes (RGB24, indexed or YUV-indexed,
-         * whichever this session actually queues - see frame_bytes below). */
+         * whichever this session actually queues - direct YUV->RGB still
+         * produces an ordinary RGB24 queue slot; see frame_bytes below). */
         unsigned long cushion_ms;
         /* Must match whichever queue_copy* the copy_ok dispatch below picks
-         * for this session (queue_copy_yuv_indexed()/queue_copy_indexed()/
-         * queue_copy() - see their declarations), or this budget either
+         * for this session (queue_copy_yuv_indexed()/queue_copy_yuv_rgb24()/
+         * queue_copy_indexed()/queue_copy() - see their declarations), or this
+         * budget either
          * overestimates and needlessly clamps video_cap (RGB24 assumed on an
          * indexed path is a 3x-6x overestimate), or underestimates and lets
          * the queue overrun its RAM budget. */
@@ -2640,7 +2710,8 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
-            if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
+            if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+                mr_h264_set_yuv_output(&dec, 1);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2718,7 +2789,8 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
-            if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
+            if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+                mr_h264_set_yuv_output(&dec, 1);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2975,9 +3047,9 @@ int main(int argc, char **argv)
                             /* decoded_at_us only ever feeds the --time
                              * latency stat (both readers are want_time-
                              * gated) - skip the monotonic_us() call
-                             * otherwise. use_indexed_queue and
-                             * use_yuv_indexed_queue are mutually exclusive
-                             * (see their declarations above). */
+                             * otherwise. The three specialised queue modes
+                             * are mutually exclusive (see their declarations
+                             * above). */
                             uint64_t decoded_at = want_time ? monotonic_us() : 0;
                             int copy_ok;
                             if (use_yuv_indexed_queue) {
@@ -3002,6 +3074,21 @@ int main(int argc, char **argv)
                             } else if (use_indexed_queue)
                                 copy_ok = queue_copy_indexed(tail, &dec.frame,
                                                              pts, decoded_at);
+                            else if (use_yuv_rgb_queue) {
+                                uint64_t yr0 = want_time ? monotonic_us() : 0;
+                                copy_ok = queue_copy_yuv_rgb24(
+                                    tail, &dec.frame, pts, decoded_at,
+                                    audio ? service_audio_for_display : NULL,
+                                    &trace);
+                                if (want_time) {
+                                    unsigned long us =
+                                        (unsigned long)(monotonic_us() - yr0);
+                                    stats.yuv_rgb_us += us;
+                                    stats.yuv_rgb_frames++;
+                                    if (us > stats.yuv_rgb_max_us)
+                                        stats.yuv_rgb_max_us = us;
+                                }
+                            }
                             else
                                 copy_ok = queue_copy(tail, &dec.frame, pts,
                                                      decoded_at);
@@ -3102,15 +3189,16 @@ int main(int argc, char **argv)
     hls_fetch_set_service(NULL, NULL);
 
     /* This drain loop calls display_show_rgb() directly on dec.frame.data,
-     * bypassing the queue (and so bypassing queue_copy_yuv_indexed()'s
-     * fused conversion too) - h264_flush() runs frames through the same
+     * bypassing the queue (and so bypassing queue_copy_yuv_indexed() and
+     * queue_copy_yuv_rgb24()) - h264_flush() runs frames through the same
      * emit_rgb() the normal decode path does, so with yuv_output still
      * enabled dec.frame would be MR_PIX_YUV420P and dec.frame.data would
      * be the Y plane alone, which display_show_rgb() would misread as
      * RGB24. Only ever drains the last frame or two at EOF, so falling
      * back to the ordinary (always-correct) RGB24 conversion here costs
      * nothing worth avoiding. */
-    if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 0);
+    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+        mr_h264_set_yuv_output(&dec, 0);
 
     /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.
      * Drain it through the same pacing and display path so the player does not

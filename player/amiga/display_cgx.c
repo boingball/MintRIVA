@@ -482,11 +482,14 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
                      mr_display_service_fn service, void *service_opaque)
 {
     cgx_state *s = (cgx_state *)h;
-    clock_t total, mark;
-    int native;
+    clock_t total = 0, mark = 0;
+    int native, timing;
     if (!s || !s->win) return;
-    memset(&s->timing, 0, sizeof s->timing);
-    total = mark = clock();
+    timing = g_display_want_time;
+    if (timing) {
+        memset(&s->timing, 0, sizeof s->timing);
+        total = mark = clock();
+    }
     /* Rebuild RTG geometry when:
      *   - geometry has never been built (geometry_valid == 0, handles first frame)
      *   - the window's bitmap changed (screen mode flip)
@@ -503,9 +506,12 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
                                   cur_bm != s->cached_bitmap ? "bitmap-change"
                                                               : "resize");
     }
-    s->timing.resize_us = elapsed_us(mark);
-    report_slow("resize-handling", s->timing.resize_us, service, service_opaque);
-    mark = clock();
+    if (timing) {
+        s->timing.resize_us = elapsed_us(mark);
+        report_slow("resize-handling", s->timing.resize_us,
+                    service, service_opaque);
+        mark = clock();
+    }
     if (s->force_full_redraw) {
         dy0 = 0;
         dy1 = hh;
@@ -514,16 +520,23 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     if (dy0 < 0) dy0 = 0;
     if (dy1 > hh) dy1 = hh;
     if (dy1 <= dy0) return;                       /* nothing changed         */
-    s->timing.clip_us = elapsed_us(mark);
-    report_slow("clipping-setup", s->timing.clip_us, service, service_opaque);
-    mark = clock();
-    s->timing.src_w = w; s->timing.src_h = hh;
-    s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
-    s->timing.src_format = s->timing.dst_format = "RGB24";
+    if (timing) {
+        s->timing.clip_us = elapsed_us(mark);
+        report_slow("clipping-setup", s->timing.clip_us,
+                    service, service_opaque);
+        mark = clock();
+    }
+    if (timing) {
+        s->timing.src_w = w; s->timing.src_h = hh;
+        s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
+        s->timing.src_format = s->timing.dst_format = "RGB24";
+    }
     native = s->dw == w && s->dh == hh;
-    s->timing.geometry_us = elapsed_us(mark);
-    report_slow("geometry-format-setup", s->timing.geometry_us,
-                service, service_opaque);
+    if (timing) {
+        s->timing.geometry_us = elapsed_us(mark);
+        report_slow("geometry-format-setup", s->timing.geometry_us,
+                    service, service_opaque);
+    }
 
     if (!native) {
         /* Downscaled path: only here do we ever need a scale buffer, and only
@@ -531,7 +544,7 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
          * scaled a strip at a time and blitted immediately, so at most one
          * small strip (not a whole second destination frame) is resident. */
         int y;
-        mark = clock();
+        if (timing) mark = clock();
         if (service) service(service_opaque);
         if (!ensure_scaled(s, s->dw)) {
             if (service) service(service_opaque);
@@ -543,11 +556,13 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
             return;
         }
         if (service) service(service_opaque);
-        s->timing.allocation_us = elapsed_us(mark);
-        report_slow("destination-buffer-allocation", s->timing.allocation_us,
-                    service, service_opaque);
+        if (timing) {
+            s->timing.allocation_us = elapsed_us(mark);
+            report_slow("destination-buffer-allocation",
+                        s->timing.allocation_us, service, service_opaque);
+        }
 
-        s->timing.prepare_us = elapsed_us(total);
+        if (timing) s->timing.prepare_us = elapsed_us(total);
         if (service) service(service_opaque);
 
         /* Time the CPU-side resample and the WritePixelArray blit separately
@@ -555,43 +570,51 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
          * so scale_us and blit_us were always identical - unable to tell
          * whether the CPU resample or the RTG driver blit call was the
          * actual cost). service() runs between the two, outside of both. */
-        s->timing.scale_us = 0;
-        s->timing.blit_us = 0;
+        if (timing) {
+            s->timing.scale_us = 0;
+            s->timing.blit_us = 0;
+        }
         for (y = 0; y < s->dh; y += MR_CGX_STRIP_ROWS) {
             int rows = s->dh - y < MR_CGX_STRIP_ROWS ? s->dh - y
                                                       : MR_CGX_STRIP_ROWS;
             clock_t step;
 
-            step = clock();
+            if (timing) step = clock();
             scale_rgb24_strip(s, rgb, w, hh, stride, y, rows);
-            s->timing.scale_us += elapsed_us(step);
+            if (timing) s->timing.scale_us += elapsed_us(step);
 
-            step = clock();
+            if (timing) step = clock();
             WritePixelArray((APTR)s->scaled, 0, 0, (UWORD)s->scaled_stride,
                             s->win->RPort, (UWORD)(s->bl + s->dx),
                             (UWORD)(s->bt + s->dy + y),
                             (UWORD)s->dw, (UWORD)rows, RECTFMT_RGB);
-            s->timing.blit_us += elapsed_us(step);
+            if (timing) s->timing.blit_us += elapsed_us(step);
 
             if (service) service(service_opaque);
         }
-        report_slow("software-scale", s->timing.scale_us,
-                    service, service_opaque);
-        report_slow("cgx-blit", s->timing.blit_us, service, service_opaque);
-        s->timing.pixels = (unsigned long)s->dw * (unsigned long)s->dh;
-        s->timing.bytes = (unsigned long)s->scaled_size *
-                          (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
-                                          MR_CGX_STRIP_ROWS);
-        s->timing.copies = (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
-                                           MR_CGX_STRIP_ROWS);
+        if (timing) {
+            report_slow("software-scale", s->timing.scale_us,
+                        service, service_opaque);
+            report_slow("cgx-blit", s->timing.blit_us,
+                        service, service_opaque);
+        }
+        if (timing) {
+            s->timing.pixels = (unsigned long)s->dw * (unsigned long)s->dh;
+            s->timing.bytes = (unsigned long)s->scaled_size *
+                              (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
+                                              MR_CGX_STRIP_ROWS);
+            s->timing.copies =
+                (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
+                                MR_CGX_STRIP_ROWS);
+        }
         if (service) service(service_opaque);
-        s->timing.total_us = elapsed_us(total);
+        if (timing) s->timing.total_us = elapsed_us(total);
         return;
     }
 
-    s->timing.prepare_us = elapsed_us(total);
+    if (timing) s->timing.prepare_us = elapsed_us(total);
     if (service) service(service_opaque);
-    mark = clock();
+    if (timing) mark = clock();
     /* Keep the dirty-row fast path, but split tall native pictures into small
      * writes. Several real P96/CGX drivers visibly retain old horizontal
      * bands when handed one multi-megabyte 1080p RGB24 WritePixelArray. The
@@ -608,14 +631,16 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
                             (UWORD)(s->bl + s->dx),
                             (UWORD)(s->bt + s->dy + y), (UWORD)w,
                             (UWORD)rows, RECTFMT_RGB);
-            s->timing.copies++;
+            if (timing) s->timing.copies++;
             if (service) service(service_opaque);
         }
     }
-    s->timing.blit_us = elapsed_us(mark);
-    s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
-    s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
-    s->timing.total_us = elapsed_us(total);
+    if (timing) s->timing.blit_us = elapsed_us(mark);
+    if (timing) {
+        s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
+        s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
+        s->timing.total_us = elapsed_us(total);
+    }
 }
 
 static int cgx_timing(void *h, mr_display_timing *timing)

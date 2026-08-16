@@ -13,13 +13,12 @@
  * dst_h (= height/vscale) is computed by the C caller and passed in
  * directly, so this never needs a 32-bit divide in its own setup.
  *
- * Per output row: src_row advances by a constant `vscale` each row (exact
- * by definition, regardless of vscale's parity), but chroma_row = src_row
- * >> 1 does NOT advance by a constant amount for odd vscale (floor-division
- * parity), so this recomputes y/u/v row pointers by a fresh MULS.L each row
- * from src_row/chroma_row rather than trying to track an incremental
- * per-row stride - one 32-bit multiply per row is negligible next to the
- * per-pixel work below.
+ * The common AGA 640x360 -> 640x180 case has vscale == 2.  Its luma,
+ * chroma and output row pointers therefore advance by fixed amounts, so a
+ * dedicated row setup walks those pointers directly and avoids all four
+ * per-row MULS.L operations.  Other scale factors retain the fully general
+ * src_row/chroma_row recomputation below; that is required for odd vscale,
+ * where floor(src_row / 2) does not advance by a constant amount.
  *
  * Per pixel pair (matching the C's chroma-pair reuse): red_add/green_add/
  * blue_add depend only on (uu, vv), computed once per pair and stashed in
@@ -63,7 +62,10 @@
  * (pixel loop). %d5/%d6/%d7/%a4 = scratch within a pixel/channel, reused
  * freely - see the per-channel block below, mirrored three times per pixel
  * (red/green/blue) and twice per pair (the two lanes), plus once more for
- * the trailing odd pixel.
+ * the trailing odd pixel.  Each channel clips inline: unsigned BLS accepts
+ * the overwhelmingly common 0..255 case in two instructions, while values
+ * outside that range are separated into negative (0) and positive (255).
+ * Keeping this inline avoids three BSR/RTS pairs per output pixel.
  */
 #if defined(MR_M68K_ASM)
 	.text
@@ -89,6 +91,9 @@ mr_yuv420_dither8_m68k:
 
 	movea.l	136(%sp),%a5		/* lut_r (whole-function constant) */
 	movea.l	140(%sp),%a6		/* lut_g (whole-function constant) */
+
+	cmpi.l	#2,100(%sp)
+	beq	.Lyd_v2_init
 
 .Lyd_row:
 	move.l	%d0,%d6
@@ -120,7 +125,22 @@ mr_yuv420_dither8_m68k:
 	muls.l	108(%sp),%d6
 	movea.l	104(%sp),%a3
 	adda.l	%d6,%a3
+	bra	.Lyd_row_ready
 
+/* vscale == 2: first selected luma row is 1, first chroma row is 0. */
+.Lyd_v2_init:
+	movea.l	68(%sp),%a0
+	adda.l	72(%sp),%a0
+	movea.l	76(%sp),%a1
+	movea.l	84(%sp),%a2
+	movea.l	104(%sp),%a3
+
+.Lyd_v2_row:
+	move.l	%d0,%d6
+	cmp.l	96(%sp),%d6		/* oy vs dst_h */
+	bge	.Lyd_done
+
+.Lyd_row_ready:
 	/* taprow[0..3] = bayer4[row_parity][0..3], one longword copy */
 	lea	.Lyd_bayer4,%a4
 	move.l	%d3,%d6
@@ -182,21 +202,42 @@ mr_yuv420_dither8_m68k:
 	move.l	%d5,%d6
 	add.l	0(%sp),%d6		/* + red_add */
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	move.b	(%a5,%d6.w),%d7		/* d7 = lut_r[idx] */
 
 	move.l	%d5,%d6
 	add.l	4(%sp),%d6		/* + green_add */
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	add.b	(%a6,%d6.w),%d7		/* += lut_g[idx] */
 
 	move.l	%d5,%d6
 	add.l	8(%sp),%d6		/* + blue_add */
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	movea.l	144(%sp),%a4		/* lut_b */
 	add.b	(%a4,%d6.w),%d7		/* += lut_b[idx] */
@@ -224,21 +265,42 @@ mr_yuv420_dither8_m68k:
 	move.l	%d5,%d6
 	add.l	0(%sp),%d6
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	move.b	(%a5,%d6.w),%d7
 
 	move.l	%d5,%d6
 	add.l	4(%sp),%d6
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	add.b	(%a6,%d6.w),%d7
 
 	move.l	%d5,%d6
 	add.l	8(%sp),%d6
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	movea.l	144(%sp),%a4
 	add.b	(%a4,%d6.w),%d7
@@ -297,21 +359,42 @@ mr_yuv420_dither8_m68k:
 	move.l	%d5,%d6
 	add.l	0(%sp),%d6
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	move.b	(%a5,%d6.w),%d7
 
 	move.l	%d5,%d6
 	add.l	4(%sp),%d6
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	add.b	(%a6,%d6.w),%d7
 
 	move.l	%d5,%d6
 	add.l	8(%sp),%d6
 	asr.l	#8,%d6
-	bsr	.Lyd_clip
+	cmp.l	#255,%d6
+	bls.b	2f
+	tst.l	%d6
+	bmi.b	1f
+	move.l	#255,%d6
+	bra.b	2f
+1:	moveq	#0,%d6
+2:
 	add.w	16(%sp),%d6
 	movea.l	144(%sp),%a4
 	add.b	(%a4,%d6.w),%d7
@@ -323,27 +406,23 @@ mr_yuv420_dither8_m68k:
 	addq.l	#1,%d3
 	and.l	#3,%d3
 	add.l	100(%sp),%d1		/* src_row += vscale */
+	cmpi.l	#2,100(%sp)
+	beq	.Lyd_v2_advance
 	bra	.Lyd_row
+
+.Lyd_v2_advance:
+	move.l	72(%sp),%d6		/* y += 2 * y_stride */
+	add.l	%d6,%d6
+	adda.l	%d6,%a0
+	adda.l	80(%sp),%a1		/* u += u_stride */
+	adda.l	88(%sp),%a2		/* v += v_stride */
+	adda.l	108(%sp),%a3		/* out += out_stride */
+	bra	.Lyd_v2_row
 
 .Lyd_done:
 	add.l	#20,%sp
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
-
-/* Clip %d6 (signed) to 0..255 in place. Only touches %d6 - safe to call
- * from anywhere mid-sequence without disturbing any other live register. */
-.Lyd_clip:
-	cmp.l	#0,%d6
-	bge.b	.Lyd_clip_pos
-	moveq	#0,%d6
-	rts
-.Lyd_clip_pos:
-	cmp.l	#255,%d6
-	ble.b	.Lyd_clip_ret
-	move.l	#255,%d6
-.Lyd_clip_ret:
-	rts
-
 	.even
 .Lyd_bayer4:
 	.byte	0,8,2,10
