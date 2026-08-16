@@ -186,6 +186,28 @@ void mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k(WORD16 *pi2_src,
                                                      WORD16 *pi2_tmp,
                                                      WORD16 *pi2_dc_src)
     __asm__("mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k");
+void mr_ih264_iquant_itrans_recon_8x8_m68k(WORD16 *pi2_src, UWORD8 *pu1_pred,
+                                           UWORD8 *pu1_out, WORD32 pred_strd,
+                                           WORD32 out_strd,
+                                           const UWORD16 *pu2_iscal_mat,
+                                           const UWORD16 *pu2_weigh_mat,
+                                           UWORD32 u4_qp_div_6,
+                                           WORD16 *pi2_tmp,
+                                           WORD32 iq_start_idx,
+                                           WORD16 *pi2_dc_ld_addr)
+    __asm__("mr_ih264_iquant_itrans_recon_8x8_m68k");
+void mr_ih264_iquant_itrans_recon_8x8_dc_m68k(WORD16 *pi2_src,
+                                              UWORD8 *pu1_pred,
+                                              UWORD8 *pu1_out,
+                                              WORD32 pred_strd,
+                                              WORD32 out_strd,
+                                              const UWORD16 *pu2_iscal_mat,
+                                              const UWORD16 *pu2_weigh_mat,
+                                              UWORD32 u4_qp_div_6,
+                                              WORD16 *pi2_tmp,
+                                              WORD32 iq_start_idx,
+                                              WORD16 *pi2_dc_ld_addr)
+    __asm__("mr_ih264_iquant_itrans_recon_8x8_dc_m68k");
 
 /* ih264_m68k_intra_pred.S - H.264 8.3.3.4 luma 16x16 plane intra
  * prediction (ih264_intra_pred_luma_16x16_mode_plane). Genuine hand asm
