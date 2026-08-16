@@ -1202,6 +1202,20 @@ static int player_event(amiga_display *disp)
     return ev;
 }
 
+/* Minimal service hook for the fetch worker during the very first HLS
+ * fetch(es) - before any display/decoder/trace state exists for the full
+ * service_player_during_io() below to safely touch (see the call site in
+ * main() for why). Only checks for the quit signal, nothing else: no
+ * fullscreen/pause/volume handling, no trace dereference. opaque is unused
+ * (always NULL here) - the signature matches hls_fetch_service_fn only so
+ * it can be installed the same way. */
+static int service_early_quit_check(void *opaque)
+{
+    (void)opaque;
+    return (SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F) &
+            (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) != 0;
+}
+
 /* HTTP's synchronous reader runs on the player task.  Pump fresh Intuition
  * input while it waits, but leave pause/seek/quit queued for the scheduler to
  * perform at its normal safe point.  Fullscreen is handled immediately by the
@@ -1592,9 +1606,23 @@ int main(int argc, char **argv)
      * might make (including YouTube URL resolution just below) so it is
      * always the first task to open bsdsocket/AmiSSL state, never a second
      * task adopting state another task already opened - see hls_fetch.c's
-     * design note. No-op (and harmless) for local files. */
-    if (mr_source_is_url(media_path))
+     * design note. No-op (and harmless) for local files.
+     *
+     * The playlist/first-segment fetch this can trigger (via mr_youtube_
+     * resolve_media() below, or directly once mr_demux_open_file_ex() is
+     * reached further down) happens before any display/decoder/trace state
+     * exists - service_player_during_io() is not safe to hand a service
+     * hook this early (it can reach display_toggle_fullscreen(disp) with a
+     * NULL disp, and its scheduler_trace pointer would be dangling before
+     * that local is ever initialised). Use the minimal quit-only check
+     * below instead, purely so a stuck initial connect can actually be
+     * interrupted rather than only ever timing out on its own; the full
+     * hook takes over once real playback state exists (see the
+     * hls_fetch_set_service() call further down). */
+    if (mr_source_is_url(media_path)) {
         hls_fetch_start(want_time);
+        hls_fetch_set_service(service_early_quit_check, NULL);
+    }
     if (mr_youtube_is_url(media_path)) {
         mr_http_options youtube_options;
         if (!mr_youtube_http_options_init(&youtube_options, &http_options)) {
