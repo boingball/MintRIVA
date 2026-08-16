@@ -73,6 +73,23 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->apf_intra_pred_luma_4x4[0] = mr_ih264_intra_pred_luma_4x4_vert_m68k;
     codec->apf_intra_pred_luma_4x4[1] = mr_ih264_intra_pred_luma_4x4_horz_m68k;
     codec->apf_intra_pred_luma_4x4[2] = mr_ih264_intra_pred_luma_4x4_dc_m68k;
+    codec->apf_intra_pred_luma_8x8[0] = mr_ih264_intra_pred_luma_8x8_vert_m68k;
+    codec->apf_intra_pred_luma_8x8[1] = mr_ih264_intra_pred_luma_8x8_horz_m68k;
+    codec->apf_intra_pred_luma_8x8[2] = mr_ih264_intra_pred_luma_8x8_dc_m68k;
+    codec->apf_intra_pred_luma_8x8[3] =
+        mr_ih264_intra_pred_luma_8x8_diag_dl_m68k;
+    codec->apf_intra_pred_luma_8x8[4] =
+        mr_ih264_intra_pred_luma_8x8_diag_dr_m68k;
+    codec->apf_intra_pred_luma_8x8[5] =
+        mr_ih264_intra_pred_luma_8x8_vert_r_m68k;
+    codec->apf_intra_pred_luma_8x8[6] =
+        mr_ih264_intra_pred_luma_8x8_horz_d_m68k;
+    codec->apf_intra_pred_luma_8x8[7] =
+        mr_ih264_intra_pred_luma_8x8_vert_l_m68k;
+    codec->apf_intra_pred_luma_8x8[8] =
+        mr_ih264_intra_pred_luma_8x8_horz_u_m68k;
+    codec->pf_intra_pred_ref_filtering =
+        mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k;
     codec->pf_deblk_luma_vert_bs4 = mr_ih264_deblk_luma_vert_bs4_m68k;
     codec->pf_deblk_luma_horz_bs4 = mr_ih264_deblk_luma_horz_bs4_m68k;
     codec->pf_deblk_luma_vert_bslt4 = mr_ih264_deblk_luma_vert_bslt4_m68k;
