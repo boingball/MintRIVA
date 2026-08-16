@@ -35,6 +35,16 @@
  *   generation-checked or not) - cancel() only changes what a *future*
  *   reclaim does with whatever comes back.
  *
+ * - hls_fetch_stop() is the one place that waits unconditionally rather
+ *   than aborting on the service callback's request (see
+ *   hls_fetch_wait_busy_forever()): this task shares this process's own
+ *   code segment (CreateNewProcTags() straight at a function here, not a
+ *   separately LoadSeg'd program - same pattern as audio_paula.c's worker),
+ *   so there is no safe way to "give up and proceed anyway" once this
+ *   process's own exit would unload that segment out from under a task
+ *   still running in it. Only actually waiting for the worker's quit
+ *   acknowledgement is safe, however long that takes.
+ *
  * - All allocation on the worker's fetch path already goes through
  *   core/mr_alloc.h (AllocVec/FreeVec on Amiga - task-safe, unlike libnix
  *   malloc/free) via mr_http_fetch_text_direct()/mr_http_post_json_direct().
@@ -72,8 +82,8 @@
                                                      * are only ever segments */
 #define HLS_FETCH_MEM_FLOOR   (4UL * 1024 * 1024)  /* true-exhaustion guard,
                                                      * not a working-set cap */
-#define HLS_FETCH_STOP_BOUND_MS 25000UL /* generous margin over mr_http.c's
-                                         * own 20s connect()/recv() bounds   */
+#define HLS_FETCH_STOP_NOTICE_MS 5000UL /* re-print the "still waiting" note
+                                         * at this cadence during teardown   */
 
 /* main <-> worker request (reused; one in flight at a time) */
 typedef struct {
@@ -255,21 +265,54 @@ static int hls_fetch_wait_busy(void)
 }
 
 /* Poll until the outstanding request completes, servicing playback but
- * IGNORING the service callback's abort request, bounded instead by a hard
- * time limit. Used only by hls_fetch_stop(): re-sending into g_req while the
- * worker might still own the previous message (between its GetMsg and
- * ReplyMsg) is genuinely unsafe, so teardown cannot take "the caller wants
- * to abort" as licence to skip the wait - only a bounded bail-out is safe. */
-static int hls_fetch_wait_busy_bounded(unsigned long bound_ms)
+ * IGNORING the service callback's abort request - and never giving up.
+ * Used only by hls_fetch_stop(). Two things make "give up after N seconds
+ * and proceed anyway" (an earlier version of this function) unsafe here,
+ * not just impolite:
+ *
+ *   1. Re-sending into g_req while the worker might still own the previous
+ *      message (between its GetMsg and ReplyMsg) is genuinely unsafe, so
+ *      teardown cannot take "the caller wants to abort" as licence to skip
+ *      the wait.
+ *   2. This worker task was created with CreateNewProcTags() pointing
+ *      straight at a function in this process's own already-loaded code -
+ *      it is not a separately LoadSeg'd program with its own seglist
+ *      reference count (see audio_paula.c's audio_worker_entry for the same
+ *      pattern). If this process's own segment is ever unloaded - which
+ *      happens once mrplay_exit() lets main() return - while this task is
+ *      still alive, that task's own program counter is pointing into memory
+ *      that no longer belongs to it. "Abandon it and free what we can"
+ *      (an earlier version's approach: DeleteMsgPort() the reply port,
+ *      mark it inactive, return) does not defuse that: the task is still
+ *      running, will still try to ReplyMsg() into a port that may since
+ *      have been freed and reused, and remains a landmine for whatever runs
+ *      next regardless. There is no safe partial teardown - only actually
+ *      waiting for the worker's own acknowledgement is safe, matching
+ *      audio_paula.c's audio_close(), which never gives up on its worker
+ *      either.
+ *
+ * In practice this is bounded by the underlying stack's own timeouts even
+ * though nothing here enforces one: connect_with_timeout() bounds connect()
+ * itself (core/mr_http.c), and SO_RCVTIMEO/SO_SNDTIMEO bound recv()/send().
+ * The one true residual is DNS (gethostbyname()), which this project cannot
+ * bound - see connect_socket()'s note. A genuinely wedged DNS lookup means
+ * "Stop" waits it out rather than hangs the emulator/machine; there is no
+ * safe alternative on AmigaOS. */
+static void hls_fetch_wait_busy_forever(void)
 {
-    unsigned long waited = 0;
+    unsigned long waited = 0, last_notice = 0;
     for (;;) {
         hls_fetch_reclaim();
-        if (!g_busy) return 1;
-        if (waited >= bound_ms) return 0;
+        if (!g_busy) return;
         if (g_service) g_service(g_service_opaque);
         Delay(1);
         waited += 20;
+        if (waited - last_notice >= HLS_FETCH_STOP_NOTICE_MS) {
+            last_notice = waited;
+            printf("hls-fetch: still waiting for the worker to finish a "
+                   "network operation (%lu ms) - not abandoning it, see "
+                   "hls_fetch_wait_busy_forever()\n", waited);
+        }
     }
 }
 
@@ -429,32 +472,13 @@ void hls_fetch_stop(void)
     mr_http_set_prefetch_hint(NULL);
 
     hls_fetch_reclaim();
-    if (g_busy && !hls_fetch_wait_busy_bounded(HLS_FETCH_STOP_BOUND_MS)) {
-        /* Still stuck (a wedged connect()/DNS lookup - mr_http.c's own
-         * connect() timeout does not cover DNS). Proceed anyway rather than
-         * hang the whole player forever; the worker leaks until reboot,
-         * the best available outcome given AmigaOS has no safe way to
-         * force-kill a task stuck inside a library call. Unconditional, not
-         * --time-gated: exactly the signal that would make this diagnosable
-         * on a future run instead of an unexplained hang. */
-        printf("hls-fetch: worker still busy after %lums, abandoning it "
-               "(socket/TLS state leaks until reboot)\n",
-               HLS_FETCH_STOP_BOUND_MS);
-        g_active = 0;
-        g_proc = NULL;
-        hls_fetch_free_ready();
-        DeleteMsgPort(g_reply_port);
-        g_reply_port = NULL;
-        return;
-    }
+    if (g_busy) hls_fetch_wait_busy_forever();
     hls_fetch_free_ready();
 
     g_req.quit = 1;
     g_busy = 1;
     PutMsg(g_worker_port, &g_req.msg);
-    if (!hls_fetch_wait_busy_bounded(HLS_FETCH_STOP_BOUND_MS))
-        printf("hls-fetch: worker did not acknowledge quit within %lums, "
-               "abandoning it\n", HLS_FETCH_STOP_BOUND_MS);
+    hls_fetch_wait_busy_forever();
 
     g_active = 0;
     g_proc = NULL;

@@ -42,10 +42,16 @@ void hls_fetch_set_service(hls_fetch_service_fn fn, void *opaque);
 void hls_fetch_cancel(void);
 
 /* Stop the worker: cancel, drain any outstanding reply, tell it to exit and
- * wait (servicing playback, bounded) for its acknowledgement - it releases
- * its own bsdsocket/AmiSSL state before it exits. Must be called before the
- * main task's own mr_http_net_shutdown(). Safe to call even if the worker
- * was never started; idempotent. */
+ * wait (servicing playback) for its acknowledgement - it releases its own
+ * bsdsocket/AmiSSL state before it exits. This wait is unconditional, not
+ * bounded: the worker task shares this process's own code segment, so
+ * there is no safe way to give up on it and proceed - only actually
+ * waiting for its quit acknowledgement is safe (see hls_fetch.c's
+ * hls_fetch_wait_busy_forever()). In practice this is bounded by
+ * core/mr_http.c's own connect()/recv()/send() timeouts; DNS resolution is
+ * the one residual that this project cannot bound. Must be called before
+ * the main task's own mr_http_net_shutdown(). Safe to call even if the
+ * worker was never started; idempotent. */
 void hls_fetch_stop(void);
 
 /* --time diagnostics: fetch hit/miss counts (a "hit" is a request the
