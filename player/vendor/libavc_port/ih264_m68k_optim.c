@@ -262,3 +262,172 @@ void mr_ih264_intra_pred_luma_4x4_dc_m68k(
     store_u32(dst + 2 * dst_stride, bval);
     store_u32(dst + 3 * dst_stride, bval);
 }
+
+/* H.264 8.3.4 chroma_8x8 vert/horz/dc - Ittiam's chroma functions take one
+ * pu1_src laid out with interleaved U/V samples (ih264_chroma_intra_pred_
+ * filters.c): pu1_top = pu1_src+18 (2*BLK8x8SIZE+2), pu1_left = pu1_src+14
+ * (2*BLK8x8SIZE-2), pu1_topleft implicitly at pu1_src+16 - i.e. exactly
+ * this project's usual S[] neighbour-buffer convention (see
+ * ih264_m68k_intra_pred.S's own header comment on the luma version of
+ * this layout) but with every logical sample doubled to its (U,V) byte
+ * pair. Same broadcast shapes as the luma vert/horz/dc predictors above -
+ * plane is the only one with a genuine per-pixel multiply+clip and no
+ * broadcast opportunity, so that one is real hand asm (see
+ * ih264_m68k_intra_pred.S) exactly like the luma 16x16 case. Big-endian
+ * m68k stores the high byte of a store_u32() value at the lowest address,
+ * so a (U,V,U,V) 4-byte broadcast pattern is built as
+ * (U<<24)|(V<<16)|(U<<8)|V. */
+void mr_ih264_intra_pred_chroma_8x8_vert_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *top = src + 18;
+    uint32_t a = load_u32(top), b = load_u32(top + 4);
+    uint32_t c = load_u32(top + 8), d = load_u32(top + 12);
+    WORD32 y;
+    (void)src_stride;
+    (void)neighbour_available;
+    for(y = 0; y < 8; y++)
+    {
+        store_u32(dst, a); store_u32(dst + 4, b);
+        store_u32(dst + 8, c); store_u32(dst + 12, d);
+        dst += dst_stride;
+    }
+}
+
+void mr_ih264_intra_pred_chroma_8x8_horz_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *left = src + 14;
+    WORD32 y;
+    (void)src_stride;
+    (void)neighbour_available;
+    for(y = 0; y < 8; y++)
+    {
+        uint32_t u = left[0], v = left[1];
+        uint32_t pattern = (u << 24) | (v << 16) | (u << 8) | v;
+        store_u32(dst, pattern); store_u32(dst + 4, pattern);
+        store_u32(dst + 8, pattern); store_u32(dst + 12, pattern);
+        left -= 2;
+        dst += dst_stride;
+    }
+}
+
+/* H.264 8.3.4.1: DC prediction is computed independently for each of the
+ * 4x4 U/V quadrants (top-left/top-right/bottom-left/bottom-right of the
+ * 8x8 chroma block), each averaging whichever of its 4 top and/or 4 left
+ * neighbour samples are actually available (falling back to 128 if
+ * neither side is available for that quadrant) - a direct transcription
+ * of the vendored C's own quadrant structure, just with pu1_left's
+ * pointer-decrement walk turned into fixed negative offsets from `left`
+ * (src+14, the same base ih264_intra_pred_chroma_8x8_mode_horz above
+ * uses) since every offset here is a compile-time constant. */
+void mr_ih264_intra_pred_chroma_8x8_dc_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *top = src + 18;
+    const UWORD8 *left = src + 14;
+    WORD32 left_avail1 = neighbour_available & 1;
+    WORD32 left_avail2 = (neighbour_available >> 4) & 1;
+    WORD32 top_avail = (neighbour_available >> 2) & 1;
+    WORD32 val_u_l1 = 0, val_u_l2 = 0, val_u_t1 = 0, val_u_t2 = 0;
+    WORD32 val_v_l1 = 0, val_v_l2 = 0, val_v_t1 = 0, val_v_t2 = 0;
+    WORD32 val_u1, val_u2, val_v1, val_v2;
+    WORD32 y;
+    (void)src_stride;
+
+    if(left_avail1)
+    {
+        val_u_l1 = left[0] + left[-2] + left[-4] + left[-6] + 2;
+        val_v_l1 = left[1] + left[-1] + left[-3] + left[-5] + 2;
+    }
+    if(left_avail2)
+    {
+        val_u_l2 = left[-8] + left[-10] + left[-12] + left[-14] + 2;
+        val_v_l2 = left[-7] + left[-9] + left[-11] + left[-13] + 2;
+    }
+    if(top_avail)
+    {
+        val_u_t1 = top[0] + top[2] + top[4] + top[6] + 2;
+        val_u_t2 = top[8] + top[10] + top[12] + top[14] + 2;
+        val_v_t1 = top[1] + top[3] + top[5] + top[7] + 2;
+        val_v_t2 = top[9] + top[11] + top[13] + top[15] + 2;
+    }
+
+    if(left_avail1 || left_avail2 || top_avail)
+    {
+        uint32_t pattern1, pattern2;
+
+        val_u1 = (left_avail1 || top_avail) ?
+            (val_u_l1 + val_u_t1) >> (1 + left_avail1 + top_avail) : 128;
+        val_v1 = (left_avail1 || top_avail) ?
+            (val_v_l1 + val_v_t1) >> (1 + left_avail1 + top_avail) : 128;
+        if(top_avail)
+        {
+            val_u2 = val_u_t2 >> 2;
+            val_v2 = val_v_t2 >> 2;
+        }
+        else if(left_avail1)
+        {
+            val_u2 = val_u_l1 >> 2;
+            val_v2 = val_v_l1 >> 2;
+        }
+        else
+        {
+            val_u2 = val_v2 = 128;
+        }
+
+        pattern1 = ((uint32_t)val_u1 << 24) | ((uint32_t)val_v1 << 16) |
+                   ((uint32_t)val_u1 << 8) | (uint32_t)val_v1;
+        pattern2 = ((uint32_t)val_u2 << 24) | ((uint32_t)val_v2 << 16) |
+                   ((uint32_t)val_u2 << 8) | (uint32_t)val_v2;
+        for(y = 0; y < 4; y++)
+        {
+            store_u32(dst, pattern1); store_u32(dst + 4, pattern1);
+            store_u32(dst + 8, pattern2); store_u32(dst + 12, pattern2);
+            dst += dst_stride;
+        }
+
+        if(left_avail2)
+        {
+            val_u1 = val_u_l2 >> 2;
+            val_v1 = val_v_l2 >> 2;
+        }
+        else if(top_avail)
+        {
+            val_u1 = val_u_t1 >> 2;
+            val_v1 = val_v_t1 >> 2;
+        }
+        else
+        {
+            val_u1 = val_v1 = 128;
+        }
+        val_u2 = (left_avail2 || top_avail) ?
+            (val_u_l2 + val_u_t2) >> (1 + left_avail2 + top_avail) : 128;
+        val_v2 = (left_avail2 || top_avail) ?
+            (val_v_l2 + val_v_t2) >> (1 + left_avail2 + top_avail) : 128;
+
+        pattern1 = ((uint32_t)val_u1 << 24) | ((uint32_t)val_v1 << 16) |
+                   ((uint32_t)val_u1 << 8) | (uint32_t)val_v1;
+        pattern2 = ((uint32_t)val_u2 << 24) | ((uint32_t)val_v2 << 16) |
+                   ((uint32_t)val_u2 << 8) | (uint32_t)val_v2;
+        for(y = 4; y < 8; y++)
+        {
+            store_u32(dst, pattern1); store_u32(dst + 4, pattern1);
+            store_u32(dst + 8, pattern2); store_u32(dst + 12, pattern2);
+            dst += dst_stride;
+        }
+    }
+    else
+    {
+        uint32_t pattern128 = UINT32_C(0x80808080);
+        for(y = 0; y < 8; y++)
+        {
+            store_u32(dst, pattern128); store_u32(dst + 4, pattern128);
+            store_u32(dst + 8, pattern128); store_u32(dst + 12, pattern128);
+            dst += dst_stride;
+        }
+    }
+}
