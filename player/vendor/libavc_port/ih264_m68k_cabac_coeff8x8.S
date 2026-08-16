@@ -144,28 +144,51 @@
  * original vendored C - is what actually executes once wired in.
  */
 #if defined(MR_M68K_ASM)
+/* This file's original .S->.o CI run (m68k-amigaos-gcc, real AmigaOS hunk
+ * output) failed to link with "undefined reference" to all three
+ * gau1_ih264d_* table symbols below, even though ih264d_tables.c defining
+ * them is compiled into the same link - this is the mirror image of the
+ * decoration mismatch ih264_m68k_optim.h's header comment already
+ * documents for the opposite direction ("m68k-amigaos-gcc ... applies its
+ * target C symbol decoration, leaving the bare .globl names unresolved at
+ * link time"): the AmigaOS target decorates every C-linkage symbol the C
+ * compiler exports (a leading underscore, the classic a.out/COFF
+ * convention this toolchain inherited) but GNU as does not apply that same
+ * decoration to a bare name written directly in hand-written assembly, so
+ * a raw `lea gau1_ih264d_...,%a0` asks the linker for the undecorated name
+ * while ih264d_tables.o only exports the decorated one. m68k-linux-gnu's
+ * ELF target (used by check-m68k under qemu) has no such prefix, so this
+ * only broke on the real AmigaOS build. __USER_LABEL_PREFIX__, predefined
+ * by both compilers with the correct value for their own target, carries
+ * the difference - SYM() applies it uniformly via the usual two-step
+ * macro-argument-expansion trick (## does not itself macro-expand its
+ * operands, hence the indirection through MR_SYM_CONCAT). */
+#define MR_SYM_CONCAT1(a, b) a ## b
+#define MR_SYM_CONCAT(a, b) MR_SYM_CONCAT1(a, b)
+#define SYM(name) MR_SYM_CONCAT(__USER_LABEL_PREFIX__, name)
+
 	.text
 	.even
 	.globl	mr_ih264d_read_coeff8x8_cabac_m68k
 
 /* Locals frame offsets (relative to sp after the prologue's sub.l). */
-L_BITSTRM     = 0
-L_SIGCTXORG   = 4	/* base pointer: ps_dec->s_high_profile.ps_sigcoeff_8x8_(frame|field) */
-L_SIGCTXCUR   = 8	/* next significance-decode context pointer                          */
-L_PLASTORG    = 12	/* L_SIGCTXORG + LAST_COEFF_CTXT_MINUS_SIG_COEFF_CTXT_8X8 (15)        */
-L_SIGINCTBL   = 16	/* gau1_ih264d_sigcoeff_context_inc_(frame|field), selected once      */
-L_NUMSIG      = 20
-L_SIGMAP0     = 24	/* au4_sig_coeff_map[0]: positions 0-31                               */
-L_SIGMAP1     = 28	/* au4_sig_coeff_map[1]: positions 32-63                               */
-L_I           = 32
-L_CTXINC      = 36
-L_EQ1         = 40
-L_GT1         = 44
-L_VALUE       = 48
-L_PREFIX      = 52
-L_ABSLVL      = 56
-L_SUFS        = 60
-FRAME_SIZE    = 64
+C8_BITSTRM     = 0
+C8_SIGCTXORG   = 4	/* base pointer: ps_dec->s_high_profile.ps_sigcoeff_8x8_(frame|field) */
+C8_SIGCTXCUR   = 8	/* next significance-decode context pointer                          */
+C8_PLASTORG    = 12	/* C8_SIGCTXORG + LAST_COEFF_CTXT_MINUS_SIG_COEFF_CTXT_8X8 (15)        */
+C8_SIGINCTBL   = 16	/* gau1_ih264d_sigcoeff_context_inc_(frame|field), selected once      */
+C8_NUMSIG      = 20
+C8_SIGMAP0     = 24	/* au4_sig_coeff_map[0]: positions 0-31                               */
+C8_SIGMAP1     = 28	/* au4_sig_coeff_map[1]: positions 32-63                               */
+C8_I           = 32
+C8_CTXINC      = 36
+C8_EQ1         = 40
+C8_GT1         = 44
+C8_VALUE       = 48
+C8_PREFIX      = 52
+C8_ABSLVL      = 56
+C8_SUFS        = 60
+C8_FRAME_SIZE    = 64
 
 mr_ih264d_read_coeff8x8_cabac_m68k:
 	movem.l	%d2-%d7/%a2-%a6,-(%sp)		/* 44 bytes */
@@ -185,76 +208,76 @@ mr_ih264d_read_coeff8x8_cabac_m68k:
 	clr.l	%d3
 	move.b	28(%a1),%d3			/* d3 = u1_mb_fld */
 
-	sub.l	#FRAME_SIZE,%sp
+	sub.l	#C8_FRAME_SIZE,%sp
 
-	move.l	%d6,L_BITSTRM(%sp)
+	move.l	%d6,C8_BITSTRM(%sp)
 
 	tst.b	%d3
 	bne.b	.Lc8_field
 	lea	42408+518(%a4),%a0		/* &ps_dec->s_high_profile.ps_sigcoeff_8x8_frame */
 	movea.l	(%a0),%a1
-	lea	gau1_ih264d_sigcoeff_context_inc_frame,%a0
+	lea	SYM(gau1_ih264d_sigcoeff_context_inc_frame),%a0
 	bra.b	.Lc8_fielddone
 .Lc8_field:
 	lea	42408+530(%a4),%a0		/* &ps_dec->s_high_profile.ps_sigcoeff_8x8_field */
 	movea.l	(%a0),%a1
-	lea	gau1_ih264d_sigcoeff_context_inc_field,%a0
+	lea	SYM(gau1_ih264d_sigcoeff_context_inc_field),%a0
 .Lc8_fielddone:
-	move.l	%a1,L_SIGCTXORG(%sp)
-	move.l	%a1,L_SIGCTXCUR(%sp)
+	move.l	%a1,C8_SIGCTXORG(%sp)
+	move.l	%a1,C8_SIGCTXCUR(%sp)
 	lea	15(%a1),%a1
-	move.l	%a1,L_PLASTORG(%sp)
-	move.l	%a0,L_SIGINCTBL(%sp)
+	move.l	%a1,C8_PLASTORG(%sp)
+	move.l	%a0,C8_SIGINCTBL(%sp)
 
-	clr.l	L_NUMSIG(%sp)
-	clr.l	L_SIGMAP0(%sp)
-	clr.l	L_SIGMAP1(%sp)
-	clr.l	L_I(%sp)
+	clr.l	C8_NUMSIG(%sp)
+	clr.l	C8_SIGMAP0(%sp)
+	clr.l	C8_SIGMAP1(%sp)
+	clr.l	C8_I(%sp)
 
 	/* --- significance-map / last-significant-coefficient loop ---
 	 * do { ...; i++; } while (i < 63) - see the header comment: both
 	 * context pointers step through their own UWORD8[64] lookup table,
 	 * not a flat per-position increment. */
 .Lc8_sigloop:
-	movea.l	L_SIGCTXCUR(%sp),%a0
+	movea.l	C8_SIGCTXCUR(%sp),%a0
 	move.l	#16384,%d5
 	bsr	.Lc8_bin_decode
 
-	/* next iteration's significance context: L_SIGCTXORG + tbl[i+1] */
-	movea.l	L_SIGINCTBL(%sp),%a0
-	move.l	L_I(%sp),%d3
+	/* next iteration's significance context: C8_SIGCTXORG + tbl[i+1] */
+	movea.l	C8_SIGINCTBL(%sp),%a0
+	move.l	C8_I(%sp),%d3
 	addq.l	#1,%d3
 	clr.l	%d4
 	move.b	(%a0,%d3.l),%d4
-	movea.l	L_SIGCTXORG(%sp),%a1
+	movea.l	C8_SIGCTXORG(%sp),%a1
 	adda.l	%d4,%a1
-	move.l	%a1,L_SIGCTXCUR(%sp)
+	move.l	%a1,C8_SIGCTXCUR(%sp)
 
 	tst.l	%d6
 	beq.b	.Lc8_sig_notset
 
-	addq.l	#1,L_NUMSIG(%sp)
+	addq.l	#1,C8_NUMSIG(%sp)
 
-	move.l	L_I(%sp),%d3
+	move.l	C8_I(%sp),%d3
 	cmp.l	#31,%d3
 	bgt.b	.Lc8_sig_hiword
 	moveq	#1,%d4
 	lsl.l	%d3,%d4
-	or.l	%d4,L_SIGMAP0(%sp)
+	or.l	%d4,C8_SIGMAP0(%sp)
 	bra.b	.Lc8_sig_bitdone
 .Lc8_sig_hiword:
 	sub.l	#32,%d3
 	moveq	#1,%d4
 	lsl.l	%d3,%d4
-	or.l	%d4,L_SIGMAP1(%sp)
+	or.l	%d4,C8_SIGMAP1(%sp)
 .Lc8_sig_bitdone:
 
-	/* last_significant_coeff_flag context: L_PLASTORG + lastcoeff_tbl[i] */
-	lea	gau1_ih264d_lastcoeff_context_inc,%a0
-	move.l	L_I(%sp),%d3
+	/* last_significant_coeff_flag context: C8_PLASTORG + lastcoeff_tbl[i] */
+	lea	SYM(gau1_ih264d_lastcoeff_context_inc),%a0
+	move.l	C8_I(%sp),%d3
 	clr.l	%d4
 	move.b	(%a0,%d3.l),%d4
-	movea.l	L_PLASTORG(%sp),%a0
+	movea.l	C8_PLASTORG(%sp),%a0
 	adda.l	%d4,%a0
 	moveq	#0,%d5
 	bsr	.Lc8_bin_decode
@@ -262,61 +285,61 @@ mr_ih264d_read_coeff8x8_cabac_m68k:
 	bne	.Lc8_readlevels
 
 .Lc8_sig_notset:
-	addq.l	#1,L_I(%sp)
-	move.l	L_I(%sp),%d3
+	addq.l	#1,C8_I(%sp)
+	move.l	C8_I(%sp),%d3
 	cmp.l	#63,%d3
 	blt	.Lc8_sigloop
 
 	/* loop exhausted (not via early goto): position 63 is significant */
-	addq.l	#1,L_NUMSIG(%sp)
+	addq.l	#1,C8_NUMSIG(%sp)
 	moveq	#1,%d4
 	moveq	#31,%d7
 	lsl.l	%d7,%d4
-	or.l	%d4,L_SIGMAP1(%sp)
+	or.l	%d4,C8_SIGMAP1(%sp)
 
 	/* --- level decode: byte-for-byte the same as the 4x4 port's, with
 	 * ctxcat fixed at LUMA_8X8_CTXCAT (5) instead of computed - see the
 	 * header comment, point 5. --- */
 .Lc8_readlevels:
-	move.l	L_SIGMAP0(%sp),(%a5)
-	move.l	L_SIGMAP1(%sp),4(%a5)
+	move.l	C8_SIGMAP0(%sp),(%a5)
+	move.l	C8_SIGMAP1(%sp),4(%a5)
 	lea	8(%a5),%a6			/* a6 = coeff write cursor */
 
 	movea.l	452(%a4),%a1			/* p_coeff_abs_level_minus1_t[5] */
-	move.l	#0x51,L_CTXINC(%sp)
+	move.l	#0x51,C8_CTXINC(%sp)
 	moveq	#1,%d3
-	move.l	%d3,L_EQ1(%sp)
-	clr.l	L_GT1(%sp)
+	move.l	%d3,C8_EQ1(%sp)
+	clr.l	C8_GT1(%sp)
 
 .Lc8_levelloop:
-	clr.l	L_VALUE(%sp)
-	move.l	L_CTXINC(%sp),%d3
+	clr.l	C8_VALUE(%sp)
+	move.l	C8_CTXINC(%sp),%d3
 	and.l	#0xf,%d3
 	movea.l	452(%a4),%a0
 	adda.l	%d3,%a0
 .Lc8_unaryloop:
 	move.l	#512,%d5
 	bsr	.Lc8_bin_decode
-	addq.l	#1,L_VALUE(%sp)
-	move.l	L_CTXINC(%sp),%d3
+	addq.l	#1,C8_VALUE(%sp)
+	move.l	C8_CTXINC(%sp),%d3
 	lsr.l	#4,%d3
 	movea.l	452(%a4),%a0
 	adda.l	%d3,%a0
 	tst.l	%d6
 	beq.b	.Lc8_unarydone
-	move.l	L_VALUE(%sp),%d3
+	move.l	C8_VALUE(%sp),%d3
 	cmp.l	#14,%d3
 	blt	.Lc8_unaryloop
 .Lc8_unarydone:
-	move.l	L_VALUE(%sp),%d3
+	move.l	C8_VALUE(%sp),%d3
 	subq.l	#1,%d3
 	add.l	%d6,%d3
-	move.l	%d3,L_PREFIX(%sp)
+	move.l	%d3,C8_PREFIX(%sp)
 
 	cmp.l	#14,%d3
 	bne	.Lc8_shortlevel
 
-	move.l	#14,L_ABSLVL(%sp)
+	move.l	#14,C8_ABSLVL(%sp)
 	bsr	.Lc8_ensure_bits
 
 	moveq	#0,%d3
@@ -329,10 +352,10 @@ mr_ih264d_read_coeff8x8_cabac_m68k:
 	bne	.Lc8_bpu_loop
 .Lc8_bpu_done:
 	subq.l	#1,%d3
-	move.l	%d3,L_VALUE(%sp)
+	move.l	%d3,C8_VALUE(%sp)
 	moveq	#1,%d4
 	lsl.l	%d3,%d4
-	move.l	%d4,L_SUFS(%sp)
+	move.l	%d4,C8_SUFS(%sp)
 
 	tst.l	%d3
 	beq.b	.Lc8_flcdone
@@ -341,7 +364,7 @@ mr_ih264d_read_coeff8x8_cabac_m68k:
 	ble.b	.Lc8_flcnoensure
 	bsr	.Lc8_ensure_bits
 .Lc8_flcnoensure:
-	move.l	L_VALUE(%sp),%d4
+	move.l	C8_VALUE(%sp),%d4
 	moveq	#0,%d7
 	moveq	#0,%d3
 .Lc8_flcloop:
@@ -351,64 +374,64 @@ mr_ih264d_read_coeff8x8_cabac_m68k:
 	or.l	%d6,%d7
 	cmp.l	%d4,%d3
 	blt	.Lc8_flcloop
-	move.l	%d7,L_VALUE(%sp)
+	move.l	%d7,C8_VALUE(%sp)
 .Lc8_flcdone:
-	move.l	L_SUFS(%sp),%d3
-	add.l	L_VALUE(%sp),%d3
-	move.l	L_ABSLVL(%sp),%d4
+	move.l	C8_SUFS(%sp),%d3
+	add.l	C8_VALUE(%sp),%d3
+	move.l	C8_ABSLVL(%sp),%d4
 	add.l	%d3,%d4
-	move.l	%d4,L_ABSLVL(%sp)
+	move.l	%d4,C8_ABSLVL(%sp)
 	bra	.Lc8_levelcommon
 
 .Lc8_shortlevel:
 	moveq	#1,%d4
-	add.l	L_PREFIX(%sp),%d4
-	move.l	%d4,L_ABSLVL(%sp)
+	add.l	C8_PREFIX(%sp),%d4
+	move.l	%d4,C8_ABSLVL(%sp)
 
 .Lc8_levelcommon:
-	move.l	L_ABSLVL(%sp),%d3
+	move.l	C8_ABSLVL(%sp),%d3
 	cmp.l	#1,%d3
 	ble.b	.Lc8_notgt1
-	addq.l	#1,L_GT1(%sp)
+	addq.l	#1,C8_GT1(%sp)
 .Lc8_notgt1:
-	tst.l	L_GT1(%sp)
+	tst.l	C8_GT1(%sp)
 	bne.b	.Lc8_isgt1
 
-	addq.l	#1,L_EQ1(%sp)
-	move.l	L_EQ1(%sp),%d3
+	addq.l	#1,C8_EQ1(%sp)
+	move.l	C8_EQ1(%sp),%d3
 	cmp.l	#4,%d3
 	ble.b	.Lc8_eq1ok
 	moveq	#4,%d3
 .Lc8_eq1ok:
 	move.l	#0x50,%d4
 	add.l	%d3,%d4
-	move.l	%d4,L_CTXINC(%sp)
+	move.l	%d4,C8_CTXINC(%sp)
 	bra.b	.Lc8_ctxincdone
 .Lc8_isgt1:
-	move.l	L_GT1(%sp),%d3
+	move.l	C8_GT1(%sp),%d3
 	cmp.l	#4,%d3
 	ble.b	.Lc8_gt1ok
 	moveq	#4,%d3
 .Lc8_gt1ok:
 	add.l	#5,%d3
 	lsl.l	#4,%d3
-	move.l	%d3,L_CTXINC(%sp)
+	move.l	%d3,C8_CTXINC(%sp)
 .Lc8_ctxincdone:
 
 	bsr	.Lc8_bypass_bit
 	tst.l	%d6
 	beq.b	.Lc8_nosign
-	move.l	L_ABSLVL(%sp),%d3
+	move.l	C8_ABSLVL(%sp),%d3
 	neg.l	%d3
-	move.l	%d3,L_ABSLVL(%sp)
+	move.l	%d3,C8_ABSLVL(%sp)
 .Lc8_nosign:
 
-	subq.l	#1,L_NUMSIG(%sp)
-	move.l	L_ABSLVL(%sp),%d3
+	subq.l	#1,C8_NUMSIG(%sp)
+	move.l	C8_ABSLVL(%sp),%d3
 	move.w	%d3,(%a6)
 	addq.l	#2,%a6
 
-	move.l	L_NUMSIG(%sp),%d3
+	move.l	C8_NUMSIG(%sp),%d3
 	bgt	.Lc8_levelloop
 
 	/* pv_parse_tu_coeff_data += ALIGN4(coeff_cursor - tu8x8_base) */
@@ -422,10 +445,10 @@ mr_ih264d_read_coeff8x8_cabac_m68k:
 
 	move.l	%d0,96(%a4)
 	move.l	%d1,100(%a4)
-	movea.l	L_BITSTRM(%sp),%a0
+	movea.l	C8_BITSTRM(%sp),%a0
 	move.l	%d2,(%a0)
 
-	add.l	#FRAME_SIZE,%sp
+	add.l	#C8_FRAME_SIZE,%sp
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
 
