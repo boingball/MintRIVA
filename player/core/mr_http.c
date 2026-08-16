@@ -18,6 +18,8 @@
 #define MR_HTTP_AMIGA 1
 #include <exec/types.h>
 #include <exec/libraries.h>
+#include <dos/dos.h>
+#include <dos/dostags.h>
 #include <proto/exec.h>
 #include <proto/bsdsocket.h>
 #include <sys/socket.h>
@@ -685,7 +687,40 @@ static int connect_socket(http_source *h, const http_url *url)
     struct hostent *he;
     struct sockaddr_in sa;
     struct timeval timeout;
+    /* gethostbyname() is a genuinely blocking bsdsocket.library call with no
+     * non-blocking mode of its own, unlike connect() above - a stuck/slow
+     * resolver can leave the calling task sitting inside it far longer than
+     * this file's other timeouts, with no way for another task to unstick
+     * it. SBTC_BREAKMASK tells bsdsocket.library which signals should abort
+     * a blocking call early for the calling task; hls_fetch.c's
+     * hls_fetch_cancel()/hls_fetch_kick() send SIGBREAKF_CTRL_C to unstick
+     * exactly this call when a fetch is cancelled or the worker needs to
+     * stop. Mirrors vendor/MintAMP/radio_stream.c's proven pattern there
+     * (same comment, same reasoning) exactly:
+     *
+     * Scoped tightly to just this one call, cleared again immediately below
+     * win or lose - leaving it set would also apply to every later blocking
+     * bsdsocket call this task makes, including whatever AmiSSL does
+     * internally inside SSL_connect()/SSL_read(), which MintAMP found
+     * sensitive to exactly this kind of external signal interference (an
+     * unexpected abort deep inside a library that never expected one is a
+     * plausible way to corrupt its state rather than cleanly cancel it).
+     *
+     * The mask alone only says which signal would abort this call - nothing
+     * sends SIGBREAKF_CTRL_C otherwise, so this is inert unless a caller
+     * explicitly kicks it. Clear any stale pending CTRL_C first: a signal
+     * left over from an earlier, unrelated cancel would otherwise sit
+     * pending and immediately abort *this* call the moment the mask goes
+     * live. */
+#if MR_HTTP_AMIGA
+    SetSignal(0, SIGBREAKF_CTRL_C);
+    SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), (ULONG)SIGBREAKF_CTRL_C,
+                   TAG_DONE);
     he = gethostbyname(url->host);
+    SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), 0UL, TAG_DONE);
+#else
+    he = gethostbyname(url->host);
+#endif
     if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
         mr_source_set_error("HTTP DNS lookup failed");
         return 0;

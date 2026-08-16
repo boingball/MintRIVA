@@ -14,7 +14,12 @@
  * for this session) or 0 if it could not be created, in which case
  * core/mr_http.c behaves exactly as it does today (every fetch runs
  * synchronously on whichever task calls it) and the caller does nothing
- * further - there is no partial/mixed mode.
+ * further - there is no partial/mixed mode. hls_fetch_start() also returns
+ * 0, permanently for the rest of this process's life, once a previous
+ * worker has ever had to be abandoned (hls_fetch_stop()'s bounded-wait
+ * timeout - see there): its request/reply structures are reused, not
+ * allocated fresh per call, so a leaked worker can never be safely handed
+ * off to a fresh one.
  */
 #ifndef HLS_FETCH_H
 #define HLS_FETCH_H
@@ -41,15 +46,15 @@ void hls_fetch_set_service(hls_fetch_service_fn fn, void *opaque);
  * request. */
 void hls_fetch_cancel(void);
 
-/* Stop the worker: cancel, drain any outstanding reply, tell it to exit and
- * wait (servicing playback) for its acknowledgement - it releases its own
- * bsdsocket/AmiSSL state before it exits. This wait is unconditional, not
- * bounded: the worker task shares this process's own code segment, so
- * there is no safe way to give up on it and proceed - only actually
- * waiting for its quit acknowledgement is safe (see hls_fetch.c's
- * hls_fetch_wait_busy_forever()). In practice this is bounded by
- * core/mr_http.c's own connect()/recv()/send() timeouts; DNS resolution is
- * the one residual that this project cannot bound. Must be called before
+/* Stop the worker: cancel (which also signals it, in case it is inside a
+ * masked DNS lookup - see hls_fetch.c's hls_fetch_kick()), drain any
+ * outstanding reply, tell it to exit and wait (servicing playback, bounded
+ * to a generous ~60s - see hls_fetch_wait_busy_bounded()) for its
+ * acknowledgement - it releases its own bsdsocket/AmiSSL state before it
+ * exits. If that bound is ever hit, the worker and its reply port are
+ * deliberately leaked rather than freed (the worker may still touch them);
+ * this mirrors vendor/MintAMP/radio_stream.c's proven Radio_RunOnNetWorker()/
+ * radio_net_worker_stop() pattern exactly. Must be called before
  * the main task's own mr_http_net_shutdown(). Safe to call even if the
  * worker was never started; idempotent. */
 void hls_fetch_stop(void);
