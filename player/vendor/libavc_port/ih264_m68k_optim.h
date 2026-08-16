@@ -29,6 +29,12 @@ void mr_ih264_intra_pred_luma_8x8_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
                                              WORD32, WORD32);
 void mr_ih264_intra_pred_luma_8x8_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
                                            WORD32, WORD32);
+void mr_ih264_intra_pred_chroma_8x8_vert_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                              WORD32, WORD32);
+void mr_ih264_intra_pred_chroma_8x8_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                              WORD32, WORD32);
+void mr_ih264_intra_pred_chroma_8x8_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                            WORD32, WORD32);
 
 /* Hand-written m68k assembly (ih264_m68k_interp.S) - only assembled/linked
  * when MR_M68K_ASM is set (Makefile.amiga, tests/run_m68k_check.sh), hence
@@ -284,6 +290,17 @@ void mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k(UWORD8 *pu1_left,
                                                       WORD32 src_strd,
                                                       WORD32 ngbr_avail)
     __asm__("mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k");
+
+/* ih264_m68k_intra_pred.S - H.264 8.3.4.4 chroma_8x8 plane intra
+ * prediction. See that file's own header comment on this function for
+ * the two-pass (U then V) design and the chroma S[] neighbour-buffer
+ * layout it shares with ih264_m68k_optim.c's chroma vert/horz/dc. */
+void mr_ih264_intra_pred_chroma_8x8_plane_m68k(UWORD8 *pu1_src,
+                                               UWORD8 *pu1_dst,
+                                               WORD32 src_strd,
+                                               WORD32 dst_strd,
+                                               WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_chroma_8x8_plane_m68k");
 #endif
 
 #endif

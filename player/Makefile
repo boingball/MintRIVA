@@ -186,6 +186,9 @@ mr_h264_recon8x8_check: tests/mr_h264_recon8x8_check.c $(LIBAVC_SRC)
 mr_h264_intra8x8_check: tests/mr_h264_intra8x8_check.c $(LIBAVC_SRC)
 	$(CC) $(CFLAGS) -o $@ tests/mr_h264_intra8x8_check.c $(LIBAVC_SRC)
 
+mr_h264_intra_chroma_check: tests/mr_h264_intra_chroma_check.c $(LIBAVC_SRC)
+	$(CC) $(CFLAGS) -o $@ tests/mr_h264_intra_chroma_check.c $(LIBAVC_SRC)
+
 mr_iptv_check: tests/mr_iptv_check.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
                iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c iptv/mr_iptv.h \
                core/mr_play_options.c core/mr_play_options.h

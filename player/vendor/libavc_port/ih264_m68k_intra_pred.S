@@ -1238,6 +1238,320 @@ mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k:
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
 
+/* ---------------------------------------------------------------------- */
+/* void mr_ih264_intra_pred_chroma_8x8_plane_m68k(UWORD8 *pu1_src,
+ *     UWORD8 *pu1_dst, WORD32 src_strd, WORD32 dst_strd,
+ *     WORD32 ngbr_avail);
+ *
+ * H.264 8.3.4.4 chroma Plane prediction (ih264_intra_pred_chroma_8x8_
+ * mode_plane, ih264_chroma_intra_pred_filters.c) - the chroma analogue of
+ * mr_ih264_intra_pred_luma_16x16_plane_m68k above: a genuine per-pixel
+ * multiply+shift+clip with no 4-bytes-at-once opportunity, same reasoning,
+ * same closed-form re-derivation approach (re-derived directly from the
+ * vendored pointer arithmetic rather than transcribing Ittiam's own
+ * shift-add chain, since MULS.L makes the closed form both correct and
+ * simpler). The one real difference from the luma case: pu1_src here is
+ * this project's usual chroma S[] layout - interleaved (U,V) sample
+ * pairs, every logical sample doubled to two bytes (S[0..13]=left
+ * reversed, S[14..15]... wait: S[16]=topleft-U/S[17]=topleft-V,
+ * S[18..33]=top+top-right, S[0..15]=left reversed - see ih264_m68k_
+ * optim.c's chroma vert/horz/dc header comment for the exact byte
+ * layout) - so U and V need two structurally-identical passes over the
+ * 8x8 grid (one full row/col fill loop per channel) rather than one,
+ * each with its own h/v/a/b/c setup reading the even (U) or odd (V)
+ * bytes of the same S[] buffer, and each pass's fill loop stepping the
+ * output cursor by 2 bytes per column (writing only the U or only the V
+ * byte of each pair) instead of 1:
+ *
+ *   H_u = sum_{c=0}^{3} (c+1) * (top_u[4+c] - top_u[3-c])
+ *   V_u = sum_{c=0}^{3} (c+1) * (left_u[-(4+c)] - left_u[-(3-c)])
+ *   a_u = 16 * (top_u[7] + left_u[-7])
+ *   b_u = (34*H_u + 32) >> 6
+ *   c_u = (34*V_u + 32) >> 6
+ *   pred_u(row, col) = CLIP_U8((a_u + b_u*(col-3) + c_u*(row-3) + 16) >> 5)
+ * (same shape for V with every _u swapped to _v, and top_v[n]/left_v[n]
+ * meaning the V byte of the same UV pair top_u[n]/left_u[n] refers to.)
+ *
+ * In S[] terms (pu1_top = pu1_src+18, pu1_left = pu1_src+14, matching the
+ * chroma vert/horz/dc functions' own bases exactly): top_u[4+c] =
+ * S[18+2*(4+c)] = S[26+2c], top_u[3-c] = S[22-2c], left_u[-(4+c)] =
+ * S[14-2*(4+c)] = S[6-2c], left_u[-(3-c)] = S[10+2c], top_u[7] = S[32],
+ * left_u[-7] = S[0] - the _v variants are each the same offset +1 (the V
+ * byte of the same pair). x/y only range 0..3 here (half of luma's 0..7,
+ * since the chroma block is 8x8 not 16x16), so - like the luma version -
+ * every term is a fixed constant displacement from pu1_src, no loop.
+ * "halfsize" (used to fold the block-center offset into the loop's
+ * initial tmp/tmpx, matching the luma version's own such folding) is 4
+ * here (8/2) where luma's was 8 (16/2).
+ *
+ * Verification cross-checks a fuzz-test reference that instead
+ * transcribes Ittiam's own literal shift-add chain, for the same reason
+ * the luma version's does - see that function's header comment above.
+ *
+ * Saves %d2-%d7/%a2-%a3 (32 bytes): pu1_src at 36(%sp) (4+32), pu1_dst at
+ * 40(%sp) (8+32), dst_strd at 48(%sp) (16+32) - identical offsets to the
+ * luma Plane function above, since the arg list and save set are the
+ * same shape. Register plan per pass: %a2=pu1_src (persistent across both
+ * passes), %a3=dst cursor for the pass currently running (reloaded fresh
+ * from pu1_dst at the start of the V pass, offset +1 for the V byte),
+ * %d6=b, %d7=c (persistent within one pass), %d0=tmp, %d1=tmpx, %d2=
+ * column counter, %d3=dst_strd (persistent across both passes), %d4=row
+ * counter, %d5=clip scratch (and holds `a` transiently during each
+ * pass's own setup) - same register shape as the luma version, just run
+ * twice with different S[] read offsets and a different dst byte lane.
+ * ---------------------------------------------------------------------- */
+	.globl	mr_ih264_intra_pred_chroma_8x8_plane_m68k
+mr_ih264_intra_pred_chroma_8x8_plane_m68k:
+	movem.l	%d2-%d7/%a2-%a3,-(%sp)
+	move.l	36(%sp),%a2		/* pu1_src   (4+32)  */
+	move.l	40(%sp),%a3		/* pu1_dst   (8+32)  */
+	move.l	48(%sp),%d3		/* dst_strd  (16+32) */
+
+	/* ==== U pass ==== */
+	clr.l	%d1
+	move.b	26(%a2),%d1
+	clr.l	%d2
+	move.b	22(%a2),%d2
+	sub.l	%d2,%d1
+	move.l	%d1,%d0			/* H_u, c=0 term (coeff 1) */
+
+	clr.l	%d1
+	move.b	28(%a2),%d1
+	clr.l	%d2
+	move.b	20(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#2,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	30(%a2),%d1
+	clr.l	%d2
+	move.b	18(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#3,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	32(%a2),%d1
+	clr.l	%d2
+	move.b	16(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#4,%d1
+	add.l	%d1,%d0			/* d0 = H_u */
+
+	move.l	%d0,%d1
+	muls.l	#34,%d1
+	add.l	#32,%d1
+	asr.l	#6,%d1
+	move.l	%d1,%d6			/* d6 = b_u */
+
+	clr.l	%d1
+	move.b	6(%a2),%d1
+	clr.l	%d2
+	move.b	10(%a2),%d2
+	sub.l	%d2,%d1
+	move.l	%d1,%d0			/* V_u, c=0 term */
+
+	clr.l	%d1
+	move.b	4(%a2),%d1
+	clr.l	%d2
+	move.b	12(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#2,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	2(%a2),%d1
+	clr.l	%d2
+	move.b	14(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#3,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	0(%a2),%d1
+	clr.l	%d2
+	move.b	16(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#4,%d1
+	add.l	%d1,%d0			/* d0 = V_u */
+
+	move.l	%d0,%d1
+	muls.l	#34,%d1
+	add.l	#32,%d1
+	asr.l	#6,%d1
+	move.l	%d1,%d7			/* d7 = c_u */
+
+	clr.l	%d5
+	move.b	32(%a2),%d5		/* top_u[7] = S[32] */
+	clr.l	%d1
+	move.b	0(%a2),%d1		/* left_u[-7] = S[0] */
+	add.l	%d1,%d5
+	lsl.l	#4,%d5			/* d5 = a_u (16*...) */
+
+	move.l	%d7,%d1
+	asl.l	#2,%d1			/* 4*c_u (halfsize=4) */
+	sub.l	%d1,%d5
+	add.l	#16,%d5
+	move.l	%d5,%d0			/* tmp = a_u - 4*c_u + 16 */
+
+	moveq	#8,%d4			/* row counter */
+.Lcp_row_u:
+	add.l	%d7,%d0			/* tmp += c_u */
+	move.l	%d6,%d1
+	asl.l	#2,%d1			/* 4*b_u */
+	neg.l	%d1			/* tmpx = -4*b_u */
+
+	moveq	#8,%d2			/* column counter */
+.Lcp_col_u:
+	add.l	%d6,%d1			/* tmpx += b_u */
+	move.l	%d0,%d5
+	add.l	%d1,%d5
+	asr.l	#5,%d5
+	bmi.s	.Lcp_u_clip_lo
+	cmp.l	#255,%d5
+	ble.s	.Lcp_u_store
+	move.l	#255,%d5
+	bra.s	.Lcp_u_store
+.Lcp_u_clip_lo:
+	moveq	#0,%d5
+.Lcp_u_store:
+	move.b	%d5,(%a3)
+	adda.l	#2,%a3
+	subq.l	#1,%d2
+	bne.s	.Lcp_col_u
+
+	suba.l	#16,%a3			/* back to this row's start (8 cols
+					 * * 2 bytes) ... */
+	adda.l	%d3,%a3			/* ... then += dst_strd */
+	subq.l	#1,%d4
+	bne	.Lcp_row_u
+
+	/* ==== V pass ==== */
+	move.l	40(%sp),%a3		/* pu1_dst, reload fresh */
+	adda.l	#1,%a3			/* + 1: V byte of the first pair */
+
+	clr.l	%d1
+	move.b	27(%a2),%d1
+	clr.l	%d2
+	move.b	23(%a2),%d2
+	sub.l	%d2,%d1
+	move.l	%d1,%d0			/* H_v, c=0 term */
+
+	clr.l	%d1
+	move.b	29(%a2),%d1
+	clr.l	%d2
+	move.b	21(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#2,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	31(%a2),%d1
+	clr.l	%d2
+	move.b	19(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#3,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	33(%a2),%d1
+	clr.l	%d2
+	move.b	17(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#4,%d1
+	add.l	%d1,%d0			/* d0 = H_v */
+
+	move.l	%d0,%d1
+	muls.l	#34,%d1
+	add.l	#32,%d1
+	asr.l	#6,%d1
+	move.l	%d1,%d6			/* d6 = b_v */
+
+	clr.l	%d1
+	move.b	7(%a2),%d1
+	clr.l	%d2
+	move.b	11(%a2),%d2
+	sub.l	%d2,%d1
+	move.l	%d1,%d0			/* V_v, c=0 term */
+
+	clr.l	%d1
+	move.b	5(%a2),%d1
+	clr.l	%d2
+	move.b	13(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#2,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	3(%a2),%d1
+	clr.l	%d2
+	move.b	15(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#3,%d1
+	add.l	%d1,%d0
+
+	clr.l	%d1
+	move.b	1(%a2),%d1
+	clr.l	%d2
+	move.b	17(%a2),%d2
+	sub.l	%d2,%d1
+	muls.l	#4,%d1
+	add.l	%d1,%d0			/* d0 = V_v */
+
+	move.l	%d0,%d1
+	muls.l	#34,%d1
+	add.l	#32,%d1
+	asr.l	#6,%d1
+	move.l	%d1,%d7			/* d7 = c_v */
+
+	clr.l	%d5
+	move.b	33(%a2),%d5		/* top_v[7] = S[33] */
+	clr.l	%d1
+	move.b	1(%a2),%d1		/* left_v[-7] = S[1] */
+	add.l	%d1,%d5
+	lsl.l	#4,%d5			/* d5 = a_v */
+
+	move.l	%d7,%d1
+	asl.l	#2,%d1
+	sub.l	%d1,%d5
+	add.l	#16,%d5
+	move.l	%d5,%d0			/* tmp = a_v - 4*c_v + 16 */
+
+	moveq	#8,%d4
+.Lcp_row_v:
+	add.l	%d7,%d0
+	move.l	%d6,%d1
+	asl.l	#2,%d1
+	neg.l	%d1
+
+	moveq	#8,%d2
+.Lcp_col_v:
+	add.l	%d6,%d1
+	move.l	%d0,%d5
+	add.l	%d1,%d5
+	asr.l	#5,%d5
+	bmi.s	.Lcp_v_clip_lo
+	cmp.l	#255,%d5
+	ble.s	.Lcp_v_store
+	move.l	#255,%d5
+	bra.s	.Lcp_v_store
+.Lcp_v_clip_lo:
+	moveq	#0,%d5
+.Lcp_v_store:
+	move.b	%d5,(%a3)
+	adda.l	#2,%a3
+	subq.l	#1,%d2
+	bne.s	.Lcp_col_v
+
+	suba.l	#16,%a3
+	adda.l	%d3,%a3
+	subq.l	#1,%d4
+	bne	.Lcp_row_v
+
+	movem.l	(%sp)+,%d2-%d7/%a2-%a3
+	rts
+
 #endif /* MR_M68K_ASM */
 
 #if defined(__ELF__)

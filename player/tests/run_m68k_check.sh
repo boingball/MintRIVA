@@ -133,6 +133,9 @@ $CC -o "$BUILD/mr_h264_recon8x8_check.m68k" tests/mr_h264_recon8x8_check.c $LIBA
 echo "== building mr_h264_intra8x8_check.m68k (real luma 8x8 intra pred modes + ref filtering vs asm) =="
 $CC -o "$BUILD/mr_h264_intra8x8_check.m68k" tests/mr_h264_intra8x8_check.c $LIBAVC_SRC
 
+echo "== building mr_h264_intra_chroma_check.m68k (real chroma_8x8 intra pred modes vs asm) =="
+$CC -o "$BUILD/mr_h264_intra_chroma_check.m68k" tests/mr_h264_intra_chroma_check.c $LIBAVC_SRC
+
 echo "== building mr_yuv_check.m68k =="
 $CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c \
     core/mr_yuv_m68k.S
@@ -168,6 +171,7 @@ run "$BUILD/mr_h264_cabac_coeff_check.m68k"
 run "$BUILD/mr_h264_mvpred_dispatch_check.m68k"
 run "$BUILD/mr_h264_recon8x8_check.m68k"
 run "$BUILD/mr_h264_intra8x8_check.m68k"
+run "$BUILD/mr_h264_intra_chroma_check.m68k"
 run "$BUILD/mr_yuv_check.m68k"
 run "$BUILD/mr_scale_check.m68k"
 run "$BUILD/mr_c2p_check.m68k"

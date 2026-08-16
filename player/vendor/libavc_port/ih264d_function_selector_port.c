@@ -90,6 +90,11 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_intra_pred_luma_8x8_horz_u_m68k;
     codec->pf_intra_pred_ref_filtering =
         mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k;
+    codec->apf_intra_pred_chroma[0] = mr_ih264_intra_pred_chroma_8x8_vert_m68k;
+    codec->apf_intra_pred_chroma[1] = mr_ih264_intra_pred_chroma_8x8_horz_m68k;
+    codec->apf_intra_pred_chroma[2] = mr_ih264_intra_pred_chroma_8x8_dc_m68k;
+    codec->apf_intra_pred_chroma[3] =
+        mr_ih264_intra_pred_chroma_8x8_plane_m68k;
     codec->pf_deblk_luma_vert_bs4 = mr_ih264_deblk_luma_vert_bs4_m68k;
     codec->pf_deblk_luma_horz_bs4 = mr_ih264_deblk_luma_horz_bs4_m68k;
     codec->pf_deblk_luma_vert_bslt4 = mr_ih264_deblk_luma_vert_bslt4_m68k;
