@@ -263,6 +263,79 @@ void mr_ih264_intra_pred_luma_4x4_dc_m68k(
     store_u32(dst + 3 * dst_stride, bval);
 }
 
+/* H.264 8.3.2.2.2/8.3.2.2.3/8.3.2.2.4 - luma 8x8 vert/horz/dc, the same
+ * three broadcast shapes as the 16x16/4x4 versions above, two store_u32
+ * calls per row since the block is 8 bytes wide. The other six 8x8 modes
+ * (diag_dl/diag_dr/vert_r/horz_d/vert_l/horz_u) and the mandatory
+ * reference-sample filtering step are genuine multi-tap FILT121/FILT11
+ * shuffles with no 4-bytes-at-once opportunity - those are real hand asm,
+ * see ih264_m68k_intra_pred.S. */
+void mr_ih264_intra_pred_luma_8x8_vert_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *top = src + 8 + 1;
+    uint32_t a = load_u32(top), b = load_u32(top + 4);
+    WORD32 y;
+    (void)src_stride;
+    (void)neighbour_available;
+    for(y = 0; y < 8; y++)
+    {
+        store_u32(dst, a); store_u32(dst + 4, b);
+        dst += dst_stride;
+    }
+}
+
+void mr_ih264_intra_pred_luma_8x8_horz_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *left = src + 8 - 1;
+    WORD32 y;
+    (void)src_stride;
+    (void)neighbour_available;
+    for(y = 0; y < 8; y++)
+    {
+        uint32_t value = (uint32_t)*left-- * UINT32_C(0x01010101);
+        store_u32(dst, value); store_u32(dst + 4, value);
+        dst += dst_stride;
+    }
+}
+
+void mr_ih264_intra_pred_luma_8x8_dc_m68k(
+    UWORD8 *src, UWORD8 *dst, WORD32 src_stride, WORD32 dst_stride,
+    WORD32 neighbour_available)
+{
+    const UWORD8 *top = src + 8 + 1;
+    const UWORD8 *left = src + 8 - 1;
+    WORD32 use_left = neighbour_available & 0x01;
+    WORD32 use_top = (neighbour_available >> 2) & 0x01;
+    WORD32 val = 0;
+    WORD32 y;
+    uint32_t bval;
+    (void)src_stride;
+
+    if(use_left)
+    {
+        for(y = 0; y < 8; y++) val += left[-y];
+        val += 4;
+    }
+    if(use_top)
+    {
+        for(y = 0; y < 8; y++) val += top[y];
+        val += 4;
+    }
+    /* Since 4 is added if either left/top pred is there, val still being
+     * zero implies both preds are unavailable. */
+    val = val ? (val >> (2 + use_left + use_top)) : 128;
+
+    bval = (uint32_t)val * UINT32_C(0x01010101);
+    for(y = 0; y < 8; y++)
+    {
+        store_u32(dst, bval); store_u32(dst + 4, bval);
+        dst += dst_stride;
+    }
+}
 /* H.264 8.3.4 chroma_8x8 vert/horz/dc - Ittiam's chroma functions take one
  * pu1_src laid out with interleaved U/V samples (ih264_chroma_intra_pred_
  * filters.c): pu1_top = pu1_src+18 (2*BLK8x8SIZE+2), pu1_left = pu1_src+14
