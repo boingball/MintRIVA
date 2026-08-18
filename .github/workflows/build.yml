@@ -153,6 +153,10 @@ jobs:
                 AMIGA_ROOT="$AMIGA_ROOT" \
                 SSL=1 SSLCERTS=1
             '
+      
+      - name: Fix release directory permissions
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" player/release
 
       - name: Confirm the release sets were produced
         shell: bash
