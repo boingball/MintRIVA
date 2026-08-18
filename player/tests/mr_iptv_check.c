@@ -374,6 +374,34 @@ int main(void) {
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "Native planar / kalms / Lace on / 2x on"));
       assert(strstr(summary, "H264 Fast"));
+
+      parsed.h264_performance = MR_H264_PERF_TURBO;
+      assert(mr_build_player_arguments(first, sizeof(first), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(first, "--h264-speed=turbo"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "H264 Turbo"));
+
+      parsed.h264_performance = MR_H264_PERF_TURBO_PLUS;
+      assert(mr_build_player_arguments(first, sizeof(first), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(first, "--h264-speed=turbo+"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "H264 Turbo+"));
+
+      {
+        char *turbo_args[] = {"iptvgui", "--h264-speed=turbo"};
+        char *turbo_plus_args[] = {"iptvgui", "--h264-speed=turbo+"};
+        mr_play_options turbo_parsed;
+        mr_play_options_default(&turbo_parsed);
+        assert(mr_play_options_parse(&turbo_parsed, 2, turbo_args, error,
+                                     sizeof(error)));
+        assert(turbo_parsed.h264_performance == MR_H264_PERF_TURBO);
+        mr_play_options_default(&turbo_parsed);
+        assert(mr_play_options_parse(&turbo_parsed, 2, turbo_plus_args, error,
+                                     sizeof(error)));
+        assert(turbo_parsed.h264_performance == MR_H264_PERF_TURBO_PLUS);
+      }
     }
     {
       char *inherited[] = {"iptvgui", "--display", "p96"};

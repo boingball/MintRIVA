@@ -38,7 +38,7 @@ static void reference_convert(uint8_t *dst, int dst_stride,
                               const uint8_t *yp, int ys,
                               const uint8_t *up, int us,
                               const uint8_t *vp, int vs,
-                              int width, int height)
+                              int width, int height, int bgr)
 {
     int y;
     for (y = 0; y < height; y++) {
@@ -51,11 +51,14 @@ static void reference_convert(uint8_t *dst, int dst_stride,
             int c = (int)yr[x] - 16;
             int d = (int)ur[x >> 1] - 128;
             int e = (int)vr[x >> 1] - 128;
+            uint8_t r, g, b;
             if (c < 0) c = 0;
-            out[x * 3 + 0] = reference_clip((298 * c + 409 * e + 128) >> 8);
-            out[x * 3 + 1] = reference_clip(
-                (298 * c - 100 * d - 208 * e + 128) >> 8);
-            out[x * 3 + 2] = reference_clip((298 * c + 516 * d + 128) >> 8);
+            r = reference_clip((298 * c + 409 * e + 128) >> 8);
+            g = reference_clip((298 * c - 100 * d - 208 * e + 128) >> 8);
+            b = reference_clip((298 * c + 516 * d + 128) >> 8);
+            out[x * 3 + 0] = bgr ? b : r;
+            out[x * 3 + 1] = g;
+            out[x * 3 + 2] = bgr ? r : b;
         }
     }
 }
@@ -83,11 +86,21 @@ static int run_case(int width, int height, unsigned seed)
     for (i = 0; i < cn; i++) vp[i] = (uint8_t)(next_value(&seed) >> 24);
     memset(expected, 0xa5, dn);
     memset(actual, 0xa5, dn);
-    reference_convert(expected, ds, yp, ys, up, cs, vp, cs, width, height);
+    reference_convert(expected, ds, yp, ys, up, cs, vp, cs, width, height, 0);
     mr_yuv420_to_rgb24(actual, ds, yp, ys, up, cs, vp, cs, width, height,
                        NULL, NULL);
     ok = memcmp(expected, actual, dn) == 0;
-    if (!ok) fprintf(stderr, "YUV mismatch at %dx%d\n", width, height);
+    if (!ok) fprintf(stderr, "YUV RGB mismatch at %dx%d\n", width, height);
+    if (ok) {
+        memset(expected, 0xa5, dn);
+        memset(actual, 0xa5, dn);
+        reference_convert(expected, ds, yp, ys, up, cs, vp, cs,
+                          width, height, 1);
+        mr_yuv420_to_bgr24(actual, ds, yp, ys, up, cs, vp, cs,
+                           width, height, NULL, NULL);
+        ok = memcmp(expected, actual, dn) == 0;
+        if (!ok) fprintf(stderr, "YUV BGR mismatch at %dx%d\n", width, height);
+    }
     free(yp); free(up); free(vp); free(expected); free(actual);
     return ok;
 }
@@ -142,7 +155,7 @@ static void check_yuv_service_clobber(void)
     memset(expected, 0xa5, sizeof expected);
     memset(actual, 0xa5, sizeof actual);
 
-    reference_convert(expected, ds, yp, ys, up, cs, vp, cs, W, H);
+    reference_convert(expected, ds, yp, ys, up, cs, vp, cs, W, H, 0);
     mr_yuv420_to_rgb24_m68k(actual, ds, yp, ys, up, cs, vp, cs, W, H,
                             clobbering_service, &services,
                             luma_x298, e_x409, d_xm100, e_xm208, d_x516);

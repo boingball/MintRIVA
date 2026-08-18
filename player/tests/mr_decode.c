@@ -147,7 +147,10 @@ int main(int argc, char **argv)
             const char *speed = argv[argi] + 13;
             h264_speed = !strcmp(speed, "quality") ? MR_H264_SPEED_QUALITY :
                          !strcmp(speed, "balanced") ? MR_H264_SPEED_BALANCED :
-                         !strcmp(speed, "fast") ? MR_H264_SPEED_FAST : -2;
+                         !strcmp(speed, "fast") ? MR_H264_SPEED_FAST :
+                         !strcmp(speed, "turbo") ? MR_H264_SPEED_TURBO :
+                         (!strcmp(speed, "turbo+") || !strcmp(speed, "turbo-plus"))
+                             ? MR_H264_SPEED_TURBO_PLUS : -2;
             if (h264_speed < 0) {
                 fprintf(stderr, "invalid H.264 speed mode\n");
                 return 2;
@@ -289,7 +292,8 @@ int main(int argc, char **argv)
              * converting through AVCC first. */
             mr_h264_set_input_annexb(&dec, pkt.is_annexb);
             ds = mr_decoder_decode(&dec, pkt.data, pkt.len);
-            if (ds == MR_EAGAIN) continue;   /* reorder delay: no frame yet   */
+            if (ds == MR_EAGAIN || ds == MR_SKIPPED)
+                continue;                    /* reorder delay / Turbo drop    */
             if (ds != MR_OK) {
                 fprintf(stderr, "decode error at frame %d\n", frame); break;
             }

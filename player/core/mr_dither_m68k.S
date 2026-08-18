@@ -1,5 +1,5 @@
 /*
- * MintVID - hand-tuned m68k RGB24 -> 8-bit palette dither (4 pixels at a
+ * MintVID - hand-tuned m68k RGB24 -> indexed palette dither (4 pixels at a
  * time, matching the 4x4 Bayer pattern's period).
  *
  * mr_dither_rgb8_m68k() implements the exact same contract as the portable
@@ -7,8 +7,8 @@
  * threshold from the 4x4 Bayer matrix (cyclic in both x and y with period
  * 4), then sum three precomputed per-threshold/per-channel LUT bytes
  * (lut_r[t][r] + lut_g[t][g] + lut_b[t][b] - see that file's build_lut()
- * for how those tables fold the threshold offset, 6x6x6 cube quantisation
- * and channel weighting into a single byte each, so this hot loop is nothing
+ * for how those tables fold the threshold offset, selected 4/5/8-plane cube
+ * quantisation and channel weighting into a single byte each, so this loop is
  * but loads and adds, no per-pixel multiply/divide).
  *
  * What this buys over `gcc -O2 -m68030` on the portable C: GCC re-derives

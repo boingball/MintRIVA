@@ -27,7 +27,9 @@ typedef struct mr_h264_timing {
 typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_QUALITY = 0,
     MR_H264_SPEED_BALANCED,
-    MR_H264_SPEED_FAST
+    MR_H264_SPEED_FAST,
+    MR_H264_SPEED_TURBO,
+    MR_H264_SPEED_TURBO_PLUS
 } mr_h264_speed_mode;
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
 void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
@@ -44,7 +46,8 @@ void mr_h264_set_skip_output(mr_decoder *dec, int skip);
  * MR_PIX_YUV420P (dec->frame.data/stride = Y, u_data/u_stride = Cb,
  * v_data/v_stride = Cr) instead of MR_PIX_RGB24 - no RGB24 buffer is
  * allocated or written. For a caller (e.g. an AGA direct-to-indexed
- * dither path) that wants the raw decoded planes instead of an RGB24
+ * dither path, or an RTG player converting directly into its retained queue
+ * slot) that wants the raw decoded planes instead of a decoder-owned RGB24
  * intermediate. See core/mr_yuv_dither.h for a fused YUV420P -> 8-bit
  * indexed conversion matching mr_yuv420_to_rgb24() + a nearest-neighbour
  * resize + mr_dither_rgb8() bit-exactly, without either intermediate
@@ -64,7 +67,11 @@ int mr_h264_output_pts(mr_decoder *dec, uint64_t *pts_us);
 void mr_h264_set_input_annexb(mr_decoder *dec, int is_annexb);
 /* Select libavc's quality/performance trade-off. Balanced only degrades
  * non-reference pictures; Fast applies cheaper filtering to all non-key
- * pictures. Returns non-zero when the decoder accepted the control call. */
+ * pictures. Turbo keeps Fast's degrade policy and asks libavc to skip B
+ * pictures; Turbo+ asks it to skip both P and B pictures. Turbo+ is the
+ * deliberately aggressive option: depending on the stream's reference
+ * structure it may be visibly much choppier than Turbo. Returns non-zero
+ * when the decoder accepted both the degrade and frame-skip controls. */
 int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode);
 
 #endif /* MR_H264_H */

@@ -368,7 +368,8 @@ static mr_status avcc_sample_to_annexb(h264_state *s,
 }
 
 static IV_API_CALL_STATUS_T set_decode_mode(h264_state *s,
-                                            IVD_VIDEO_DECODE_MODE_T mode)
+                                            IVD_VIDEO_DECODE_MODE_T mode,
+                                            IVD_FRAME_SKIP_MODE_T skip_mode)
 {
     ih264d_ctl_set_config_ip_t in;
     ih264d_ctl_set_config_op_t out;
@@ -379,7 +380,7 @@ static IV_API_CALL_STATUS_T set_decode_mode(h264_state *s,
     in.s_ivd_ctl_set_config_ip_t.e_sub_cmd = IVD_CMD_CTL_SETPARAMS;
     in.s_ivd_ctl_set_config_ip_t.e_vid_dec_mode = mode;
     in.s_ivd_ctl_set_config_ip_t.u4_disp_wd = 0;
-    in.s_ivd_ctl_set_config_ip_t.e_frm_skip_mode = IVD_SKIP_NONE;
+    in.s_ivd_ctl_set_config_ip_t.e_frm_skip_mode = skip_mode;
     in.s_ivd_ctl_set_config_ip_t.e_frm_out_mode = IVD_DISPLAY_FRAME_OUT;
     out.s_ivd_ctl_set_config_op_t.u4_size = sizeof out;
     return ih264d_api_function(s->handle, &in, &out);
@@ -560,7 +561,7 @@ static mr_status h264_open(mr_decoder *dec)
     if (ih264d_api_function(s->handle, &cores_in, &cores_out) != IV_SUCCESS)
         goto bad_format;
 
-    if (set_decode_mode(s, IVD_DECODE_HEADER) != IV_SUCCESS)
+    if (set_decode_mode(s, IVD_DECODE_HEADER, IVD_SKIP_NONE) != IV_SUCCESS)
         goto bad_format;
     if (avcc_config_to_annexb(s, dec->config, dec->config_len,
                               &cfg_len) != MR_OK)
@@ -597,7 +598,7 @@ static mr_status h264_open(mr_decoder *dec)
         s->out[i] = (uint8_t *)malloc(s->out_size[i]);
         if (!s->out[i]) goto no_memory;
     }
-    if (set_decode_mode(s, IVD_DECODE_FRAME) != IV_SUCCESS)
+    if (set_decode_mode(s, IVD_DECODE_FRAME, IVD_SKIP_NONE) != IV_SUCCESS)
         goto bad_format;
 
     dec->frame.width = dec->width;
@@ -629,6 +630,7 @@ static mr_status h264_decode(mr_decoder *dec,
     mr_status captured_status = MR_EAGAIN;
     mr_status decode_failure = MR_OK;
     int output_captured = 0;
+    int intentional_skip = 0;
     clock_t input_mark;
     clock_t au_mark;
 
@@ -756,6 +758,23 @@ static mr_status h264_decode(mr_decoder *dec,
 
             if (r != IV_SUCCESS) {
                 uint32_t error = sub_out.s_ivd_video_decode_op_t.u4_error_code;
+
+                /*
+                 * Restored libavc Turbo modes intentionally return IV_FAIL
+                 * with IVD_DEC_FRM_SKIPPED.  That is flow control, not a bad
+                 * bitstream: advance by the bytes the decoder consumed and
+                 * let the next sub-call start at the picture boundary it
+                 * handed back to us.
+                 */
+                if ((error & IVD_ERROR_MASK) == IVD_DEC_FRM_SKIPPED) {
+                    intentional_skip = 1;
+                    if (!used || used > annexb_len - off)
+                        break;
+                    off += used;
+                    if (s->service) s->service(s->service_opaque);
+                    continue;
+                }
+
                 ret = r;
                 /* Hardware caught 0x0000402b at 1080p: fatal plus
                  * IVD_MEM_ALLOC_FAILED. Preserve that distinction so mrplay can
@@ -780,6 +799,8 @@ static mr_status h264_decode(mr_decoder *dec,
         return decode_failure;
     if (output_captured)
         return captured_status;
+    if (intentional_skip)
+        return MR_SKIPPED;
     return ret == IV_SUCCESS ? MR_EAGAIN : MR_EFORMAT;
 }
 
@@ -809,8 +830,9 @@ void mr_h264_set_timing_enabled(mr_decoder *dec, int enabled)
  * opts in, in which case it hands back libavc's own Y/Cb/Cr display-buffer
  * pointers directly (dec->frame.fmt = MR_PIX_YUV420P) and skips both the
  * RGB24 allocation and mr_yuv420_to_rgb24() call entirely - for a consumer
- * (e.g. the AGA backend's direct-to-indexed dither) that wants the raw
- * planes instead of an RGB24 intermediate. Those pointers are borrowed from
+ * (e.g. the AGA direct-to-indexed dither or mrplay's direct-to-RTG-queue
+ * conversion) that wants the raw planes instead of an RGB24 intermediate.
+ * Those pointers are borrowed from
  * libavc's own display picture buffer, exactly like the RGB path already
  * borrows them for the synchronous conversion call - valid until the next
  * decode, same lifetime mr_frame's own contract already documents. */
@@ -904,6 +926,7 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
     h264_state *s;
     ih264d_ctl_degrade_ip_t in;
     ih264d_ctl_degrade_op_t out;
+    IVD_FRAME_SKIP_MODE_T skip_mode = IVD_SKIP_NONE;
     if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return 0;
     s = (h264_state *)dec->priv;
     memset(&in, 0, sizeof in);
@@ -919,6 +942,18 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
         in.i4_degrade_type = (1 << 1) | (1 << 2);
         in.i4_degrade_pics = 1;
         break;
+    case MR_H264_SPEED_TURBO:
+        /* Fast's cheap filtering plus decoder-level B-picture skipping. */
+        skip_mode = IVD_SKIP_B;
+        in.i4_degrade_type = (1 << 1) | (1 << 3);
+        in.i4_degrade_pics = 3;
+        break;
+    case MR_H264_SPEED_TURBO_PLUS:
+        /* Deliberately aggressive: ask libavc to skip both P and B pictures. */
+        skip_mode = IVD_SKIP_PB;
+        in.i4_degrade_type = (1 << 1) | (1 << 3);
+        in.i4_degrade_pics = 3;
+        break;
     case MR_H264_SPEED_FAST:
         /* Keep keyframes pristine; favour throughput everywhere else. */
         in.i4_degrade_type = (1 << 1) | (1 << 3);
@@ -930,7 +965,15 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
         break;
     }
     out.u4_size = sizeof out;
-    return ih264d_api_function(s->handle, &in, &out) == IV_SUCCESS;
+    if (ih264d_api_function(s->handle, &in, &out) != IV_SUCCESS)
+        return 0;
+
+    /*
+     * The vendored libavc frame-skip API is restored by the companion
+     * submodule patch. Use SETPARAMS again so the decoder owns all picture
+     * boundary bookkeeping rather than reaching into dec_struct_t here.
+     */
+    return set_decode_mode(s, IVD_DECODE_FRAME, skip_mode) == IV_SUCCESS;
 }
 
 static mr_status h264_flush(mr_decoder *dec)

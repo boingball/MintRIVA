@@ -17,6 +17,7 @@ typedef int32_t mr_status;
 #define MR_EFORMAT      (-3)   /* container/stream malformed                */
 #define MR_EUNSUPPORTED (-4)   /* recognised but not (yet) handled          */
 #define MR_EAGAIN       (-5)   /* need more data / no output this call       */
+#define MR_SKIPPED      (-6)   /* input consumed; frame deliberately omitted */
 
 /* Big-endian helpers are provided so the core never depends on host byte
  * order (m68k is big-endian; AVI/RIFF payloads are little-endian). */

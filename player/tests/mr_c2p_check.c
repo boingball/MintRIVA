@@ -64,7 +64,7 @@ static int check_case(int nplanes, int width, int height, int dirty_y0,
 
 int main(void)
 {
-    static const int planecounts[] = { 5, 6, 8 };
+    static const int planecounts[] = { 4, 5, 6, 8 };
     int iteration, width, p;
     for (iteration = 0; iteration < 200; iteration++) {
         for (width = 32; width <= 160; width += 32) {

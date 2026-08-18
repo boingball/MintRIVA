@@ -128,73 +128,115 @@ static int p96_close_private_screen(struct Screen **screen, const char *reason)
 {
     int attempt;
     if (!screen || !*screen) return 1;
-    for (attempt = 0; attempt < 3; attempt++) {
+
+    WaitBlit();
+    for (attempt = 0; attempt < 50; attempt++) {
         if (CloseScreen(*screen)) {
             *screen = NULL;
+            if (attempt > 0)
+                printf("p96-fullscreen: private screen closed after %d "
+                       "VBlank(s) (%s)\n", attempt,
+                       reason ? reason : "unknown");
             return 1;
         }
         WaitTOF();
     }
     ScreenToBack(*screen);
-    printf("p96-fullscreen: private screen close deferred (%s)\n",
-           reason ? reason : "unknown");
+    printf("p96-fullscreen: WARNING private screen still busy after "
+           "50 VBlanks (%s)\n", reason ? reason : "unknown");
     return 0;
 }
 
-static struct Screen *p96_open_private_screen(p96_state *s, const char *title)
+/*
+ * Pick the smallest available 24-bit CyberGraphX mode which can contain the
+ * source at 1:1.  P96's direct-write path is most valuable when it does not
+ * also spend 30-50 ms scaling every frame just because Workbench happens to
+ * be 1024x768.
+ *
+ * The first request is the exact source size.  The common-mode probes make
+ * the choice deterministic on boards/drivers whose BestCModeIDTags() rounds
+ * an unusual video size (for example 854x480) down to 800x600: a containing
+ * 1024x768 mode is preferred to shrinking the video.
+ */
+static ULONG p96_mode_for_source(int source_w, int source_h, ULONG *depth_out)
 {
-    /* Unlike display_cgx.c (which picks the lowest depth that still shows the
-     * picture, since WritePixelArray converts for it), this backend only
-     * knows how to write fixed 24-bit BGR - a private screen opened at any
-     * other depth would make bitmap_format_ok() correctly refuse to draw,
-     * dropping every frame (audio keeps running, screen just goes black).
-     * That's exactly what happened before this fix: a card offering 16-bit
-     * modes had them picked first. Only 24-bit is a candidate here. */
-    static const ULONG depths[] = { 24 };
-    struct Screen *public_screen;
-    struct Screen *scr = NULL;
-    ULONG best_modeid = (ULONG)INVALID_ID;
-    ULONG best_depth = 0;
-    ULONG best_score = ~0UL;
-    int target_w = s->source_w;
-    int target_h = s->source_h;
+    static const UWORD common_modes[][2] = {
+        { 320, 240 }, { 640, 400 }, { 640, 480 }, { 720, 480 },
+        { 800, 600 }, { 1024, 768 }, { 1152, 864 },
+        { 1280, 720 }, { 1280, 1024 }, { 1600, 900 },
+        { 1600, 1200 }, { 1920, 1080 }
+    };
+    ULONG best_fit = (ULONG)INVALID_ID;
+    ULONG best_any = (ULONG)INVALID_ID;
+    ULONG best_fit_area = ~0UL;
+    ULONG best_fit_delta = ~0UL;
+    ULONG best_any_delta = ~0UL;
+    ULONG best_fit_depth = 0;
+    ULONG best_any_depth = 0;
     unsigned i;
 
-    public_screen = LockPubScreen(NULL);
-    if (public_screen) {
-        if (public_screen->Width > 0 && public_screen->Height > 0) {
-            target_w = public_screen->Width;
-            target_h = public_screen->Height;
-        }
-        UnlockPubScreen(NULL, public_screen);
-    }
+    for (i = 0; i <= sizeof common_modes / sizeof common_modes[0]; i++) {
+        int request_w = i ? (int)common_modes[i - 1][0] : source_w;
+        int request_h = i ? (int)common_modes[i - 1][1] : source_h;
+        ULONG modeid, mode_w, mode_h, mode_depth, delta;
 
-    for (i = 0; i < sizeof depths / sizeof depths[0]; i++) {
-        ULONG modeid = BestCModeIDTags(
-            CYBRBIDTG_NominalWidth, (ULONG)target_w,
-            CYBRBIDTG_NominalHeight, (ULONG)target_h,
-            CYBRBIDTG_Depth, depths[i],
+        modeid = BestCModeIDTags(
+            CYBRBIDTG_NominalWidth, (ULONG)request_w,
+            CYBRBIDTG_NominalHeight, (ULONG)request_h,
+            CYBRBIDTG_Depth, 24,
             TAG_END);
-        ULONG mode_w, mode_h, mode_depth, score;
         if (modeid == (ULONG)INVALID_ID || !IsCyberModeID(modeid))
             continue;
+
         mode_w = GetCyberIDAttr(CYBRIDATTR_WIDTH, modeid);
         mode_h = GetCyberIDAttr(CYBRIDATTR_HEIGHT, modeid);
         mode_depth = GetCyberIDAttr(CYBRIDATTR_DEPTH, modeid);
         if (!mode_w || !mode_h || mode_w == ~0UL || mode_h == ~0UL ||
-            mode_depth <= 8 || mode_depth == ~0UL)
+            mode_depth != 24)
             continue;
-        score = (ULONG)((int)mode_w >= target_w ? (int)mode_w - target_w
-                                                     : target_w - (int)mode_w) +
-                (ULONG)((int)mode_h >= target_h ? (int)mode_h - target_h
-                                                     : target_h - (int)mode_h);
-        if (score < best_score ||
-            (score == best_score && mode_depth < best_depth)) {
-            best_modeid = modeid;
-            best_depth = mode_depth;
-            best_score = score;
+
+        delta = (ULONG)((int)mode_w >= source_w ? (int)mode_w - source_w
+                                                : source_w - (int)mode_w) +
+                (ULONG)((int)mode_h >= source_h ? (int)mode_h - source_h
+                                                : source_h - (int)mode_h);
+
+        if ((int)mode_w >= source_w && (int)mode_h >= source_h) {
+            ULONG source_area = (ULONG)source_w * (ULONG)source_h;
+            ULONG mode_area = mode_w * mode_h;
+            ULONG excess = mode_area >= source_area ? mode_area - source_area
+                                                     : 0;
+            if (best_fit == (ULONG)INVALID_ID ||
+                excess < best_fit_area ||
+                (excess == best_fit_area && delta < best_fit_delta)) {
+                best_fit = modeid;
+                best_fit_area = excess;
+                best_fit_delta = delta;
+                best_fit_depth = mode_depth;
+            }
+        } else if (best_any == (ULONG)INVALID_ID || delta < best_any_delta) {
+            best_any = modeid;
+            best_any_delta = delta;
+            best_any_depth = mode_depth;
         }
     }
+
+    if (best_fit != (ULONG)INVALID_ID) {
+        if (depth_out) *depth_out = best_fit_depth;
+        return best_fit;
+    }
+    if (depth_out) *depth_out = best_any_depth;
+    return best_any;
+}
+
+static struct Screen *p96_open_private_screen(p96_state *s, const char *title)
+{
+    /* P96 direct writes currently support only packed 24-bit BGR. */
+    struct Screen *scr = NULL;
+    ULONG best_depth = 0;
+    ULONG best_modeid;
+
+    best_modeid = p96_mode_for_source(s->source_w, s->source_h, &best_depth);
+
     if (best_modeid != (ULONG)INVALID_ID)
         scr = OpenScreenTags(NULL,
             SA_DisplayID, best_modeid,
@@ -216,12 +258,12 @@ static struct Screen *p96_open_private_screen(p96_state *s, const char *title)
         scr = NULL;
     }
     if (scr && g_display_want_time)
-        printf("p96-fullscreen private=%dx%d depth=%lu target=%dx%d "
-               "source=%dx%d\n",
+        printf("p96-fullscreen private=%dx%d depth=%lu source=%dx%d "
+               "policy=native-or-downscale\n",
                scr->Width, scr->Height,
                (unsigned long)GetCyberMapAttr(scr->RastPort.BitMap,
                                                CYBRMATTR_DEPTH),
-               target_w, target_h, s->source_w, s->source_h);
+               s->source_w, s->source_h);
     return scr;
 }
 
@@ -284,19 +326,6 @@ static struct Window *p96_open_window(p96_state *s, const char *title,
     return win;
 }
 
-static int p96_default_screen_is_rtg(void)
-{
-    struct Screen *scr = LockPubScreen(NULL);
-    int rtg = 0;
-    if (scr) {
-        ULONG modeid = GetVPModeID(&scr->ViewPort);
-        if (modeid != (ULONG)INVALID_ID && IsCyberModeID(modeid))
-            rtg = 1;
-        UnlockPubScreen(NULL, scr);
-    }
-    return rtg;
-}
-
 /* Only RGBFB_B8G8R8 (packed 24-bit BGR, 3 bytes/pixel) is supported today -
  * see the file header comment. bm may be any live BitMap (public screen or a
  * private one this backend just opened). */
@@ -334,8 +363,15 @@ static void *p96_open(int w, int h, const char *title)
     p96_state *s;
     int win_w = w, win_h = h;
     struct Screen *scr;
-    if (!CyberGfxBase || !P96Base || !p96_default_screen_is_rtg())
-        return NULL;                              /* not RTG -> try CGX/AGA */
+    if (!CyberGfxBase || !P96Base)
+        return NULL;
+
+    /*
+     * A P96 private screen does not require Workbench itself to be an RTG
+     * screen.  The old p96_default_screen_is_rtg() gate needlessly forced
+     * fallback to AGA/CGX on an AGA Workbench even when a P96 mode could be
+     * opened privately.
+     */
 
     /* Fullscreen only - see the file header comment. A direct bitmap lock
      * has no equivalent of the window-clipping WritePixelArray gets for free
@@ -426,14 +462,40 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
 
     old_iw = s->iw;
     old_ih = s->ih;
-    s->bl = s->win->BorderLeft;
-    s->bt = s->win->BorderTop;
-    s->iw = s->win->Width  - s->win->BorderLeft - s->win->BorderRight;
-    s->ih = s->win->Height - s->win->BorderTop  - s->win->BorderBottom;
+
+    /*
+     * On our private screen the direct bitmap lock addresses the whole screen,
+     * not the Intuition window's inner rectangle.  Use every pixel of that
+     * private bitmap; this also avoids losing the screen-bar-sized strip which
+     * previously turned a nominal 640x480 mode into an ~640x466 drawable.
+     */
+    if (s->screen) {
+        s->bl = 0;
+        s->bt = 0;
+        s->iw = s->screen->Width;
+        s->ih = s->screen->Height;
+    } else {
+        s->bl = s->win->BorderLeft;
+        s->bt = s->win->BorderTop;
+        s->iw = s->win->Width  - s->win->BorderLeft - s->win->BorderRight;
+        s->ih = s->win->Height - s->win->BorderTop  - s->win->BorderBottom;
+    }
     if (s->iw < 1) s->iw = 1;
     if (s->ih < 1) s->ih = 1;
 
-    fit = mr_aspect_fit(s->source_w, s->source_h, s->iw, s->ih);
+    /*
+     * Never upscale on the P96 CPU path.  If the source fits, centre it at
+     * exactly 1:1 and let the fast BGR row-copy path handle presentation.
+     * Only videos larger than the available private mode are downscaled.
+     */
+    if (s->source_w <= s->iw && s->source_h <= s->ih) {
+        fit.w = s->source_w;
+        fit.h = s->source_h;
+        fit.x = (s->iw - fit.w) / 2;
+        fit.y = (s->ih - fit.h) / 2;
+    } else {
+        fit = mr_aspect_fit(s->source_w, s->source_h, s->iw, s->ih);
+    }
 
     scale_map_changed = (fit.w != s->cached_dst_w ||
                          fit.h != s->cached_dst_h ||
@@ -447,8 +509,8 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
     if (bm_changed)
         s->format_ok = bitmap_format_ok(bm);
 
-    win_x = s->win->LeftEdge;
-    win_y = s->win->TopEdge;
+    win_x = s->screen ? 0 : s->win->LeftEdge;
+    win_y = s->screen ? 0 : s->win->TopEdge;
     position_changed = s->geometry_valid && !bm_changed &&
                        (win_x != s->win_x || win_y != s->win_y);
     /* Erase the old absolute rect before anything draws at the new one -
@@ -471,8 +533,11 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
     s->cached_bitmap = bm;
     s->geometry_valid = 1;
     if (scale_map_changed || bm_changed) {
-        FillPixelArray(s->win->RPort, (UWORD)s->bl, (UWORD)s->bt,
-                       (UWORD)s->iw, (UWORD)s->ih, 0x00000000UL);
+        if (s->screen && s->format_ok)
+            clear_bgr24_rect(bm, 0, 0, s->iw, s->ih);
+        else
+            FillPixelArray(s->win->RPort, (UWORD)s->bl, (UWORD)s->bt,
+                           (UWORD)s->iw, (UWORD)s->ih, 0x00000000UL);
         s->force_full_redraw = 1;
     }
     /* Only the delta rows since last frame get redrawn otherwise (the caller
@@ -550,15 +615,14 @@ static void clear_bgr24_rect(struct BitMap *bm, int x, int y, int w, int h)
     p96UnlockBitMap(bm, lock);
 }
 
-/* Lock the live bitmap, write `rows` of RGB24 `src` (R,G,B byte order - the
- * player's universal internal format) into it starting at (dst_x, dst_y) as
- * BGR24, unlock. Never holds the lock across a service() call - see the file
- * header comment. Returns 0 (and leaves the frame undrawn for this strip) if
- * the lock could not be taken; the caller treats that like any other dropped
- * strip, not a fatal error. */
+/* Lock the live bitmap and write `rows` into native BGR24 screen memory.
+ * RGB callers retain the old per-pixel R/B shuffle. A caller that already
+ * supplies BGR24 (the H.264 direct-YUV queue path) takes the row memcpy route,
+ * eliminating that complete channel-shuffle pass. Never holds the bitmap lock
+ * across a service() call - see the file header comment. */
 static int write_bgr24_strip(struct BitMap *bm, int dst_x, int dst_y,
                              const unsigned char *src, int src_stride,
-                             int w, int rows)
+                             int w, int rows, int src_is_bgr)
 {
     struct RenderInfo ri;
     LONG lock;
@@ -575,11 +639,15 @@ static int write_bgr24_strip(struct BitMap *bm, int dst_x, int dst_y,
     for (y = 0; y < rows; y++) {
         const unsigned char *srow = src + (size_t)y * (size_t)src_stride;
         unsigned char *drow = base + (size_t)y * (size_t)bpr;
-        int x;
-        for (x = 0; x < w; x++) {
-            drow[x * 3 + 0] = srow[x * 3 + 2]; /* B */
-            drow[x * 3 + 1] = srow[x * 3 + 1]; /* G */
-            drow[x * 3 + 2] = srow[x * 3 + 0]; /* R */
+        if (src_is_bgr) {
+            memcpy(drow, srow, (size_t)w * 3u);
+        } else {
+            int x;
+            for (x = 0; x < w; x++) {
+                drow[x * 3 + 0] = srow[x * 3 + 2]; /* B */
+                drow[x * 3 + 1] = srow[x * 3 + 1]; /* G */
+                drow[x * 3 + 2] = srow[x * 3 + 0]; /* R */
+            }
         }
     }
 
@@ -587,17 +655,20 @@ static int write_bgr24_strip(struct BitMap *bm, int dst_x, int dst_y,
     return 1;
 }
 
-static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
-                     int stride, int dy0, int dy1,
-                     mr_display_service_fn service, void *service_opaque)
+static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
+                            int stride, int dy0, int dy1, int src_is_bgr,
+                            mr_display_service_fn service, void *service_opaque)
 {
     p96_state *s = (p96_state *)h;
-    clock_t total, mark;
-    int native;
+    clock_t total = 0, mark = 0;
+    int native, timing;
     struct BitMap *bm;
     if (!s || !s->win) return;
-    memset(&s->timing, 0, sizeof s->timing);
-    total = mark = clock();
+    timing = g_display_want_time;
+    if (timing) {
+        memset(&s->timing, 0, sizeof s->timing);
+        total = mark = clock();
+    }
     {
         struct BitMap *cur_bm = s->win->RPort->BitMap;
         int moved = s->win->LeftEdge != s->win_x || s->win->TopEdge != s->win_y;
@@ -612,8 +683,11 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
                                  cur_bm != s->cached_bitmap ? "bitmap-change" :
                                  moved ? "moved" : "resize");
     }
-    s->timing.resize_us = elapsed_us(mark);
-    report_slow("resize-handling", s->timing.resize_us, service, service_opaque);
+    if (timing) {
+        s->timing.resize_us = elapsed_us(mark);
+        report_slow("resize-handling", s->timing.resize_us,
+                    service, service_opaque);
+    }
 
     if (!s->format_ok) {
         /* The live bitmap stopped being 24-bit BGR (e.g. a screen-mode
@@ -627,7 +701,7 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
         return;
     }
 
-    mark = clock();
+    if (timing) mark = clock();
     if (s->force_full_redraw) {
         dy0 = 0;
         dy1 = hh;
@@ -636,22 +710,30 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
     if (dy0 < 0) dy0 = 0;
     if (dy1 > hh) dy1 = hh;
     if (dy1 <= dy0) return;
-    s->timing.clip_us = elapsed_us(mark);
-    report_slow("clipping-setup", s->timing.clip_us, service, service_opaque);
-    mark = clock();
-    s->timing.src_w = w; s->timing.src_h = hh;
-    s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
-    s->timing.src_format = "RGB24"; s->timing.dst_format = "BGR24";
+    if (timing) {
+        s->timing.clip_us = elapsed_us(mark);
+        report_slow("clipping-setup", s->timing.clip_us,
+                    service, service_opaque);
+        mark = clock();
+    }
+    if (timing) {
+        s->timing.src_w = w; s->timing.src_h = hh;
+        s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
+        s->timing.src_format = src_is_bgr ? "BGR24" : "RGB24";
+        s->timing.dst_format = "BGR24";
+    }
     native = s->dw == w && s->dh == hh;
-    s->timing.geometry_us = elapsed_us(mark);
-    report_slow("geometry-format-setup", s->timing.geometry_us,
-                service, service_opaque);
+    if (timing) {
+        s->timing.geometry_us = elapsed_us(mark);
+        report_slow("geometry-format-setup", s->timing.geometry_us,
+                    service, service_opaque);
+    }
 
     bm = s->win->RPort->BitMap;
 
     if (!native) {
         int y;
-        mark = clock();
+        if (timing) mark = clock();
         if (service) service(service_opaque);
         if (!ensure_scaled(s, s->dw)) {
             if (service) service(service_opaque);
@@ -663,50 +745,61 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
             return;
         }
         if (service) service(service_opaque);
-        s->timing.allocation_us = elapsed_us(mark);
-        report_slow("destination-buffer-allocation", s->timing.allocation_us,
-                    service, service_opaque);
+        if (timing) {
+            s->timing.allocation_us = elapsed_us(mark);
+            report_slow("destination-buffer-allocation",
+                        s->timing.allocation_us, service, service_opaque);
+        }
 
-        s->timing.prepare_us = elapsed_us(total);
+        if (timing) s->timing.prepare_us = elapsed_us(total);
         if (service) service(service_opaque);
 
-        s->timing.scale_us = 0;
-        s->timing.blit_us = 0;
+        if (timing) {
+            s->timing.scale_us = 0;
+            s->timing.blit_us = 0;
+        }
         for (y = 0; y < s->dh; y += MR_P96_STRIP_ROWS) {
             int rows = s->dh - y < MR_P96_STRIP_ROWS ? s->dh - y
                                                       : MR_P96_STRIP_ROWS;
             clock_t step;
 
-            step = clock();
+            if (timing) step = clock();
             scale_rgb24_strip(s, rgb, w, hh, stride, y, rows);
-            s->timing.scale_us += elapsed_us(step);
+            if (timing) s->timing.scale_us += elapsed_us(step);
 
-            step = clock();
+            if (timing) step = clock();
             if (!write_bgr24_strip(bm, s->win_x + s->bl + s->dx,
                                    s->win_y + s->bt + s->dy + y,
-                                   s->scaled, s->scaled_stride, s->dw, rows))
+                                   s->scaled, s->scaled_stride, s->dw, rows,
+                                   src_is_bgr))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
-            s->timing.blit_us += elapsed_us(step);
+            if (timing) s->timing.blit_us += elapsed_us(step);
 
             if (service) service(service_opaque);
         }
-        report_slow("software-scale", s->timing.scale_us,
-                    service, service_opaque);
-        report_slow("p96-lock-write", s->timing.blit_us, service, service_opaque);
-        s->timing.pixels = (unsigned long)s->dw * (unsigned long)s->dh;
-        s->timing.bytes = (unsigned long)s->scaled_size *
-                          (unsigned long)((s->dh + MR_P96_STRIP_ROWS - 1) /
-                                          MR_P96_STRIP_ROWS);
-        s->timing.copies = (unsigned long)((s->dh + MR_P96_STRIP_ROWS - 1) /
-                                           MR_P96_STRIP_ROWS);
+        if (timing) {
+            report_slow("software-scale", s->timing.scale_us,
+                        service, service_opaque);
+            report_slow("p96-lock-write", s->timing.blit_us,
+                        service, service_opaque);
+        }
+        if (timing) {
+            s->timing.pixels = (unsigned long)s->dw * (unsigned long)s->dh;
+            s->timing.bytes = (unsigned long)s->scaled_size *
+                              (unsigned long)((s->dh + MR_P96_STRIP_ROWS - 1) /
+                                              MR_P96_STRIP_ROWS);
+            s->timing.copies =
+                (unsigned long)((s->dh + MR_P96_STRIP_ROWS - 1) /
+                                MR_P96_STRIP_ROWS);
+        }
         if (service) service(service_opaque);
-        s->timing.total_us = elapsed_us(total);
+        if (timing) s->timing.total_us = elapsed_us(total);
         return;
     }
 
-    s->timing.prepare_us = elapsed_us(total);
+    if (timing) s->timing.prepare_us = elapsed_us(total);
     if (service) service(service_opaque);
-    mark = clock();
+    if (timing) mark = clock();
     {
         int y;
         for (y = dy0; y < dy1; y += MR_P96_STRIP_ROWS) {
@@ -714,16 +807,35 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
                                                     : MR_P96_STRIP_ROWS;
             if (!write_bgr24_strip(bm, s->win_x + s->bl + s->dx,
                                    s->win_y + s->bt + s->dy + y,
-                                   rgb + (size_t)y * stride, stride, w, rows))
+                                   rgb + (size_t)y * stride, stride, w, rows,
+                                   src_is_bgr))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
-            s->timing.copies++;
+            if (timing) s->timing.copies++;
             if (service) service(service_opaque);
         }
     }
-    s->timing.blit_us = elapsed_us(mark);
-    s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
-    s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
-    s->timing.total_us = elapsed_us(total);
+    if (timing) s->timing.blit_us = elapsed_us(mark);
+    if (timing) {
+        s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
+        s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
+        s->timing.total_us = elapsed_us(total);
+    }
+}
+
+static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
+                     int stride, int dy0, int dy1,
+                     mr_display_service_fn service, void *service_opaque)
+{
+    p96_show_packed(h, rgb, w, hh, stride, dy0, dy1, 0,
+                    service, service_opaque);
+}
+
+static void p96_show_bgr(void *h, const unsigned char *bgr, int w, int hh,
+                         int stride, int dy0, int dy1,
+                         mr_display_service_fn service, void *service_opaque)
+{
+    p96_show_packed(h, bgr, w, hh, stride, dy0, dy1, 1,
+                    service, service_opaque);
 }
 
 static int p96_timing(void *h, mr_display_timing *timing)
@@ -843,11 +955,31 @@ static void p96_status(void *h, const char *text)
 static void p96_close(void *h)
 {
     p96_state *s = (p96_state *)h;
+    struct IntuiMessage *msg;
+
     if (!s) return;
-    if (s->scaled) FreeVec(s->scaled);
-    if (s->win) { CloseWindow(s->win); s->win = NULL; }
+
+    if (s->win) {
+        ModifyIDCMP(s->win, 0);
+        if (s->win->UserPort) {
+            while ((msg = (struct IntuiMessage *)GetMsg(s->win->UserPort)))
+                ReplyMsg((struct Message *)msg);
+        }
+        /*
+         * p96LockBitMap is released per strip, but wait for any graphics-side
+         * work to settle before dropping the fullscreen window/screen.
+         */
+        WaitBlit();
+        CloseWindow(s->win);
+        s->win = NULL;
+        WaitTOF();
+        WaitTOF();
+    }
+
     p96_close_private_screen(&s->screen, "shutdown");
     p96_close_private_screen(&s->retired_screen, "shutdown retry");
+
+    if (s->scaled) FreeVec(s->scaled);
     FreeVec(s);
 }
 
@@ -862,6 +994,7 @@ const display_backend backend_p96 = {
     .name = "RTG (P96)",
     .open = p96_open,
     .show = p96_show,
+    .show_bgr = p96_show_bgr,
     .timing = p96_timing,
     .poll = p96_poll,
     .close = p96_close,

@@ -1,13 +1,12 @@
 /*
- * MintVID - conformance check for mr_yuv420_dither8() (core/mr_yuv_dither.c).
+ * MintVID - conformance check for the fused YUV420-to-indexed dither paths.
  *
- * Compares the fused YUV420P -> 8-bit-indexed conversion against the real
+ * Compares fused 4/5/8-plane YUV420P -> indexed conversion against the real
  * three-stage composition it replaces - mr_yuv420_to_rgb24() (core/mr_yuv.c)
- * -> mr_scale_resize_rgb24() (core/mr_scale.c) -> mr_dither_rgb8()
+ * -> mr_scale_resize_rgb24() (core/mr_scale.c) -> mr_dither_rgb_indexed()
  * (core/mr_dither.c), calling those actual functions directly (not a
- * reimplementation) - for the exact geometry mr_yuv420_dither8() is
- * documented to match: destination width == source width, height an exact
- * integer multiple of the vertical scale factor.
+ * reimplementation) - for both the exact vertical fast-path geometry and
+ * the general two-axis resize geometry.
  */
 #include "../core/mr_yuv.h"
 #include "../core/mr_scale.h"
@@ -25,8 +24,9 @@ static uint8_t random_byte(void)
     return (uint8_t)(state >> 24);
 }
 
-static int run_case(int width, int height, int vscale, int y_stride,
-                    int u_stride, int v_stride, int extreme, int seed)
+static int run_case(int depth, int width, int height, int vscale,
+                    int y_stride, int u_stride, int v_stride, int extreme,
+                    int seed)
 {
     int cw = (width + 1) / 2, ch = (height + 1) / 2;
     int dst_h = height / vscale;
@@ -63,22 +63,24 @@ static int run_case(int width, int height, int vscale, int y_stride,
         mr_scale_resize_rgb24(rgb_full, width, height, width * 3,
                               rgb_resized, width, dst_h, width * 3);
     }
-    mr_dither_rgb8(rgb_resized, width, dst_h, width * 3, ref_out, width,
-                  y_base);
+    mr_dither_rgb_indexed(rgb_resized, width, dst_h, width * 3, ref_out,
+                          width, y_base, depth);
 
     /* Under test: the direct fused path. */
-    mr_yuv420_dither8(y, y_stride, u, u_stride, v, v_stride,
-                      width, height, vscale, got_out, width, y_base);
+    mr_yuv420_dither_indexed(y, y_stride, u, u_stride, v, v_stride,
+                             width, height, vscale, depth, got_out, width,
+                             y_base);
 
     if (memcmp(ref_out, got_out, (size_t)width * dst_h) != 0) {
         int i;
         for (i = 0; i < width * dst_h; i++) {
             if (ref_out[i] != got_out[i]) {
-                printf("FAIL w=%d h=%d vscale=%d y_stride=%d u_stride=%d "
+                printf("FAIL depth=%d w=%d h=%d vscale=%d y_stride=%d "
+                       "u_stride=%d "
                        "v_stride=%d extreme=%d seed=%d index=%d "
                        "ref=%u got=%u\n",
-                       width, height, vscale, y_stride, u_stride, v_stride,
-                       extreme, seed, i, ref_out[i], got_out[i]);
+                       depth, width, height, vscale, y_stride, u_stride,
+                       v_stride, extreme, seed, i, ref_out[i], got_out[i]);
                 fails = 1;
                 break;
             }
@@ -90,9 +92,9 @@ static int run_case(int width, int height, int vscale, int y_stride,
     return fails;
 }
 
-static int run_resize_case(int width, int height, int dst_w, int dst_h,
-                           int y_stride, int u_stride, int v_stride,
-                           int extreme, int seed)
+static int run_resize_case(int depth, int width, int height, int dst_w,
+                           int dst_h, int y_stride, int u_stride,
+                           int v_stride, int extreme, int seed)
 {
     int ch = (height + 1) / 2;
     uint8_t *y = (uint8_t *)malloc((size_t)y_stride * height);
@@ -123,23 +125,24 @@ static int run_resize_case(int width, int height, int dst_w, int dst_h,
                        v, v_stride, width, height, NULL, NULL);
     mr_scale_resize_rgb24(rgb_full, width, height, width * 3,
                           rgb_resized, dst_w, dst_h, dst_w * 3);
-    mr_dither_rgb8(rgb_resized, dst_w, dst_h, dst_w * 3, ref_out, dst_w,
-                  y_base);
+    mr_dither_rgb_indexed(rgb_resized, dst_w, dst_h, dst_w * 3, ref_out,
+                          dst_w, y_base, depth);
 
     /* Under test: the general fused resize+dither path. */
-    mr_yuv420_dither8_resize(y, y_stride, u, u_stride, v, v_stride,
-                             width, height, got_out, dst_w, dst_h, dst_w,
-                             y_base);
+    mr_yuv420_dither_indexed_resize(y, y_stride, u, u_stride, v, v_stride,
+                                    width, height, depth, got_out, dst_w,
+                                    dst_h, dst_w, y_base);
 
     if (memcmp(ref_out, got_out, (size_t)dst_w * dst_h) != 0) {
         int i;
         for (i = 0; i < dst_w * dst_h; i++) {
             if (ref_out[i] != got_out[i]) {
-                printf("FAIL (resize) w=%d h=%d dst_w=%d dst_h=%d "
+                printf("FAIL (resize) depth=%d w=%d h=%d dst_w=%d dst_h=%d "
                        "y_stride=%d u_stride=%d v_stride=%d extreme=%d "
                        "seed=%d index=%d ref=%u got=%u\n",
-                       width, height, dst_w, dst_h, y_stride, u_stride,
-                       v_stride, extreme, seed, i, ref_out[i], got_out[i]);
+                       depth, width, height, dst_w, dst_h, y_stride,
+                       u_stride, v_stride, extreme, seed, i, ref_out[i],
+                       got_out[i]);
                 fails = 1;
                 break;
             }
@@ -165,24 +168,30 @@ int main(void)
         { 18, 12, 2 },     /* odd width - exercises the tail-pixel path     */
         { 2, 2, 1 },
     };
-    size_t n = sizeof geoms / sizeof geoms[0], i;
+    static const int depths[] = { 4, 5, 8 };
+    size_t n = sizeof geoms / sizeof geoms[0], i, di;
     int fails = 0, seed = 0;
 
-    for (i = 0; i < n; i++) {
-        int w = geoms[i].w, h = geoms[i].h, vs = geoms[i].vscale;
-        /* Tight strides. */
-        fails += run_case(w, h, vs, w, (w + 1) / 2, (w + 1) / 2, 0, seed++);
-        fails += run_case(w, h, vs, w, (w + 1) / 2, (w + 1) / 2, 1, seed++);
-        /* Padded strides, to catch a stride bug that a tight buffer would
-         * hide. */
-        fails += run_case(w, h, vs, w + 8, (w + 1) / 2 + 4,
-                          (w + 1) / 2 + 4, 0, seed++);
-        /* A handful of random y_base/seed repeats per geometry. */
-        {
-            int r;
-            for (r = 0; r < 5; r++)
-                fails += run_case(w, h, vs, w, (w + 1) / 2, (w + 1) / 2, 0,
-                                  seed++);
+    for (di = 0; di < sizeof depths / sizeof depths[0]; di++) {
+        int depth = depths[di];
+        for (i = 0; i < n; i++) {
+            int w = geoms[i].w, h = geoms[i].h, vs = geoms[i].vscale;
+            /* Tight strides. */
+            fails += run_case(depth, w, h, vs, w, (w + 1) / 2,
+                              (w + 1) / 2, 0, seed++);
+            fails += run_case(depth, w, h, vs, w, (w + 1) / 2,
+                              (w + 1) / 2, 1, seed++);
+            /* Padded strides, to catch a stride bug that a tight buffer would
+             * hide. */
+            fails += run_case(depth, w, h, vs, w + 8, (w + 1) / 2 + 4,
+                              (w + 1) / 2 + 4, 0, seed++);
+            /* A handful of random y_base/seed repeats per geometry. */
+            {
+                int r;
+                for (r = 0; r < 5; r++)
+                    fails += run_case(depth, w, h, vs, w, (w + 1) / 2,
+                                      (w + 1) / 2, 0, seed++);
+            }
         }
     }
 
@@ -204,20 +213,27 @@ int main(void)
         };
         size_t rn = sizeof resize_geoms / sizeof resize_geoms[0], ri;
 
-        for (ri = 0; ri < rn; ri++) {
-            int w = resize_geoms[ri].w, h = resize_geoms[ri].h;
-            int dw = resize_geoms[ri].dw, dh = resize_geoms[ri].dh;
-            fails += run_resize_case(w, h, dw, dh, w, (w + 1) / 2,
-                                     (w + 1) / 2, 0, seed++);
-            fails += run_resize_case(w, h, dw, dh, w, (w + 1) / 2,
-                                     (w + 1) / 2, 1, seed++);
-            fails += run_resize_case(w, h, dw, dh, w + 8, (w + 1) / 2 + 4,
-                                     (w + 1) / 2 + 4, 0, seed++);
-            {
-                int r;
-                for (r = 0; r < 5; r++)
-                    fails += run_resize_case(w, h, dw, dh, w, (w + 1) / 2,
-                                             (w + 1) / 2, 0, seed++);
+        for (di = 0; di < sizeof depths / sizeof depths[0]; di++) {
+            int depth = depths[di];
+            for (ri = 0; ri < rn; ri++) {
+                int w = resize_geoms[ri].w, h = resize_geoms[ri].h;
+                int dw = resize_geoms[ri].dw, dh = resize_geoms[ri].dh;
+                fails += run_resize_case(depth, w, h, dw, dh, w,
+                                         (w + 1) / 2, (w + 1) / 2, 0,
+                                         seed++);
+                fails += run_resize_case(depth, w, h, dw, dh, w,
+                                         (w + 1) / 2, (w + 1) / 2, 1,
+                                         seed++);
+                fails += run_resize_case(depth, w, h, dw, dh, w + 8,
+                                         (w + 1) / 2 + 4,
+                                         (w + 1) / 2 + 4, 0, seed++);
+                {
+                    int r;
+                    for (r = 0; r < 5; r++)
+                        fails += run_resize_case(depth, w, h, dw, dh, w,
+                                                 (w + 1) / 2,
+                                                 (w + 1) / 2, 0, seed++);
+                }
             }
         }
     }

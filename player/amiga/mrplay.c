@@ -17,11 +17,14 @@
 #include "../core/mr_hls.h"
 #include "../core/mr_http.h"
 #include "../core/mr_youtube.h"
+#include "hls_fetch.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
 #include "../core/mr_dither.h"
+#include "../core/mr_media_clock.h"
+#include "../core/mr_yuv.h"
 #include "../core/mr_yuv_dither.h"
 #include "../audio/mr_audio_decode.h"
 #include "../iptv/mr_iptv.h"
@@ -139,6 +142,11 @@ static mr_player_control_port *control_block;
 static mr_audio *control_audio;
 static int control_volume = 64;
 static int deferred_player_event;
+/* Set once, first thing in main(). service_player_during_io() checks this
+ * to refuse to touch display/audio/queue state when called from any task
+ * other than this one - see that function's comment for why that check is
+ * required, not optional, once the HLS fetch worker exists. */
+static struct Task *g_main_task;
 static ULONG status_file_seq;
 static int playing_status_published;
 static char playing_status_codec[MR_PLAYER_CODEC_MAX];
@@ -307,202 +315,25 @@ static void playback_timer_close(void)
 static int mrplay_exit(int code)
 {
     playback_timer_close();
-    mr_http_net_shutdown();
+    /* Stop the fetch worker (idempotent, safe even if never started) before
+     * releasing this task's own bsdsocket/AmiSSL state below - it must
+     * release its own first, from its own task. If it had to be abandoned
+     * instead (hls_fetch_stop()'s bounded-wait timeout - see hls_fetch_
+     * leaked()), it may still be executing inside those exact libraries;
+     * closing them here regardless would be a delayed version of the same
+     * use-after-free hls_fetch_stop()'s leak-not-free path exists to avoid,
+     * not a safe cleanup. Skip this task's own shutdown in that case - the
+     * (leaked) worker keeps the libraries open for as long as it needs
+     * them, and the process's own exit still reclaims everything else. */
+    hls_fetch_stop();
+    if (!hls_fetch_leaked())
+        mr_http_net_shutdown();
     control_port_close();
     return code;
 }
 
-/* ---- Media-clock source tags ------------------------------------------- */
-#define MCLOCK_MONO     0   /* no audio: caller uses raw monotonic elapsed   */
-#define MCLOCK_AUDIO    1   /* audio healthy: signed offset from audio raw    */
-#define MCLOCK_HOLDOVER 2   /* audio starved: advance from frozen media time  */
-
-/*
- * Consecutive non-starved scheduler iterations required before holdover exit
- * may be attempted.  This stability condition is necessary but not sufficient:
- * the audio raw counter must also have reached or passed last_output_us before
- * the signed offset can represent the media/audio relationship without clamping
- * the mapped candidate behind the continuous media timeline.
- */
-#define MCLOCK_RESUME_STABLE_ITERS 3U
-
-/*
- * Stateful media-clock controller.
- *
- * Bridges audio underruns with a monotonic holdover so that the media timeline
- * never jumps forward to raw wall-clock time when Paula is starved.
- *
- * On resume, audio_to_media_offset_us maps the raw audio counter back onto the
- * continuous holdover position regardless of whether raw audio is ahead of or
- * behind the frozen media time.  This signed representation replaces the old
- * unsigned clock_base_us which could only subtract from the audio counter and
- * therefore had to reset to zero whenever media was ahead of raw audio.
- */
-typedef struct {
-    uint64_t last_output_us;           /* last returned value (monotonic gate)*/
-    uint64_t holdover_media_us;        /* media time captured on starvation   */
-    uint64_t holdover_started_mono_us; /* monotonic time at holdover entry    */
-    int64_t  audio_to_media_offset_us; /* media = audio_raw + this (signed)   */
-    uint64_t last_stall_print_us;      /* throttle for the per-iteration       */
-                                        /* "remaining in holdover" trace below  */
-    unsigned healthy_audio_samples;    /* non-starved iters since holdover     */
-    int      holdover_active;
-    int      source;                   /* MCLOCK_MONO / AUDIO / HOLDOVER       */
-} media_clock;
-
-/*
- * Rebase the media clock to a new (audio_raw, target_media_us) correspondence.
- * Call on playback start, pause/resume, or loop restart.
- */
-static void media_clock_rebase(media_clock *mc, uint64_t audio_raw,
-                               uint64_t target_media_us)
-{
-    mc->audio_to_media_offset_us = (int64_t)target_media_us - (int64_t)audio_raw;
-    mc->holdover_active  = 0;
-    mc->healthy_audio_samples = 0;
-    mc->last_output_us   = target_media_us;
-    mc->source           = MCLOCK_AUDIO;
-}
-
-/*
- * Estimate current media time without advancing mc->last_output_us.
- * Used for post-rescue frame-drop evaluation before the main clock tick.
- */
-
 /* Clamp a signed microsecond value to a non-negative uint64_t. */
 static uint64_t s64_to_us(int64_t v) { return v > 0 ? (uint64_t)v : 0; }
-
-static uint64_t media_clock_rescue_estimate(const media_clock *mc,
-                                            uint64_t audio_raw, uint64_t now)
-{
-    uint64_t candidate;
-    if (mc->holdover_active) {
-        candidate = mc->holdover_media_us +
-                    (now - mc->holdover_started_mono_us);
-    } else {
-        candidate = s64_to_us((int64_t)audio_raw + mc->audio_to_media_offset_us);
-    }
-    return candidate < mc->last_output_us ? mc->last_output_us : candidate;
-}
-
-/*
- * Advance the stateful media clock by one scheduler iteration.
- *
- * - Healthy audio   → MCLOCK_AUDIO: candidate = audio_raw + offset (signed).
- * - Starvation      → MCLOCK_HOLDOVER: advance from frozen media time using
- *                     monotonic elapsed since starvation began.
- * - Audio resumes   → require MCLOCK_RESUME_STABLE_ITERS non-starved iters
- *                     AND audio_raw >= last_output_us before exiting holdover.
- *                     Both conditions are necessary; stability alone is not
- *                     sufficient.  While waiting, remain in MCLOCK_HOLDOVER.
- *
- * The returned value is monotonically non-decreasing (never < last_output_us).
- * When !have_audio, sets source=MCLOCK_MONO and returns last_output_us — the
- * caller should substitute its own mono_media_clock_us in that case.
- */
-static uint64_t current_media_clock_us(media_clock *mc, int have_audio,
-                                       int starved, uint64_t audio_raw,
-                                       uint64_t now, int want_time)
-{
-    uint64_t candidate;
-
-    if (!have_audio) {
-        mc->source = MCLOCK_MONO;
-        return mc->last_output_us;
-    }
-
-    if (starved) {
-        if (!mc->holdover_active) {
-            mc->holdover_media_us         = mc->last_output_us;
-            mc->holdover_started_mono_us  = now;
-            mc->holdover_active           = 1;
-            mc->healthy_audio_samples     = 0;
-            if (want_time)
-                printf("clock-holdover entered media=%lu us\n",
-                       (unsigned long)mc->holdover_media_us);
-        }
-        /* Reset stability counter on every starved iteration so that partial
-         * recovery attempts that re-stall require a fresh run of stable iters. */
-        mc->healthy_audio_samples = 0;
-        mc->source = MCLOCK_HOLDOVER;
-        candidate = mc->holdover_media_us +
-                    (now - mc->holdover_started_mono_us);
-        if (candidate < mc->last_output_us) candidate = mc->last_output_us;
-        mc->last_output_us = candidate;
-        return candidate;
-    }
-
-    /* Audio not starved. */
-    if (mc->holdover_active) {
-        mc->healthy_audio_samples++;
-
-        /* Stability gate: need MCLOCK_RESUME_STABLE_ITERS good iterations. */
-        if (mc->healthy_audio_samples < MCLOCK_RESUME_STABLE_ITERS) {
-            mc->source = MCLOCK_HOLDOVER;
-            candidate = mc->holdover_media_us +
-                        (now - mc->holdover_started_mono_us);
-            if (candidate < mc->last_output_us) candidate = mc->last_output_us;
-            mc->last_output_us = candidate;
-            return candidate;
-        }
-
-        if (audio_raw < mc->last_output_us) {
-            /*
-             * Audio has resumed but has not yet caught up to the holdover
-             * media position.  Stay in holdover — do not reset the base or
-             * change source.  Exiting now would leave the mapped audio
-             * candidate behind last_output_us, causing the monotonic clamp
-             * to freeze the clock until audio catches up.
-             */
-            /* Fires on every iteration audio stays behind the holdover
-             * position - unthrottled, that's once per scheduler pass for as
-             * long as audio is starved, which on a constrained machine can
-             * be the entire session (observed 963 of these in one ~67 s
-             * WinUAE run). Rate-limit like clock-trace below so --time
-             * logging doesn't itself become a source of scheduler latency
-             * competing with the audio service calls it's trying to trace. */
-            if (want_time &&
-                now - mc->last_stall_print_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
-                mc->last_stall_print_us = now;
-                printf("clock-holdover audio-raw=%lu us < resume-at=%lu us, "
-                       "remaining in holdover\n",
-                       (unsigned long)audio_raw,
-                       (unsigned long)mc->last_output_us);
-            }
-            mc->source = MCLOCK_HOLDOVER;
-            candidate = mc->holdover_media_us +
-                        (now - mc->holdover_started_mono_us);
-            if (candidate < mc->last_output_us) candidate = mc->last_output_us;
-            mc->last_output_us = candidate;
-            return candidate;
-        }
-
-        /*
-         * Both gates passed: exit holdover.  Compute a signed offset so that
-         * the audio counter maps exactly onto the current continuous media
-         * position, supporting both "media behind audio" (negative) and
-         * "media ahead of audio" (positive) cases.
-         */
-        mc->audio_to_media_offset_us = (int64_t)mc->last_output_us -
-                                       (int64_t)audio_raw;
-        mc->holdover_active = 0;
-        if (want_time)
-            printf("clock-holdover exit audio-raw=%lu us resume-at=%lu us "
-                   "offset=%ld us\n",
-                   (unsigned long)audio_raw,
-                   (unsigned long)mc->last_output_us,
-                   (long)mc->audio_to_media_offset_us);
-    }
-
-    /* Normal audio mode: audio_raw mapped through signed offset. */
-    mc->source = MCLOCK_AUDIO;
-    candidate = s64_to_us((int64_t)audio_raw + mc->audio_to_media_offset_us);
-    if (candidate < mc->last_output_us) candidate = mc->last_output_us;
-    mc->last_output_us = candidate;
-    return candidate;
-}
-
-/* ---- end media-clock controller ---------------------------------------- */
 
 typedef struct queued_video {
     unsigned char *rgb;
@@ -545,6 +376,9 @@ typedef struct playback_stats {
     uint64_t yuv_indexed_us;
     unsigned long yuv_indexed_max_us;
     unsigned yuv_indexed_frames;
+    uint64_t yuv_rgb_us;
+    unsigned long yuv_rgb_max_us;
+    unsigned yuv_rgb_frames;
 } playback_stats;
 
 /*
@@ -580,12 +414,13 @@ typedef struct video_presenter {
     int                 *frames;
     playback_stats      *stats;
     int                  want_time;
-    /* Set once from display_supports_indexed() after display_open(); true
-     * only for the AGA backend's plain 256-colour configuration. When set,
-     * the queue holds pre-dithered 8-bit indexed frames (queue_copy_indexed)
+    /* Set once from display_supports_indexed() after display_open(). When set,
+     * the queue holds pre-dithered one-byte palette indices (queue_copy_indexed)
      * instead of RGB24, and this presenter must blit them with
      * display_show_indexed() instead of display_show_rgb(). */
     int                  use_indexed;
+    /* P96 native BGR queue: present with display_show_bgr24(). */
+    int                  use_bgr;
 } video_presenter;
 
 typedef struct scheduler_trace {
@@ -655,7 +490,7 @@ static void present_service_frame(video_presenter *vp)
     if (vp->audio)
         master_clock_us = current_media_clock_us(mc, 1, audio_starved(vp->audio),
                                                  audio_elapsed_us(vp->audio),
-                                                 now, vp->want_time);
+                                                 vp->want_time);
     else {
         mc->source = MCLOCK_MONO;
         master_clock_us = now - *vp->mono_base_us;
@@ -686,6 +521,9 @@ static void present_service_frame(video_presenter *vp)
     if (vp->use_indexed)
         display_show_indexed(vp->disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
+    else if (vp->use_bgr)
+        display_show_bgr24(vp->disp, front->rgb, front->width, front->height,
+                           front->stride, front->dirty_y0, front->dirty_y1);
     else
         display_show_rgb(vp->disp, front->rgb, front->width, front->height,
                          front->stride, front->dirty_y0, front->dirty_y1);
@@ -814,8 +652,56 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
     return 1;
 }
 
+/* H.264 RGB-display path: convert libavc's borrowed YUV420P planes directly
+ * into the queue slot.  The old path converted into mr_h264.c's persistent
+ * full-frame RGB buffer and immediately memcpy'd that whole buffer here.
+ * Writing the conversion result straight to q->rgb removes that extra RGB
+ * framebuffer and one complete RGB24 read+write pass per queued frame while
+ * preserving the display-facing queue format and all CGX/P96 code unchanged.
+ * It also defers conversion until after the scheduler's retain/drop decision,
+ * so an overload frame discarded before queueing never pays RGB conversion.
+ * The service hook is the same audio/presenter callback formerly used inside
+ * mr_h264.c's conversion and remains safe here: the queue is not published
+ * (qcount is not incremented) until this function returns. */
+static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
+                                uint64_t pts, uint64_t decoded_at, int bgr,
+                                mr_yuv_service_fn service,
+                                void *service_opaque)
+{
+    size_t stride, bytes;
+    if (!q || !fr || fr->fmt != MR_PIX_YUV420P ||
+        !fr->data || !fr->u_data || !fr->v_data ||
+        fr->width <= 0 || fr->height <= 0)
+        return 0;
+    if ((size_t)fr->width > (size_t)-1 / 3u) return 0;
+    stride = (size_t)fr->width * 3u;
+    if ((size_t)fr->height > (size_t)-1 / stride) return 0;
+    bytes = stride * (size_t)fr->height;
+    if (q->capacity < bytes) {
+        unsigned char *p = (unsigned char *)realloc(q->rgb, bytes);
+        if (!p) return 0;
+        q->rgb = p; q->capacity = bytes;
+    }
+    if (bgr)
+        mr_yuv420_to_bgr24(q->rgb, (int)stride,
+                           fr->data, fr->stride,
+                           fr->u_data, fr->u_stride,
+                           fr->v_data, fr->v_stride,
+                           fr->width, fr->height, service, service_opaque);
+    else
+        mr_yuv420_to_rgb24(q->rgb, (int)stride,
+                           fr->data, fr->stride,
+                           fr->u_data, fr->u_stride,
+                           fr->v_data, fr->v_stride,
+                           fr->width, fr->height, service, service_opaque);
+    q->width = fr->width; q->height = fr->height; q->stride = (int)stride;
+    q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
+    q->pts_us = pts; q->decoded_at_us = decoded_at;
+    return 1;
+}
+
 /*
- * Same contract as queue_copy(), but for a display that can accept an 8-bit
+ * Same contract as queue_copy(), but for a display that can accept an
  * indexed frame directly (display_supports_indexed() - see display_backend.h
  * and aga_supports_indexed()). Dithers straight into the queue slot instead
  * of memcpy'ing an RGB24 frame that display_show_rgb's AGA backend would only
@@ -830,7 +716,7 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
  * dirty_y1) would leave stale rows from whatever frame last occupied it.
  */
 static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
-                              uint64_t decoded_at)
+                              uint64_t decoded_at, int indexed_depth)
 {
     size_t bytes = (size_t)fr->width * (size_t)fr->height;
     if (q->capacity < bytes) {
@@ -838,8 +724,8 @@ static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    mr_dither_rgb8(fr->data, fr->width, fr->height, fr->stride,
-                   q->rgb, fr->width, 0);
+    mr_dither_rgb_indexed(fr->data, fr->width, fr->height, fr->stride,
+                          q->rgb, fr->width, 0, indexed_depth);
     q->width = fr->width; q->height = fr->height; q->stride = fr->width;
     q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
     q->pts_us = pts; q->decoded_at_us = decoded_at;
@@ -855,15 +741,16 @@ static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
  * straight from the decoder's YUV planes to indexed at the display's
  * fitted size in one pass (core/mr_yuv_dither.h) - no RGB24 buffer, full
  * resolution or resized, ever exists on this path. vscale > 0 selects the
- * exact vertical-only downscale's hand-tuned m68k asm (mr_yuv420_dither8());
+ * exact vertical-only downscale's hand-tuned m68k assembly;
  * vscale == 0 selects the general 2D nearest-neighbour path
- * (mr_yuv420_dither8_resize(), portable C only) for every other resize
+ * (mr_yuv420_dither_indexed_resize(), portable C only) for every other resize
  * shape, including an upscale (e.g. a 192x108 mobile HLS variant fitted up
  * to a 320x180 AGA screen).
  */
 static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
                                   uint64_t pts, uint64_t decoded_at,
-                                  int dst_w, int dst_h, int vscale)
+                                  int dst_w, int dst_h, int vscale,
+                                  int indexed_depth)
 {
     size_t bytes = (size_t)dst_w * (size_t)dst_h;
     if (q->capacity < bytes) {
@@ -872,14 +759,15 @@ static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
         q->rgb = p; q->capacity = bytes;
     }
     if (vscale > 0)
-        mr_yuv420_dither8(fr->data, fr->stride, fr->u_data, fr->u_stride,
-                          fr->v_data, fr->v_stride, fr->width, fr->height,
-                          vscale, q->rgb, dst_w, 0);
-    else
-        mr_yuv420_dither8_resize(fr->data, fr->stride, fr->u_data,
+        mr_yuv420_dither_indexed(fr->data, fr->stride, fr->u_data,
                                  fr->u_stride, fr->v_data, fr->v_stride,
-                                 fr->width, fr->height, q->rgb, dst_w, dst_h,
-                                 dst_w, 0);
+                                 fr->width, fr->height, vscale, indexed_depth,
+                                 q->rgb, dst_w, 0);
+    else
+        mr_yuv420_dither_indexed_resize(
+            fr->data, fr->stride, fr->u_data, fr->u_stride, fr->v_data,
+            fr->v_stride, fr->width, fr->height, indexed_depth, q->rgb,
+            dst_w, dst_h, dst_w, 0);
     q->width = dst_w; q->height = dst_h; q->stride = dst_w;
     q->dirty_y0 = 0; q->dirty_y1 = dst_h;
     q->pts_us = pts; q->decoded_at_us = decoded_at;
@@ -908,6 +796,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     unsigned long sc = average_hundredths(st->scale_us, st->presented);
     unsigned long yi = average_hundredths(st->yuv_indexed_us,
                                           st->yuv_indexed_frames);
+    unsigned long yr = average_hundredths(st->yuv_rgb_us,
+                                          st->yuv_rgb_frames);
     unsigned long ds = average_hundredths(st->display_us, st->presented);
     unsigned long la = average_hundredths(st->latency_us, st->presented);
     unsigned long pf = rate_hundredths(st->presented, elapsed_us);
@@ -921,7 +811,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     printf("rtg timing: vdecode=%lu.%02lu/%lu ms network-blocked=%lu ms "
            "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
            "convert=%lu.%02lu ms scale=%lu.%02lu ms "
-           "yuv-indexed=%lu.%02lu/%lu ms display=%lu.%02lu/%lu ms "
+           "yuv-indexed=%lu.%02lu/%lu ms yuv-rgb=%lu.%02lu/%lu ms "
+           "display=%lu.%02lu/%lu ms "
            "audio-buffered=%lu ms vqueue=%d late=%u dropped=%u "
            "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
            "sleep-max-error=%lu us latency=%lu.%02lu ms "
@@ -931,6 +822,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            io.hls_segment_ms, dm / 100, dm % 100, ad / 100, ad % 100,
            cv / 100, cv % 100, sc / 100, sc % 100,
            yi / 100, yi % 100, st->yuv_indexed_max_us / 1000,
+           yr / 100, yr % 100, st->yuv_rgb_max_us / 1000,
            ds / 100, ds % 100, st->display_max_us / 1000,
            audio ? audio_buffered_ms(audio) : 0, depth, st->late, st->dropped,
            pf / 100, pf % 100, df / 100, df % 100,
@@ -973,6 +865,13 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
     printf("demux timing: calls=%lu max-call=%lu us max-scanned=%lu "
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
            demux_timing.scanned_max, demux_timing.service_calls);
+    if (audio) service_audio_for_display(trace);
+    if (hls_fetch_active()) {
+        unsigned long hits, misses, worst_wait_ms;
+        hls_fetch_stats(&hits, &misses, &worst_wait_ms);
+        printf("hls fetch: hits=%lu misses=%lu worst-wait=%lu ms\n",
+               hits, misses, worst_wait_ms);
+    }
     if (audio) service_audio_for_display(trace);
     if (st->decoded) {
 #if defined(MR_H264_STAGE_PROFILE)
@@ -1102,7 +1001,9 @@ static mr_h264_speed_mode effective_h264_speed(int requested)
 {
     if (requested == MR_H264_SPEED_QUALITY ||
         requested == MR_H264_SPEED_BALANCED ||
-        requested == MR_H264_SPEED_FAST)
+        requested == MR_H264_SPEED_FAST ||
+        requested == MR_H264_SPEED_TURBO ||
+        requested == MR_H264_SPEED_TURBO_PLUS)
         return (mr_h264_speed_mode)requested;
     /* Auto used to scale the degrade level with resolution, on the
      * assumption that a small picture is proportionally cheap enough to
@@ -1128,7 +1029,9 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
     mode = effective_h264_speed(requested);
-    name = mode == MR_H264_SPEED_FAST ? "Fast" :
+    name = mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip)" :
+           mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip)" :
+           mode == MR_H264_SPEED_FAST ? "Fast" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
     if (!mr_h264_set_speed_mode(dec, mode)) return 0;
     if (verbose || requested < 0)
@@ -1190,16 +1093,45 @@ static int player_event(amiga_display *disp)
     return ev;
 }
 
+/* Minimal service hook for the fetch worker during the very first HLS
+ * fetch(es) - before any display/decoder/trace state exists for the full
+ * service_player_during_io() below to safely touch (see the call site in
+ * main() for why). Only checks for the quit signal, nothing else: no
+ * fullscreen/pause/volume handling, no trace dereference. opaque is unused
+ * (always NULL here) - the signature matches hls_fetch_service_fn only so
+ * it can be installed the same way. */
+static int service_early_quit_check(void *opaque)
+{
+    (void)opaque;
+    return (SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F) &
+            (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) != 0;
+}
+
 /* HTTP's synchronous reader runs on the player task.  Pump fresh Intuition
  * input while it waits, but leave pause/seek/quit queued for the scheduler to
  * perform at its normal safe point.  Fullscreen is handled immediately by the
- * display backend, so its replacement window starts being drained at once. */
+ * display backend, so its replacement window starts being drained at once.
+ *
+ * MUST NOT run on any task but the main one. core/mr_http.c's own internal
+ * service hook (mr_http_set_service()) and this file's hls_fetch_set_
+ * service() are BOTH set to this same function with the same &trace, but
+ * they are consulted from two different tasks once the HLS fetch worker is
+ * active: mr_http.c's hook fires from inside whichever task is currently
+ * calling into its connect/read code - which, for every HLS fetch, is the
+ * worker task, not this one - while hls_fetch_wait_busy() calls it from
+ * this (main) task while polling for that same worker's reply. Without this
+ * check both tasks could call display_poll_event()/present_service_frame()/
+ * service_audio_for_display() concurrently, on state (the video queue in
+ * particular) that is explicitly documented as single-task with no lock.
+ * Refuse to do any of that unless FindTask(NULL) is the main task; the
+ * worker's own calls become a safe no-op instead. */
 static int service_player_during_io(void *opaque)
 {
     scheduler_trace *trace = (scheduler_trace *)opaque;
-    amiga_display *disp = trace && trace->presenter ? trace->presenter->disp
-                                                    : NULL;
+    amiga_display *disp;
     int ev = MR_EV_NONE;
+    if (FindTask(NULL) != g_main_task) return 0;
+    disp = trace && trace->presenter ? trace->presenter->disp : NULL;
     if (disp && (!trace->presenter || !trace->presenter->presenting)) {
         ev = control_signal_event(disp);
         if (ev == MR_EV_NONE) ev = display_poll_event(disp);
@@ -1312,7 +1244,12 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
         if (quit) break;
 
-        { clock_t a = clock(); got = mr_mpeg1_next(mp, &fr, &pts_us); t_dec += clock() - a; }
+        {
+            clock_t a = 0;
+            if (want_time) a = clock();
+            got = mr_mpeg1_next(mp, &fr, &pts_us);
+            if (want_time) t_dec += clock() - a;
+        }
         if (!got) {
             if (loop) { mr_mpeg1_rewind(mp); frames = 0;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
@@ -1360,10 +1297,13 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
         if (quit) break;
 
-        { clock_t a = clock();
-          display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
-                           fr.dirty_y0, fr.dirty_y1);
-          t_show += clock() - a; }
+        {
+            clock_t a = 0;
+            if (want_time) a = clock();
+            display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
+                             fr.dirty_y0, fr.dirty_y1);
+            if (want_time) t_show += clock() - a;
+        }
         frames++;
         if (audio) audio_service(audio);
     }
@@ -1400,6 +1340,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
 
 int main(int argc, char **argv)
 {
+    g_main_task = FindTask(NULL);
     long len = 0;
     unsigned char *buf = NULL;
     mr_demux *dx;
@@ -1486,7 +1427,7 @@ int main(int argc, char **argv)
                "[--2x] [--lace] [--ecs-fast] [--ecs32] [--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
-               "[--h264-speed=auto|quality|balanced|fast] "
+               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+] "
                "[--audio-rate=normal|low] [--no-audio] "
                "[--time]\n");
         return mrplay_exit(5);
@@ -1543,6 +1484,9 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "quality")) h264_speed = MR_H264_SPEED_QUALITY;
                 else if (!strcmp(mode, "balanced")) h264_speed = MR_H264_SPEED_BALANCED;
                 else if (!strcmp(mode, "fast")) h264_speed = MR_H264_SPEED_FAST;
+                else if (!strcmp(mode, "turbo")) h264_speed = MR_H264_SPEED_TURBO;
+                else if (!strcmp(mode, "turbo+") || !strcmp(mode, "turbo-plus"))
+                    h264_speed = MR_H264_SPEED_TURBO_PLUS;
                 else {
                     printf("invalid H.264 speed mode: %s\n", mode);
                     return mrplay_exit(5);
@@ -1576,6 +1520,27 @@ int main(int argc, char **argv)
     http_options.hls_max_fps = hls_max_fps;
     have_http_options = user_agent || referer || hls_low || hls_max_width ||
                         hls_max_height || hls_max_fps;
+    /* Start the background fetch worker before any network call this session
+     * might make (including YouTube URL resolution just below) so it is
+     * always the first task to open bsdsocket/AmiSSL state, never a second
+     * task adopting state another task already opened - see hls_fetch.c's
+     * design note. No-op (and harmless) for local files.
+     *
+     * The playlist/first-segment fetch this can trigger (via mr_youtube_
+     * resolve_media() below, or directly once mr_demux_open_file_ex() is
+     * reached further down) happens before any display/decoder/trace state
+     * exists - service_player_during_io() is not safe to hand a service
+     * hook this early (it can reach display_toggle_fullscreen(disp) with a
+     * NULL disp, and its scheduler_trace pointer would be dangling before
+     * that local is ever initialised). Use the minimal quit-only check
+     * below instead, purely so a stuck initial connect can actually be
+     * interrupted rather than only ever timing out on its own; the full
+     * hook takes over once real playback state exists (see the
+     * hls_fetch_set_service() call further down). */
+    if (mr_source_is_url(media_path)) {
+        hls_fetch_start(want_time);
+        hls_fetch_set_service(service_early_quit_check, NULL);
+    }
     if (mr_youtube_is_url(media_path)) {
         mr_http_options youtube_options;
         if (!mr_youtube_http_options_init(&youtube_options, &http_options)) {
@@ -1633,6 +1598,20 @@ int main(int argc, char **argv)
             printf("YouTube: source client %s\n",
                    mr_youtube_last_client());
     }
+    /* Resolution (if any) is done, so we now know definitively whether this
+     * session is HLS. If it is not, the worker started above (for "any
+     * URL", before we could know) is not actually going to be used: stop it
+     * now, before mr_demux_open_file_ex() below opens its own connection on
+     * this task for progressive/direct playback. Otherwise that connection
+     * would adopt whatever bsdsocket/AmiSSL state the worker already opened
+     * (e.g. during YouTube resolution above) instead of being this
+     * session's sole, fresh owner of it - see hls_fetch.c's design note on
+     * why a second task touching that state is unsafe. Safe/idempotent even
+     * when the worker was never started (a local file, or mr_source_is_url()
+     * was already false). */
+    if (!mr_source_is_hls(media_path))
+        hls_fetch_stop();
+
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
     mr_hls_set_verbose(want_time);
@@ -1792,19 +1771,31 @@ int main(int argc, char **argv)
      * C - see queue_copy_yuv_indexed()). Checked first, ahead of
      * use_indexed_queue below: at 1:1 both would otherwise apply, and this
      * is strictly the cheaper of the two. */
-    int use_yuv_indexed_queue = 0, yuv_dst_w = 0, yuv_dst_h = 0, yuv_vscale = 1;
+    int use_yuv_indexed_queue = 0, yuv_dst_w = 0, yuv_dst_h = 0;
+    int yuv_vscale = 1, indexed_depth = 8;
     if (codec == &mr_codec_h264)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
-            disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale);
-    if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
-    /* True only for the AGA backend's plain 256-colour configuration (see
+            disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale,
+            &indexed_depth);
+    /* True for a plain 4-, 5- or 8-plane native indexed configuration (see
      * display_backend.h / aga_supports_indexed()) when the YUV path above
      * doesn't already cover this (non-H.264, or an AGA mode
      * aga_supports_yuv_indexed() itself rejects) session. Queried once: the
      * display mode is fixed for the life of this session, so every queue
      * slot below uses the same format throughout. */
     int use_indexed_queue = !use_yuv_indexed_queue &&
-                            display_supports_indexed(disp);
+                            display_supports_indexed(disp, &indexed_depth);
+    /* Every remaining H.264 display path consumes RGB24.  Keep libavc's
+     * output planar and convert it directly into each queue slot instead of
+     * first allocating/filling the decoder's private RGB framebuffer and
+     * immediately copying that full frame into the queue.  This is primarily
+     * the RTG CGX/P96 path, but is equally correct for an AGA RGB fallback. */
+    int use_yuv_rgb_queue = codec == &mr_codec_h264 &&
+                            !use_yuv_indexed_queue && !use_indexed_queue;
+    int use_yuv_bgr_queue = use_yuv_rgb_queue &&
+                            display_supports_bgr24(disp);
+    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+        mr_h264_set_yuv_output(&dec, 1);
     if (want_time) {
         int diag_depth, diag_ham, diag_scale, diag_resize;
         const char *diag_c2p;
@@ -1816,14 +1807,20 @@ int main(int argc, char **argv)
                    diag_c2p, use_yuv_indexed_queue ? "supported"
                                                    : "unsupported");
         if (use_yuv_indexed_queue)
-            printf("video path: YUV420P %dx%d -> INDEX8 %dx%d %s\n",
-                   vi->width, vi->height, yuv_dst_w, yuv_dst_h,
+            printf("video path: YUV420P %dx%d -> INDEX%d %dx%d %s\n",
+                   vi->width, vi->height, indexed_depth, yuv_dst_w, yuv_dst_h,
                    yuv_vscale == 1 ? "(1:1 identity)" :
                    yuv_vscale > 1  ? "(vscale asm path)" :
                                      "(general resize path)");
         else if (use_indexed_queue)
-            printf("video path: RGB24 %dx%d -> INDEX8 (queue_copy_indexed)\n",
-                   vi->width, vi->height);
+            printf("video path: RGB24 %dx%d -> INDEX%d (queue_copy_indexed)\n",
+                   vi->width, vi->height, indexed_depth);
+        else if (use_yuv_bgr_queue)
+            printf("video path: YUV420P %dx%d -> BGR24 "
+                   "(direct-to-queue; P96 native)\n", vi->width, vi->height);
+        else if (use_yuv_rgb_queue)
+            printf("video path: YUV420P %dx%d -> RGB24 "
+                   "(direct-to-queue)\n", vi->width, vi->height);
         else
             printf("video path: RGB24 %dx%d (queue_copy)\n",
                    vi->width, vi->height);
@@ -1946,6 +1943,9 @@ int main(int argc, char **argv)
      * segment fetch, so an ordinary ~350 ms download no longer freezes video for
      * its whole duration. Fires while released is set around the demux read. */
     mr_http_set_service(service_player_during_io, &trace);
+    /* Same contract, for whichever fetches the background worker performs on
+     * our behalf while we wait on it (see hls_fetch_wait_busy()). */
+    hls_fetch_set_service(service_player_during_io, &trace);
     {
         unsigned long period = vi->rate ? (1000UL * (vi->scale ? vi->scale : 1)
                                            / vi->rate) : 83;
@@ -1997,11 +1997,13 @@ int main(int argc, char **argv)
          * The clamps below keep the footprint within a safe slice of free RAM,
          * and video_cap is the ring modulus so the queue's footprint is
          * exactly video_cap * frame_bytes (RGB24, indexed or YUV-indexed,
-         * whichever this session actually queues - see frame_bytes below). */
+         * whichever this session actually queues - direct YUV->RGB still
+         * produces an ordinary RGB24 queue slot; see frame_bytes below). */
         unsigned long cushion_ms;
         /* Must match whichever queue_copy* the copy_ok dispatch below picks
-         * for this session (queue_copy_yuv_indexed()/queue_copy_indexed()/
-         * queue_copy() - see their declarations), or this budget either
+         * for this session (queue_copy_yuv_indexed()/queue_copy_yuv_rgb24()/
+         * queue_copy_indexed()/queue_copy() - see their declarations), or this
+         * budget either
          * overestimates and needlessly clamps video_cap (RGB24 assumed on an
          * indexed path is a 3x-6x overestimate), or underestimates and lets
          * the queue overrun its RAM budget. */
@@ -2075,6 +2077,7 @@ int main(int argc, char **argv)
          * use_yuv_indexed_queue - see queue_copy_indexed()/
          * queue_copy_yuv_indexed()), so one flag covers both. */
         presenter.use_indexed = use_indexed_queue || use_yuv_indexed_queue;
+        presenter.use_bgr = use_yuv_bgr_queue;
         trace.presenter = &presenter;
 
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
@@ -2189,8 +2192,7 @@ int main(int argc, char **argv)
                 if (qcount && playback_started) {
                     uint64_t rescue_clock =
                         media_clock_rescue_estimate(&mc,
-                                                    audio_elapsed_us(audio),
-                                                    now);
+                                                    audio_elapsed_us(audio));
                     queued_video *new_front = &vq[qhead];
                     int64_t post_late = (int64_t)rescue_clock -
                                         (int64_t)new_front->pts_us;
@@ -2241,7 +2243,7 @@ int main(int argc, char **argv)
             mono_media_clock_us = now - mono_base_us;
             if (audio) {
                 audio_media_clock_us = current_media_clock_us(
-                    &mc, 1, starved, audio_elapsed_raw_us, now, want_time);
+                    &mc, 1, starved, audio_elapsed_raw_us, want_time);
                 master_clock_us = audio_media_clock_us;
             } else {
                 audio_media_clock_us = 0;
@@ -2369,7 +2371,7 @@ int main(int argc, char **argv)
             mono_media_clock_us = now - mono_base_us;
             if (audio) {
                 audio_media_clock_us = current_media_clock_us(
-                    &mc, 1, starved, audio_elapsed_raw_us, now, want_time);
+                    &mc, 1, starved, audio_elapsed_raw_us, want_time);
                 master_clock_us = audio_media_clock_us;
             } else {
                 audio_media_clock_us = 0;
@@ -2448,6 +2450,10 @@ int main(int argc, char **argv)
             if (use_indexed_queue || use_yuv_indexed_queue)
                 display_show_indexed(disp, front->rgb, front->width, front->height,
                                      front->stride, front->dirty_y0, front->dirty_y1);
+            else if (use_yuv_bgr_queue)
+                display_show_bgr24(disp, front->rgb, front->width, front->height,
+                                   front->stride, front->dirty_y0,
+                                   front->dirty_y1);
             else
                 display_show_rgb(disp, front->rgb, front->width, front->height,
                                  front->stride, front->dirty_y0, front->dirty_y1);
@@ -2547,7 +2553,8 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
-            if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
+            if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+                mr_h264_set_yuv_output(&dec, 1);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2589,6 +2596,9 @@ int main(int argc, char **argv)
             }
             if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
             display_set_status(disp, "Reconnecting...");
+            /* Discard any in-flight/cached fetch for the stream we're leaving
+             * before it can be handed to (or cached for) the reopened one. */
+            hls_fetch_cancel();
             mr_demux_close(dx);
             dx = NULL;
             for (tries = 0; tries < LIVE_RECONNECT_TRIES && !quit; tries++) {
@@ -2622,7 +2632,8 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
-            if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 1);
+            if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+                mr_h264_set_yuv_output(&dec, 1);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2789,6 +2800,21 @@ int main(int argc, char **argv)
                         quit = 1;
                         continue;
                     }
+                    if (decode_status == MR_SKIPPED) {
+                        /*
+                         * Turbo deliberately omitted this source picture.
+                         * No display frame is queued, but its media-time slot
+                         * still existed. Advance the fallback timeline so the
+                         * next surviving picture cannot inherit a compressed
+                         * synthetic PTS and race ahead of audio.
+                         *
+                         * MR_EAGAIN is different: it is ordinary libavc
+                         * reordering/no-output and consumes no extra fallback
+                         * display interval here.
+                         */
+                        decoded_index++;
+                        stats.dropped++;
+                    }
                     if (decode_status == MR_EFORMAT) {
                         printf("h264-decode-error: packet %lu len=%lu\n",
                                (unsigned long)decoded_index,
@@ -2879,9 +2905,9 @@ int main(int argc, char **argv)
                             /* decoded_at_us only ever feeds the --time
                              * latency stat (both readers are want_time-
                              * gated) - skip the monotonic_us() call
-                             * otherwise. use_indexed_queue and
-                             * use_yuv_indexed_queue are mutually exclusive
-                             * (see their declarations above). */
+                             * otherwise. The three specialised queue modes
+                             * are mutually exclusive (see their declarations
+                             * above). */
                             uint64_t decoded_at = want_time ? monotonic_us() : 0;
                             int copy_ok;
                             if (use_yuv_indexed_queue) {
@@ -2894,7 +2920,8 @@ int main(int argc, char **argv)
                                 uint64_t yt0 = want_time ? monotonic_us() : 0;
                                 copy_ok = queue_copy_yuv_indexed(
                                     tail, &dec.frame, pts, decoded_at,
-                                    yuv_dst_w, yuv_dst_h, yuv_vscale);
+                                    yuv_dst_w, yuv_dst_h, yuv_vscale,
+                                    indexed_depth);
                                 if (want_time) {
                                     unsigned long us =
                                         (unsigned long)(monotonic_us() - yt0);
@@ -2905,7 +2932,24 @@ int main(int argc, char **argv)
                                 }
                             } else if (use_indexed_queue)
                                 copy_ok = queue_copy_indexed(tail, &dec.frame,
-                                                             pts, decoded_at);
+                                                             pts, decoded_at,
+                                                             indexed_depth);
+                            else if (use_yuv_rgb_queue) {
+                                uint64_t yr0 = want_time ? monotonic_us() : 0;
+                                copy_ok = queue_copy_yuv_rgb24(
+                                    tail, &dec.frame, pts, decoded_at,
+                                    use_yuv_bgr_queue,
+                                    audio ? service_audio_for_display : NULL,
+                                    &trace);
+                                if (want_time) {
+                                    unsigned long us =
+                                        (unsigned long)(monotonic_us() - yr0);
+                                    stats.yuv_rgb_us += us;
+                                    stats.yuv_rgb_frames++;
+                                    if (us > stats.yuv_rgb_max_us)
+                                        stats.yuv_rgb_max_us = us;
+                                }
+                            }
                             else
                                 copy_ok = queue_copy(tail, &dec.frame, pts,
                                                      decoded_at);
@@ -3003,17 +3047,19 @@ int main(int argc, char **argv)
      * die. */
     mr_hls_set_wait(NULL, NULL);
     mr_http_set_service(NULL, NULL);
+    hls_fetch_set_service(NULL, NULL);
 
     /* This drain loop calls display_show_rgb() directly on dec.frame.data,
-     * bypassing the queue (and so bypassing queue_copy_yuv_indexed()'s
-     * fused conversion too) - h264_flush() runs frames through the same
+     * bypassing the queue (and so bypassing queue_copy_yuv_indexed() and
+     * queue_copy_yuv_rgb24()) - h264_flush() runs frames through the same
      * emit_rgb() the normal decode path does, so with yuv_output still
      * enabled dec.frame would be MR_PIX_YUV420P and dec.frame.data would
      * be the Y plane alone, which display_show_rgb() would misread as
      * RGB24. Only ever drains the last frame or two at EOF, so falling
      * back to the ordinary (always-correct) RGB24 conversion here costs
      * nothing worth avoiding. */
-    if (use_yuv_indexed_queue) mr_h264_set_yuv_output(&dec, 0);
+    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+        mr_h264_set_yuv_output(&dec, 0);
 
     /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.
      * Drain it through the same pacing and display path so the player does not

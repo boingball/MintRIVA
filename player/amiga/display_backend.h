@@ -17,6 +17,12 @@ typedef struct {
     void  (*show)(void *handle, const unsigned char *rgb, int w, int h,
                   int stride, int dy0, int dy1,
                   mr_display_service_fn service, void *service_opaque);
+    /* Optional packed-BGR24 entry point.  P96's native RGBFB_B8G8R8 backend
+     * implements this so callers that already hold BGR can skip its per-pixel
+     * RGB channel shuffle.  NULL for backends whose public input is RGB24. */
+    void  (*show_bgr)(void *handle, const unsigned char *bgr, int w, int h,
+                      int stride, int dy0, int dy1,
+                      mr_display_service_fn service, void *service_opaque);
     int   (*timing)(void *handle, mr_display_timing *timing);
     int   (*poll)(void *handle);
     void  (*close)(void *handle);
@@ -26,37 +32,26 @@ typedef struct {
     /* Optional: signal bits a caller may Wait() on to wake for backend events. */
     ULONG (*wait_mask)(void *handle);
     int   (*toggle_fullscreen)(void *handle);
-    /* Optional: report whether this handle can accept a pre-dithered 8-bit
-     * indexed frame via show_indexed() instead of RGB24 via show(). Only
-     * ever true for the AGA backend's plain indexed configuration (depth
-     * 8, no HAM, no pixel-doubling, no resize - exactly what
-     * core/mr_dither_rgb8() encodes for); leave NULL (unsupported) for
-     * every other backend, including AGA's own HAM/scaled/resized modes -
-     * mrplay.c must not call show_indexed() unless this returned non-zero
-     * for the same handle. */
-    int   (*supports_indexed)(void *handle);
-    /* Optional: blit a pre-dithered 8-bit indexed frame - idx_stride bytes
-     * per row, one byte per pixel, already in this backend's palette index
-     * space (core/mr_dither_rgb8()'s fixed 6x6x6 cube for the AGA backend).
+    /* Optional: accept one-byte palette indices directly. Returns the active
+     * native depth through indexed_depth (4/5/8); false for HAM/scaled modes. */
+    int   (*supports_indexed)(void *handle, int *indexed_depth);
+    /* Optional: blit pre-dithered palette indices - idx_stride bytes per row,
+     * one byte per pixel, already in this backend's active palette space.
      * Only implemented (non-NULL) where supports_indexed exists. */
     void  (*show_indexed)(void *handle, const unsigned char *idx, int w,
                           int h, int idx_stride, int dy0, int dy1,
                           mr_display_service_fn service, void *service_opaque);
-    /* Optional: report whether this handle can accept a direct YUV420P ->
-     * indexed fused conversion (core/mr_yuv_dither.h's mr_yuv420_dither8())
-     * for a src_w x src_h source, filling *dst_w, *dst_h and *vscale with the
-     * geometry to produce - only ever true for the AGA backend when the
-     * fitted display needs an exact integer *vertical-only* downscale (no
-     * horizontal resize), e.g. a 640x360 source on a non-laced screen
-     * fitting 640x180 - see aga_open()'s resize computation. Distinct from
-     * supports_indexed(), which only covers the *unscaled* indexed case;
-     * the two are mutually exclusive (one requires !resize, this requires
-     * resize with an exact vertical ratio) and a caller queries both.
+    /* Optional: report whether this handle can accept direct YUV420P ->
+     * indexed conversion, filling the fitted geometry, fast-path vscale
+     * (1 or an exact vertical divisor; 0 selects general resize), and active
+     * 4/5/8-plane palette depth. A caller should prefer this over the RGB
+     * supports_indexed() route when both apply.
      * Produced buffers are consumed the same way as supports_indexed()'s -
      * via show_indexed(), called with *dst_w and *dst_h instead of the source
      * dimensions. */
     int   (*supports_yuv_indexed)(void *handle, int src_w, int src_h,
-                                  int *dst_w, int *dst_h, int *vscale);
+                                  int *dst_w, int *dst_h, int *vscale,
+                                  int *indexed_depth);
 } display_backend;
 
 extern const display_backend backend_cgx;

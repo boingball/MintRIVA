@@ -70,6 +70,17 @@ static void emit_pixel(uint8_t *dst, int luma,
     dst[2] = clip8((scaled_y + blue_add) >> 8);
 }
 
+static void emit_pixel_bgr(uint8_t *dst, int luma,
+                           int red_add, int green_add, int blue_add)
+{
+    int scaled_y;
+    if (luma < 0) luma = 0;
+    scaled_y = g_luma_x298[luma];
+    dst[0] = clip8((scaled_y + blue_add) >> 8);
+    dst[1] = clip8((scaled_y + green_add) >> 8);
+    dst[2] = clip8((scaled_y + red_add) >> 8);
+}
+
 void mr_yuv420_to_rgb24(uint8_t *dst, int dst_stride,
                         const uint8_t *y_plane, int y_stride,
                         const uint8_t *u_plane, int u_stride,
@@ -127,6 +138,71 @@ void mr_yuv420_to_rgb24(uint8_t *dst, int dst_stride,
                        g_e_x409[vv] + 128,
                        g_d_xm100[uu] + g_e_xm208[vv] + 128,
                        g_d_x516[uu] + 128);
+        }
+        if (service && (row & 15) == 15) service(service_opaque);
+    }
+}
+
+void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
+                        const uint8_t *y_plane, int y_stride,
+                        const uint8_t *u_plane, int u_stride,
+                        const uint8_t *v_plane, int v_stride,
+                        int width, int height,
+                        mr_yuv_service_fn service, void *service_opaque)
+{
+    int row;
+    if (!dst || !y_plane || !u_plane || !v_plane ||
+        width <= 0 || height <= 0)
+        return;
+    if (!g_tables_ready) build_tables();
+
+#if defined(MR_M68K_ASM)
+    /*
+     * Reuse the bit-exact hand-written RGB kernel without adding a branch to
+     * its hot pixel loop.  Swap U/V and permute the coefficient tables:
+     *
+     *   RGB kernel R slot = 409 * V' = 516 * U  -> B
+     *   RGB kernel G slot = -100*U' -208*V'     -> unchanged G
+     *   RGB kernel B slot = 516 * U' = 409 * V  -> R
+     *
+     * with U'=V and V'=U.  The kernel therefore writes B,G,R directly, with
+     * exactly the same clipping/service behaviour and no post-conversion
+     * channel shuffle.
+     */
+    mr_yuv420_to_rgb24_m68k(dst, dst_stride, y_plane, y_stride,
+                            v_plane, v_stride, u_plane, u_stride,
+                            width, height, service, service_opaque,
+                            g_luma_x298,
+                            g_d_x516,   /* kernel e_x409:  B from original U */
+                            g_e_xm208,  /* kernel d_xm100: V green term      */
+                            g_d_xm100,  /* kernel e_xm208: U green term      */
+                            g_e_x409);  /* kernel d_x516:  R from original V */
+    return;
+#endif
+
+    for (row = 0; row < height; row++) {
+        const uint8_t *src_y = y_plane + row * y_stride;
+        const uint8_t *src_u = u_plane + (row >> 1) * u_stride;
+        const uint8_t *src_v = v_plane + (row >> 1) * v_stride;
+        uint8_t *out = dst + row * dst_stride;
+        int x;
+
+        for (x = 0; x + 1 < width; x += 2) {
+            unsigned uu = src_u[x >> 1], vv = src_v[x >> 1];
+            int red_add = g_e_x409[vv] + 128;
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
+            int blue_add = g_d_x516[uu] + 128;
+            emit_pixel_bgr(out + x * 3, (int)src_y[x] - 16,
+                           red_add, green_add, blue_add);
+            emit_pixel_bgr(out + (x + 1) * 3, (int)src_y[x + 1] - 16,
+                           red_add, green_add, blue_add);
+        }
+        if (x < width) {
+            unsigned uu = src_u[x >> 1], vv = src_v[x >> 1];
+            emit_pixel_bgr(out + x * 3, (int)src_y[x] - 16,
+                           g_e_x409[vv] + 128,
+                           g_d_xm100[uu] + g_e_xm208[vv] + 128,
+                           g_d_x516[uu] + 128);
         }
         if (service && (row & 15) == 15) service(service_opaque);
     }

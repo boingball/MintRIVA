@@ -2,7 +2,7 @@
  * MintVID - AGA (planar) display backend.
  *
  * Opens a custom screen and blits each frame through a portable pixel encoder
- * (256-colour dither / HAM8 / HAM6) plus a chunky->planar step. The default
+ * (16/32/256-colour dither / HAM8 / HAM6) plus a chunky->planar step. The default
  * WritePixelArray8 remains the default; --c2p selects the portable mr_c2p8 and
  * --riva-c2p selects an opt-in 32-pixel, direct-to-plane variant for hardware
  * measurement. --kalms-c2p selects Kalms' public-domain 68030 converter.
@@ -134,134 +134,15 @@ static int chipset_has_aga(void)
     return GfxBase && (GfxBase->ChipRevBits0 & GFXF_AA_LISA) != 0;
 }
 
-/* OCS/ECS indexed output uses a fixed 4x4x2 RGB cube. Keep this native-only
- * encoder here so it does not disturb the established AGA dither hot path. */
-static const uint8_t dither5_bayer[4][4] = {
-    { 0, 8, 2, 10 }, { 12, 4, 14, 6 },
-    { 3, 11, 1, 9 }, { 15, 7, 13, 5 }
-};
-static uint8_t dither5_r[16][256], dither5_g[16][256],
-               dither5_b[16][256];
-static int dither5_ready;
-
-static void dither5_palette(uint8_t *pal)
-{
-    int r, g, b, i = 0;
-    for (r = 0; r < 4; r++)
-        for (g = 0; g < 4; g++)
-            for (b = 0; b < 2; b++) {
-                pal[i * 3 + 0] = (uint8_t)(r * 255 / 3);
-                pal[i * 3 + 1] = (uint8_t)(g * 255 / 3);
-                pal[i * 3 + 2] = (uint8_t)(b * 255);
-                i++;
-            }
-}
-
-static void dither5_build(void)
-{
-    int t, v;
-    for (t = 0; t < 16; t++)
-        for (v = 0; v < 256; v++) {
-            int v4 = v + (t - 8) * 85 / 16;
-            int v2 = v + (t - 8) * 255 / 16;
-            if (v4 < 0) v4 = 0; else if (v4 > 255) v4 = 255;
-            if (v2 < 0) v2 = 0; else if (v2 > 255) v2 = 255;
-            dither5_r[t][v] = (uint8_t)(((v4 * 3 + 127) / 255) * 8);
-            dither5_g[t][v] = (uint8_t)(((v4 * 3 + 127) / 255) * 2);
-            dither5_b[t][v] = (uint8_t)((v2 + 127) / 255);
-        }
-    dither5_ready = 1;
-}
-
-static void dither5_rgb(const uint8_t *rgb, int w, int h, int rgb_stride,
-                        uint8_t *out, int out_stride, int y_base)
-{
-    int x, y;
-    if (!dither5_ready) dither5_build();
-    for (y = 0; y < h; y++) {
-        const uint8_t *src = rgb + (size_t)y * rgb_stride;
-        uint8_t *dst = out + (size_t)y * out_stride;
-        const uint8_t *threshold = dither5_bayer[(y_base + y) & 3];
-        for (x = 0; x < w; x++) {
-            int t = threshold[x & 3];
-            dst[x] = (uint8_t)(dither5_r[t][src[x * 3 + 0]] +
-                               dither5_g[t][src[x * 3 + 1]] +
-                               dither5_b[t][src[x * 3 + 2]]);
-        }
-    }
-}
-
-/* Opt-in fast encoder (--ecs-fast): a 2x4x2 RGB cube, half the plane count of
- * the normal AGA 256-colour path (4 planes vs 8). Available on any chipset,
- * including AGA - it is a speed/quality tradeoff the user opts into, not an
- * ECS/OCS capability fallback (that is dither5_rgb() above). Shares the same
- * Bayer matrix and r*8+g*2+b index packing as dither5_rgb(). */
-static uint8_t dither4_r[16][256], dither4_g[16][256],
-               dither4_b[16][256];
-static int dither4_ready;
-
-static void dither4_palette(uint8_t *pal)
-{
-    int r, g, b, i = 0;
-    for (r = 0; r < 2; r++)
-        for (g = 0; g < 4; g++)
-            for (b = 0; b < 2; b++) {
-                pal[i * 3 + 0] = (uint8_t)(r * 255);
-                pal[i * 3 + 1] = (uint8_t)(g * 255 / 3);
-                pal[i * 3 + 2] = (uint8_t)(b * 255);
-                i++;
-            }
-}
-
-static void dither4_build(void)
-{
-    int t, v;
-    for (t = 0; t < 16; t++)
-        for (v = 0; v < 256; v++) {
-            int v4 = v + (t - 8) * 85 / 16;
-            int v2 = v + (t - 8) * 255 / 16;
-            if (v4 < 0) v4 = 0; else if (v4 > 255) v4 = 255;
-            if (v2 < 0) v2 = 0; else if (v2 > 255) v2 = 255;
-            dither4_r[t][v] = (uint8_t)(((v2 + 127) / 255) * 8);
-            dither4_g[t][v] = (uint8_t)(((v4 * 3 + 127) / 255) * 2);
-            dither4_b[t][v] = (uint8_t)((v2 + 127) / 255);
-        }
-    dither4_ready = 1;
-}
-
-static void dither4_rgb(const uint8_t *rgb, int w, int h, int rgb_stride,
-                        uint8_t *out, int out_stride, int y_base)
-{
-    int x, y;
-    if (!dither4_ready) dither4_build();
-    for (y = 0; y < h; y++) {
-        const uint8_t *src = rgb + (size_t)y * rgb_stride;
-        uint8_t *dst = out + (size_t)y * out_stride;
-        const uint8_t *threshold = dither5_bayer[(y_base + y) & 3];
-        for (x = 0; x < w; x++) {
-            int t = threshold[x & 3];
-            dst[x] = (uint8_t)(dither4_r[t][src[x * 3 + 0]] +
-                               dither4_g[t][src[x * 3 + 1]] +
-                               dither4_b[t][src[x * 3 + 2]]);
-        }
-    }
-}
-
 static void load_palette(struct Screen *scr, int ham, int depth)
 {
     ULONG tab[1 + 256 * 3 + 1];
     int   n, i;
     uint8_t pal[256 * 3];
     if (ham) { n = (ham >= 8) ? 64 : 16; mr_ham_palette(pal, ham); }
-    else if (depth == 5) {
-        n = 32;
-        dither5_palette(pal);
-    } else if (depth == 4) {
-        n = 16;
-        dither4_palette(pal);
-    } else {
-        n = 256;
-        mr_dither_palette(pal);
+    else {
+        n = depth == 4 ? 16 : depth == 5 ? 32 : 256;
+        mr_dither_palette_indexed(pal, depth);
     }
     tab[0] = ((ULONG)n << 16) | 0;
     for (i = 0; i < n; i++) {
@@ -315,7 +196,7 @@ static void *aga_open(int w, int h, const char *title)
     /* ECS/OCS Denise+Agnus cannot fetch more than 4 bitplanes' worth of data
      * per scanline at HIRES pixel rates - a genuine display DMA bandwidth
      * limit, not something AGA needed since it redesigned the fetch path.
-     * This backend's non-AGA paths normally use depth 5 (dither5_rgb, the
+     * This backend's non-AGA paths normally use depth 5 (the 4x4x2 cube, the
      * ECS/OCS 32-colour cube) or depth 6 (HAM6), both invalid HIRES bitplane
      * counts on real ECS/OCS hardware - OpenScreenTags simply fails for that
      * combination. Confirmed on real ECS hardware: a live stream narrow
@@ -539,12 +420,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                               dw, s->dh, dw * 3);
         uint8_t *encoded = s->chunky + (s->use_kalms_c2p ? s->x0 : 0);
         if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, encoded, pw, s->ham);
-        else if (s->depth == 5)
-            dither5_rgb(s->scaled, dw, s->dh, dw * 3, encoded, pw, 0);
-        else if (s->depth == 4)
-            dither4_rgb(s->scaled, dw, s->dh, dw * 3, encoded, pw, 0);
-        else
-            mr_dither_rgb8(s->scaled, dw, s->dh, dw * 3, encoded, pw, 0);
+        else mr_dither_rgb_indexed(s->scaled, dw, s->dh, dw * 3,
+                                   encoded, pw, 0, s->depth);
         ddy0 = 0; ddh = s->dh;
     } else {
         /* Encode only the changed source rows [dy0,dy1); the screen keeps the
@@ -561,12 +438,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         rows = dy1 - dy0;
         if (sc == 2) {
             if (s->ham) mr_ham_encode(src, w, rows, stride, s->enc, w, s->ham);
-            else if (s->depth == 5)
-                dither5_rgb(src, w, rows, stride, s->enc, w, dy0);
-            else if (s->depth == 4)
-                dither4_rgb(src, w, rows, stride, s->enc, w, dy0);
-            else
-                mr_dither_rgb8(src, w, rows, stride, s->enc, w, dy0);
+            else mr_dither_rgb_indexed(src, w, rows, stride, s->enc, w,
+                                       dy0, s->depth);
             mr_scale2x_u8(s->enc, w, rows, w,
                           s->chunky + (size_t)(dy0*2) * pw +
                           (s->use_kalms_c2p ? s->x0 : 0), pw);
@@ -575,12 +448,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             uint8_t *dst = s->chunky + (size_t)dy0 * pw +
                            (s->use_kalms_c2p ? s->x0 : 0);
             if (s->ham) mr_ham_encode(src, w, rows, stride, dst, pw, s->ham);
-            else if (s->depth == 5)
-                dither5_rgb(src, w, rows, stride, dst, pw, dy0);
-            else if (s->depth == 4)
-                dither4_rgb(src, w, rows, stride, dst, pw, dy0);
-            else
-                mr_dither_rgb8(src, w, rows, stride, dst, pw, dy0);
+            else mr_dither_rgb_indexed(src, w, rows, stride, dst, pw,
+                                       dy0, s->depth);
             ddy0 = dy0; ddh = rows;
         }
     }
@@ -590,27 +459,30 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
 }
 
 /*
- * Non-zero only for the plain 256-colour AGA configuration: no HAM, no pixel
- * doubling, no resize.  That is exactly the combination for which aga_show()
- * would otherwise call mr_dither_rgb8() itself with a 1:1 row mapping - here
+ * Non-zero for a plain 4-, 5- or 8-plane indexed configuration: no HAM, no
+ * pixel doubling, no resize. That is exactly when aga_show() would otherwise
+ * call mr_dither_rgb_indexed() itself with a 1:1 row mapping - here
  * the caller (mrplay.c's decode-ahead queue) has already done that dither
  * once, earlier, into the queue slot, and hands us the indexed rows directly
  * instead of paying for a second dither pass over the same pixels.
  */
-static int aga_supports_indexed(void *handle)
+static int aga_supports_indexed(void *handle, int *indexed_depth)
 {
     aga_state *s = (aga_state *)handle;
-    return s && s->depth == 8 && !s->ham && s->scale == 1 && !s->resize;
+    if (!s || s->ham || s->scale != 1 || s->resize ||
+        (s->depth != 4 && s->depth != 5 && s->depth != 8)) return 0;
+    if (indexed_depth) *indexed_depth = s->depth;
+    return 1;
 }
 
 /*
  * Non-zero whenever this AGA geometry can go straight from H.264's decoded
  * YUV420P planes to indexed pixels (core/mr_yuv_dither.h) instead of the
  * ordinary mr_yuv420_to_rgb24() -> mr_scale_resize_rgb24() -> mr_dither_rgb8()
- * pipeline, for the plain 256-colour AGA configuration. Three shapes exist:
+ * pipeline, for any plain 4-, 5- or 8-plane configuration. Three shapes exist:
  *
  *   - identity, no resize at all (s->dw==src_w, s->dh==src_h) - reported as
- *     vscale == 1 (mr_yuv420_dither8() documents vscale=1 as a valid no-op,
+ *     vscale == 1 (mr_yuv420_dither_indexed() accepts it as a valid no-op,
  *     already covered by tests/mr_yuv_dither_check.c and its m68k asm).
  *     Skipping straight from decode to indexed is strictly cheaper than
  *     decoding to RGB24 first and dithering that (aga_supports_indexed()'s
@@ -622,20 +494,23 @@ static int aga_supports_indexed(void *handle)
  *   - the exact *vertical-only* integer downscale (width unchanged, height
  *     an exact multiple of s->dh) that aga_open()'s resize computation
  *     produces for typical HIRES non-laced playback (e.g. a 640x360 source
- *     fits 640x180) - reported as vscale >= 2, for mr_yuv420_dither8()'s
+ *     fits 640x180) - reported as vscale >= 2, for the LUT-generic
  *     hand-tuned m68k asm fast path;
  *   - every other resize shape (any horizontal change, any non-integer
  *     ratio, upscale as well as downscale - e.g. the BBC HLS mobile
  *     variant's 192x108 fitted up to a 320x180 AGA screen) - reported as
- *     vscale == 0, for mr_yuv420_dither8_resize()'s general 2D
+ *     vscale == 0, for mr_yuv420_dither_indexed_resize()'s general 2D
  *     nearest-neighbour path (portable C only, no asm yet).
  */
 static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
-                                    int *dst_w, int *dst_h, int *vscale)
+                                    int *dst_w, int *dst_h, int *vscale,
+                                    int *indexed_depth)
 {
     aga_state *s = (aga_state *)handle;
-    if (!s || s->depth != 8 || s->ham || s->scale != 1) return 0;
+    if (!s || s->ham || s->scale != 1 ||
+        (s->depth != 4 && s->depth != 5 && s->depth != 8)) return 0;
     if (src_w <= 0 || src_h <= 0) return 0;
+    if (indexed_depth) *indexed_depth = s->depth;
     if (!s->resize) {
         *dst_w = s->w; *dst_h = s->h; *vscale = 1;
         return 1;
@@ -684,7 +559,7 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     { clock_t a = 0;
     if (g_display_want_time) a = clock();
     /* Already-dithered rows: a plain per-row copy into the padded chunky
-     * layout, no LUT arithmetic - mr_dither_rgb8() already ran once, in
+     * layout, no LUT arithmetic - mr_dither_rgb_indexed() already ran once, in
      * queue_copy_indexed(), when this frame was queued. */
     for (y = dy0; y < dy1; y++) {
         const uint8_t *sr = idx + (size_t)y * idx_stride;
@@ -721,13 +596,59 @@ static int aga_poll(void *handle)
 static void aga_close(void *handle)
 {
     aga_state *s = (aga_state *)handle;
+    struct IntuiMessage *msg;
+    int attempt;
+
     if (!s) return;
+
+    /*
+     * Custom planar screens are shared Intuition/graphics objects.  On real
+     * hardware CloseWindow() returning does not guarantee that the last IDCMP
+     * message or blit/screen reference has disappeared on the same instruction.
+     * Losing the Screen pointer after a failed CloseScreen() leaves Workbench
+     * in a very unhappy state, so make shutdown deliberately conservative.
+     */
+    if (s->win) {
+        ModifyIDCMP(s->win, 0);
+        if (s->win->UserPort) {
+            while ((msg = (struct IntuiMessage *)GetMsg(s->win->UserPort)))
+                ReplyMsg((struct Message *)msg);
+        }
+    }
+
+    WaitBlit();
+
+    if (s->win) {
+        CloseWindow(s->win);
+        s->win = NULL;
+        /* Give Intuition two frames to retire window/layer references. */
+        WaitTOF();
+        WaitTOF();
+    }
+
+    if (s->scr) {
+        for (attempt = 0; attempt < 50; attempt++) {
+            if (CloseScreen(s->scr)) {
+                s->scr = NULL;
+                break;
+            }
+            WaitTOF();
+        }
+        if (s->scr) {
+            ScreenToBack(s->scr);
+            printf("planar: WARNING custom screen still busy after "
+                   "50 VBlanks (shutdown)\n");
+        } else if (attempt > 0) {
+            printf("planar: custom screen closed after %d VBlank(s) "
+                   "(shutdown)\n", attempt);
+        }
+    }
+
+    /* Keep all frame/blit storage alive until graphics has quiesced above. */
     if (s->enc) free(s->enc);
     if (s->scaled) free(s->scaled);
     if (s->chunky) free(s->chunky);
     if (s->tempbm) FreeBitMap(s->tempbm);
-    if (s->win) CloseWindow(s->win);
-    if (s->scr) CloseScreen(s->scr);
     s_kalms_active = 0;
     free(s);
 }

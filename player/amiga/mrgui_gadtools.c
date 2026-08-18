@@ -61,7 +61,8 @@ typedef struct gt_app {
 static STRPTR c2p_labels[] = {(STRPTR)"C2P: Standard", (STRPTR)"C2P: CD32",
                              (STRPTR)"C2P: Kalms", NULL};
 static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
-                              (STRPTR)"H.264: Balanced", (STRPTR)"H.264: Fast", NULL};
+                              (STRPTR)"H.264: Balanced", (STRPTR)"H.264: Fast",
+                              (STRPTR)"H.264: Turbo", (STRPTR)"H.264: Turbo+", NULL};
 static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
                                     (STRPTR)"Audio: Low", NULL};
 static const struct TextAttr topaz = {(STRPTR)"topaz.font", 8, 0, 0};
@@ -112,7 +113,7 @@ static void read_options(gt_app *app, mr_play_options *options)
                                                : MR_DISPLAY_AGA;
     options->c2p = c2p == 1 ? MR_C2P_AKIKO :
                    c2p == 2 ? MR_C2P_KALMS : MR_C2P_STANDARD;
-    options->h264_performance = h264 <= MR_H264_PERF_FAST
+    options->h264_performance = h264 <= MR_H264_PERF_TURBO_PLUS
                               ? (mr_h264_performance)h264
                               : MR_H264_PERF_AUTO;
     options->laced = gad_value(app, app->lace, GTCB_Checked) != 0;

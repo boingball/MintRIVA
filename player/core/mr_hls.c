@@ -416,7 +416,17 @@ static int open_seg(hls_source *h, size_t i)
     if (g_verbose)
         printf("HLS: opening segment %lu of %lu\n",
                (unsigned long)(i + 1), (unsigned long)h->nsegs);
-    if (h->have_options && h->options.hls_buffer_segments)
+    /* A fetch override (e.g. amiga/hls_fetch.c's background worker) only
+     * intercepts the complete-body fetch functions (mr_http_fetch_text()/
+     * mr_http_fetch_buffer()), not the streaming mr_http_source_open_ex()
+     * path hls_open() falls back to - that path opens its own connection
+     * directly and would bypass the override, breaking the "only one task
+     * ever touches this session's HTTP/S state" invariant it exists for. So
+     * force the buffered path whenever an override is active, regardless of
+     * hls_buffer_segments (every override-routed fetch is already a
+     * complete-body fetch, a strict superset of what that option asks for). */
+    if (mr_http_fetch_override_active() ||
+        (h->have_options && h->options.hls_buffer_segments))
         s = hls_open_buffered(h->segs[i], &h->options);
     else
         s = hls_open(h->segs[i], h->have_options ? &h->options : NULL, 1);
@@ -446,6 +456,15 @@ static int open_seg(hls_source *h, size_t i)
     if (timing)
         mr_source_timing_add_hls_segment((unsigned long)
             ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
+    /* Best-effort background lookahead for the next segment, if its URL is
+     * already known - a no-op unless a fetch override installed a hint (see
+     * mr_http_prefetch_hint()). Never fires for a not-yet-discovered next
+     * segment (i+1 == h->nsegs at the live edge), which is also exactly the
+     * case hls_refetch_live()'s playlist poll needs the worker free for -
+     * see amiga/hls_fetch.c's design note on this. */
+    if (i + 1 < h->nsegs)
+        mr_http_prefetch_hint(h->segs[i + 1],
+                              h->have_options ? &h->options : NULL);
     return 1;
 }
 
@@ -499,7 +518,7 @@ static int hls_refetch_live(hls_source *h)
                           h->have_options ? &h->options : NULL);
         if (!text) return 0;                       /* playlist gone / error    */
         st = merge_playlist(text, h->playlist_url, h, &added);
-        free(text);
+        mr_free(text);
         if (st != MR_OK) return 0;
         if (added > 0) return 1;                    /* fresh segments to play   */
         if (!h->live) return 0;                     /* ENDLIST arrived: done    */
@@ -567,28 +586,28 @@ mr_source *mr_hls_source_open_ex(const char *url,
     if (strstr(text, "#EXT-X-STREAM-INF")) {
         if (g_verbose) printf("HLS: master playlist received\n");
         if (!pick_variant(text, url, media_url, sizeof media_url, options)) {
-            free(text);
+            mr_free(text);
             mr_source_set_error("no playable variant in HLS master playlist");
             return NULL;
         }
         if (g_verbose) printf("HLS: compatible media variant selected\n");
-        free(text);
+        mr_free(text);
         text = fetch_text(media_url, options);
         if (!text) return NULL;
         base = media_url;
         if (strstr(text, "#EXT-X-STREAM-INF")) {
-            free(text);
+            mr_free(text);
             mr_source_set_error("nested HLS master playlist is not supported");
             return NULL;
         }
     }
 
     h = (hls_source *)calloc(1, sizeof *h);
-    if (!h) { free(text); mr_source_set_error("out of memory for HLS"); return NULL; }
+    if (!h) { mr_free(text); mr_source_set_error("out of memory for HLS"); return NULL; }
     if (options) {
         if (!mr_http_options_init(&h->options, options->user_agent,
                                   options->referer)) {
-            free(text);
+            mr_free(text);
             hls_close(h);
             return NULL;
         }
@@ -602,7 +621,7 @@ mr_source *mr_hls_source_open_ex(const char *url,
         h->options.hls_max_fps = options->hls_max_fps;
     }
     st = merge_playlist(text, base, h, &added);
-    free(text);
+    mr_free(text);
     if (st != MR_OK) { hls_close(h); return NULL; }
     if (!h->nsegs) {
         hls_close(h);

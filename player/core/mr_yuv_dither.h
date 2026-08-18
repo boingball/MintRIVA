@@ -1,5 +1,5 @@
 /*
- * MintVID - direct YUV420P -> 8-bit indexed conversion, fused with an exact
+ * MintVID - direct YUV420P -> indexed conversion, fused with an exact
  * integer vertical decimation.
  *
  * For AGA playback where the fitted display height is an exact integer
@@ -7,7 +7,7 @@
  * non-laced AGA screen needs 640x180, a clean 2:1 vertical fit with no
  * horizontal change - see display_aga.c's aga_open()), this replaces the
  * three-stage mr_yuv420_to_rgb24() -> mr_scale_resize_rgb24() ->
- * mr_dither_rgb8() pipeline with one pass over only the rows that survive
+ * mr_dither_rgb_indexed() pipeline with one pass over only the rows that survive
  * the downscale, entirely skipping the intermediate RGB24 buffers (both the
  * full-resolution one and the resized one).
  */
@@ -41,6 +41,16 @@ void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
                        int width, int height, int vscale,
                        uint8_t *out, int out_stride, int y_base);
 
+/* Depth-generic form used by native planar output. depth=4 selects the
+ * 2x4x2 16-colour cube, depth=5 selects the 4x4x2 32-colour cube, and depth=8
+ * retains the established 6x6x6 palette. All three dispatch through the same
+ * LUT-driven m68k assembly for identity/integer vertical scaling. */
+void mr_yuv420_dither_indexed(const uint8_t *y_plane, int y_stride,
+                              const uint8_t *u_plane, int u_stride,
+                              const uint8_t *v_plane, int v_stride,
+                              int width, int height, int vscale, int depth,
+                              uint8_t *out, int out_stride, int y_base);
+
 /*
  * General nearest-neighbour resize + dither fusion: dst_w/dst_h may differ
  * from width/height in either direction (upscale or downscale, horizontal
@@ -65,5 +75,12 @@ void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
                               int width, int height,
                               uint8_t *out, int dst_w, int dst_h,
                               int out_stride, int y_base);
+
+void mr_yuv420_dither_indexed_resize(const uint8_t *y_plane, int y_stride,
+                                     const uint8_t *u_plane, int u_stride,
+                                     const uint8_t *v_plane, int v_stride,
+                                     int width, int height, int depth,
+                                     uint8_t *out, int dst_w, int dst_h,
+                                     int out_stride, int y_base);
 
 #endif /* MR_YUV_DITHER_H */

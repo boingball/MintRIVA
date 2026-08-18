@@ -9,6 +9,7 @@
 #include "ih264d_structs.h"
 #include "ih264d_function_selector.h"
 #include "ih264_m68k_optim.h"
+#include "ih264_m68k_bs.h"
 #include "ih264d_stage_profile.h"
 
 void ih264d_init_function_ptr(dec_struct_t *codec)
@@ -62,6 +63,10 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_default_weighted_pred_luma_m68k;
     codec->pf_default_weighted_pred_chroma =
         mr_ih264_default_weighted_pred_chroma_m68k;
+    codec->pf_weighted_pred_luma = mr_ih264_weighted_pred_luma_m68k;
+    codec->pf_weighted_pred_chroma = mr_ih264_weighted_pred_chroma_m68k;
+    codec->pf_weighted_bi_pred_luma = mr_ih264_weighted_bi_pred_luma_m68k;
+    codec->pf_weighted_bi_pred_chroma = mr_ih264_weighted_bi_pred_chroma_m68k;
     codec->apf_intra_pred_luma_16x16[0] =
         mr_ih264_intra_pred_luma_16x16_vert_m68k;
     codec->apf_intra_pred_luma_16x16[1] =
@@ -73,6 +78,28 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->apf_intra_pred_luma_4x4[0] = mr_ih264_intra_pred_luma_4x4_vert_m68k;
     codec->apf_intra_pred_luma_4x4[1] = mr_ih264_intra_pred_luma_4x4_horz_m68k;
     codec->apf_intra_pred_luma_4x4[2] = mr_ih264_intra_pred_luma_4x4_dc_m68k;
+    codec->apf_intra_pred_luma_8x8[0] = mr_ih264_intra_pred_luma_8x8_vert_m68k;
+    codec->apf_intra_pred_luma_8x8[1] = mr_ih264_intra_pred_luma_8x8_horz_m68k;
+    codec->apf_intra_pred_luma_8x8[2] = mr_ih264_intra_pred_luma_8x8_dc_m68k;
+    codec->apf_intra_pred_luma_8x8[3] =
+        mr_ih264_intra_pred_luma_8x8_diag_dl_m68k;
+    codec->apf_intra_pred_luma_8x8[4] =
+        mr_ih264_intra_pred_luma_8x8_diag_dr_m68k;
+    codec->apf_intra_pred_luma_8x8[5] =
+        mr_ih264_intra_pred_luma_8x8_vert_r_m68k;
+    codec->apf_intra_pred_luma_8x8[6] =
+        mr_ih264_intra_pred_luma_8x8_horz_d_m68k;
+    codec->apf_intra_pred_luma_8x8[7] =
+        mr_ih264_intra_pred_luma_8x8_vert_l_m68k;
+    codec->apf_intra_pred_luma_8x8[8] =
+        mr_ih264_intra_pred_luma_8x8_horz_u_m68k;
+    codec->pf_intra_pred_ref_filtering =
+        mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k;
+    codec->apf_intra_pred_chroma[0] = mr_ih264_intra_pred_chroma_8x8_vert_m68k;
+    codec->apf_intra_pred_chroma[1] = mr_ih264_intra_pred_chroma_8x8_horz_m68k;
+    codec->apf_intra_pred_chroma[2] = mr_ih264_intra_pred_chroma_8x8_dc_m68k;
+    codec->apf_intra_pred_chroma[3] =
+        mr_ih264_intra_pred_chroma_8x8_plane_m68k;
     codec->pf_deblk_luma_vert_bs4 = mr_ih264_deblk_luma_vert_bs4_m68k;
     codec->pf_deblk_luma_horz_bs4 = mr_ih264_deblk_luma_horz_bs4_m68k;
     codec->pf_deblk_luma_vert_bslt4 = mr_ih264_deblk_luma_vert_bslt4_m68k;
@@ -90,6 +117,18 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
         mr_ih264_iquant_itrans_recon_chroma_4x4_m68k;
     codec->pf_iquant_itrans_recon_chroma_4x4_dc =
         mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k;
+    codec->pf_iquant_itrans_recon_luma_8x8 =
+        mr_ih264_iquant_itrans_recon_8x8_m68k;
+    codec->pf_iquant_itrans_recon_luma_8x8_dc =
+        mr_ih264_iquant_itrans_recon_8x8_dc_m68k;
+    codec->pf_fill_bs1[0][0] =
+        mr_ih264d_fill_bs1_16x16mb_pslice_m68k;
+    codec->pf_fill_bs1[0][1] =
+        mr_ih264d_fill_bs1_non16x16mb_pslice_m68k;
+    codec->pf_fill_bs1[1][0] =
+        mr_ih264d_fill_bs1_16x16mb_bslice_m68k;
+    codec->pf_fill_bs1[1][1] =
+        mr_ih264d_fill_bs1_non16x16mb_bslice_m68k;
 #endif
 #if defined(MR_H264_STAGE_PROFILE)
     /* Diagnostic-only, opt-in: wraps whatever is now sitting in the

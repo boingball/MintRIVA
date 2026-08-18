@@ -168,7 +168,11 @@ static int append_playback_flags(char *out, size_t cap,
         const char *mode = o->h264_performance == MR_H264_PERF_QUALITY
                          ? "--h264-speed=quality" :
                            o->h264_performance == MR_H264_PERF_BALANCED
-                         ? "--h264-speed=balanced" : "--h264-speed=fast";
+                         ? "--h264-speed=balanced" :
+                           o->h264_performance == MR_H264_PERF_TURBO
+                         ? "--h264-speed=turbo" :
+                           o->h264_performance == MR_H264_PERF_TURBO_PLUS
+                         ? "--h264-speed=turbo+" : "--h264-speed=fast";
         if (!append_option(out, cap, mode)) return 0;
     }
     if (o->no_audio) {
@@ -188,6 +192,13 @@ int mr_build_player_arguments(char *out, size_t cap,
     if (!o) { mr_play_options_default(&defaults); o = &defaults; }
     out[0] = 0;
     if (!append_playback_flags(out, cap, o, 0)) return 0;
+    /* P96's direct bitmap-lock backend is fullscreen-only.  GUI callers
+     * select P96 as a display mode but do not have a separate startup
+     * fullscreen option, so enter fullscreen before display_open().  This
+     * lets display_p96 open its private screen instead of rejecting a
+     * windowed P96 launch and falling back to CGX/WritePixelArray. */
+    if (o->display == MR_DISPLAY_P96 &&
+        !append_option(out, cap, "--fullscreen")) return 0;
     if (ua && *ua &&
         (!append_option(out, cap, "--user-agent") ||
          !append_quoted(out, cap, ua))) return 0;
@@ -259,6 +270,9 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "quality")) o->h264_performance = MR_H264_PERF_QUALITY;
             else if (!strcmp(value, "balanced")) o->h264_performance = MR_H264_PERF_BALANCED;
             else if (!strcmp(value, "fast")) o->h264_performance = MR_H264_PERF_FAST;
+            else if (!strcmp(value, "turbo")) o->h264_performance = MR_H264_PERF_TURBO;
+            else if (!strcmp(value, "turbo+") || !strcmp(value, "turbo-plus"))
+                o->h264_performance = MR_H264_PERF_TURBO_PLUS;
             else goto bad;
         }
         else if (!strncmp(arg, "--audio-rate=", 13)) {
@@ -308,7 +322,9 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
     hls_policy_text(o, hls, sizeof hls);
     h264 = o->h264_performance == MR_H264_PERF_QUALITY ? "Quality" :
            o->h264_performance == MR_H264_PERF_BALANCED ? "Balanced" :
-           o->h264_performance == MR_H264_PERF_FAST ? "Fast" : "Auto";
+           o->h264_performance == MR_H264_PERF_FAST ? "Fast" :
+           o->h264_performance == MR_H264_PERF_TURBO ? "Turbo" :
+           o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" : "Auto";
     audio = audio_policy_text(o);
     if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
         snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s%s",

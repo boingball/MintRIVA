@@ -23,6 +23,18 @@ void mr_ih264_intra_pred_luma_4x4_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
                                              WORD32, WORD32);
 void mr_ih264_intra_pred_luma_4x4_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
                                            WORD32, WORD32);
+void mr_ih264_intra_pred_luma_8x8_vert_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                             WORD32, WORD32);
+void mr_ih264_intra_pred_luma_8x8_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                             WORD32, WORD32);
+void mr_ih264_intra_pred_luma_8x8_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                           WORD32, WORD32);
+void mr_ih264_intra_pred_chroma_8x8_vert_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                              WORD32, WORD32);
+void mr_ih264_intra_pred_chroma_8x8_horz_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                              WORD32, WORD32);
+void mr_ih264_intra_pred_chroma_8x8_dc_m68k(UWORD8 *, UWORD8 *, WORD32,
+                                            WORD32, WORD32);
 
 /* Hand-written m68k assembly (ih264_m68k_interp.S) - only assembled/linked
  * when MR_M68K_ASM is set (Makefile.amiga, tests/run_m68k_check.sh), hence
@@ -112,6 +124,26 @@ void mr_ih264_inter_pred_chroma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
                                      WORD32, WORD32, WORD32, WORD32)
     __asm__("mr_ih264_inter_pred_chroma_m68k");
 
+/* ih264_m68k_weighted_pred.S - explicit weighted prediction for P/B slices
+ * (spec 8.4.2.3.2).  Chroma weights/offsets use libavc's packed U/V ABI. */
+void mr_ih264_weighted_pred_luma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
+                                      WORD32, WORD32, WORD32, WORD32, WORD32)
+    __asm__("mr_ih264_weighted_pred_luma_m68k");
+void mr_ih264_weighted_pred_chroma_m68k(UWORD8 *, UWORD8 *, WORD32, WORD32,
+                                        WORD32, WORD32, WORD32, WORD32,
+                                        WORD32)
+    __asm__("mr_ih264_weighted_pred_chroma_m68k");
+void mr_ih264_weighted_bi_pred_luma_m68k(UWORD8 *, UWORD8 *, UWORD8 *,
+                                         WORD32, WORD32, WORD32, WORD32,
+                                         WORD32, WORD32, WORD32, WORD32,
+                                         WORD32, WORD32)
+    __asm__("mr_ih264_weighted_bi_pred_luma_m68k");
+void mr_ih264_weighted_bi_pred_chroma_m68k(UWORD8 *, UWORD8 *, UWORD8 *,
+                                           WORD32, WORD32, WORD32, WORD32,
+                                           WORD32, WORD32, WORD32, WORD32,
+                                           WORD32, WORD32)
+    __asm__("mr_ih264_weighted_bi_pred_chroma_m68k");
+
 /* ih264_m68k_mvpred.S - motion vector prediction (spec 8.4.1.2.1), ported
  * from ih264d_get_motion_vector_predictor(). Struct layouts are opaque
  * here deliberately (see ih264_m68k_cabac.S's declaration above for why),
@@ -137,6 +169,14 @@ UWORD8 mr_ih264d_read_coeff4x4_cabac_m68k(void *ps_bitstrm, UWORD32 u4_ctxcat,
                                           void *ps_dec,
                                           UWORD8 *ps_ctxt_coded)
     __asm__("mr_ih264d_read_coeff4x4_cabac_m68k");
+
+/* ih264_m68k_cabac_coeff8x8.S - CABAC 8x8-transform residual coefficient
+ * parsing (High Profile transform_size_8x8_flag path), ported from
+ * ih264d_read_coeff8x8_cabac(). ps_bitstrm/ps_dec/ps_cur_mb_info are
+ * opaque void* for the same reason as the 4x4 declaration above. */
+void mr_ih264d_read_coeff8x8_cabac_m68k(void *ps_bitstrm, void *ps_dec,
+                                        void *ps_cur_mb_info)
+    __asm__("mr_ih264d_read_coeff8x8_cabac_m68k");
 
 /* ih264_m68k_iquant_itrans_recon.S - 4x4 inverse quant/transform/recon
  * (ih264_iquant_itrans_recon_4x4/_dc and _chroma_4x4/_dc). Plain function-
@@ -186,6 +226,28 @@ void mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k(WORD16 *pi2_src,
                                                      WORD16 *pi2_tmp,
                                                      WORD16 *pi2_dc_src)
     __asm__("mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k");
+void mr_ih264_iquant_itrans_recon_8x8_m68k(WORD16 *pi2_src, UWORD8 *pu1_pred,
+                                           UWORD8 *pu1_out, WORD32 pred_strd,
+                                           WORD32 out_strd,
+                                           const UWORD16 *pu2_iscal_mat,
+                                           const UWORD16 *pu2_weigh_mat,
+                                           UWORD32 u4_qp_div_6,
+                                           WORD16 *pi2_tmp,
+                                           WORD32 iq_start_idx,
+                                           WORD16 *pi2_dc_ld_addr)
+    __asm__("mr_ih264_iquant_itrans_recon_8x8_m68k");
+void mr_ih264_iquant_itrans_recon_8x8_dc_m68k(WORD16 *pi2_src,
+                                              UWORD8 *pu1_pred,
+                                              UWORD8 *pu1_out,
+                                              WORD32 pred_strd,
+                                              WORD32 out_strd,
+                                              const UWORD16 *pu2_iscal_mat,
+                                              const UWORD16 *pu2_weigh_mat,
+                                              UWORD32 u4_qp_div_6,
+                                              WORD16 *pi2_tmp,
+                                              WORD32 iq_start_idx,
+                                              WORD16 *pi2_dc_ld_addr)
+    __asm__("mr_ih264_iquant_itrans_recon_8x8_dc_m68k");
 
 /* ih264_m68k_intra_pred.S - H.264 8.3.3.4 luma 16x16 plane intra
  * prediction (ih264_intra_pred_luma_16x16_mode_plane). Genuine hand asm
@@ -200,6 +262,65 @@ void mr_ih264_intra_pred_luma_16x16_plane_m68k(UWORD8 *pu1_src,
                                                WORD32 dst_strd,
                                                WORD32 ngbr_avail)
     __asm__("mr_ih264_intra_pred_luma_16x16_plane_m68k");
+
+/* ih264_m68k_intra_pred.S - H.264 8.3.2.2 luma 8x8 diagonal_down_left/
+ * diagonal_down_right intra prediction. See that file's own header
+ * comment (above the FILT121/FILT11 subroutines) for the shared S[]
+ * neighbour-buffer layout these and the remaining 8x8 modes use. */
+void mr_ih264_intra_pred_luma_8x8_diag_dl_m68k(UWORD8 *pu1_src,
+                                               UWORD8 *pu1_dst,
+                                               WORD32 src_strd,
+                                               WORD32 dst_strd,
+                                               WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_8x8_diag_dl_m68k");
+void mr_ih264_intra_pred_luma_8x8_diag_dr_m68k(UWORD8 *pu1_src,
+                                               UWORD8 *pu1_dst,
+                                               WORD32 src_strd,
+                                               WORD32 dst_strd,
+                                               WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_8x8_diag_dr_m68k");
+void mr_ih264_intra_pred_luma_8x8_vert_r_m68k(UWORD8 *pu1_src,
+                                              UWORD8 *pu1_dst,
+                                              WORD32 src_strd,
+                                              WORD32 dst_strd,
+                                              WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_8x8_vert_r_m68k");
+void mr_ih264_intra_pred_luma_8x8_horz_d_m68k(UWORD8 *pu1_src,
+                                              UWORD8 *pu1_dst,
+                                              WORD32 src_strd,
+                                              WORD32 dst_strd,
+                                              WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_8x8_horz_d_m68k");
+void mr_ih264_intra_pred_luma_8x8_vert_l_m68k(UWORD8 *pu1_src,
+                                              UWORD8 *pu1_dst,
+                                              WORD32 src_strd,
+                                              WORD32 dst_strd,
+                                              WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_8x8_vert_l_m68k");
+void mr_ih264_intra_pred_luma_8x8_horz_u_m68k(UWORD8 *pu1_src,
+                                              UWORD8 *pu1_dst,
+                                              WORD32 src_strd,
+                                              WORD32 dst_strd,
+                                              WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_8x8_horz_u_m68k");
+void mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k(UWORD8 *pu1_left,
+                                                      UWORD8 *pu1_topleft,
+                                                      UWORD8 *pu1_top,
+                                                      UWORD8 *pu1_dst,
+                                                      WORD32 src_strd,
+                                                      WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_luma_8x8_ref_filtering_m68k");
+
+/* ih264_m68k_intra_pred.S - H.264 8.3.4.4 chroma_8x8 plane intra
+ * prediction. See that file's own header comment on this function for
+ * the two-pass (U then V) design and the chroma S[] neighbour-buffer
+ * layout it shares with ih264_m68k_optim.c's chroma vert/horz/dc. */
+void mr_ih264_intra_pred_chroma_8x8_plane_m68k(UWORD8 *pu1_src,
+                                               UWORD8 *pu1_dst,
+                                               WORD32 src_strd,
+                                               WORD32 dst_strd,
+                                               WORD32 ngbr_avail)
+    __asm__("mr_ih264_intra_pred_chroma_8x8_plane_m68k");
 #endif
 
 #endif
