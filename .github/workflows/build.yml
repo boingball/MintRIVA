@@ -12,12 +12,28 @@ name: Build
 # relaxed-alignment execution (see player/tests/run_m68k_check.sh and
 # CLAUDE.md) - a hand-asm bug that only misbehaves on real m68k codegen
 # cannot be caught by `build` compiling cleanly.
+#
+# `nightly` builds all three Amiga CPU profiles and updates one rolling
+# GitHub pre-release. It runs after conformance on pushes to main and once
+# per night. Normal numbered releases remain separate.
 
 on:
   push:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish_nightly:
+        description: "Build and publish the rolling Nightly release (main only)"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "17 2 * * *"
+      timezone: "Europe/London"
+
+permissions:
+  contents: read
 
 jobs:
   conformance:
@@ -49,6 +65,9 @@ jobs:
         run: sh tests/run_m68k_check.sh
 
   build:
+    # The scheduled run is for the three-profile Nightly build below, so avoid
+    # doing a duplicate single-profile Amiga build first.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -94,3 +113,174 @@ jobs:
             player/ytgui-GT
             player/mr_decode
           if-no-files-found: error
+          retention-days: 14
+
+  nightly:
+    # Scheduled workflows run from main. Automatic publishing is also limited
+    # to main so the public Nightly never points at an arbitrary feature branch.
+    needs: conformance
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main' &&
+       inputs.publish_nightly == true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    concurrency:
+      group: mintvid-nightly-release
+      cancel-in-progress: true
+
+    steps:
+      - name: Check out the code and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build 68030, 68040 and 68060 release sets
+        run: |
+          docker run --rm -v "$PWD":/src -w /src/player \
+            sacredbanana/amiga-compiler:m68k-amigaos \
+            bash -c '
+              set -e
+              AMIGA_GCC="$(command -v m68k-amigaos-gcc)"
+              AMIGA_ROOT="$(dirname "$(dirname "$AMIGA_GCC")")"
+              echo "Compiler: $AMIGA_GCC"
+              "$AMIGA_GCC" --version | head -1
+              make -f Makefile.amiga release \
+                AMIGA_ROOT="$AMIGA_ROOT" \
+                SSL=1 SSLCERTS=1
+            '
+
+      - name: Confirm the release sets were produced
+        shell: bash
+        run: |
+          set -euo pipefail
+          for cpu in 030 040 060; do
+            dir="player/release/MintVID${cpu}"
+            echo "Checking $dir"
+            test -d "$dir"
+            for program in \
+              mrplay mrgui iptvgui ytgui \
+              mrgui-GT iptvgui-GT ytgui-GT mr_decode
+            do
+              test -f "$dir/$program"
+            done
+          done
+          find player/release -maxdepth 2 -type f -print | sort
+
+      - name: Create Nightly package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+
+          cat > player/release/NIGHTLY.txt <<EOF
+          MintVID Nightly Build
+          =====================
+
+          Built:  ${BUILD_DATE}
+          Commit: ${GITHUB_SHA}
+          Ref:    ${GITHUB_REF_NAME}
+          Run:    ${GITHUB_RUN_NUMBER}
+
+          This is an automated development build and may contain experimental
+          changes. For normal use, prefer a numbered stable MintVID release.
+
+          Included CPU builds:
+            MintVID030 - Motorola 68030+
+            MintVID040 - Motorola 68040+
+            MintVID060 - Motorola 68060
+          EOF
+
+          cp README player/release/README
+          cp README.md player/release/README.md
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          source = Path("player/release")
+          target = Path("dist/MintVID-Nightly.zip")
+
+          with zipfile.ZipFile(
+              target, "w",
+              compression=zipfile.ZIP_DEFLATED,
+              compresslevel=9
+          ) as archive:
+              for path in sorted(source.rglob("*")):
+                  if path.is_file():
+                      archive.write(path, path.relative_to(source))
+
+          print(f"Created {target} ({target.stat().st_size} bytes)")
+          PY
+
+          sha256sum dist/MintVID-Nightly.zip > dist/MintVID-Nightly.zip.sha256
+
+          cat > dist/nightly-notes.md <<EOF
+          Automated MintVID development build.
+
+          **Built:** ${BUILD_DATE}
+          **Ref:** \`${GITHUB_REF_NAME}\`
+          **Commit:** \`${GITHUB_SHA}\`
+          **Actions run:** #${GITHUB_RUN_NUMBER}
+
+          The ZIP contains ready-to-run **68030**, **68040** and **68060**
+          directories plus the plain-text and Markdown README files.
+
+          This is a **pre-release/nightly** build. Numbered releases remain the
+          recommended stable downloads.
+          EOF
+
+          ls -lh dist/MintVID-Nightly.zip dist/MintVID-Nightly.zip.sha256
+
+      - name: Upload Nightly as an Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MintVID-Nightly-${{ github.sha }}
+          path: |
+            dist/MintVID-Nightly.zip
+            dist/MintVID-Nightly.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish rolling GitHub Nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Keep one permanent rolling tag/release rather than creating a new
+          # GitHub Release every day.
+          git tag -f nightly "$GITHUB_SHA"
+          git push --force origin refs/tags/nightly
+
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly \
+              --title "MintVID Nightly" \
+              --notes-file dist/nightly-notes.md \
+              --prerelease
+
+            gh release upload nightly \
+              dist/MintVID-Nightly.zip \
+              dist/MintVID-Nightly.zip.sha256 \
+              --clobber
+          else
+            gh release create nightly \
+              dist/MintVID-Nightly.zip \
+              dist/MintVID-Nightly.zip.sha256 \
+              --verify-tag \
+              --title "MintVID Nightly" \
+              --notes-file dist/nightly-notes.md \
+              --prerelease \
+              --latest=false
+          fi
