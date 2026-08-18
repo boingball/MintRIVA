@@ -3,6 +3,15 @@ name: Build
 # Compile MintVID for AmigaOS (m68k) on every push and pull request.
 # MintVID uses submodules for MintAMP and libavc, so checkout must recurse.
 # The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
+#
+# The `build` job only proves the AmigaOS cross-compile links: it does not
+# run any decoder. `conformance` is what actually exercises the portable
+# core - `make check`/`check-audio` decode real fixtures and diff against
+# ffmpeg on the host (x86-64), and `make check-m68k` cross-builds the same
+# suite for m68k-linux-gnu and runs it under qemu-m68k for real big-endian,
+# relaxed-alignment execution (see player/tests/run_m68k_check.sh and
+# CLAUDE.md) - a hand-asm bug that only misbehaves on real m68k codegen
+# cannot be caught by `build` compiling cleanly.
 
 on:
   push:
@@ -11,6 +20,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the code and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ffmpeg (conformance oracle) and the m68k cross toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            ffmpeg gcc-m68k-linux-gnu binutils-m68k-linux-gnu qemu-user
+
+      - name: make check (host, video codecs vs ffmpeg)
+        working-directory: player
+        run: make check
+
+      - name: make check-audio (host, MP3/AAC/LATM/AC-3 vs ffmpeg)
+        working-directory: player
+        run: make check-audio
+
+      - name: make check-m68k (real m68k/big-endian codegen under qemu)
+        working-directory: player
+        run: sh tests/run_m68k_check.sh
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30

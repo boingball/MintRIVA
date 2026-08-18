@@ -115,8 +115,16 @@
  * used for this - pointer alignment differs by target):
  *   dec_struct_t:                96=s_cab_dec_env, 252=pv_parse_tu_coeff_data,
  *                                452=p_coeff_abs_level_minus1_t[LUMA_8X8_CTXCAT],
- *                                42408=s_high_profile
- *   high_profile_tools_t (relative to s_high_profile, so 42408+N below):
+ *                                42424=s_high_profile (was 42408 before the
+ *                                "Backport safe H.264 frame skipping" change
+ *                                to the vendored libavc fork inserted four
+ *                                new UWORD32/WORD32 fields into dec_struct_t
+ *                                ahead of s_high_profile - the 4x4 port
+ *                                doesn't reference s_high_profile at all, so
+ *                                that change silently invalidated only this
+ *                                file's hardcoded offset; recomputed with
+ *                                offsetof() under the current submodule pin)
+ *   high_profile_tools_t (relative to s_high_profile, so 42424+N below):
  *                                518=ps_sigcoeff_8x8_frame,
  *                                530=ps_sigcoeff_8x8_field
  *   dec_mb_info_t:                54=ps_curmb
@@ -214,12 +222,12 @@ mr_ih264d_read_coeff8x8_cabac_m68k:
 
 	tst.b	%d3
 	bne.b	.Lc8_field
-	lea	42408+518(%a4),%a0		/* &ps_dec->s_high_profile.ps_sigcoeff_8x8_frame */
+	lea	42424+518(%a4),%a0		/* &ps_dec->s_high_profile.ps_sigcoeff_8x8_frame */
 	movea.l	(%a0),%a1
 	lea	SYM(gau1_ih264d_sigcoeff_context_inc_frame),%a0
 	bra.b	.Lc8_fielddone
 .Lc8_field:
-	lea	42408+530(%a4),%a0		/* &ps_dec->s_high_profile.ps_sigcoeff_8x8_field */
+	lea	42424+530(%a4),%a0		/* &ps_dec->s_high_profile.ps_sigcoeff_8x8_field */
 	movea.l	(%a0),%a1
 	lea	SYM(gau1_ih264d_sigcoeff_context_inc_field),%a0
 .Lc8_fielddone:
