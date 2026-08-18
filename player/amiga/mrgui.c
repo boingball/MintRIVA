@@ -298,7 +298,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
                    selected_c2p == 2 ? MR_C2P_KALMS : MR_C2P_STANDARD;
     options->laced = checked_lace != 0;
     options->scale_2x = checked_2x != 0;
-    options->h264_performance = selected_h264 <= MR_H264_PERF_FAST
+    options->h264_performance = selected_h264 <= MR_H264_PERF_TURBO_PLUS
                               ? (mr_h264_performance)selected_h264
                               : MR_H264_PERF_AUTO;
     options->audio_rate = selected_audio_rate == 1
@@ -674,7 +674,9 @@ int main(void)
     if (!add_chooser_node(&h264_modes, "Auto") ||
         !add_chooser_node(&h264_modes, "Quality") ||
         !add_chooser_node(&h264_modes, "Balanced") ||
-        !add_chooser_node(&h264_modes, "Fast"))
+        !add_chooser_node(&h264_modes, "Fast") ||
+        !add_chooser_node(&h264_modes, "Turbo") ||
+        !add_chooser_node(&h264_modes, "Turbo+"))
         goto cleanup;
     if (!add_chooser_node(&audio_rate_modes, "Normal") ||
         !add_chooser_node(&audio_rate_modes, "Low"))

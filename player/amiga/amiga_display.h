@@ -112,6 +112,14 @@ const char *display_backend_name(amiga_display *d);
 void display_show_rgb(amiga_display *d, const unsigned char *rgb,
                       int w, int h, int stride, int dy0, int dy1);
 
+/* Optional packed B,G,R path used by the P96 direct-lock backend.  Query
+ * support once after display_open(); when true, display_show_bgr24() accepts
+ * the same geometry/dirty-row contract as display_show_rgb() but does not
+ * perform an RGB->BGR channel shuffle before writing the native bitmap. */
+int display_supports_bgr24(amiga_display *d);
+void display_show_bgr24(amiga_display *d, const unsigned char *bgr,
+                        int w, int h, int stride, int dy0, int dy1);
+
 /* Non-zero when `d` can accept a pre-dithered indexed frame via
  * display_show_indexed() instead of RGB24 via display_show_rgb() - true
  * only for the AGA backend's plain indexed configuration (see

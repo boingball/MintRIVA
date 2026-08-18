@@ -419,6 +419,8 @@ typedef struct video_presenter {
      * instead of RGB24, and this presenter must blit them with
      * display_show_indexed() instead of display_show_rgb(). */
     int                  use_indexed;
+    /* P96 native BGR queue: present with display_show_bgr24(). */
+    int                  use_bgr;
 } video_presenter;
 
 typedef struct scheduler_trace {
@@ -519,6 +521,9 @@ static void present_service_frame(video_presenter *vp)
     if (vp->use_indexed)
         display_show_indexed(vp->disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
+    else if (vp->use_bgr)
+        display_show_bgr24(vp->disp, front->rgb, front->width, front->height,
+                           front->stride, front->dirty_y0, front->dirty_y1);
     else
         display_show_rgb(vp->disp, front->rgb, front->width, front->height,
                          front->stride, front->dirty_y0, front->dirty_y1);
@@ -659,7 +664,7 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
  * mr_h264.c's conversion and remains safe here: the queue is not published
  * (qcount is not incremented) until this function returns. */
 static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
-                                uint64_t pts, uint64_t decoded_at,
+                                uint64_t pts, uint64_t decoded_at, int bgr,
                                 mr_yuv_service_fn service,
                                 void *service_opaque)
 {
@@ -677,11 +682,18 @@ static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    mr_yuv420_to_rgb24(q->rgb, (int)stride,
-                       fr->data, fr->stride,
-                       fr->u_data, fr->u_stride,
-                       fr->v_data, fr->v_stride,
-                       fr->width, fr->height, service, service_opaque);
+    if (bgr)
+        mr_yuv420_to_bgr24(q->rgb, (int)stride,
+                           fr->data, fr->stride,
+                           fr->u_data, fr->u_stride,
+                           fr->v_data, fr->v_stride,
+                           fr->width, fr->height, service, service_opaque);
+    else
+        mr_yuv420_to_rgb24(q->rgb, (int)stride,
+                           fr->data, fr->stride,
+                           fr->u_data, fr->u_stride,
+                           fr->v_data, fr->v_stride,
+                           fr->width, fr->height, service, service_opaque);
     q->width = fr->width; q->height = fr->height; q->stride = (int)stride;
     q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
     q->pts_us = pts; q->decoded_at_us = decoded_at;
@@ -989,7 +1001,9 @@ static mr_h264_speed_mode effective_h264_speed(int requested)
 {
     if (requested == MR_H264_SPEED_QUALITY ||
         requested == MR_H264_SPEED_BALANCED ||
-        requested == MR_H264_SPEED_FAST)
+        requested == MR_H264_SPEED_FAST ||
+        requested == MR_H264_SPEED_TURBO ||
+        requested == MR_H264_SPEED_TURBO_PLUS)
         return (mr_h264_speed_mode)requested;
     /* Auto used to scale the degrade level with resolution, on the
      * assumption that a small picture is proportionally cheap enough to
@@ -1015,7 +1029,9 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
     mode = effective_h264_speed(requested);
-    name = mode == MR_H264_SPEED_FAST ? "Fast" :
+    name = mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip)" :
+           mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip)" :
+           mode == MR_H264_SPEED_FAST ? "Fast" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
     if (!mr_h264_set_speed_mode(dec, mode)) return 0;
     if (verbose || requested < 0)
@@ -1411,7 +1427,7 @@ int main(int argc, char **argv)
                "[--2x] [--lace] [--ecs-fast] [--ecs32] [--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
-               "[--h264-speed=auto|quality|balanced|fast] "
+               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+] "
                "[--audio-rate=normal|low] [--no-audio] "
                "[--time]\n");
         return mrplay_exit(5);
@@ -1468,6 +1484,9 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "quality")) h264_speed = MR_H264_SPEED_QUALITY;
                 else if (!strcmp(mode, "balanced")) h264_speed = MR_H264_SPEED_BALANCED;
                 else if (!strcmp(mode, "fast")) h264_speed = MR_H264_SPEED_FAST;
+                else if (!strcmp(mode, "turbo")) h264_speed = MR_H264_SPEED_TURBO;
+                else if (!strcmp(mode, "turbo+") || !strcmp(mode, "turbo-plus"))
+                    h264_speed = MR_H264_SPEED_TURBO_PLUS;
                 else {
                     printf("invalid H.264 speed mode: %s\n", mode);
                     return mrplay_exit(5);
@@ -1773,6 +1792,8 @@ int main(int argc, char **argv)
      * the RTG CGX/P96 path, but is equally correct for an AGA RGB fallback. */
     int use_yuv_rgb_queue = codec == &mr_codec_h264 &&
                             !use_yuv_indexed_queue && !use_indexed_queue;
+    int use_yuv_bgr_queue = use_yuv_rgb_queue &&
+                            display_supports_bgr24(disp);
     if (use_yuv_indexed_queue || use_yuv_rgb_queue)
         mr_h264_set_yuv_output(&dec, 1);
     if (want_time) {
@@ -1794,6 +1815,9 @@ int main(int argc, char **argv)
         else if (use_indexed_queue)
             printf("video path: RGB24 %dx%d -> INDEX%d (queue_copy_indexed)\n",
                    vi->width, vi->height, indexed_depth);
+        else if (use_yuv_bgr_queue)
+            printf("video path: YUV420P %dx%d -> BGR24 "
+                   "(direct-to-queue; P96 native)\n", vi->width, vi->height);
         else if (use_yuv_rgb_queue)
             printf("video path: YUV420P %dx%d -> RGB24 "
                    "(direct-to-queue)\n", vi->width, vi->height);
@@ -2053,6 +2077,7 @@ int main(int argc, char **argv)
          * use_yuv_indexed_queue - see queue_copy_indexed()/
          * queue_copy_yuv_indexed()), so one flag covers both. */
         presenter.use_indexed = use_indexed_queue || use_yuv_indexed_queue;
+        presenter.use_bgr = use_yuv_bgr_queue;
         trace.presenter = &presenter;
 
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
@@ -2425,6 +2450,10 @@ int main(int argc, char **argv)
             if (use_indexed_queue || use_yuv_indexed_queue)
                 display_show_indexed(disp, front->rgb, front->width, front->height,
                                      front->stride, front->dirty_y0, front->dirty_y1);
+            else if (use_yuv_bgr_queue)
+                display_show_bgr24(disp, front->rgb, front->width, front->height,
+                                   front->stride, front->dirty_y0,
+                                   front->dirty_y1);
             else
                 display_show_rgb(disp, front->rgb, front->width, front->height,
                                  front->stride, front->dirty_y0, front->dirty_y1);
@@ -2771,6 +2800,21 @@ int main(int argc, char **argv)
                         quit = 1;
                         continue;
                     }
+                    if (decode_status == MR_SKIPPED) {
+                        /*
+                         * Turbo deliberately omitted this source picture.
+                         * No display frame is queued, but its media-time slot
+                         * still existed. Advance the fallback timeline so the
+                         * next surviving picture cannot inherit a compressed
+                         * synthetic PTS and race ahead of audio.
+                         *
+                         * MR_EAGAIN is different: it is ordinary libavc
+                         * reordering/no-output and consumes no extra fallback
+                         * display interval here.
+                         */
+                        decoded_index++;
+                        stats.dropped++;
+                    }
                     if (decode_status == MR_EFORMAT) {
                         printf("h264-decode-error: packet %lu len=%lu\n",
                                (unsigned long)decoded_index,
@@ -2894,6 +2938,7 @@ int main(int argc, char **argv)
                                 uint64_t yr0 = want_time ? monotonic_us() : 0;
                                 copy_ok = queue_copy_yuv_rgb24(
                                     tail, &dec.frame, pts, decoded_at,
+                                    use_yuv_bgr_queue,
                                     audio ? service_audio_for_display : NULL,
                                     &trace);
                                 if (want_time) {

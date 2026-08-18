@@ -16,4 +16,14 @@ void mr_yuv420_to_rgb24(uint8_t *dst, int dst_stride,
                         int width, int height,
                         mr_yuv_service_fn service, void *service_opaque);
 
+/* Same conversion and service contract, but packed as B,G,R bytes.  This is
+ * useful for native 24-bit Picasso96 screens (RGBFB_B8G8R8): producing BGR at
+ * queue time avoids a full per-pixel RGB->BGR shuffle during every blit. */
+void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
+                        const uint8_t *y_plane, int y_stride,
+                        const uint8_t *u_plane, int u_stride,
+                        const uint8_t *v_plane, int v_stride,
+                        int width, int height,
+                        mr_yuv_service_fn service, void *service_opaque);
+
 #endif /* MR_YUV_H */

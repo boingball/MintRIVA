@@ -17,6 +17,12 @@ typedef struct {
     void  (*show)(void *handle, const unsigned char *rgb, int w, int h,
                   int stride, int dy0, int dy1,
                   mr_display_service_fn service, void *service_opaque);
+    /* Optional packed-BGR24 entry point.  P96's native RGBFB_B8G8R8 backend
+     * implements this so callers that already hold BGR can skip its per-pixel
+     * RGB channel shuffle.  NULL for backends whose public input is RGB24. */
+    void  (*show_bgr)(void *handle, const unsigned char *bgr, int w, int h,
+                      int stride, int dy0, int dy1,
+                      mr_display_service_fn service, void *service_opaque);
     int   (*timing)(void *handle, mr_display_timing *timing);
     int   (*poll)(void *handle);
     void  (*close)(void *handle);

@@ -117,6 +117,19 @@ void display_show_rgb(amiga_display *d, const unsigned char *rgb,
                        d->service, d->service_opaque);
 }
 
+int display_supports_bgr24(amiga_display *d)
+{
+    return d && d->be->show_bgr;
+}
+
+void display_show_bgr24(amiga_display *d, const unsigned char *bgr,
+                        int w, int h, int stride, int dy0, int dy1)
+{
+    if (d && d->be->show_bgr)
+        d->be->show_bgr(d->h, bgr, w, h, stride, dy0, dy1,
+                        d->service, d->service_opaque);
+}
+
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque)
 {
