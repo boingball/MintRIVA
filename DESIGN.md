@@ -4,11 +4,13 @@ A codec-agnostic video player for 68k AmigaOS, in the spirit of **MintAMP**
 (the libhelix-based audio player): small, portable C at the core, thin
 Amiga-specific layers around it, and audio handled by MintAMP itself.
 
-The repository started as the source of **RiVA 0.54** (Fellner / Török /
-Richter) — the fastest 68k MPEG-1 player, written in hand-tuned 68k/AMMX
-assembly. RiVA is kept as **reference** (`src/`, `RiVA.guide`): its renderers
-(AGA C2P, CyberGraphX/P96 chunky) and IDCT/motion macros are a goldmine. The
-new player is a *fresh* codebase, not an extension of that assembly.
+The project was inspired by **RiVA 0.54** (Fellner / Török / Richter) — the
+fastest 68k MPEG-1 player, written in hand-tuned 68k/AMMX assembly. Its
+renderers (AGA C2P, CyberGraphX/P96 chunky) and IDCT/motion macros were a
+goldmine of ideas during design, but its source was never vendored into this
+repository and MintVID does not build on or ship any of it — the new player
+is a *fresh* codebase, not an extension of that assembly. See the original
+RiVA 0.54 release on Aminet if you want the reference source itself.
 
 ## Why not "just extend RiVA"?
 
@@ -41,9 +43,10 @@ the CPU, which usually means an older, decode-cheap codec.
 - **Cinepak (CVID)** — base tier. Vector quantisation: codebook lookups + block
   copies, no DCT. Designed for 386/68030-class CD-ROM playback. **Implemented
   and validated** (`player/core/mr_cinepak.c`).
-- **Motion-JPEG** — mid tier. Intra-only; core is 8×8 IDCT + Huffman, and
-  RiVA's hand-tuned 68k IDCT (`src/MacrosIDCT68k.m`) is directly reusable as the
-  hot path. Better quality, heavier than Cinepak.
+- **Motion-JPEG** — mid tier. Intra-only; core is 8×8 IDCT + Huffman.
+  (MintVID's shipped MJPEG decoder uses a picojpeg-based adapter rather than
+  porting RiVA's hand-tuned 68k IDCT — see the roadmap below.) Better
+  quality, heavier than Cinepak.
 - **MPEG-1** — mid tier. Could wrap a portable decoder, or bridge to RiVA's
   engine as reference.
 - **Moon-shot** — H.264 Baseline/Main/High through Ittiam libavc's portable
@@ -146,19 +149,21 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       libavc, using its generic integer C backend: avcC/AVCC conversion, CABAC,
       B-slices and DPB display reordering. Exact 640x360 High Profile/B-frame
       sample decodes 171/171 frames and matches ffmpeg at worst MAE 1.06/255.
-      Gated in practice to PiStorm/Emu68-class machines; m68k timing pending.
-- [ ] Internet streaming (reuse MintAMP's radio_stream + AmiSSL HTTP stack)
+      Gated in practice to PiStorm/Emu68-class machines. Field-confirmed on a
+      Pi3-based PiStorm 600: anything under ~200p (YouTube/IPTV live) plays
+      well. A faster PiStorm32/CM4 should do more but that headroom isn't
+      confirmed yet.
+- [x] Internet streaming: HTTP/HTTPS URL input, HLS live/VOD, and native
+      YouTube resolution (see README)
 - [~] RTG fullscreen toggle is implemented with a borderless screen-sized CGX
-      window; direct RGB565 and porting `RendererCGXInit.i` remain future work
-- [~] Paula audio backend + audio-master A/V sync (`audio_paula.c`) - PCM,
+      window; a direct RGB565 CGX render path remains future work
+- [x] Paula audio backend + audio-master A/V sync (`audio_paula.c`) - PCM,
       MP2, MP3, AAC-LC (raw/ADTS/LATM) and fixed-point AC-3 stereo downmix.
       MP3/AAC use the pinned MintAMP/Helix sources through
-      `player/audio/mr_audio_decode.c`; host regression tests pass, pending
-      on-hardware verification of AC-3 and LATM.
-- [ ] AGA C2P + dither output (port from `RendererAGAC2P.i`)
-- [ ] MJPEG decoder reusing RiVA's 68k IDCT
-- [ ] seek/loop
-- [ ] Moon-shot heavier codec, gated to fast/PiStorm machines
+      `player/audio/mr_audio_decode.c`; host regression tests pass, and
+      AC-3/general audio quality is confirmed good on real hardware.
+- [x] Moon-shot heavier codec, gated to fast/PiStorm machines: delivered as
+      H.264/AVC above
 ```
 
 ## Legacy codec compatibility policy
