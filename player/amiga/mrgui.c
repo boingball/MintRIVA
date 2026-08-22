@@ -346,7 +346,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
         seglist = LoadSeg((CONST_STRPTR)"iptvgui");
     if (!seglist) {
         set_info(info, window,
-                 "Could not load iptvgui (keep it beside mrgui).");
+                 "Could not load iptvgui (keep it beside MintVID).");
         return;
     }
 
@@ -387,7 +387,7 @@ static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
         seglist = LoadSeg((CONST_STRPTR)"ytgui");
     if (!seglist) {
         set_info(info, window,
-                 "Could not load ytgui (keep it beside mrgui).");
+                 "Could not load ytgui (keep it beside MintVID).");
         return;
     }
     process = CreateNewProcTags(
@@ -537,7 +537,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
         seglist = LoadSeg((CONST_STRPTR)"mrplay");
     if (!seglist) {
         set_info(info, window,
-                 "Could not load mrplay (keep it beside mrgui or in PATH).");
+                 "Could not load mrplay (keep it beside MintVID or in PATH).");
         return;
     }
 
@@ -644,7 +644,7 @@ int main(void)
     audio_rate_modes.lh_TailPred = (struct Node *)&audio_rate_modes.lh_Head;
 
     if (!open_reaction_classes()) {
-        fprintf(stderr, "mrgui: ReAction V%ld classes are not available.\n",
+        fprintf(stderr, "MintVID: ReAction V%ld classes are not available.\n",
                 (long)MRGUI_CLASS_VERSION);
         goto cleanup;
     }

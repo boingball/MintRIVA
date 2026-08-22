@@ -69,10 +69,16 @@ release.
 
 INSTALLATION
 
-Copy the whole archive to your Amiga (or a shared PiStorm volume). Keep
-mrplay alongside whichever GUI set you use (mrgui/iptvgui/ytgui, or the
--GT equivalents) - the GUIs launch mrplay as a subprocess. Assign or copy
-the icon provided if Workbench does not show one automatically.
+Copy the whole archive to your Amiga (or a shared PiStorm volume) and
+double-click MintVID - that is the whole program, with IPTV and YouTube
+browsing reachable from its own menus. Everything else in the drawer
+(mrplay, iptvgui, ytgui, the GadTools -GT set, mr_decode) is a support
+binary MintVID or the -GT controller loads on demand and is marked Hidden,
+so a normal Workbench listing only shows MintVID; enable "Show > All Files"
+in a Workbench window if you need to get at them directly (a stock OS 3.1
+system without ReAction V44 should instead run mrgui-GT, the plain
+GadTools/Intuition equivalent). Keep the whole drawer together either way -
+nothing here is meant to be split up or copied out on its own.
 
 SOURCE / LICENSING
 
