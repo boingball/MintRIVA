@@ -67,10 +67,16 @@ make -f Makefile.amiga release SSL=1   # release/MintVID030, 040 and 060
 Use the `.040` build for a PiStorm configured as a 68040 and `.060` only on a
 68060-compatible CPU. `release/MintVID030`, `release/MintVID040` and
 `release/MintVID060` are ready-to-run sets with ordinary unsuffixed program
-names. Each contains `mrplay`, the ReAction `mrgui`/`iptvgui`/`ytgui` set, the
+names. Each contains `mrplay`, the ReAction `MintVID`/`iptvgui`/`ytgui` set, the
 GadTools `mrgui-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line
-`mr_decode` codec probe/test harness. The release target finishes by restoring
-the working binaries to the universal 030 build.
+`mr_decode` codec probe/test harness. `MintVID` is the flagship binary (built
+from the `mrgui` target/`mrgui.c`, but named `MintVID` on disk) - it is the
+one meant to carry the Workbench icon and be double-clicked; the release
+target also drops a `HideExtras` AmigaDOS script in each `MintVID0xx`
+directory that sets the Hidden protection bit on everything else (run it from
+an Amiga/emulator shell - a Linux cross build cannot set AmigaDOS protection
+bits itself). The release target finishes by restoring the working binaries
+to the universal 030 build.
 
 ```sh
 git submodule update --init --recursive
@@ -132,7 +138,7 @@ handshake instead of the full per-segment bring-up.
   more than ~4 s behind the wall clock, it fast-consumes the buffered backlog
   (decode reference-only, discard audio) and re-primes near the live edge; and
   if the stream drops out entirely it reopens the URL and resumes rather than
-  ending. It never fires in normal playback. GUI-launched playback (`mrgui`, the
+  ending. It never fires in normal playback. GUI-launched playback (`MintVID`, the
   IPTV browser) enables this by default since IPTV streams are always live; a
   direct `mrplay <url>` leaves it off. Use `--no-live-resync` to opt out.
 
@@ -175,7 +181,7 @@ native resolver. The **Quality** button cycles through Low, 360p, 480p, 720p,
 1080p, and unrestricted Best. For recorded videos, 720p/1080p/Best try the
 compatible muxed 720p format and fall back to 360p; the other choices use 360p.
 The search-type selector defaults to **Live** and also offers **All**,
-**Videos**, and **Shorts**. Build with `SSL=1` and keep `ytgui` beside `mrgui`
+**Videos**, and **Shorts**. Build with `SSL=1` and keep `ytgui` beside `MintVID`
 and `mrplay`. As with watch-page
 resolution, this deliberately small parser may need maintenance if YouTube
 changes its private page schema.
@@ -191,7 +197,7 @@ steps, Fullscreen toggles the RTG window, and Stop exits the player.
 The Amiga build creates two Workbench-friendly GUI sets over the same player,
 parsers, playback settings, and status/control protocol:
 
-- `mrgui`, `iptvgui`, `ytgui` use ReAction V44.
+- `MintVID` (built from the `mrgui` target), `iptvgui`, `ytgui` use ReAction V44.
 - `mrgui-GT`, `iptvgui-GT`, `ytgui-GT` use only GadTools/Intuition V37 and are
   intended for a standard AmigaOS 3.1 installation. Start `mrgui-GT`; it opens
   the matching `-GT` browsers automatically.
@@ -236,7 +242,7 @@ whole-file input path and therefore do not accept URLs.
 
 Both controllers include an **IPTV...** launcher for their matching directory
 window. Build all editions together using
-`make -f Makefile.amiga all SSL=1 SSLCERTS=1`; keep `mrgui`, `iptvgui`,
+`make -f Makefile.amiga all SSL=1 SSLCERTS=1`; keep `MintVID`, `iptvgui`,
 `ytgui`, the three `-GT` programs, and `mrplay` together. `SSL=1` enables AmiSSL for YouTube searches and
 the iptv-org directory download; `SSLCERTS=1` enables certificate verification.
 A browser built

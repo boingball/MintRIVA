@@ -292,7 +292,7 @@ GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wext
 # m68k-linux-gnu test toolchain in tests/run_m68k_check.sh).
 LDFLAGS = -noixemul -lgcc $(LIBAVC_M68K_LDFLAGS)
 
-all: mrplay mrgui iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT mr_decode
+all: mrplay MintVID iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT mr_decode
 
 audio_task_stress: check-cc tests/amiga_audio_task_stress.c amiga/audio_paula.c
 	$(CC) $(CFLAGS) -o $@ tests/amiga_audio_task_stress.c \
@@ -325,8 +325,12 @@ $(KALMS_OBJ): $(KALMS_SRC) Makefile.amiga | check-kalms
 	$(KALMS_VASM) -Fhunk -m68030 -no-opt -I$(KALMS_ASM_INCLUDE) -o $@ $<
 
 # As in MintAMP, mrgui opens the ReAction classes explicitly at runtime.
-# No libauto archive is required by the cross-toolchain.
-mrgui: check-cc $(GUI) amiga/mr_master_options.h
+# No libauto archive is required by the cross-toolchain. Built as MintVID -
+# this is the flagship ReAction GUI and the visible name/icon for the
+# Aminet release; iptvgui/ytgui/the GadTools -GT set/mrplay/mr_decode are
+# support binaries it launches on demand and stay hidden in the release
+# tree (see the `release` target below).
+MintVID: check-cc $(GUI) amiga/mr_master_options.h
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
 iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h amiga/mr_master_options.h
@@ -374,16 +378,29 @@ mr_decode: $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f mrplay mrgui iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT \
+	rm -f mrplay MintVID iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT \
 	      mr_decode kalms_c2p_check $(KALMS_OBJ)
 	rm -f audio_task_stress
 
 # Build every supported CPU profile into its own ready-to-run directory.
 # The final recursive build is 68030, leaving the ordinary working binaries on
 # the safest baseline as well as producing all three release sets.
+#
+# MintVID is the flagship ReAction GUI and the only program meant to be
+# visible/double-clickable on Workbench; it LoadSeg()s the rest as needed
+# (mrplay, iptvgui, ytgui, the GadTools -GT set, mr_decode). Those are still
+# shipped - MintVID and the -GT set both fail over to loading them from
+# PROGDIR:/beside themselves - just not meant to clutter the drawer. A cross
+# build on this Linux host cannot set AmigaDOS's protection bits (FFS/OFS
+# directory-entry metadata, not a POSIX chmod bit), so HIDDEN_PROGRAMS below
+# only documents which files *should* end up with the H bit; HideExtras is
+# an AmigaDOS script that actually does it - run it once from an Amiga (or
+# emulator) shell inside each MintVID0xx directory before lha-ing the
+# archive for Aminet.
 RELEASE_DIR ?= release
-RELEASE_PROGRAMS := mrplay mrgui iptvgui ytgui mrgui-GT iptvgui-GT \
-                    ytgui-GT mr_decode
+MAIN_PROGRAM := MintVID
+HIDDEN_PROGRAMS := mrplay iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT mr_decode
+RELEASE_PROGRAMS := $(MAIN_PROGRAM) $(HIDDEN_PROGRAMS)
 
 define build_release_cpu
 	$(MAKE) -f Makefile.amiga clean
@@ -392,7 +409,18 @@ define build_release_cpu
 	@for program in $(RELEASE_PROGRAMS); do \
 		cp "$$program" "$(RELEASE_DIR)/MintVID$(2)/$$program"; \
 	done
-	@cp amiga/icons/mrplay.info "$(RELEASE_DIR)/MintVID$(2)/mrplay.info"
+	@if [ -f amiga/icons/MintVID.info ]; then \
+		cp amiga/icons/MintVID.info "$(RELEASE_DIR)/MintVID$(2)/MintVID.info"; \
+	else \
+		echo "NOTE: amiga/icons/MintVID.info not found - copy the MintVID icon into $(RELEASE_DIR)/MintVID$(2)/ by hand"; \
+	fi
+	@printf '%s\n' \
+	    '; Run from an AmigaOS (or emulator) shell inside this drawer, once,' \
+	    '; before lha-ing the release for Aminet: sets the Hidden bit on the' \
+	    '; support binaries MintVID loads on demand, so only MintVID shows' \
+	    '; up in a normal Workbench listing.' \
+	    $(foreach p,$(HIDDEN_PROGRAMS),"Protect $(p) ADD H") \
+	    > "$(RELEASE_DIR)/MintVID$(2)/HideExtras"
 endef
 
 release:
@@ -400,6 +428,7 @@ release:
 	$(call build_release_cpu,68060,060)
 	$(call build_release_cpu,68030,030)
 	@echo "Release binaries written to $(RELEASE_DIR)/"
+	@echo "Run HideExtras from an Amiga/emulator shell in each MintVID0xx dir before lha-ing for Aminet"
 	@echo "Ready-to-run sets: MintVID030, MintVID040 and MintVID060"
 
 .PHONY: all release clean check-cc check-mintamp check-libavc check-kalms \
