@@ -208,9 +208,11 @@ In RTG/CGX mode, `F` switches the live player between its resizeable window and
 a borderless public-screen-sized view without restarting decoding; `--fullscreen`
 starts in that view. Press `F` again—or use ytgui's **Fullscreen** button—to
 restore the previous window geometry. AGA display modes remain hotkey-driven
-and ignore the RTG-only fullscreen command. True timeline seeking is not yet
-implemented; it needs a demux keyframe/sample seek API rather than pretending
-that fast decode is a seek operation.
+and ignore the RTG-only fullscreen command. Cursor left/right seek 10 seconds
+at a time for local QuickTime MOV/MP4 files, landing on the nearest keyframe
+via the sample index rather than pretending that fast decode is a seek
+operation. AVI, MKV and network/live sources don't have a keyframe index yet
+and keep cursor-right as the fast-forward toggle instead.
 
 Every GUI has a **MintVID > About MintVID...** menu containing the project
 credits and support link. **MintVID > Quit** closes that frontend cleanly.

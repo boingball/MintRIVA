@@ -123,7 +123,19 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       re-blits only those rows, so mostly-static video skips most of the encode
 - [x] Playback controls: pause (space), loop (--loop), quit; input is now an
       event stream (`display_poll_event`) so seek (cursor keys) can slot in
-- [ ] Seek (needs a keyframe index in the demuxers)
+- [x] Offline-file seek: QuickTime MOV/MP4 tracks are already stored as a
+      flat, presentation-time-sorted sample index, so `mr_mov_seek()` parses
+      the `stss` sync-sample table into a keyframe flag per video sample and
+      binary-searches the index for the nearest keyframe at or before the
+      target time (`mr_demux_seek`/`mr_demux_can_seek` in `mr_demux.h`).
+      Wired to cursor left/right (10 s steps) in `mrplay` for local, non-
+      streamed MOV files - decoder/audio state resets exactly like the
+      existing loop-restart and live-reconnect paths do, then the normal
+      startup logic re-primes from the new position. Host-validated
+      (`player/tests/mr_mov_seek_check.c`, in `make check`) against a
+      2-keyframe fixture. AVI (has no timestamp/keyframe table at all today)
+      and MKV (Cues unread) remain unseekable and keep the fast-forward
+      toggle; network/live sources are deliberately excluded.
 - [ ] Optional asm C2P hot loop; CD32 Akiko hardware C2P path (--akiko)
 - [x] MJPEG decoder (picojpeg adapter, `mr_mjpeg.c`) - ffmpeg-validated
       (worst MAE 0.5/255); proves the codec plugin design with a 2nd codec

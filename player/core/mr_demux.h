@@ -118,6 +118,18 @@ void         mr_demux_timing_get(mr_demux *d, mr_demux_timing *timing,
  * on any container other than TS. */
 void         mr_demux_set_timing_enabled(mr_demux *d, int enabled);
 void         mr_demux_rewind(mr_demux *d);
+/* True when mr_demux_seek() can reposition this demux instance - a local,
+ * keyframe-indexed container (MOV/MP4 today). Streamed/live sources and
+ * containers without a keyframe index (AVI, MKV, TS, PS, raw) return 0. */
+int          mr_demux_can_seek(const mr_demux *d);
+/* Reposition to the nearest video keyframe at or before target_us (media
+ * timeline, microseconds). *out_us receives the keyframe actually reached,
+ * which is not necessarily target_us. Subsequent mr_demux_next_packet calls
+ * resume from there. The caller must reset any decoder reference state
+ * (mr_decoder_reset, mr_audio_decoder_reset) before decoding what follows -
+ * seeking does not by itself make old reference frames valid. Returns
+ * MR_EUNSUPPORTED when mr_demux_can_seek() would say 0. */
+mr_status    mr_demux_seek(mr_demux *d, uint64_t target_us, uint64_t *out_us);
 void         mr_demux_close(mr_demux *d);
 
 const mr_video_info *mr_demux_video(const mr_demux *d);
