@@ -1,0 +1,92 @@
+Short:            Multi-codec video player, AGA to PiStorm
+Uploader:         Darren Banfi <boingball@gmail.com>
+Author:           Darren "boingball" Banfi
+Type:             gfx/show
+Version:          0.1
+Requires:         Kickstart 2.0+; MintAMP-compatible audio.library setup for
+                  MP3/AAC; AmiSSL v5 + amisslmaster.library for HTTPS/HLS/
+                  YouTube (optional, only needed if built with SSL=1)
+Architecture:     m68k-amigaos >= 68030
+Distribution:     Aminet
+Kurzbeschreibung: Videoplayer fuer 68k AmigaOS mit mehreren Codecs (Cinepak
+                  bis H.264), skaliert von A600/AGA bis PiStorm/RTG.
+
+Description:
+
+MintVID is a video player for real 68k Amiga hardware, built in the spirit
+of MintAMP (the libhelix-based audio player): a small portable C core with
+thin, Amiga-specific display/audio layers around it.
+
+WHO THIS IS FOR
+
+Anyone still running actual Amiga hardware or an FPGA/PiStorm-class
+accelerator who wants to play video files, watch YouTube, or browse IPTV
+channels directly on the Amiga - not just decode a file format nobody has
+anymore. It is written to work across the whole real-world hardware spread
+in one binary, from the machine you actually have:
+
+  - Stock A600 / plain AGA, 68030, no FPU, no RTG      -> Cinepak, small
+    frames, AGA C2P/dither or HAM output.
+  - 68040/060 with RTG (CyberGraphX/Picasso96)          -> Cinepak, MJPEG,
+    MPEG-1/2 and MPEG-4 Part 2 at modest sizes.
+  - PiStorm/Emu68 (ARM-hosted 68k) with RTG             -> the same player,
+    but H.264/AVC (Baseline through High Profile, CABAC, B-frames) becomes
+    realistic. Field-confirmed on a Pi3-based PiStorm 600: anything under
+    roughly 200p (e.g. YouTube/IPTV live streams) plays well.
+
+There is no separate "PiStorm build" or "AGA build" you have to choose
+between - the player detects what screen/chipset it has and a weaker
+machine just sticks to the codecs it can afford.
+
+WHAT IT PLAYS
+
+  - Containers: AVI, QuickTime MOV/MP4, Matroska/MKV, MPEG-TS/M2TS, raw
+    MPEG-1 program streams, raw MJPEG/MPEG-4 Visual streams, and direct
+    HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
+  - Video codecs: Cinepak, Microsoft Video 1, Microsoft RLE8, uncompressed
+    UYVY422, H.263 baseline, Motion-JPEG, MPEG-1, MPEG-2 (with B-frames),
+    MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), and H.264/AVC Baseline/
+    Main/High Profile.
+  - Audio to Paula: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and fixed-point
+    AC-3 (stereo downmix) - all confirmed good quality on real hardware.
+  - Two complete GUI sets over the same player: ReAction (V44) and plain
+    GadTools/Intuition (V37) for a stock 3.1 install, each with matching
+    file, IPTV-directory and YouTube-search browser windows.
+
+Every codec decoder in this package is validated frame-by-frame against
+ffmpeg's own decoder on a Linux host before it ever ships, and the portable
+core is additionally cross-built and run under a real big-endian m68k target
+(gcc-m68k-linux-gnu + qemu-user) to catch endianness/alignment bugs that a
+little-endian x86 host build cannot - see the project page for details.
+
+WHAT IT IS NOT
+
+Not a decoder for one fixed format - it is a plugin architecture, so the
+codec list above will grow. Not a video *editor* or *encoder*: use ffmpeg
+or similar on a modern machine to prepare source material, then play the
+result on the Amiga. True timeline seeking is not implemented in this
+release.
+
+INSTALLATION
+
+Copy the whole archive to your Amiga (or a shared PiStorm volume). Keep
+mrplay alongside whichever GUI set you use (mrgui/iptvgui/ytgui, or the
+-GT equivalents) - the GUIs launch mrplay as a subprocess. Assign or copy
+the icon provided if Workbench does not show one automatically.
+
+SOURCE / LICENSING
+
+MintVID's own source is MIT-licensed and available from its project
+repository. It links several dependencies that keep their own licences
+(GPL-2.0-or-later, Apache-2.0, and RealNetworks RPSL among them) - see the
+project's README for the full breakdown before redistributing binaries.
+
+This player was inspired by RiVA 0.54 (Fellner/Toeroek/Richter), the
+fastest 68k MPEG-1 player, previously distributed on Aminet - but is a
+fresh, unrelated codebase and does not include or depend on RiVA's source.
+
+SUPPORT
+
+If MintVID is useful, or YouTube on an Amiga made you laugh, you can help
+keep the hardware testing and development going at:
+  https://buymeacoffee.com/boingball

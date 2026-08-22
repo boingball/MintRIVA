@@ -11,7 +11,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct mov_sample { uint32_t off; uint32_t size; uint32_t t_ms; uint8_t is_video; };
+struct mov_sample {
+    uint32_t off; uint32_t size; uint32_t t_ms;
+    uint8_t is_video;
+    uint8_t is_keyframe; /* video only: sync sample (stss), or every sample
+                          * when the track has no stss (spec default) */
+};
 
 static uint32_t rb32(const uint8_t *p){ return mr_rb32(p); }
 static uint16_t rb16(const uint8_t *p){ return mr_rb16(p); }
@@ -247,7 +252,7 @@ static mr_status parse_video(mr_mov *m, const uint8_t *stbl, uint32_t stbl_sz,
 
 /* Append a segment to the growing interleaved index. */
 static mr_status push_seg(mr_mov *m, uint32_t off, uint32_t size, int is_video,
-                          uint32_t t_ms)
+                          uint32_t t_ms, int is_keyframe)
 {
     if (!size) return MR_OK;
     if (m->nsamples >= m->cap) {
@@ -257,12 +262,38 @@ static mr_status push_seg(mr_mov *m, uint32_t off, uint32_t size, int is_video,
         if (!ns) return MR_ENOMEM;
         m->samples = ns; m->cap = nc;
     }
-    m->samples[m->nsamples].off      = off;
-    m->samples[m->nsamples].size     = size;
-    m->samples[m->nsamples].t_ms     = t_ms;
-    m->samples[m->nsamples].is_video = (uint8_t)is_video;
+    m->samples[m->nsamples].off         = off;
+    m->samples[m->nsamples].size        = size;
+    m->samples[m->nsamples].t_ms        = t_ms;
+    m->samples[m->nsamples].is_video    = (uint8_t)is_video;
+    m->samples[m->nsamples].is_keyframe = (uint8_t)is_keyframe;
     m->nsamples++;
     return MR_OK;
+}
+
+/* Sync-sample (stss) cursor: sample numbers are 1-based and ascending. A
+ * track with no stss atom has every sample as a random access point (spec
+ * default), so has_stss doubles as "no stss -> always a keyframe". */
+struct stss_iter { const uint8_t *nums; uint32_t cnt, idx; int has_stss; };
+static void stss_iter_init(struct stss_iter *it, const uint8_t *stbl,
+                           const uint8_t *end)
+{
+    uint32_t sz;
+    const uint8_t *stss = find_atom(stbl, end, T('s','t','s','s'), &sz);
+    it->has_stss = stss && sz >= 8;
+    it->nums = it->has_stss ? stss + 8 : NULL;
+    it->cnt  = it->has_stss ? rb32(stss + 4) : 0;
+    if (it->has_stss && (uint64_t)it->cnt * 4 > (uint64_t)(sz - 8))
+        it->cnt = (sz - 8) / 4;
+    it->idx = 0;
+}
+/* sample_no is the 1-based decode-order sample number being pushed now. */
+static int stss_is_key(struct stss_iter *it, uint32_t sample_no)
+{
+    if (!it->has_stss) return 1;      /* no stss: every sample is a keyframe */
+    while (it->idx < it->cnt && rb32(it->nums + (size_t)it->idx * 4) < sample_no)
+        it->idx++;
+    return it->idx < it->cnt && rb32(it->nums + (size_t)it->idx * 4) == sample_no;
 }
 
 /* Flatten a track's stbl into the shared index. Video emits one segment per
@@ -310,6 +341,7 @@ static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
     const uint8_t *stsc = find_atom(stbl, end, T('s','t','s','c'), &stsc_sz);
     const uint8_t *stco = find_atom(stbl, end, T('s','t','c','o'), &stco_sz);
     struct stts_iter ti;
+    struct stss_iter ki;
     int co64 = 0;
     if (!stco) { stco = find_atom(stbl, end, T('c','o','6','4'), &stco_sz); co64 = 1; }
     if (!stsz || !stsc || !stco || stsz_sz < 12 || stsc_sz < 8 || stco_sz < 8)
@@ -326,6 +358,7 @@ static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
     const uint8_t *co    = stco + 8;
 
     stts_iter_init(&ti, stbl, end, timescale);
+    if (is_video) stss_iter_init(&ki, stbl, end);
 
     uint32_t si = 0, e;
     for (e = 0; e < stsc_cnt && si < nsamp; e++) {
@@ -347,14 +380,16 @@ static mr_status read_stbl_segments(mr_mov *m, const uint8_t *stbl,
                     total += uniform ? uniform : rb32(sizes + (uint64_t)si * 4);
                     si++;
                 }
-                if (push_seg(m, start, total, is_video, seg_ms) != MR_OK)
+                if (push_seg(m, start, total, is_video, seg_ms, 0) != MR_OK)
                     return MR_ENOMEM;
             } else {
                 for (k = 0; k < spc && si < nsamp; k++) {
                     uint32_t ssz = uniform ? uniform
                                            : rb32(sizes + (uint64_t)si * 4);
                     uint32_t sms = stts_next_ms(&ti);
-                    if (push_seg(m, (uint32_t)off, ssz, is_video, sms) != MR_OK)
+                    int is_key = is_video ? stss_is_key(&ki, si + 1) : 0;
+                    if (push_seg(m, (uint32_t)off, ssz, is_video, sms,
+                                is_key) != MR_OK)
                         return MR_ENOMEM;
                     off += ssz;
                     si++;
@@ -592,6 +627,59 @@ mr_status mr_mov_next_packet(mr_mov *m, mr_packet *pkt)
 }
 
 void mr_mov_rewind(mr_mov *m) { m->cursor = 0; }
+
+/* Seek to the nearest video keyframe at or before target_ms. m->samples[] is
+ * sorted ascending by decode-time (t_ms), video-track order preserved within
+ * that, so a linear scan back from the first sample at/after target_ms finds
+ * it in one pass; the cursor lands on that keyframe's own index (any audio
+ * strictly before it in decode time is skipped, same as any real player
+ * jumping to a new position). */
+mr_status mr_mov_seek(mr_mov *m, uint64_t target_ms, uint64_t *out_ms)
+{
+    uint32_t lo, hi, mid, hit, i;
+    if (!m->nsamples) return MR_EUNSUPPORTED;
+
+    lo = 0; hi = m->nsamples;             /* [lo,hi): first index with t_ms >= target */
+    while (lo < hi) {
+        mid = lo + (hi - lo) / 2;
+        if ((uint64_t)m->samples[mid].t_ms < target_ms) lo = mid + 1;
+        else hi = mid;
+    }
+    hit = m->nsamples;                    /* nsamples = "not found yet"      */
+    for (i = lo; i > 0; i--) {
+        uint32_t j = i - 1;
+        if (m->samples[j].is_video && m->samples[j].is_keyframe) { hit = j; break; }
+    }
+    if (hit == m->nsamples) {
+        /* target is before every keyframe (or before the first one at/after
+         * it) - use the first video keyframe in the file, i.e. seek-to-start. */
+        for (i = 0; i < m->nsamples; i++)
+            if (m->samples[i].is_video && m->samples[i].is_keyframe) { hit = i; break; }
+    }
+    if (hit == m->nsamples) return MR_EUNSUPPORTED; /* no video keyframe at all */
+
+    m->cursor = hit;
+    if (out_ms) *out_ms = m->samples[hit].t_ms;
+    return MR_OK;
+}
+
+uint32_t mr_mov_sample_count(const mr_mov *m) { return m->nsamples; }
+
+void mr_mov_sample_info(const mr_mov *m, uint32_t index, uint64_t *t_ms,
+                        int *is_video, int *is_keyframe)
+{
+    const struct mov_sample *s;
+    if (index >= m->nsamples) {
+        if (t_ms) *t_ms = 0;
+        if (is_video) *is_video = 0;
+        if (is_keyframe) *is_keyframe = 0;
+        return;
+    }
+    s = &m->samples[index];
+    if (t_ms) *t_ms = s->t_ms;
+    if (is_video) *is_video = s->is_video;
+    if (is_keyframe) *is_keyframe = s->is_keyframe;
+}
 
 void mr_mov_close(mr_mov *m)
 {

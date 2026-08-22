@@ -392,6 +392,7 @@ define build_release_cpu
 	@for program in $(RELEASE_PROGRAMS); do \
 		cp "$$program" "$(RELEASE_DIR)/MintVID$(2)/$$program"; \
 	done
+	@cp amiga/icons/mrplay.info "$(RELEASE_DIR)/MintVID$(2)/mrplay.info"
 endef
 
 release:

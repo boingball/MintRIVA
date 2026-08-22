@@ -303,6 +303,28 @@ void mr_demux_rewind(mr_demux *d)
     else mr_raw_mpeg4_rewind(&d->u.raw_mpeg4);
 }
 
+int mr_demux_can_seek(const mr_demux *d)
+{
+    /* Excludes network sources on principle even though mr_mov_seek() itself
+     * only touches metadata already resident in RAM: a "seekable" HTTP MOV
+     * would still need mr_demux_seek() to trigger a fresh byte-range read for
+     * the target packet, which mr_mov_next_packet() already does via
+     * file_read_at() - so this is future-proofing the contract, not masking
+     * a real limitation today. */
+    return d && d->kind == MR_CONTAINER_MOV && !mr_source_is_streaming(d->owned_source);
+}
+
+mr_status mr_demux_seek(mr_demux *d, uint64_t target_us, uint64_t *out_us)
+{
+    if (!mr_demux_can_seek(d)) return MR_EUNSUPPORTED;
+    {
+        uint64_t out_ms = 0;
+        mr_status st = mr_mov_seek(&d->u.mov, target_us / 1000, &out_ms);
+        if (st == MR_OK && out_us) *out_us = out_ms * 1000;
+        return st;
+    }
+}
+
 void mr_demux_close(mr_demux *d)
 {
     if (!d) return;

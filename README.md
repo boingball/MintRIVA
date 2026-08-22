@@ -9,9 +9,11 @@ A600/AGA up to a PiStorm/RTG machine — by matching the codec to the CPU rather
 than chasing heavier modern formats. See **[DESIGN.md](DESIGN.md)** for the full
 architecture and roadmap.
 
-This repository began as the source of **RiVA 0.54**, the fastest 68k MPEG-1
-player (Stephen Fellner, László Török, Henryk Richter). That assembly is kept
-as reference material — see `src/`, the original `README`, and `RiVA.guide`.
+This repository began life inspired by **RiVA 0.54**, the fastest 68k MPEG-1
+player (Stephen Fellner, László Török, Henryk Richter). RiVA's assembly source
+was studied for ideas during design but was never built on or shipped as part
+of MintVID, so it is not carried in this tree — see the original RiVA release
+on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 
 ## Status
 
@@ -206,9 +208,11 @@ In RTG/CGX mode, `F` switches the live player between its resizeable window and
 a borderless public-screen-sized view without restarting decoding; `--fullscreen`
 starts in that view. Press `F` again—or use ytgui's **Fullscreen** button—to
 restore the previous window geometry. AGA display modes remain hotkey-driven
-and ignore the RTG-only fullscreen command. True timeline seeking is not yet
-implemented; it needs a demux keyframe/sample seek API rather than pretending
-that fast decode is a seek operation.
+and ignore the RTG-only fullscreen command. Cursor left/right seek 10 seconds
+at a time for local QuickTime MOV/MP4 files, landing on the nearest keyframe
+via the sample index rather than pretending that fast decode is a seek
+operation. AVI, MKV and network/live sources don't have a keyframe index yet
+and keep cursor-right as the fast-forward toggle instead.
 
 Every GUI has a **MintVID > About MintVID...** menu containing the project
 credits and support link. **MintVID > Quit** closes that frontend cleanly.
@@ -286,8 +290,6 @@ should show a meaningful downward trend across completed open/close cycles.
 ## Layout
 
 ```
-src/                 RiVA 0.54 assembly (reference)
-RiVA.guide           RiVA manual (reference)
 DESIGN.md            architecture & roadmap
 player/core/         portable C core: demux + video decoders
 player/audio/        packet adapter for MP2, MintAMP MP3/AAC and fixed AC-3
@@ -306,12 +308,28 @@ hardware experiments and token fund moving at
 
 ## Licensing
 
-RiVA is GPL-2.0 (`src/gpl-2.0.txt`); its AGA/CGX renderers are dual GPL/MIT. New
-MintVID code inherits GPL-2.0 to stay compatible with the RiVA reference it
-draws on. The vendored VideoLAN libmpeg2 core and fixed-point Rockbox/a52dec
-AC-3 core are GPL-2.0-or-later. MintAMP/Helix
-and Apache-2.0 Ittiam libavc remain separately licensed in their pinned
-submodules; retain their notices when distributing source or binaries.
+MintVID's own code (`player/core/`, `player/amiga/`, `player/audio/`,
+`player/iptv/`, `player/youtube/`, and the GUI frontends) is [MIT](LICENSE).
+
+Several vendored/pinned dependencies keep their own upstream licences, and
+distributing a *built binary* means complying with all of them at once, not
+just MIT:
+
+- **libmpeg2** (VideoLAN) and the fixed-point **Rockbox/a52dec AC-3** core are
+  GPL-2.0-or-later, and are statically linked into `mrplay`. That makes the
+  compiled binary a combined work under GPL-2.0-or-later — redistributing
+  binaries obliges you to also offer corresponding source, per the GPL, even
+  though MintVID's own contribution is MIT.
+- **Ittiam libavc** (H.264) is Apache-2.0.
+- **MintAMP/Helix** is a separately licensed submodule; retain its notices.
+  In particular the Helix AAC decoder path it pulls in is licensed under
+  RealNetworks' RPSL, not GPL — keep that distinct when redistributing.
+
+Retain all upstream licence notices (`player/vendor/*/LICENSE*`,
+`player/vendor/*/COPYING*`) when distributing source or binaries. RiVA 0.54,
+which inspired this project's design but is not included in this repository,
+is itself GPL-2.0 with dual GPL/MIT renderers — see the original RiVA release
+on Aminet.
 
 ## VLC-era video compatibility (wave 1)
 

@@ -96,6 +96,7 @@ void __chkabort(void) { }
  * enough to see the trend without adding load while --time is capturing it. */
 #define CLOCK_TRACE_MIN_INTERVAL_US 200000ULL
 #define PRESENTATION_GUARD_US 4000ULL
+#define MR_SEEK_STEP_US 10000000LL  /* cursor-left/right: jump 10 s          */
 #define AUDIO_REFILL_WARNING_MS 120UL
 #define AUDIO_RESCUE_ENTRY_MS 100UL
 #define AUDIO_RESCUE_TARGET_MS 200UL
@@ -1951,7 +1952,9 @@ int main(int argc, char **argv)
                                            / vi->rate) : 83;
         if (period < 1) period = 1;
 
-    printf("playing: space=pause, F=fullscreen, right=fast, ESC=quit%s...\n",
+    printf("playing: space=pause, F=fullscreen, %s, ESC=quit%s...\n",
+           mr_demux_can_seek(dx) ? "left/right=seek 10s"
+                                 : "right=fast (no seek index for this file)",
            loop ? ", loop on" : "");
 
     memset(vq, 0, sizeof vq);
@@ -2343,7 +2346,42 @@ int main(int argc, char **argv)
                 paused = 1;
                 if (audio) audio_set_running(audio, 0);
             }
-            if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
+            if ((ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK) &&
+                mr_demux_can_seek(dx)) {
+                /* Real offline-file seek: jump the demux index straight to
+                 * the nearest keyframe, then re-prime exactly like the
+                 * loop-restart/live-reconnect paths above do - same reset
+                 * calls, same "let the startup logic re-derive timing from
+                 * the next real packet" idiom, just landing mid-file instead
+                 * of at 0. Network sources fall through to the old
+                 * fast-forward toggle below; they have no keyframe index. */
+                uint64_t out_us;
+                int64_t cur_pts_us = front ? (int64_t)front->pts_us
+                                    : (have_deadline ? (int64_t)master_clock_us : 0);
+                int64_t target_us = cur_pts_us +
+                    (ev == MR_EV_SEEK_FWD ? MR_SEEK_STEP_US : -MR_SEEK_STEP_US);
+                if (target_us < 0) target_us = 0;
+                if (mr_demux_seek(dx, (uint64_t)target_us, &out_us) == MR_OK) {
+                    if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
+                    display_set_status(disp, "Seeking...");
+                    if (mr_decoder_reset(&dec) != MR_OK ||
+                        !apply_h264_speed(&dec, h264_speed, 0)) break;
+                    mr_h264_set_timing_enabled(&dec, want_time);
+                    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+                        mr_h264_set_yuv_output(&dec, 1);
+                    if (audio_dec) mr_audio_decoder_reset(audio_dec);
+                    qcount = 0; qhead = 0;
+                    playback_started = 0;
+                    decoded_index = 0; mono_base_us = 0;
+                    have_container_pts = 0; last_container_pts_us = 0;
+                    container_pts_adjust_us = 0;
+                    input_eof = 0;
+                    if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), out_us);
+                    else memset(&mc, 0, sizeof mc);
+                    stats.timing_rebases++;
+                    continue;
+                }
+            } else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
             while (paused && !quit) {
                 ev = player_event(disp);
                 if (ev == MR_EV_QUIT) quit = 1;
