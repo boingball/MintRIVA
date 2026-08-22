@@ -233,7 +233,7 @@ static void play_file(gt_app *app)
     if (!mr_build_player_arguments(args, sizeof(args), &options, app->path,
                                    NULL, NULL) ||
         !launch("mrplay", "MintVID player", args))
-        set_info(app, "Could not start mrplay (keep it beside mrgui-GT).");
+        set_info(app, "Could not start mrplay (keep it beside MintVID-GT).");
     else
         set_info(app, "Starting playback...");
 }
