@@ -94,9 +94,9 @@ jobs:
 
       - name: Confirm the programs were produced
         run: |
-          ls -la player/mrplay player/mrgui player/iptvgui player/ytgui \
+          ls -la player/mrplay player/MintVID player/iptvgui player/ytgui \
             player/mrgui-GT player/iptvgui-GT player/ytgui-GT player/mr_decode
-          file player/mrplay player/mrgui player/iptvgui player/ytgui \
+          file player/mrplay player/MintVID player/iptvgui player/ytgui \
             player/mrgui-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
 
       - name: Upload compiled programs
@@ -105,7 +105,7 @@ jobs:
           name: MintVID-AmigaOS
           path: |
             player/mrplay
-            player/mrgui
+            player/MintVID
             player/iptvgui
             player/ytgui
             player/mrgui-GT
@@ -167,7 +167,7 @@ jobs:
             echo "Checking $dir"
             test -d "$dir"
             for program in \
-              mrplay mrgui iptvgui ytgui \
+              mrplay MintVID iptvgui ytgui \
               mrgui-GT iptvgui-GT ytgui-GT mr_decode
             do
               test -f "$dir/$program"
