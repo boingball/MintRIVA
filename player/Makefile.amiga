@@ -403,6 +403,7 @@ define build_release_cpu
 	done
 	@if [ -f amiga/icons/MintVID.info ]; then \
 		cp amiga/icons/MintVID.info "$(RELEASE_DIR)/MintVID$(2)/MintVID.info"; \
+		cp amiga/icons/MintVID.info "$(RELEASE_DIR)/MintVID$(2)/MintVID-GT.info"; \
 	else \
 		echo "NOTE: amiga/icons/MintVID.info not found - copy the MintVID icon into $(RELEASE_DIR)/MintVID$(2)/ by hand"; \
 	fi

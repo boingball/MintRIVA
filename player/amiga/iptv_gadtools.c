@@ -411,7 +411,12 @@ static int window_open(iptvgt *app)
     memset(&nw,0,sizeof(nw));
     nw.LeftEdge=(app->screen->Width-WIN_W)/2;nw.TopEdge=(app->screen->Height-WIN_H)/2;
     nw.Width=WIN_W;nw.Height=WIN_H;nw.DetailPen=0;nw.BlockPen=1;
-    nw.IDCMPFlags=IDCMP_GADGETUP|IDCMP_CLOSEWINDOW|IDCMP_REFRESHWINDOW|IDCMP_MENUPICK;
+    /* LISTVIEWIDCMP (gadtools.h) supplies the mouse-button/move, gadget-down
+     * and IntuiTicks events GadTools' composite scroller and auto-repeat
+     * up/down arrow gadgets consume internally - IDCMP_GADGETUP alone leaves
+     * the channel listview's arrows drawn but unresponsive (same fix as
+     * MintAMP's amiga_mp3gui.c radio browser window). */
+    nw.IDCMPFlags=LISTVIEWIDCMP|IDCMP_CLOSEWINDOW|IDCMP_REFRESHWINDOW|IDCMP_MENUPICK;
     nw.Flags=WFLG_CLOSEGADGET|WFLG_DRAGBAR|WFLG_DEPTHGADGET|WFLG_ACTIVATE|WFLG_SMART_REFRESH;
     nw.FirstGadget=app->gadgets;nw.Title=(UBYTE *)"MintVID IPTV-GT";
     nw.Screen=app->screen;nw.Type=CUSTOMSCREEN;app->window=OpenWindow(&nw);
