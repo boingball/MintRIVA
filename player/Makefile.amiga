@@ -419,6 +419,12 @@ define build_release_cpu
 endef
 
 release:
+	@# Wipe any previous release tree first: build_release_cpu only ever
+	@# copies files in, so a directory removed from generation (e.g. the
+	@# now-gone HideExtras script) would otherwise linger forever in an
+	@# existing release/ from before that change, instead of actually
+	@# reflecting the current build.
+	rm -rf $(RELEASE_DIR)
 	$(call build_release_cpu,68040,040)
 	$(call build_release_cpu,68060,060)
 	$(call build_release_cpu,68030,030)
