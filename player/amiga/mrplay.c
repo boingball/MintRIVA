@@ -1407,6 +1407,16 @@ int main(int argc, char **argv)
     unsigned long rescue_hw_before = 0;
     uint64_t rescue_started_us = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
+    /* Bridges the seek origin across the gap a seek itself creates: a
+     * successful seek empties the video queue (qcount = 0), so front is
+     * NULL until a new frame is decoded and queued - real time, spent on a
+     * network fetch plus H.264 decode. A seek key pressed again inside that
+     * gap must still originate from where the previous seek actually
+     * landed, not from a stale/zero fallback, or repeated presses (holding
+     * the key, or just pressing faster than the queue refills) all land on
+     * the same target instead of accumulating. front->pts_us is preferred
+     * over this the moment it is available again (see cur_pts_us below). */
+    int64_t last_seek_pts_us = -1;
     playback_stats stats;
     scheduler_trace trace;
 
@@ -2346,6 +2356,10 @@ int main(int argc, char **argv)
                 paused = 1;
                 if (audio) audio_set_running(audio, 0);
             }
+            if (ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK)
+                printf("seek: received %s, can_seek=%d\n",
+                       ev == MR_EV_SEEK_FWD ? "FWD" : "BACK",
+                       mr_demux_can_seek(dx));
             if ((ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK) &&
                 mr_demux_can_seek(dx)) {
                 /* Real offline-file seek: jump the demux index straight to
@@ -2357,11 +2371,13 @@ int main(int argc, char **argv)
                  * fast-forward toggle below; they have no keyframe index. */
                 uint64_t out_us;
                 int64_t cur_pts_us = front ? (int64_t)front->pts_us
+                                    : last_seek_pts_us >= 0 ? last_seek_pts_us
                                     : (have_deadline ? (int64_t)master_clock_us : 0);
                 int64_t target_us = cur_pts_us +
                     (ev == MR_EV_SEEK_FWD ? MR_SEEK_STEP_US : -MR_SEEK_STEP_US);
                 if (target_us < 0) target_us = 0;
                 if (mr_demux_seek(dx, (uint64_t)target_us, &out_us) == MR_OK) {
+                    last_seek_pts_us = (int64_t)out_us;
                     if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
                     display_set_status(disp, "Seeking...");
                     if (mr_decoder_reset(&dec) != MR_OK ||
@@ -2372,8 +2388,37 @@ int main(int argc, char **argv)
                     if (audio_dec) mr_audio_decoder_reset(audio_dec);
                     qcount = 0; qhead = 0;
                     playback_started = 0;
-                    decoded_index = 0; mono_base_us = 0;
-                    have_container_pts = 0; last_container_pts_us = 0;
+                    /* decoded_index drives synthetic_pts (= decoded_index *
+                     * period_us, the same product either way period_us is
+                     * derived) below, used whenever a decoded frame's own
+                     * container PTS isn't available yet - e.g. while the
+                     * H.264 reorder buffer is still refilling right after
+                     * mr_decoder_reset() above, which every seek forces.
+                     * Resetting it to 0 here (as loop-restart/live-reconnect
+                     * correctly do, since those really do restart at time 0)
+                     * made those early post-seek frames report a small
+                     * near-zero pts even once the have_container_pts fix
+                     * below stopped clobbering real container timestamps -
+                     * seed it from the seek target instead, same as
+                     * last_container_pts_us. */
+                    decoded_index = period_us ? out_us / period_us : 0;
+                    mono_base_us = 0;
+                    /* Unlike a loop-restart/live-reconnect (which genuinely
+                     * begins again at container time 0, so a zero baseline is
+                     * correct), a seek lands mid-file: seed the discontinuity
+                     * baseline at the seek target itself, not 0. Leaving
+                     * have_container_pts/last_container_pts_us zeroed here
+                     * made the very first frame decoded after a seek look
+                     * like a discontinuity against a synthetic zero clock,
+                     * which set container_pts_adjust_us = 0 - frame_pts_us -
+                     * forcing every displayed pts to 0 - (frame_pts_us) = 0
+                     * regardless of where mr_demux_seek() actually landed.
+                     * That is what made cur_pts_us (the next seek's origin)
+                     * read back near 0 even once front was populated again,
+                     * so repeated presses kept retargeting the same ~10s
+                     * mark instead of accumulating - last_seek_pts_us above
+                     * only covered the gap before front existed at all. */
+                    have_container_pts = 1; last_container_pts_us = out_us;
                     container_pts_adjust_us = 0;
                     input_eof = 0;
                     if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), out_us);
@@ -2381,6 +2426,10 @@ int main(int argc, char **argv)
                     stats.timing_rebases++;
                     continue;
                 }
+                printf("seek: mr_demux_seek() failed for target %lld us "
+                       "(container reports seekable but couldn't reposition)\n",
+                       (long long)target_us);
+                display_set_status(disp, "Seek failed");
             } else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
             while (paused && !quit) {
                 ev = player_event(disp);
@@ -3040,8 +3089,29 @@ int main(int argc, char **argv)
                     if (playback_started) {
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
+                        /* Rebase the audio-derived media clock to the same
+                         * front-of-queue pts mono_base_us just used, not a
+                         * hardcoded 0. This "playback just (re)started"
+                         * priming runs after a real session start, a loop
+                         * restart, live-reconnect, AND a seek (which reuses
+                         * playback_started = 0 on purpose to let this same
+                         * logic re-derive timing) - the first three really
+                         * do begin at media time 0, where vq[qhead].pts_us
+                         * is already ~0 too, so this is a no-op for them.
+                         * A seek does not: rebasing to 0 here silently
+                         * overwrote the seek's own correct
+                         * media_clock_rebase(..., out_us) the moment the
+                         * queue refilled past startup_depth, leaving the
+                         * audio clock thinking playback was at ~0 while
+                         * mono_base_us (and every video frame's real pts)
+                         * correctly read the seeked-to position - a
+                         * permanent split between the two clocks that Audio,
+                         * as the master clock, never recovers from: the
+                         * video looked frozen (perpetually "not due yet")
+                         * while audio kept playing normally. */
                         if (audio)
-                            media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
+                            media_clock_rebase(&mc, audio_elapsed_us(audio),
+                                               vq[qhead].pts_us);
                         if (audio) audio_set_running(audio, 1);
                         display_set_status(disp, NULL);  /* clear Buffering... */
                         if (h264_pipeline_diag_enabled && h264_pipeline_stage < 3) {
