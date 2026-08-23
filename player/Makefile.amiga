@@ -26,7 +26,7 @@
 #   make -f Makefile.amiga AMIGA_ROOT=/opt/amiga-gcc
 #   make -f Makefile.amiga AMIGA_GCC=/home/me/amiga/bin/m68k-amigaos-gcc
 #
-# CPU defaults to the universal 68030 baseline. CPU=68040 and CPU=68060 are
+# CPU defaults to the baseline 68030 build. CPU=68040 and CPU=68060 are
 # explicit performance builds; `release` creates all three without changing
 # which binary a normal `make` produces. The core is integer-only and does not
 # require an FPU.
@@ -109,7 +109,7 @@ YTGUI_GT = amiga/youtube_gadtools.c youtube/mr_youtube_search.c \
            core/mr_play_options.c $(GUI_MENU)
 MINTAMP_ROOT ?= vendor/MintAMP
 
-# MintAMP's own hand-tuned m68k asm (real/amiga_m68k_polyphase.S,
+# MintAMP's own hand-asm (real/amiga_m68k_polyphase.S,
 # amiga_m68k_planars8.S, and the AMIGA_M68K_ASM_* inline asm throughout
 # real/*.c) is a real win on 68030/68040 - both implement 32x32->64
 # MULS.L/MULU.L in hardware - but is actively harmful on 68060: that
@@ -392,6 +392,7 @@ clean:
 # same directory - MintVID and the -GT set both fail over to loading them
 # from PROGDIR:/beside themselves.
 RELEASE_DIR ?= release
+RELEASE_LICENSE_DIR := $(RELEASE_DIR)/LICENSES
 RELEASE_PROGRAMS := MintVID mrplay iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode
 
 define build_release_cpu
@@ -432,10 +433,29 @@ release:
 	@if [ -f ../MintVID.readme ]; then \
 		cp ../MintVID.readme "$(RELEASE_DIR)/MintVID.readme"; \
 	else \
-		echo "NOTE: MintVID.readme not found - copy the Aminet readme into $(RELEASE_DIR)/ by hand"; \
+		echo "ERROR: MintVID.readme not found - release metadata is required"; exit 1; \
 	fi
+	@mkdir -p $(RELEASE_LICENSE_DIR)
+	@test -f ../LICENSE || { echo "ERROR: ../LICENSE is required for release packaging"; exit 1; }
+	@test -f ../THIRD-PARTY-LICENSES.txt || { echo "ERROR: ../THIRD-PARTY-LICENSES.txt is required for release packaging"; exit 1; }
+	@test -f vendor/libmpeg2/COPYING || { echo "ERROR: libmpeg2 GPL licence text is missing"; exit 1; }
+	@test -f vendor/libavc/LICENSE -a -f vendor/libavc/NOTICE || { echo "ERROR: libavc licence/NOTICE missing - initialise submodules"; exit 1; }
+	@test -f $(MINTAMP_ROOT)/LICENSE.txt -a -f $(MINTAMP_ROOT)/RPSL.txt -a -f $(MINTAMP_ROOT)/RCSL.txt || { echo "ERROR: MintAMP/Helix licence notices missing - initialise submodules"; exit 1; }
+	@cp ../LICENSE "$(RELEASE_LICENSE_DIR)/MintVID-LICENSE.txt"
+	@cp ../THIRD-PARTY-LICENSES.txt "$(RELEASE_LICENSE_DIR)/THIRD-PARTY-LICENSES.txt"
+	@cp vendor/libmpeg2/COPYING "$(RELEASE_LICENSE_DIR)/GPL-2.0.txt"
+	@if [ -f vendor/libmpeg2/README.mintvid ]; then \
+		cp vendor/libmpeg2/README.mintvid "$(RELEASE_LICENSE_DIR)/libmpeg2-README.txt"; \
+	fi
+	@cp vendor/libavc/LICENSE "$(RELEASE_LICENSE_DIR)/libavc-LICENSE.txt"
+	@cp vendor/libavc/NOTICE "$(RELEASE_LICENSE_DIR)/libavc-NOTICE.txt"
+	@cp $(MINTAMP_ROOT)/LICENSE.txt "$(RELEASE_LICENSE_DIR)/MintAMP-LICENSE.txt"
+	@cp $(MINTAMP_ROOT)/RPSL.txt "$(RELEASE_LICENSE_DIR)/RPSL.txt"
+	@cp $(MINTAMP_ROOT)/RCSL.txt "$(RELEASE_LICENSE_DIR)/RCSL.txt"
 	@echo "Release binaries written to $(RELEASE_DIR)/"
 	@echo "Ready-to-run sets: MintVID030, MintVID040 and MintVID060"
+	@echo "Licence notices: $(RELEASE_LICENSE_DIR)/"
+	@echo "For Aminet binary distribution, also provide corresponding source from a recursive checkout."
 
 .PHONY: all release clean check-cc check-mintamp check-libavc check-kalms \
 	kalms_c2p_check
