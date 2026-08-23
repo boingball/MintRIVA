@@ -515,6 +515,47 @@ static void run_channel(const mr_youtube_search_result *selected, Object *list,
                      list, play_button, status, window, nodes, results);
 }
 
+/* ~600ms at dos.library's 50 ticks/sec (3000 ticks/minute) - a reasonable
+ * double-click window when RA_HandleInput()'s abstraction doesn't expose
+ * the raw IDCMP message timestamps DoubleClick() (intuition.library) would
+ * need. */
+#define DOUBLE_CLICK_TICKS 30UL
+
+static ULONG ds_ticks(const struct DateStamp *ds)
+{
+    return ((ULONG)ds->ds_Days * 24UL * 60UL + (ULONG)ds->ds_Minute) * 3000UL +
+           (ULONG)ds->ds_Tick;
+}
+
+/* True if the row currently selected in the results list is the same one
+ * clicked last time, within the double-click window - so double-clicking a
+ * result starts it, the same as pressing Play. */
+static int video_was_double_clicked(Object *results_list)
+{
+    static struct DateStamp last_ds;
+    static const mr_youtube_search_result *last_video;
+    static int have_last;
+    struct Node *node = NULL;
+    mr_youtube_search_result *video = NULL;
+    struct DateStamp now;
+    int dbl;
+
+    GetAttr(LISTBROWSER_SelectedNode, results_list, (ULONG *)&node);
+    if (node)
+        GetListBrowserNodeAttrs(node, LBNA_UserData, (ULONG)&video, TAG_DONE);
+    if (!video)
+        return 0;
+    DateStamp(&now);
+    dbl = have_last && video == last_video &&
+          ds_ticks(&now) - ds_ticks(&last_ds) <= DOUBLE_CLICK_TICKS;
+    last_ds = now;
+    last_video = video;
+    have_last = 1;
+    if (dbl)
+        have_last = 0; /* don't chain a third click into another double-click */
+    return dbl;
+}
+
 int main(int argc, char **argv)
 {
     Object *winobj = NULL, *layout = NULL, *search_row = NULL;
@@ -774,7 +815,9 @@ int main(int argc, char **argv)
                                STRINGA_TextVal, (ULONG)playback_text, TAG_DONE);
                 set_status(status, window,
                            "Quality changed; applies to the next Play.");
-            } else if (gadget == G_PLAY) {
+            } else if (gadget == G_PLAY ||
+                       (gadget == G_RESULTS &&
+                        video_was_double_clicked(results_list))) {
                 struct Node *node = NULL;
                 mr_youtube_search_result *video = NULL;
                 GetAttr(LISTBROWSER_SelectedNode, results_list, (ULONG *)&node);

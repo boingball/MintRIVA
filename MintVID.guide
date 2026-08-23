@@ -214,7 +214,8 @@ the intended tier for practical H.264 IPTV playback.
 Only the selected country's channels are held in RAM; unrelated global
 streams are validated and discarded. Each channel retains up to four
 preferred stream URLs, and the window's Next Stream button advances
-through them without silently looping.
+through them without silently looping. Double-clicking a channel plays
+it directly, without a separate Play press.
 
 IPTV playback inherits a snapshot of the ReAction controller's display,
 C2P, lace, and 2x selections when IPTV... is pressed; close and reopen
@@ -272,7 +273,8 @@ channel's public uploads list.
 The transport row controls the separate player process directly: Play
 first cleanly replaces the current video, Pause and Fast toggle their
 modes, Vol -/+ adjusts Paula in steps, Fullscreen toggles the RTG
-window, and Stop exits the player.
+window, and Stop exits the player. Double-clicking a result plays it
+directly, without a separate Play press.
 
 Build with SSL=1 and keep ytgui beside MintVID and mrplay.
 
