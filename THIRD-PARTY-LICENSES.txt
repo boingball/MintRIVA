@@ -1,0 +1,42 @@
+MintVID 1.0 - third-party licence index
+=======================================
+
+MintVID's own source code is MIT-licensed. See LICENSE in the project root.
+The mrplay binary also contains or links code from third-party projects with
+their own licence terms. Keep the accompanying licence and notice files with
+binary distributions, and provide corresponding source where the applicable
+licence requires it.
+
+Project / complete source tree:
+  https://github.com/boingball/MintVID
+
+For the pinned dependency revisions used by MintVID, clone recursively:
+  git clone --recurse-submodules https://github.com/boingball/MintVID.git
+
+Third-party components used by mrplay
+-------------------------------------
+
+libmpeg2 (VideoLAN)
+  Licence: GPL-2.0-or-later
+  Source:  player/vendor/libmpeg2/
+  Release notice: LICENSES/GPL-2.0.txt and LICENSES/libmpeg2-README.txt
+
+Rockbox/a52dec-derived fixed-point AC-3 core
+  Licence: GPL-2.0-or-later
+  Source:  player/vendor/liba52/
+  The GPL text supplied with the release also applies to this component.
+  Copyright/licence notices remain in the corresponding source files.
+
+Ittiam libavc
+  Licence: Apache License 2.0
+  Source:  player/vendor/libavc/ (pinned submodule)
+  Release notices: LICENSES/libavc-LICENSE.txt and LICENSES/libavc-NOTICE.txt
+
+MintAMP / Helix audio decoder code
+  Licence: see the pinned MintAMP submodule and its RealNetworks notices.
+  Source:  player/vendor/MintAMP/ (pinned submodule)
+  Release notices include MintAMP-LICENSE.txt, RPSL.txt and RCSL.txt.
+
+This file is an index, not a replacement for the licence texts themselves.
+The release packaging target copies the available upstream licence/notices into
+the LICENSES drawer automatically.
