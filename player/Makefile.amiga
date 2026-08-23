@@ -2,7 +2,7 @@
 #
 # Programs:
 #   mrplay    - the player: opens an RTG window and plays an AVI/MOV clip.
-#   mrgui / mrgui-GT       - ReAction / OS 3.1 GadTools controllers.
+#   MintVID / MintVID-GT   - ReAction / OS 3.1 GadTools controllers.
 #   iptvgui / iptvgui-GT   - ReAction / GadTools IPTV browsers.
 #   ytgui / ytgui-GT       - ReAction / GadTools YouTube browsers.
 #   mr_decode - decoder test harness: dumps frames to PPM (no display), used to
@@ -292,7 +292,7 @@ GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wext
 # m68k-linux-gnu test toolchain in tests/run_m68k_check.sh).
 LDFLAGS = -noixemul -lgcc $(LIBAVC_M68K_LDFLAGS)
 
-all: mrplay MintVID iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT mr_decode
+all: mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode
 
 audio_task_stress: check-cc tests/amiga_audio_task_stress.c amiga/audio_paula.c
 	$(CC) $(CFLAGS) -o $@ tests/amiga_audio_task_stress.c \
@@ -339,7 +339,7 @@ iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h amiga/mr_master_options.h
 ytgui: check-cc $(YTGUI) youtube/mr_youtube_search.h amiga/mr_master_options.h
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(YTGUI) $(LDFLAGS)
 
-mrgui-GT: check-cc $(GUI_GT) amiga/mr_master_options.h
+MintVID-GT: check-cc $(GUI_GT) amiga/mr_master_options.h
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI_GT) $(LDFLAGS)
 
 iptvgui-GT: check-cc $(IPTVGUI_GT) iptv/mr_iptv.h amiga/mr_master_options.h
@@ -378,7 +378,7 @@ mr_decode: $(HARN) $(CORE)
 endif
 
 clean:
-	rm -f mrplay MintVID iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT \
+	rm -f mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT \
 	      mr_decode kalms_c2p_check $(KALMS_OBJ)
 	rm -f audio_task_stress
 
@@ -399,7 +399,7 @@ clean:
 # archive for Aminet.
 RELEASE_DIR ?= release
 MAIN_PROGRAM := MintVID
-HIDDEN_PROGRAMS := mrplay iptvgui ytgui mrgui-GT iptvgui-GT ytgui-GT mr_decode
+HIDDEN_PROGRAMS := mrplay iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode
 RELEASE_PROGRAMS := $(MAIN_PROGRAM) $(HIDDEN_PROGRAMS)
 
 define build_release_cpu

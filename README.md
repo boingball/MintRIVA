@@ -68,10 +68,10 @@ Use the `.040` build for a PiStorm configured as a 68040 and `.060` only on a
 68060-compatible CPU. `release/MintVID030`, `release/MintVID040` and
 `release/MintVID060` are ready-to-run sets with ordinary unsuffixed program
 names. Each contains `mrplay`, the ReAction `MintVID`/`iptvgui`/`ytgui` set, the
-GadTools `mrgui-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line
+GadTools `MintVID-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line
 `mr_decode` codec probe/test harness. `MintVID` is the flagship binary (built
-from the `mrgui` target/`mrgui.c`, but named `MintVID` on disk) - it is the
-one meant to carry the Workbench icon and be double-clicked; the release
+from `mrgui.c`, whose Makefile target and output are named `MintVID`) - it
+is the one meant to carry the Workbench icon and be double-clicked; the release
 target also drops a `HideExtras` AmigaDOS script in each `MintVID0xx`
 directory that sets the Hidden protection bit on everything else (run it from
 an Amiga/emulator shell - a Linux cross build cannot set AmigaDOS protection
@@ -197,10 +197,11 @@ steps, Fullscreen toggles the RTG window, and Stop exits the player.
 The Amiga build creates two Workbench-friendly GUI sets over the same player,
 parsers, playback settings, and status/control protocol:
 
-- `MintVID` (built from the `mrgui` target), `iptvgui`, `ytgui` use ReAction V44.
-- `mrgui-GT`, `iptvgui-GT`, `ytgui-GT` use only GadTools/Intuition V37 and are
-  intended for a standard AmigaOS 3.1 installation. Start `mrgui-GT`; it opens
-  the matching `-GT` browsers automatically.
+- `MintVID` (from `mrgui.c`), `iptvgui`, `ytgui` use ReAction V44.
+- `MintVID-GT` (from `mrgui_gadtools.c`), `iptvgui-GT`, `ytgui-GT` use only
+  GadTools/Intuition V37 and are intended for a standard AmigaOS 3.1
+  installation. Start `MintVID-GT`; it opens the matching `-GT` browsers
+  automatically.
 
 Keep one complete GUI set beside `mrplay` (or put `mrplay` on the command
 path), run the controller, choose a

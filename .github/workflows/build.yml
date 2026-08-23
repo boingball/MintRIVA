@@ -95,9 +95,9 @@ jobs:
       - name: Confirm the programs were produced
         run: |
           ls -la player/mrplay player/MintVID player/iptvgui player/ytgui \
-            player/mrgui-GT player/iptvgui-GT player/ytgui-GT player/mr_decode
+            player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode
           file player/mrplay player/MintVID player/iptvgui player/ytgui \
-            player/mrgui-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
+            player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
 
       - name: Upload compiled programs
         uses: actions/upload-artifact@v4
@@ -108,7 +108,7 @@ jobs:
             player/MintVID
             player/iptvgui
             player/ytgui
-            player/mrgui-GT
+            player/MintVID-GT
             player/iptvgui-GT
             player/ytgui-GT
             player/mr_decode
@@ -168,7 +168,7 @@ jobs:
             test -d "$dir"
             for program in \
               mrplay MintVID iptvgui ytgui \
-              mrgui-GT iptvgui-GT ytgui-GT mr_decode
+              MintVID-GT iptvgui-GT ytgui-GT mr_decode
             do
               test -f "$dir/$program"
             done
