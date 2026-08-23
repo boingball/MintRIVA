@@ -264,6 +264,7 @@ ID to the public channel `/videos` page and lists that channel's uploads. The
 transport row controls the separate player process: Play first cleanly replaces
 the current video, Pause and Fast toggle their modes, Vol -/+ adjusts Paula in
 steps, Fullscreen toggles the RTG window, and Stop exits the player.
+Double-clicking a result plays it directly, without a separate Play press.
 
 ## GUI editions
 
@@ -363,7 +364,8 @@ playlists, live-playlist refreshes, segments, and range reconnects. Values with
 CR/LF or values exceeding their fixed limits are rejected, and the options are
 owned by one playback source so they cannot leak into a later channel. The IPTV
 window's **Next Stream** button advances through the retained alternatives
-without silently looping.
+without silently looping. Double-clicking a channel plays it directly, without
+a separate Play press.
 
 IPTV playback inherits a snapshot of the ReAction controller's display, C2P,
 lace, and 2x selections when **IPTV...** is pressed. The IPTV window shows that

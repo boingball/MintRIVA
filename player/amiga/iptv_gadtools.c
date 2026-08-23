@@ -66,7 +66,21 @@ typedef struct iptvgt {
     int timer_open, timer_running;
     ULONG status_seq;
     LONG selected_index;
+    struct DateStamp last_click_ds;
+    LONG last_click_index;
+    int have_last_click;
 } iptvgt;
+
+/* ~600ms at dos.library's 50 ticks/sec (3000 ticks/minute) - a reasonable
+ * double-click window when the toolkit's own event loop doesn't expose the
+ * IDCMP message timestamps DoubleClick() (intuition.library) would need. */
+#define DOUBLE_CLICK_TICKS 30UL
+
+static ULONG ds_ticks(const struct DateStamp *ds)
+{
+    return ((ULONG)ds->ds_Days * 24UL * 60UL + (ULONG)ds->ds_Minute) * 3000UL
+         + (ULONG)ds->ds_Tick;
+}
 
 static STRPTR country_labels[]={(STRPTR)"United Kingdom",(STRPTR)"United States",
                                 (STRPTR)"All",NULL};
@@ -312,6 +326,21 @@ static void play_selected(iptvgt *app)
     else set_text(app,app->status,"Could not start mrplay (or old player is busy).");
 }
 
+/* Selecting a channel just updates the list's selection; double-clicking the
+ * same row within DOUBLE_CLICK_TICKS also starts it, same as pressing Play. */
+static void channel_clicked(iptvgt *app, ULONG code)
+{
+    struct DateStamp now;
+    int dbl;
+    app->selected_index=(LONG)code;
+    GT_SetGadgetAttrs(app->channels,app->window,NULL,GTLV_Selected,code,TAG_DONE);
+    DateStamp(&now);
+    dbl=app->have_last_click && (LONG)code==app->last_click_index &&
+        ds_ticks(&now)-ds_ticks(&app->last_click_ds)<=DOUBLE_CLICK_TICKS;
+    app->last_click_ds=now; app->last_click_index=(LONG)code; app->have_last_click=1;
+    if(dbl){play_selected(app); app->have_last_click=0;}
+}
+
 static void next_stream(iptvgt *app)
 {
     if(!app->active||app->active_stream+1>=app->active->stream_count){
@@ -467,7 +496,7 @@ int main(int argc,char **argv)
       while((msg=GT_GetIMsg(app.window->UserPort))!=NULL){ULONG cls=msg->Class;UWORD code=msg->Code;struct Gadget *gad=(struct Gadget *)msg->IAddress;UWORD id=gad?gad->GadgetID:0;GT_ReplyIMsg(msg);
         if(cls==IDCMP_CLOSEWINDOW)done=1;else if(cls==IDCMP_REFRESHWINDOW){GT_BeginRefresh(app.window);GT_EndRefresh(app.window,TRUE);}
         else if(cls==IDCMP_MENUPICK){int action=mr_gui_menu_action(&app.menu,code);if(action==MR_GUI_MENU_ABOUT)mr_gui_show_about(app.window,"IPTV GadTools edition (OS 3.0)");else if(action==MR_GUI_MENU_QUIT)done=1;}
-        else if(cls==IDCMP_GADGETUP){if(id==G_CLOSE)done=1;else if(id==G_CHANNELS){app.selected_index=(LONG)code;GT_SetGadgetAttrs(app.channels,app.window,NULL,GTLV_Selected,(ULONG)code,TAG_DONE);}else if(id==G_SEARCH||id==G_CATEGORY)rebuild(&app);else if(id==G_COUNTRY)load_directory(&app);
+        else if(cls==IDCMP_GADGETUP){if(id==G_CLOSE)done=1;else if(id==G_CHANNELS)channel_clicked(&app,code);else if(id==G_SEARCH||id==G_CATEGORY)rebuild(&app);else if(id==G_COUNTRY)load_directory(&app);
           else if(id==G_REFRESH){if(refresh(&app))load_directory(&app);}else if(id==G_PLAY)play_selected(&app);else if(id==G_NEXT)next_stream(&app);
           else if(id==G_STOP)set_text(&app,app.status,stop_player()?"Playback stopped.":"No stream is playing.");else if(id==G_OPEN)open_url(&app);
           else if(id==G_DEBUG)app.debug_on=value(&app,app.debug,GTCY_Active)!=0;}

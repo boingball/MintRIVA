@@ -705,6 +705,45 @@ static void poll_player_status(Object *status, struct Window *window,
   set_status(status, window, out);
 }
 
+/* ~600ms at dos.library's 50 ticks/sec (3000 ticks/minute) - a reasonable
+ * double-click window when RA_HandleInput()'s abstraction doesn't expose
+ * the raw IDCMP message timestamps DoubleClick() (intuition.library) would
+ * need. */
+#define DOUBLE_CLICK_TICKS 30UL
+
+static ULONG ds_ticks(const struct DateStamp *ds) {
+  return ((ULONG)ds->ds_Days * 24UL * 60UL + (ULONG)ds->ds_Minute) * 3000UL +
+         (ULONG)ds->ds_Tick;
+}
+
+/* True if the row currently selected in the channel list is the same one
+ * clicked last time, within the double-click window - so double-clicking a
+ * channel starts it, the same as pressing Play. */
+static int channel_was_double_clicked(Object *channels) {
+  static struct DateStamp last_ds;
+  static mr_iptv_channel *last_channel;
+  static int have_last;
+  struct Node *node = NULL;
+  mr_iptv_channel *channel = NULL;
+  struct DateStamp now;
+  int dbl;
+
+  GetAttr(LISTBROWSER_SelectedNode, channels, (ULONG *)&node);
+  if (node)
+    GetListBrowserNodeAttrs(node, LBNA_UserData, (ULONG)&channel, TAG_DONE);
+  if (!channel)
+    return 0;
+  DateStamp(&now);
+  dbl = have_last && channel == last_channel &&
+        ds_ticks(&now) - ds_ticks(&last_ds) <= DOUBLE_CLICK_TICKS;
+  last_ds = now;
+  last_channel = channel;
+  have_last = 1;
+  if (dbl)
+    have_last = 0; /* don't chain a third click into another double-click */
+  return dbl;
+}
+
 int main(int argc, char **argv) {
   Object *winobj = NULL, *layout = NULL, *search = NULL, *country = NULL;
   Object *category = NULL, *channels = NULL, *status = NULL, *url = NULL;
@@ -1063,7 +1102,9 @@ int main(int argc, char **argv) {
         else
           player_status_seq = ~0UL;
       } else if ((result & WMHI_GADGETMASK) == G_PLAY ||
-                 (result & WMHI_GADGETMASK) == G_NEXT_STREAM) {
+                 (result & WMHI_GADGETMASK) == G_NEXT_STREAM ||
+                 ((result & WMHI_GADGETMASK) == G_CHANNELS &&
+                  channel_was_double_clicked(channels))) {
         GetAttr(LISTBROWSER_SelectedNode, channels, (ULONG *)&node);
         if (node)
           GetListBrowserNodeAttrs(node, LBNA_UserData, (ULONG)&channel,

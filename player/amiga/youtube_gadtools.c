@@ -58,7 +58,21 @@ typedef struct ytgt {
     struct timerequest *timer_io;
     int timer_open, timer_running, debug_log, log_session_open;
     LONG selected_index;
+    struct DateStamp last_click_ds;
+    LONG last_click_index;
+    int have_last_click;
 } ytgt;
+
+/* ~600ms at dos.library's 50 ticks/sec (3000 ticks/minute) - a reasonable
+ * double-click window when the toolkit's own event loop doesn't expose the
+ * IDCMP message timestamps DoubleClick() (intuition.library) would need. */
+#define DOUBLE_CLICK_TICKS 30UL
+
+static ULONG ds_ticks(const struct DateStamp *ds)
+{
+    return ((ULONG)ds->ds_Days * 24UL * 60UL + (ULONG)ds->ds_Minute) * 3000UL
+         + (ULONG)ds->ds_Tick;
+}
 
 static STRPTR type_labels[] = {(STRPTR)"All", (STRPTR)"Videos",
                                (STRPTR)"Live", (STRPTR)"Shorts", NULL};
@@ -241,6 +255,17 @@ static int start_video(ytgt *app, const mr_youtube_search_result *video)
         UnLoadSeg(seglist);
     }
     return process != NULL;
+}
+
+/* Shared by the Play button and double-clicking a result - same checks and
+ * status text either way. */
+static void play_selected(ytgt *app)
+{
+    mr_youtube_search_result *video = selected(app);
+    mr_master_options_apply(&app->options);
+    if (!video) set_text(app, app->status, "Select a video first.");
+    else if (!start_video(app, video)) set_text(app, app->status, "Could not start mrplay.");
+    else set_text(app, app->status, video->live ? "Resolving YouTube Live..." : "Resolving YouTube video...");
 }
 
 static void load_url(ytgt *app, const char *url, mr_youtube_search_mode mode,
@@ -503,9 +528,17 @@ int main(int argc, char **argv)
             } else if (cls==IDCMP_GADGETUP) {
                 if (id==G_CLOSE) done=1;
                 else if (id==G_RESULTS) {
+                    struct DateStamp now;
+                    int dbl;
                     app.selected_index=(LONG)code;
                     GT_SetGadgetAttrs(app.results,app.window,NULL,
                                       GTLV_Selected,(ULONG)code,TAG_DONE);
+                    DateStamp(&now);
+                    dbl = app.have_last_click && (LONG)code==app.last_click_index &&
+                          ds_ticks(&now)-ds_ticks(&app.last_click_ds)<=DOUBLE_CLICK_TICKS;
+                    app.last_click_ds=now; app.last_click_index=(LONG)code;
+                    app.have_last_click=1;
+                    if (dbl) { play_selected(&app); app.have_last_click=0; }
                 }
                 else if (id==G_SEARCH || id==G_QUERY) search(&app);
                 else if (id==G_CHANNEL) channel(&app);
@@ -529,11 +562,7 @@ int main(int argc, char **argv)
                                     quality_labels[app.quality_index]);
                     mr_play_options_summary(&app.options,summary,sizeof(summary)); set_text(&app,app.summary,summary);
                 } else if (id==G_PLAY) {
-                    mr_youtube_search_result *video=selected(&app);
-                    mr_master_options_apply(&app.options);
-                    if (!video) set_text(&app,app.status,"Select a video first.");
-                    else if (!start_video(&app,video)) set_text(&app,app.status,"Could not start mrplay.");
-                    else set_text(&app,app.status,video->live?"Resolving YouTube Live...":"Resolving YouTube video...");
+                    play_selected(&app);
                 }
             }
         }
