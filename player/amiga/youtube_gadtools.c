@@ -1,4 +1,4 @@
-/* MintVID YouTube-GT: OS 3.1 GadTools frontend, shared search/player core. */
+/* MintVID YouTube-GT: OS 3.0 GadTools frontend, shared search/player core. */
 #include "../core/mr_alloc.h"
 #include "../core/mr_http.h"
 #include "../core/mr_play_options.h"
@@ -495,7 +495,7 @@ int main(int argc, char **argv)
             else if (cls==IDCMP_REFRESHWINDOW) { GT_BeginRefresh(app.window); GT_EndRefresh(app.window,TRUE); }
             else if (cls==IDCMP_MENUPICK) {
                 int action=mr_gui_menu_action(&app.menu,code);
-                if (action==MR_GUI_MENU_ABOUT) mr_gui_show_about(app.window,"YouTube GadTools edition (OS 3.1)");
+                if (action==MR_GUI_MENU_ABOUT) mr_gui_show_about(app.window,"YouTube GadTools edition (OS 3.0)");
                 else if (action==MR_GUI_MENU_QUIT) done=1;
             } else if (cls==IDCMP_GADGETUP) {
                 if (id==G_CLOSE) done=1;

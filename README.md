@@ -24,7 +24,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | AVI, QuickTime MOV/MP4, Matroska/MKV and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
 | Public YouTube URLs | ✅ live HLS plus experimental muxed 360p/720p H.264/AAC playback for compatible uploads |
-| YouTube search | ✅ no-key ReAction and OS 3.1 GadTools browsers; All/Videos/Live/Shorts filters and native playback handoff |
+| YouTube search | ✅ no-key ReAction and OS 3.0 GadTools browsers; All/Videos/Live/Shorts filters and native playback handoff |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
 | Microsoft RLE8 — palettised AVI | ✅ native palette and delta-frame decoder (RLE4 deferred) |
@@ -37,7 +37,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | Matroska/MKV | ✅ H.264/MPEG-4/MPEG-2/MJPEG video; AAC/MP3/MP2/AC-3/PCM audio; common lacing supported |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
 | Amiga RTG / AGA output | ✅ |
-| ReAction + GadTools controllers | ✅ matching file, IPTV and YouTube frontends for modern and OS 3.1 systems |
+| ReAction + GadTools controllers | ✅ matching file, IPTV and YouTube frontends for modern and OS 3.0 systems |
 | IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
 | PCM / MP2 / MP3 / AAC-LC / AC-3 audio to Paula | ✅ host-validated; AC-3 uses fixed-point stereo downmix |
 
@@ -204,7 +204,7 @@ parsers, playback settings, and status/control protocol:
 
 - `MintVID` (from `mrgui.c`), `iptvgui`, `ytgui` use ReAction V44.
 - `MintVID-GT` (from `mrgui_gadtools.c`), `iptvgui-GT`, `ytgui-GT` use only
-  GadTools/Intuition V37 and are intended for a standard AmigaOS 3.1
+  GadTools/Intuition V37 and are intended for a standard AmigaOS 3.0
   installation. Start `MintVID-GT`; it opens the matching `-GT` browsers
   automatically.
 

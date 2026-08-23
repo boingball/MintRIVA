@@ -2,7 +2,7 @@
 #
 # Programs:
 #   mrplay    - the player: opens an RTG window and plays an AVI/MOV clip.
-#   MintVID / MintVID-GT   - ReAction / OS 3.1 GadTools controllers.
+#   MintVID / MintVID-GT   - ReAction / OS 3.0 GadTools controllers.
 #   iptvgui / iptvgui-GT   - ReAction / GadTools IPTV browsers.
 #   ytgui / ytgui-GT       - ReAction / GadTools YouTube browsers.
 #   mr_decode - decoder test harness: dumps frames to PPM (no display), used to

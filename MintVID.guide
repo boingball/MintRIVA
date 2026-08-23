@@ -86,7 +86,7 @@ YouTube browsing reachable from its own menus.
 
 Everything else in the drawer (mrplay, iptvgui, ytgui, the GadTools -GT
 set, mr_decode) is a support binary MintVID or the -GT controller loads
-on demand. A stock OS 3.1 system without ReAction V44 should instead run
+on demand. A stock OS 3.0 system without ReAction V44 should instead run
 @{b}MintVID-GT@{ub}, the plain GadTools/Intuition equivalent - it opens
 the matching -GT browsers automatically.
 
@@ -150,7 +150,7 @@ parsers, playback settings, and status/control protocol:
 
   - @{b}MintVID@{ub}, iptvgui, ytgui use ReAction V44.
   - @{b}MintVID-GT@{ub}, iptvgui-GT, ytgui-GT use only GadTools/Intuition
-    V37, for a standard AmigaOS 3.1 installation. Start MintVID-GT; it
+    V37, for a standard AmigaOS 3.0 installation. Start MintVID-GT; it
     opens the matching -GT browsers automatically.
 
 Keep one complete GUI set beside mrplay (or put mrplay on the command

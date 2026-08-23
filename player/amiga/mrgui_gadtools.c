@@ -1,4 +1,4 @@
-/* MintVID-GT: OS 3.1 GadTools controller for the shared mrplay engine. */
+/* MintVID-GT: OS 3.0 GadTools controller for the shared mrplay engine. */
 #include "../core/mr_play_options.h"
 #include "mr_gui_menu.h"
 #include "mr_master_options.h"
@@ -458,7 +458,7 @@ int main(void)
             } else if (cls == IDCMP_MENUPICK) {
                 int action = mr_gui_menu_action(&app.menu, code);
                 if (action == MR_GUI_MENU_ABOUT)
-                    mr_gui_show_about(app.window, "GadTools edition (OS 3.1)");
+                    mr_gui_show_about(app.window, "GadTools edition (OS 3.0)");
                 else if (action == MR_GUI_MENU_QUIT)
                     done = 1;
             } else if (cls == IDCMP_GADGETUP) {

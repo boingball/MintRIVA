@@ -51,7 +51,7 @@ WHAT IT PLAYS
   - Audio to Paula: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and fixed-point
     AC-3 (stereo downmix) - all confirmed good quality on real hardware.
   - Two complete GUI sets over the same player: ReAction (V44) and plain
-    GadTools/Intuition (V37) for a stock 3.1 install, each with matching
+    GadTools/Intuition (V37) for a stock 3.0 install, each with matching
     file, IPTV-directory and YouTube-search browser windows.
 
 Every codec decoder in this package is validated frame-by-frame against
@@ -76,7 +76,7 @@ Copy the whole archive to your Amiga (or a shared PiStorm volume) and
 double-click MintVID - that is the whole program, with IPTV and YouTube
 browsing reachable from its own menus. Everything else in the drawer
 (mrplay, iptvgui, ytgui, the GadTools -GT set, mr_decode) is a support
-binary MintVID or the -GT controller loads on demand (a stock OS 3.1
+binary MintVID or the -GT controller loads on demand (a stock OS 3.0
 system without ReAction V44 should instead run MintVID-GT, the plain
 GadTools/Intuition equivalent). Keep the whole drawer together - nothing
 here is meant to be split up or copied out on its own.
