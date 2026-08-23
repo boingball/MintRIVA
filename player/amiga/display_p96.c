@@ -867,6 +867,8 @@ static int p96_poll(void *h)
             case 0x23: p96_toggle_fullscreen(s); break;
             case 0x4E: ev = MR_EV_SEEK_FWD; break;
             case 0x4F: ev = MR_EV_SEEK_BACK; break;
+            case 0x4C: ev = MR_EV_VOLUME_UP; break;
+            case 0x4D: ev = MR_EV_VOLUME_DOWN; break;
             }
         }
     }

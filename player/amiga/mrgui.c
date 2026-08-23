@@ -8,6 +8,7 @@
 #include <exec/tasks.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
+#include <devices/timer.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <graphics/displayinfo.h>
@@ -43,6 +44,7 @@
 #include "../core/mr_play_options.h"
 #include "mr_master_options.h"
 #include "mr_gui_menu.h"
+#include "mr_player_status.h"
 
 #ifndef MRGUI_CLASS_VERSION
 #define MRGUI_CLASS_VERSION 44
@@ -501,6 +503,93 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     }
 }
 
+/* Repeating poll so the separate mrplay process's codec/position/error status
+ * reaches the Info: line, the same mechanism the IPTV and YouTube browser
+ * windows already use (see mr_player_status.h). Purely advisory: if the
+ * timer.device is unavailable the GUI still works, it just stops mirroring
+ * the player's live status and Info: keeps showing the chosen file. */
+#define STATUS_POLL_MICROS 250000UL /* 4 Hz - mrplay itself only republishes
+                                      * position about once a second */
+
+static struct MsgPort *status_timer_port;
+static struct timerequest *status_timer_io;
+static int status_timer_device_open;
+static int status_timer_running;
+static ULONG player_status_seq;
+
+static int status_timer_open(void)
+{
+    status_timer_port = CreateMsgPort();
+    if (!status_timer_port) return 0;
+    status_timer_io = (struct timerequest *)
+        CreateIORequest(status_timer_port, sizeof(*status_timer_io));
+    if (!status_timer_io) return 0;
+    if (OpenDevice((CONST_STRPTR)"timer.device", UNIT_VBLANK,
+                   (struct IORequest *)status_timer_io, 0) != 0)
+        return 0;
+    status_timer_device_open = 1;
+    return 1;
+}
+
+static void status_timer_start(void)
+{
+    if (!status_timer_io) return;
+    status_timer_io->tr_node.io_Command = TR_ADDREQUEST;
+    status_timer_io->tr_time.tv_secs = 0;
+    status_timer_io->tr_time.tv_micro = STATUS_POLL_MICROS;
+    SendIO((struct IORequest *)status_timer_io);
+    status_timer_running = 1;
+}
+
+static void status_timer_close(void)
+{
+    if (status_timer_io) {
+        if (status_timer_running && !CheckIO((struct IORequest *)status_timer_io))
+            AbortIO((struct IORequest *)status_timer_io);
+        if (status_timer_running)
+            WaitIO((struct IORequest *)status_timer_io);
+        status_timer_running = 0;
+        if (status_timer_device_open) {
+            CloseDevice((struct IORequest *)status_timer_io);
+            status_timer_device_open = 0;
+        }
+        DeleteIORequest((struct IORequest *)status_timer_io);
+        status_timer_io = NULL;
+    }
+    if (status_timer_port) {
+        DeleteMsgPort(status_timer_port);
+        status_timer_port = NULL;
+    }
+}
+
+/* Mirrors mrplay's status (including the "| H:MM:SS"/"| M:SS" playhead it
+ * folds on once a second - see mrplay.c's player_update_position()) onto
+ * Info: while a player is running. Leaves Info: alone - showing whatever
+ * file/type text update_file_info() last set - once no player is running,
+ * so choosing a file after playback still reads back correctly. */
+static void poll_player_status(Object *info, struct Window *window)
+{
+    mr_player_status ps;
+    char line[256];
+
+    if (!mr_player_status_read(&ps)) { player_status_seq = 0; return; }
+    if (ps.seq == player_status_seq) return;
+    player_status_seq = ps.seq;
+
+    if (ps.state == MR_PLAYER_STATE_PLAYING)
+        snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
+                 ps.codec, ps.codec[0] ? "): " : "", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED)
+        snprintf(line, sizeof(line), "Not supported: %s", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_ERROR)
+        snprintf(line, sizeof(line), "Player error: %s", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_ENDED)
+        snprintf(line, sizeof(line), "Playback ended");
+    else
+        return; /* STARTING/OPENING: leave whatever Info: already shows */
+    set_info(info, window, line);
+}
+
 static void start_player(Object *file, Object *mode, Object *c2p,
                          Object *h264,
                          Object *lace, Object *twox,
@@ -608,12 +697,14 @@ int main(void)
     ULONG sigmask;
     ULONG result;
     ULONG signals;
+    ULONG timermask;
     UWORD code;
     int status;
     int have_rtg;
     int default_mode;
 
     window_object = NULL;
+    timermask = 0;
     file = NULL;
     mode = NULL;
     c2p = NULL;
@@ -882,11 +973,22 @@ int main(void)
     publish_play_options(master_options, mode, c2p, h264, lace, twox,
                          audio_rate, no_audio);
     GetAttr(WINDOW_SigMask, window_object, &sigmask);
+    if (status_timer_open()) {
+        timermask = 1UL << status_timer_port->mp_SigBit;
+        status_timer_start();
+    }
 
     for (;;) {
-        signals = Wait(sigmask | SIGBREAKF_CTRL_C);
+        signals = Wait(sigmask | timermask | SIGBREAKF_CTRL_C);
         if (signals & SIGBREAKF_CTRL_C)
             break;
+        if (timermask && (signals & timermask)) {
+            while (GetMsg(status_timer_port)) /* remove the replied request */
+                ;
+            status_timer_running = 0;
+            poll_player_status(info, window);
+            status_timer_start();
+        }
 
         while ((result = RA_HandleInput(window_object, &code)) !=
                WMHI_LASTMSG) {
@@ -978,6 +1080,7 @@ done:
     stop_player_and_wait();
 
 cleanup:
+    status_timer_close();
     mr_master_options_close(&master_options);
     mr_gui_menu_close(&app_menu, window);
     /* Dispose only the highest successfully-created owner.  The window owns

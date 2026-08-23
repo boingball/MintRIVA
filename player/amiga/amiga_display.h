@@ -155,7 +155,9 @@ enum {
     MR_EV_QUIT,          /* ESC or close gadget                            */
     MR_EV_PAUSE,         /* space - toggle pause                           */
     MR_EV_SEEK_FWD,      /* cursor right                                   */
-    MR_EV_SEEK_BACK      /* cursor left                                    */
+    MR_EV_SEEK_BACK,     /* cursor left                                    */
+    MR_EV_VOLUME_UP,     /* cursor up                                      */
+    MR_EV_VOLUME_DOWN    /* cursor down                                    */
 };
 
 /* Non-blocking: returns the most significant queued input event (QUIT wins). */

@@ -68,7 +68,10 @@ or similar on a modern machine to prepare source material, then play the
 result on the Amiga. Timeline seeking (cursor left/right, 10 seconds at a
 time, landing on the nearest keyframe) works for local QuickTime MOV/MP4
 files; AVI, MKV, and network/live sources don't have a keyframe index yet,
-so cursor-right stays a fast-forward toggle there instead.
+so cursor-right stays a fast-forward toggle there instead. Cursor up/down
+adjust Paula's volume, and once playback starts, the controller's Info:
+field mirrors a live H:MM:SS/M:SS playhead so you can see where a seek
+actually landed.
 
 INSTALLATION
 

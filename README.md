@@ -224,7 +224,8 @@ and ignore the RTG-only fullscreen command. Cursor left/right seek 10 seconds
 at a time for local QuickTime MOV/MP4 files, landing on the nearest keyframe
 via the sample index rather than pretending that fast decode is a seek
 operation. AVI, MKV and network/live sources don't have a keyframe index yet
-and keep cursor-right as the fast-forward toggle instead.
+and keep cursor-right as the fast-forward toggle instead. Cursor up/down adjust
+Paula's volume in the same 8/64 steps as ytgui's **Vol -**/**Vol +** buttons.
 
 Every GUI has a **MintVID > About MintVID...** menu containing the project
 credits and support link. **MintVID > Quit** closes that frontend cleanly.
@@ -232,7 +233,11 @@ credits and support link. **MintVID > Quit** closes that frontend cleanly.
 The controller's file gadget identifies the selected file. On launch, `mrplay`
 also reports the container type, video codec/FourCC, dimensions, frame rate and
 audio format to its console, which is useful metadata when testing unfamiliar
-files.
+files. Once a file starts playing, the same Info: field also mirrors a live
+playhead - `H:MM:SS`/`M:SS` in the current stream's own timeline, refreshed
+about once a second - for local files and any stream played through the
+IPTV/YouTube browsers, so seeking with cursor left/right shows where you
+actually landed.
 
 Direct AVI/MOV/MP4 URL input still needs a finite, byte-addressable resource:
 the server must supply `Content-Length` or `Content-Range`, and must honour byte

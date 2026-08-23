@@ -152,6 +152,11 @@ static ULONG status_file_seq;
 static int playing_status_published;
 static char playing_status_codec[MR_PLAYER_CODEC_MAX];
 static char playing_status_text[MR_PLAYER_STATUS_TEXT_MAX];
+/* Elapsed playback position last folded into the published status text, in
+ * the current frame's own timeline (pts_us) - not wall-clock time, so it
+ * still tracks correctly under seeks and the Turbo/Turbo+ H.264 speed
+ * modes. -1 means "nothing published yet". */
+static int64_t position_status_last_pts_us = -1;
 
 /* One-shot high-resolution pipeline breadcrumb. It advances only when a new
  * stage is reached, so diagnostics cannot turn every 1080p frame into DOS I/O. */
@@ -248,6 +253,18 @@ static void player_status(LONG state, const char *codec, const char *text)
     }
 }
 
+/* Same as player_status() but skips the T: snapshot's Open/Write/Close/
+ * Rename - that disk I/O only exists so a terminal state (error/unsupported/
+ * ended) survives this process exiting before the controller reads it. A
+ * periodic position update while playback is healthy has no such need, and
+ * doing that disk round trip once a second during decode is exactly the
+ * kind of avoidable tax on a slow floppy/HDD-based Amiga this player is
+ * otherwise careful not to add. */
+static void player_status_live(const char *codec, const char *text)
+{
+    mr_player_status_set(control_block, MR_PLAYER_STATE_PLAYING, codec, text);
+}
+
 static void player_prepare_playing_status(const char *codec, const char *text)
 {
     mr_player_status_copy(playing_status_codec,
@@ -255,14 +272,47 @@ static void player_prepare_playing_status(const char *codec, const char *text)
     mr_player_status_copy(playing_status_text,
                           sizeof playing_status_text, text ? text : "");
     playing_status_published = 0;
+    position_status_last_pts_us = -1;
 }
 
-static void player_first_frame_presented(void)
+/* Folds an "H:MM:SS"/"M:SS" playhead onto the end of the fixed stream
+ * description and republishes it (live only, see player_status_live()) -
+ * throttled to about once a second of the video's own timeline so this is a
+ * once-a-second string format plus a Forbid()/Permit(), not a per-frame
+ * cost. pts_us < 0 means the caller has no usable timestamp here (e.g. the
+ * H.264 EOF drain loop, which only ever handles the last frame or two) and
+ * just wants the one-time "now playing" latch below. */
+static void player_update_position(int64_t pts_us)
 {
-    if (playing_status_published) return;
-    playing_status_published = 1;
-    player_status(MR_PLAYER_STATE_PLAYING, playing_status_codec,
-                  playing_status_text);
+    int64_t diff;
+    unsigned long secs, h, m, s;
+    char line[MR_PLAYER_STATUS_TEXT_MAX];
+
+    if (pts_us < 0) return;
+    diff = pts_us - position_status_last_pts_us;
+    if (diff < 0) diff = -diff;
+    if (position_status_last_pts_us >= 0 && diff < 1000000) return;
+    position_status_last_pts_us = pts_us;
+
+    secs = (unsigned long)(pts_us / 1000000);
+    h = secs / 3600; m = (secs / 60) % 60; s = secs % 60;
+    if (h)
+        snprintf(line, sizeof line, "%s | %lu:%02lu:%02lu",
+                 playing_status_text, h, m, s);
+    else
+        snprintf(line, sizeof line, "%s | %lu:%02lu",
+                 playing_status_text, m, s);
+    player_status_live(playing_status_codec, line);
+}
+
+static void player_first_frame_presented(int64_t pts_us)
+{
+    if (!playing_status_published) {
+        playing_status_published = 1;
+        player_status(MR_PLAYER_STATE_PLAYING, playing_status_codec,
+                      playing_status_text);
+    }
+    player_update_position(pts_us);
 }
 
 /* Keep a failure status readable by the IPTV controller for a moment before we
@@ -528,7 +578,7 @@ static void present_service_frame(video_presenter *vp)
     else
         display_show_rgb(vp->disp, front->rgb, front->width, front->height,
                          front->stride, front->dirty_y0, front->dirty_y1);
-    player_first_frame_presented();
+    player_first_frame_presented((int64_t)front->pts_us);
     if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
         h264_pipeline_checkpoint_player("post-display-service",
                                         *vp->qcount, *vp->playback_started);
@@ -1041,6 +1091,17 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     return 1;
 }
 
+/* Shared by the on-screen Vol -/+ controller commands and the display
+ * window's own cursor up/down keys. */
+static void apply_volume_step(int delta)
+{
+    control_volume += delta;
+    if (control_volume < 0) control_volume = 0;
+    if (control_volume > 64) control_volume = 64;
+    if (control_audio) audio_set_volume(control_audio, control_volume);
+    printf("volume: %d%%\n", control_volume * 100 / 64);
+}
+
 /* The ReAction controller uses Ctrl-F for a normal stop so AmigaDOS does not
  * abort the CLI process before display/audio cleanup runs.  Shell Ctrl-C is
  * still accepted when mrplay sees it itself; Ctrl-D toggles pause and Ctrl-E
@@ -1061,18 +1122,8 @@ static int control_signal_event(amiga_display *disp)
         }
         if (commands & MR_PLAYER_COMMAND_FULLSCREEN)
             display_toggle_fullscreen(disp);
-        if (commands & MR_PLAYER_COMMAND_VOLUME_DOWN) {
-            control_volume -= 8;
-            if (control_volume < 0) control_volume = 0;
-            if (control_audio) audio_set_volume(control_audio, control_volume);
-            printf("volume: %d%%\n", control_volume * 100 / 64);
-        }
-        if (commands & MR_PLAYER_COMMAND_VOLUME_UP) {
-            control_volume += 8;
-            if (control_volume > 64) control_volume = 64;
-            if (control_audio) audio_set_volume(control_audio, control_volume);
-            printf("volume: %d%%\n", control_volume * 100 / 64);
-        }
+        if (commands & MR_PLAYER_COMMAND_VOLUME_DOWN) apply_volume_step(-8);
+        if (commands & MR_PLAYER_COMMAND_VOLUME_UP) apply_volume_step(8);
         if (commands & MR_PLAYER_COMMAND_PAUSE) return MR_EV_PAUSE;
         if (commands & MR_PLAYER_COMMAND_FAST) return MR_EV_SEEK_FWD;
         /* Compatibility with older controllers that used bare Ctrl-E. */
@@ -1091,6 +1142,11 @@ static int player_event(amiga_display *disp)
         ev = control_signal_event(disp);
     }
     if (ev == MR_EV_NONE) ev = display_poll_event(disp);
+    /* Volume is applied here, not returned to the many playback loops below -
+     * none of them need to know a volume key was pressed, only that nothing
+     * else happened this poll. */
+    if (ev == MR_EV_VOLUME_UP) { apply_volume_step(8); ev = MR_EV_NONE; }
+    else if (ev == MR_EV_VOLUME_DOWN) { apply_volume_step(-8); ev = MR_EV_NONE; }
     return ev;
 }
 
@@ -2544,7 +2600,7 @@ int main(int argc, char **argv)
             else
                 display_show_rgb(disp, front->rgb, front->width, front->height,
                                  front->stride, front->dirty_y0, front->dirty_y1);
-            player_first_frame_presented();
+            player_first_frame_presented((int64_t)front->pts_us);
             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
                 h264_pipeline_checkpoint_player("post-display-main",
                                                 qcount, playback_started);
@@ -3205,13 +3261,13 @@ int main(int argc, char **argv)
             display_show_rgb(disp, dec.frame.data, dec.frame.width,
                              dec.frame.height, dec.frame.stride,
                              dec.frame.dirty_y0, dec.frame.dirty_y1);
-            player_first_frame_presented();
+            player_first_frame_presented(-1);
             total_display_us += monotonic_us() - a;
         } else {
             display_show_rgb(disp, dec.frame.data, dec.frame.width,
                              dec.frame.height, dec.frame.stride,
                              dec.frame.dirty_y0, dec.frame.dirty_y1);
-            player_first_frame_presented();
+            player_first_frame_presented(-1);
         }
         frames++;
     }
