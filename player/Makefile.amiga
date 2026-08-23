@@ -414,6 +414,11 @@ define build_release_cpu
 	else \
 		echo "NOTE: amiga/icons/MintVID.info not found - copy the MintVID icon into $(RELEASE_DIR)/MintVID$(2)/ by hand"; \
 	fi
+	@if [ -f amiga/icons/MintVID$(2).info ]; then \
+		cp amiga/icons/MintVID$(2).info "$(RELEASE_DIR)/MintVID$(2).info"; \
+	else \
+		echo "NOTE: amiga/icons/MintVID$(2).info not found - copy the MintVID$(2) drawer icon into $(RELEASE_DIR)/ by hand"; \
+	fi
 	@printf '%s\n' \
 	    '; Run from an AmigaOS (or emulator) shell inside this drawer, once,' \
 	    '; before lha-ing the release for Aminet: sets the Hidden bit on the' \
