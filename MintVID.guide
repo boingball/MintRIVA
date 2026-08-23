@@ -36,22 +36,27 @@ Amiga. It is built in the spirit of MintAMP (the libhelix-based audio
 player): a small portable C core with thin Amiga-specific display and
 audio layers around it, and MintAMP itself handles the audio decoding.
 
-The goal is to go beyond MPEG-1 on real Amiga hardware by matching the
-codec to the CPU, rather than chasing heavier modern formats:
+The goal is to go beyond MPEG-1 on real Amiga hardware, rather than
+chasing heavier modern formats. One binary runs everywhere; nothing is
+locked to a CPU tier - every codec will run on any supported machine, it
+is decode speed that decides what is actually watchable:
 
-  - Stock A600/AGA, 68030, no FPU, no RTG
-    -> Cinepak, small frames, AGA C2P/dither or HAM output.
-  - 68040/060 with RTG (CyberGraphX/Picasso96)
-    -> Cinepak, MJPEG, MPEG-1/2 and MPEG-4 Part 2 at modest sizes.
-  - PiStorm/Emu68 (ARM-hosted 68k) with RTG
-    -> the same player, but H.264/AVC (Baseline through High Profile,
-       CABAC, B-frames) becomes realistic. Field-confirmed on a
-       Pi3-based PiStorm 600: anything under roughly 200p (e.g.
-       YouTube/IPTV live streams) plays well.
+  - Stock A600/AGA, 68030, no FPU, no RTG - Cinepak plays smoothly at
+    small frame sizes with AGA C2P/dither or HAM output. Heavier codecs
+    (MJPEG, MPEG-4 Part 2) will decode, but crawl - roughly 7 fps on a
+    bare 68060, let alone a 68030 - not something worth watching.
+  - 68040/060 with RTG (CyberGraphX/Picasso96) - Cinepak, MJPEG, MPEG-1/2
+    and MPEG-4 Part 2 become watchable at modest sizes. H.264/AVC will
+    still decode, just nowhere near fast enough to be worth it without
+    PiStorm.
+  - PiStorm/Emu68 (ARM-hosted 68k) with RTG - the same player, but
+    H.264/AVC (Baseline through High Profile, CABAC, B-frames) becomes
+    realistic. Field-confirmed on a Pi3-based PiStorm 600: anything
+    under roughly 200p (e.g. YouTube/IPTV live streams) plays well.
 
 There is no separate "PiStorm build" or "AGA build" to choose between -
-the player detects what screen/chipset it has, and a weaker machine
-simply sticks to the codecs it can afford.
+one binary, and you pick what to play based on what your machine can
+actually keep up with.
 
 @{" Back to Contents " Link Main}
 @endnode
