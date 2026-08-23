@@ -37,6 +37,36 @@ MintAMP / Helix audio decoder code
   Source:  player/vendor/MintAMP/ (pinned submodule)
   Release notices include MintAMP-LICENSE.txt, RPSL.txt and RCSL.txt.
 
-This file is an index, not a replacement for the licence texts themselves.
-The release packaging target copies the available upstream licence/notices into
-the LICENSES drawer automatically.
+PL_MPEG - Dominic Szablewski / phoboslab.org
+  Licence: MIT (SPDX-License-Identifier: MIT in player/core/pl_mpeg.h)
+  Source:  player/core/pl_mpeg.h
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+
+Mikael Kalms' C2P collection
+  Source used by MintVID: player/vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
+  The bundled kalms-c2p readme states that all files outside its "others"
+  directory are Public Domain and may be used, modified and redistributed for
+  commercial or non-commercial purposes. MintVID uses a routine from the
+  "normal" directory. See player/vendor/kalms-c2p/readme.txt for the original
+  notice.
+
+This file supplements, rather than replaces, the upstream licence texts. The
+release packaging target copies the available GPL, Apache and MintAMP/Helix
+licence/notices into the LICENSES drawer automatically.
