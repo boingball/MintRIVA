@@ -1,3 +1,27 @@
+<h1>
+  <img src="player/amiga/icons/MintVID.png" width="48" alt="MintVID icon">
+  MintVID
+</h1>
+
+![AmigaOS](https://img.shields.io/badge/AmigaOS-3.0%2B-orange)
+![CPU](https://img.shields.io/badge/CPU-68030%20%7C%20040%20%7C%20060-blue)
+![Video](https://img.shields.io/badge/Video-H.264%20%7C%20MPEG%20%7C%20MJPEG-purple)
+![YouTube](https://img.shields.io/badge/YouTube-Native%20Playback-red)
+![Streaming](https://img.shields.io/badge/Streaming-HLS%20%7C%20IPTV-green)
+![Display](https://img.shields.io/badge/Display-AGA%20%7C%20HAM%20%7C%20RTG-blue)
+
+[![Support](https://img.shields.io/badge/Support-Buy%20Me%20a%20Coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/boingball)
+
+![GitHub stars](https://img.shields.io/github/stars/boingball/MintVID)
+![GitHub last commit](https://img.shields.io/github/last-commit/boingball/MintVID)
+
+**Modern video playback and streaming for classic 68k Amigas.**
+
+Play local video, HTTP/HTTPS streams, HLS, IPTV and public YouTube content
+with native Amiga playback across AGA, HAM and RTG systems.
+
+![MintVID playing YouTube](player/amiga/art/MintVID-YouTube.png)
+
 # MintVID
 
 A codec-agnostic video player for 68k AmigaOS — built in the spirit of
