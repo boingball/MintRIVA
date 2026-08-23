@@ -7,9 +7,6 @@ Requires:         Kickstart 2.0+; MintAMP-compatible audio.library setup for
                   MP3/AAC; AmiSSL v5 + amisslmaster.library for HTTPS/HLS/
                   YouTube (optional, only needed if built with SSL=1)
 Architecture:     m68k-amigaos >= 68030
-Distribution:     Aminet
-Kurzbeschreibung: Videoplayer fuer 68k AmigaOS mit mehreren Codecs (Cinepak
-                  bis H.264), skaliert von A600/AGA bis PiStorm/RTG.
 
 Description:
 
@@ -22,21 +19,25 @@ WHO THIS IS FOR
 Anyone still running actual Amiga hardware or an FPGA/PiStorm-class
 accelerator who wants to play video files, watch YouTube, or browse IPTV
 channels directly on the Amiga - not just decode a file format nobody has
-anymore. It is written to work across the whole real-world hardware spread
-in one binary, from the machine you actually have:
+anymore. One binary runs everywhere; nothing is locked to a CPU tier - every
+codec below will run on any supported machine, it is decode speed that
+decides what is actually watchable:
 
-  - Stock A600 / plain AGA, 68030, no FPU, no RTG      -> Cinepak, small
-    frames, AGA C2P/dither or HAM output.
-  - 68040/060 with RTG (CyberGraphX/Picasso96)          -> Cinepak, MJPEG,
-    MPEG-1/2 and MPEG-4 Part 2 at modest sizes.
-  - PiStorm/Emu68 (ARM-hosted 68k) with RTG             -> the same player,
-    but H.264/AVC (Baseline through High Profile, CABAC, B-frames) becomes
-    realistic. Field-confirmed on a Pi3-based PiStorm 600: anything under
-    roughly 200p (e.g. YouTube/IPTV live streams) plays well.
+  - Stock A600 / plain AGA, 68030, no FPU, no RTG - Cinepak plays smoothly
+    at small frame sizes with AGA C2P/dither or HAM output. Heavier codecs
+    (MJPEG, MPEG-4 Part 2) will decode, but crawl - roughly 7 fps on a bare
+    68060, let alone a 68030 - not something worth watching.
+  - 68040/060 with RTG (CyberGraphX/Picasso96) - Cinepak, MJPEG, MPEG-1/2
+    and MPEG-4 Part 2 become watchable at modest sizes. H.264/AVC will still
+    decode, just nowhere near fast enough to be worth it without PiStorm.
+  - PiStorm/Emu68 (ARM-hosted 68k) with RTG - the same player, but H.264/AVC
+    (Baseline through High Profile, CABAC, B-frames) becomes realistic.
+    Field-confirmed on a Pi3-based PiStorm 600: anything under roughly 200p
+    (e.g. YouTube/IPTV live streams) plays well.
 
-There is no separate "PiStorm build" or "AGA build" you have to choose
-between - the player detects what screen/chipset it has and a weaker
-machine just sticks to the codecs it can afford.
+There is no separate "PiStorm build" or "AGA build" to choose between - one
+binary, and you pick what to play based on what your machine can actually
+keep up with.
 
 WHAT IT PLAYS
 
