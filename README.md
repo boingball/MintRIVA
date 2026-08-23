@@ -20,8 +20,8 @@
 
 Play local video, HTTP/HTTPS streams, HLS, IPTV and public YouTube content
 with native Amiga playback across AGA, HAM and RTG systems.
-The faster your 68k, the higher the resolution and heavier the codec MintVID
-can handle in real time.
+Performance scales strongly with CPU, codec, resolution and display mode;
+format support is not a promise of real-time playback on every 68k.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
@@ -38,6 +38,26 @@ MintVID provides a broad range of codecs, but what is practical in real time
 depends heavily on CPU speed, codec complexity, resolution, bitrate and
 display mode. Codec support does not imply real-time playback on every CPU.
 See **[DESIGN.md](DESIGN.md)** for the full architecture and roadmap.
+
+### Hardware and performance expectations
+
+- **68030-class ECS/AGA:** best suited to lightweight codecs and modest frame
+  sizes. Cinepak is the natural starting point; heavier formats may decode
+  correctly without being practical in real time.
+- **68040/060:** older codecs such as Cinepak, MJPEG, MPEG-1/2 and MPEG-4 Part 2
+  become more practical at modest resolutions, especially with RTG. H.264/AVC
+  remains far too demanding for normal real-time YouTube/IPTV viewing on
+  classic CPUs. On a tested 68060 using AGA, lowest-resolution YouTube/IPTV
+  H.264 playback has been around **7 fps at best**. Treat classic 040/060 H.264
+  streaming as compatibility/demo functionality rather than smooth playback.
+- **PiStorm/Emu68:** use the **MintVID040** build. This is the release build
+  targeted for the Emu68/PiStorm environment. H.264 becomes much more practical;
+  on a tested Pi3-based PiStorm 600, low-resolution H.264 streams below roughly
+  200p have played well. Faster PiStorm hardware should provide more headroom,
+  but results still depend on the source and configuration.
+- **Vampire/Apollo 68080:** currently unvalidated by the MintVID project. No
+  optimised build is officially recommended yet, and the 68060 build should not
+  be assumed to be the right choice solely from the CPU name.
 
 This repository began life inspired by **RiVA 0.54**, the fastest 68k MPEG-1
 player (Stephen Fellner, László Török, Henryk Richter). RiVA's assembly source
@@ -94,24 +114,26 @@ make -f Makefile.amiga all SSL=1 SSLCERTS=1 CPU=68060
 make -f Makefile.amiga release SSL=1 SSLCERTS=1   # release/MintVID030, 040 and 060
 ```
 
-Use the `.040` build for a PiStorm configured as a 68040 and `.060` only on a
-68060-compatible CPU. `release/MintVID030`, `release/MintVID040` and
-`release/MintVID060` are ready-to-run sets with ordinary unsuffixed program
-names. Each contains `mrplay`, the ReAction `MintVID`/`iptvgui`/`ytgui` set, the
-GadTools `MintVID-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line
-`mr_decode` codec probe/test harness. `MintVID` is the flagship binary (built
-from `mrgui.c`, whose Makefile target and output are named `MintVID`) - it
-is the one meant to carry the Workbench icon and be double-clicked, with the
-rest alongside it in the same directory as support binaries it loads on
-demand. If `player/amiga/icons/MintVID.info` and the matching
-`MintVID030.info`/`MintVID040.info`/`MintVID060.info` drawer icons are
-present, the release target also copies them in: `MintVID.info` goes inside
-each `MintVID0xx/` directory next to the `MintVID` executable, and each
+For normal classic systems use the build matching the CPU. **PiStorm/Emu68
+users should use MintVID040.** Vampire/Apollo 68080 is not yet validated, so
+there is no official optimised-build recommendation for it. Use MintVID060 only
+on systems where a 68060-targeted build is known to be appropriate.
+`release/MintVID030`, `release/MintVID040` and `release/MintVID060` are
+ready-to-run sets with ordinary unsuffixed program names. Each contains
+`mrplay`, the ReAction `MintVID`/`iptvgui`/`ytgui` set, the GadTools
+`MintVID-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line `mr_decode`
+codec probe/test harness. `MintVID` is the flagship binary (built from
+`mrgui.c`, whose Makefile target and output are named `MintVID`) - it is the one
+meant to carry the Workbench icon and be double-clicked, with the rest alongside
+it in the same directory as support binaries it loads on demand. If
+`player/amiga/icons/MintVID.info` and the matching
+`MintVID030.info`/`MintVID040.info`/`MintVID060.info` drawer icons are present,
+the release target also copies them in: `MintVID.info` goes inside each
+`MintVID0xx/` directory next to the `MintVID` executable, and each
 `MintVID0xx.info` goes into `release/` itself, next to (not inside)
 `MintVID0xx/`, as its drawer icon - the normal AmigaOS convention of a
-`<name>.info` file living beside the `<name>` it decorates. The release
-target finishes by restoring the working binaries to the baseline 68030
-build.
+`<name>.info` file living beside the `<name>` it decorates. The release target
+finishes by restoring the working binaries to the baseline 68030 build.
 
 The release target also creates `release/LICENSES/` and copies MintVID's own
 licence plus the available libmpeg2, libavc and MintAMP/Helix licence/notices
@@ -215,6 +237,11 @@ There is no standard muxed 480p or 1080p target here: dependable higher
 resolutions require separate adaptive video and audio streams and are deferred
 to the next phase.
 
+On classic 68040/060 hardware, successful H.264 decoding should not be read as
+a claim of smooth YouTube playback. A tested 68060 using AGA has managed around
+7 fps at best at the lowest online resolutions. PiStorm/Emu68 is the practical
+H.264 streaming target.
+
 This remains intentionally narrow: age/login/region-restricted videos, DRM,
 uploads without a usable muxed 360p/720p format, and private-schema changes can
 all produce a clean unsupported error. YouTube can change these internal clients
@@ -317,6 +344,11 @@ M3U8 playlists, and simple `#EXTM3U` lists use the normal MintVID URL/player
 pipeline.  Playback still depends on the existing demuxers and codecs. HLS
 prefers supported low-resolution variants (maximum width 640 by default), and
 cannot make DRM, login-only, unsupported-codec, or dead streams playable.
+
+Classic 68040/060 systems may successfully decode H.264 IPTV while remaining
+well below real time; the tested 68060/AGA machine has been around 7 fps at best
+at the lowest streaming resolutions. PiStorm/Emu68 is the intended tier for
+practical H.264 IPTV viewing.
 
 Cached JSON is processed incrementally with a 16 KiB buffer. Only the selected
 country is held in RAM; unrelated global streams are validated and discarded.
