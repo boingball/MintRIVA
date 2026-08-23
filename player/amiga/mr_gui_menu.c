@@ -95,7 +95,7 @@ void mr_gui_show_about(struct Window *window, const char *edition)
     request.es_Flags = 0;
     request.es_Title = (UBYTE *)"About MintVID";
     request.es_TextFormat = (UBYTE *)
-        "MintVID - Video for classic AmigaOS\n"
+        "MintVID " MINTVID_VERSION " - Video for classic AmigaOS\n"
         "%s\n\n"
         "Made by Darren 'boingball' Banfi\n"
         "Copyright 2026\n\n"
