@@ -2346,6 +2346,10 @@ int main(int argc, char **argv)
                 paused = 1;
                 if (audio) audio_set_running(audio, 0);
             }
+            if (ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK)
+                printf("seek: received %s, can_seek=%d\n",
+                       ev == MR_EV_SEEK_FWD ? "FWD" : "BACK",
+                       mr_demux_can_seek(dx));
             if ((ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK) &&
                 mr_demux_can_seek(dx)) {
                 /* Real offline-file seek: jump the demux index straight to
