@@ -2389,7 +2389,22 @@ int main(int argc, char **argv)
                     qcount = 0; qhead = 0;
                     playback_started = 0;
                     decoded_index = 0; mono_base_us = 0;
-                    have_container_pts = 0; last_container_pts_us = 0;
+                    /* Unlike a loop-restart/live-reconnect (which genuinely
+                     * begins again at container time 0, so a zero baseline is
+                     * correct), a seek lands mid-file: seed the discontinuity
+                     * baseline at the seek target itself, not 0. Leaving
+                     * have_container_pts/last_container_pts_us zeroed here
+                     * made the very first frame decoded after a seek look
+                     * like a discontinuity against a synthetic zero clock,
+                     * which set container_pts_adjust_us = 0 - frame_pts_us -
+                     * forcing every displayed pts to 0 - (frame_pts_us) = 0
+                     * regardless of where mr_demux_seek() actually landed.
+                     * That is what made cur_pts_us (the next seek's origin)
+                     * read back near 0 even once front was populated again,
+                     * so repeated presses kept retargeting the same ~10s
+                     * mark instead of accumulating - last_seek_pts_us above
+                     * only covered the gap before front existed at all. */
+                    have_container_pts = 1; last_container_pts_us = out_us;
                     container_pts_adjust_us = 0;
                     input_eof = 0;
                     if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), out_us);
