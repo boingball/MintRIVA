@@ -570,7 +570,7 @@ static void status_timer_close(void)
 static void poll_player_status(Object *info, struct Window *window)
 {
     mr_player_status ps;
-    char line[256];
+    char line[300]; /* codec (48) + text (208) + " (): " can exceed 256 */
 
     if (!mr_player_status_read(&ps)) { player_status_seq = 0; return; }
     if (ps.seq == player_status_seq) return;
