@@ -3089,8 +3089,29 @@ int main(int argc, char **argv)
                     if (playback_started) {
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
+                        /* Rebase the audio-derived media clock to the same
+                         * front-of-queue pts mono_base_us just used, not a
+                         * hardcoded 0. This "playback just (re)started"
+                         * priming runs after a real session start, a loop
+                         * restart, live-reconnect, AND a seek (which reuses
+                         * playback_started = 0 on purpose to let this same
+                         * logic re-derive timing) - the first three really
+                         * do begin at media time 0, where vq[qhead].pts_us
+                         * is already ~0 too, so this is a no-op for them.
+                         * A seek does not: rebasing to 0 here silently
+                         * overwrote the seek's own correct
+                         * media_clock_rebase(..., out_us) the moment the
+                         * queue refilled past startup_depth, leaving the
+                         * audio clock thinking playback was at ~0 while
+                         * mono_base_us (and every video frame's real pts)
+                         * correctly read the seeked-to position - a
+                         * permanent split between the two clocks that Audio,
+                         * as the master clock, never recovers from: the
+                         * video looked frozen (perpetually "not due yet")
+                         * while audio kept playing normally. */
                         if (audio)
-                            media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
+                            media_clock_rebase(&mc, audio_elapsed_us(audio),
+                                               vq[qhead].pts_us);
                         if (audio) audio_set_running(audio, 1);
                         display_set_status(disp, NULL);  /* clear Buffering... */
                         if (h264_pipeline_diag_enabled && h264_pipeline_stage < 3) {
