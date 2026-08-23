@@ -103,8 +103,8 @@ void mr_gui_show_about(struct Window *window, const char *edition)
         "https://github.com/boingball/MintVID\n\n"
         "Support development and the LLM token fund:\n"
         "https://buymeacoffee.com/boingball\n\n"
-        "Built with RiVA heritage, libavc, libmpeg2,\n"
-        "MintAMP audio decoders, liba52, Claude and Codex.";
+        "Built with libavc, libmpeg2, MintAMP audio decoders,\n"
+        "liba52, Claude and Codex.";
     request.es_GadgetFormat = (UBYTE *)"Cheers!";
     EasyRequestArgs(window, &request, NULL, (APTR)&name);
 }
