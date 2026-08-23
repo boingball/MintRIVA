@@ -115,7 +115,11 @@ typedef struct {
     int            window_left, window_top, window_width, window_height;
     int            window_iw, window_ih;
     int            force_full_redraw;
-    const char    *title;
+    /* Owned copy of the current title, not an alias of the caller's string -
+     * see cgx_state's identical field for why (Window.Title is never copied
+     * by Intuition, and some callers reuse one buffer with new content each
+     * time, e.g. the live playhead). */
+    char           title[80];
 } p96_state;
 
 static void p96_rebuild_geometry(p96_state *s, const char *reason);
@@ -406,7 +410,7 @@ static void *p96_open(int w, int h, const char *title)
     s->fullscreen = g_display_fullscreen;
     s->source_w = w;
     s->source_h = h;
-    s->title = title;
+    snprintf(s->title, sizeof s->title, "%s", (title && *title) ? title : "MintVID");
     s->win = p96_open_window(s, title, win_w, win_h, &s->screen);
     if (!s->win) { FreeVec(s); return NULL; }
 
@@ -947,11 +951,13 @@ static int p96_toggle_fullscreen(void *h)
 static void p96_status(void *h, const char *text)
 {
     p96_state *s = (p96_state *)h;
-    const char *title = (text && *text) ? text : "MintVID";
+    const char *want = (text && *text) ? text : "MintVID";
     if (!s || !s->win) return;
-    if (s->title == title) return;
-    s->title = title;
-    SetWindowTitles(s->win, (CONST_STRPTR)title, (CONST_STRPTR)~0UL);
+    /* Compare content, not the caller's pointer - see cgx_status()'s
+     * identical comment for why. */
+    if (strcmp(s->title, want) == 0) return;
+    snprintf(s->title, sizeof s->title, "%s", want);
+    SetWindowTitles(s->win, (CONST_STRPTR)s->title, (CONST_STRPTR)~0UL);
 }
 
 static void p96_close(void *h)

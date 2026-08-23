@@ -264,7 +264,9 @@ files. Once a file starts playing, the same Info: field also mirrors a live
 playhead - `H:MM:SS`/`M:SS` in the current stream's own timeline, refreshed
 about once a second - for local files and any stream played through the
 IPTV/YouTube browsers, so seeking with cursor left/right shows where you
-actually landed.
+actually landed. On RTG (CGX/P96), the same playhead also appears in the
+video window's own title bar, so it stays visible even with the controller
+window elsewhere.
 
 Direct AVI/MOV/MP4 URL input still needs a finite, byte-addressable resource:
 the server must supply `Content-Length` or `Content-Range`, and must honour byte
