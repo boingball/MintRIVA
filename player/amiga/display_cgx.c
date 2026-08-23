@@ -679,6 +679,8 @@ static int cgx_poll(void *h)
             case 0x23: cgx_toggle_fullscreen(s); break;/* F                */
             case 0x4E: ev = MR_EV_SEEK_FWD; break;     /* cursor right     */
             case 0x4F: ev = MR_EV_SEEK_BACK; break;    /* cursor left      */
+            case 0x4C: ev = MR_EV_VOLUME_UP; break;    /* cursor up        */
+            case 0x4D: ev = MR_EV_VOLUME_DOWN; break;  /* cursor down      */
             }
         }
     }

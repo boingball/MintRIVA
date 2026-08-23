@@ -133,7 +133,15 @@ Cursor left/right seek 10 seconds at a time for local QuickTime MOV/MP4
 files, landing on the nearest keyframe via the sample index - a real
 seek, not a fast-decode approximation. AVI, MKV, and network/live
 sources don't have a keyframe index yet, so cursor-right stays the
-fast-forward toggle for those instead.
+fast-forward toggle for those instead. Cursor up/down adjust Paula's
+volume, the same 8/64 steps as ytgui's Vol -/Vol + buttons.
+
+@{b}Playhead@{ub}
+
+Once playback starts, the controller's Info: field mirrors a live
+H:MM:SS/M:SS playhead in the current stream's own timeline, refreshed
+about once a second, for local files and any stream played through the
+IPTV/YouTube browsers - so a seek shows where it actually landed.
 
 @{b}Every GUI@{ub} has a MintVID > About MintVID... menu with the project
 credits and support link, and MintVID > Quit to close that frontend

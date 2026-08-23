@@ -2,8 +2,10 @@
 #include "../core/mr_play_options.h"
 #include "mr_gui_menu.h"
 #include "mr_master_options.h"
+#include "mr_player_status.h"
 
 #include <cybergraphx/cybergraphics.h>
+#include <devices/timer.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <graphics/displayinfo.h>
@@ -62,6 +64,10 @@ typedef struct gt_app {
     STRPTR mode_labels[8];
     unsigned mode_count;
     char path[512];
+    struct MsgPort *timer_port;
+    struct timerequest *timer_io;
+    int timer_open, timer_running;
+    ULONG status_seq;
 } gt_app;
 
 static STRPTR c2p_labels[] = {(STRPTR)"C2P: Standard", (STRPTR)"C2P: CD32",
@@ -99,6 +105,70 @@ static void set_info(gt_app *app, const char *text)
                          GTTX_Text, (ULONG)(text ? text : ""), TAG_DONE);
     if (app->window && app->info)
         RefreshGList(app->info, app->window, NULL, 1);
+}
+
+/* Mirrors the separate mrplay process's codec/position/error status (the
+ * same mechanism the IPTV-GT and YouTube-GT browsers already use) onto
+ * Info:, including the "| H:MM:SS"/"| M:SS" playhead mrplay folds on about
+ * once a second - see mrplay.c's player_update_position(). Leaves Info:
+ * alone once no player is running, so it keeps showing whatever file/type
+ * text set_info() last set from play_file(). */
+static void poll_status(gt_app *app)
+{
+    mr_player_status ps;
+    char line[300];
+    if (!mr_player_status_read(&ps)) { app->status_seq = 0; return; }
+    if (ps.seq == app->status_seq) return;
+    app->status_seq = ps.seq;
+    if (ps.state == MR_PLAYER_STATE_PLAYING)
+        snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
+                 ps.codec, ps.codec[0] ? "): " : "", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED)
+        snprintf(line, sizeof(line), "Not supported: %s", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_ERROR)
+        snprintf(line, sizeof(line), "Player error: %s", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_ENDED)
+        snprintf(line, sizeof(line), "Playback ended");
+    else
+        return; /* STARTING/OPENING: leave whatever Info: already shows */
+    set_info(app, line);
+}
+
+static int status_timer_open(gt_app *app)
+{
+    app->timer_port = CreateMsgPort();
+    if (!app->timer_port) return 0;
+    app->timer_io = (struct timerequest *)
+        CreateIORequest(app->timer_port, sizeof(*app->timer_io));
+    if (!app->timer_io || OpenDevice((CONST_STRPTR)"timer.device", UNIT_VBLANK,
+                                     (struct IORequest *)app->timer_io, 0))
+        return 0;
+    app->timer_open = 1;
+    return 1;
+}
+
+static void status_timer_start(gt_app *app)
+{
+    app->timer_io->tr_node.io_Command = TR_ADDREQUEST;
+    app->timer_io->tr_time.tv_secs = 0;
+    app->timer_io->tr_time.tv_micro = 250000; /* 4 Hz */
+    SendIO((struct IORequest *)app->timer_io);
+    app->timer_running = 1;
+}
+
+static void status_timer_close(gt_app *app)
+{
+    if (app->timer_io) {
+        if (app->timer_running && !CheckIO((struct IORequest *)app->timer_io))
+            AbortIO((struct IORequest *)app->timer_io);
+        if (app->timer_running)
+            WaitIO((struct IORequest *)app->timer_io);
+        if (app->timer_open)
+            CloseDevice((struct IORequest *)app->timer_io);
+        DeleteIORequest((struct IORequest *)app->timer_io);
+    }
+    if (app->timer_port)
+        DeleteMsgPort(app->timer_port);
 }
 
 static ULONG gad_value(gt_app *app, struct Gadget *gadget, ULONG tag)
@@ -405,6 +475,7 @@ static int build_window(gt_app *app)
 
 static void cleanup(gt_app *app)
 {
+    status_timer_close(app);
     mr_gui_menu_close(&app->menu, app->window);
     mr_master_options_close(&app->master);
     if (app->window)
@@ -422,7 +493,7 @@ static void cleanup(gt_app *app)
 int main(void)
 {
     gt_app app;
-    ULONG mask;
+    ULONG mask, timermask = 0;
     int done = 0, rc = RETURN_FAIL;
     memset(&app, 0, sizeof(app));
     IntuitionBase = (struct IntuitionBase *)OpenLibrary(
@@ -439,11 +510,22 @@ int main(void)
     publish_options(&app);
     mr_gui_menu_open(&app.menu, app.window);
     mask = 1UL << app.window->UserPort->mp_SigBit;
+    if (status_timer_open(&app)) {
+        timermask = 1UL << app.timer_port->mp_SigBit;
+        status_timer_start(&app);
+    }
     while (!done) {
         struct IntuiMessage *msg;
-        ULONG signals = Wait(mask | SIGBREAKF_CTRL_C);
+        ULONG signals = Wait(mask | timermask | SIGBREAKF_CTRL_C);
         if (signals & SIGBREAKF_CTRL_C)
             break;
+        if (timermask && (signals & timermask)) {
+            while (GetMsg(app.timer_port)) /* remove the replied request */
+                ;
+            app.timer_running = 0;
+            poll_status(&app);
+            status_timer_start(&app);
+        }
         while ((msg = GT_GetIMsg(app.window->UserPort)) != NULL) {
             ULONG cls = msg->Class;
             UWORD code = msg->Code;
