@@ -23,7 +23,13 @@
 #include <string.h>
 
 #define MRPLAY_STACK_SIZE 320000UL
-#define WIN_W 640
+/* 720, not 640: the widest display-mode cycle label ("Display: RTG
+ * (WritePixel)", 26 chars) needs ~240px at topaz-8 plus the cycle gadget's
+ * arrow, not the 160px row 2 used to give it - see G_MODE below. Every
+ * gadget from G_MODE rightward on that row, plus the file path field/Browse
+ * button and the status bar (both already sized to track the window's full
+ * width), shift/widen by the same +80px so the layout stays proportional. */
+#define WIN_W 720
 #define WIN_H 154
 
 #if defined(__GNUC__)
@@ -340,19 +346,19 @@ static int build_window(gt_app *app)
     app->mode_labels[app->mode_count] = NULL;
 
     g = app->gadgets;
-    app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 56, 20, 493, 15,
+    app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 56, 20, 573, 15,
         "", GTST_MaxChars, sizeof(app->path));
-    g = add_gadget(app, g, BUTTON_KIND, G_BROWSE, 555, 20, 72, 15,
+    g = add_gadget(app, g, BUTTON_KIND, G_BROWSE, 635, 20, 72, 15,
                    "Browse...", TAG_IGNORE, 0);
-    app->mode = g = add_gadget(app, g, CYCLE_KIND, G_MODE, 8, 44, 160, 16,
+    app->mode = g = add_gadget(app, g, CYCLE_KIND, G_MODE, 8, 44, 240, 16,
         "", GTCY_Labels, (ULONG)app->mode_labels);
-    app->c2p = g = add_gadget(app, g, CYCLE_KIND, G_C2P, 174, 44, 145, 16,
+    app->c2p = g = add_gadget(app, g, CYCLE_KIND, G_C2P, 254, 44, 145, 16,
         "", GTCY_Labels, (ULONG)c2p_labels);
-    app->h264 = g = add_gadget(app, g, CYCLE_KIND, G_H264, 325, 44, 170, 16,
+    app->h264 = g = add_gadget(app, g, CYCLE_KIND, G_H264, 405, 44, 170, 16,
         "", GTCY_Labels, (ULONG)h264_labels);
-    app->lace = g = add_gadget(app, g, CHECKBOX_KIND, G_LACE, 501, 45, 80, 14,
+    app->lace = g = add_gadget(app, g, CHECKBOX_KIND, G_LACE, 581, 45, 80, 14,
         "Laced", GTCB_Checked, FALSE);
-    app->twox = g = add_gadget(app, g, CHECKBOX_KIND, G_2X, 587, 45, 45, 14,
+    app->twox = g = add_gadget(app, g, CHECKBOX_KIND, G_2X, 667, 45, 45, 14,
         "2x", GTCB_Checked, FALSE);
     app->audio_rate = g = add_gadget(app, g, CYCLE_KIND, G_AUDIO_RATE, 8, 68,
         145, 16, "", GTCY_Labels, (ULONG)audio_rate_labels);
@@ -370,7 +376,7 @@ static int build_window(gt_app *app)
                    TAG_IGNORE, 0);
     g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 485, 92, 142, 18,
                    "YouTube...", TAG_IGNORE, 0);
-    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 116, 619, 16,
+    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 116, 699, 16,
         "", GTTX_Text, (ULONG)"No file selected");
     if (!g)
         return 0;
