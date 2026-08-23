@@ -29,9 +29,9 @@ clean:
 # that drawer using the exact matching name Workbench expects.
 release: submodules
 	$(MAKE) -C player -f Makefile.amiga release SSL=1 SSLCERTS=1
-	@if [ -f player/amiga/icons/licences.info ]; then \
-		cp player/amiga/icons/licences.info player/release/LICENSES.info; \
+	@if [ -f player/amiga/icons/LICENSES.info ]; then \
+		cp player/amiga/icons/LICENSES.info player/release/LICENSES.info; \
 		echo "Added Workbench icon: player/release/LICENSES.info"; \
 	else \
-		echo "NOTE: player/amiga/icons/licences.info not found; LICENSES will use the default Workbench drawer icon"; \
+		echo "NOTE: player/amiga/icons/LICENSES.info not found; LICENSES will use the default Workbench drawer icon"; \
 	fi
