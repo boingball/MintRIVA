@@ -3,6 +3,8 @@
 
 #include <exec/types.h>
 
+#define MINTVID_VERSION "1.0"
+
 struct Menu;
 struct Window;
 
