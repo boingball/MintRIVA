@@ -29,7 +29,7 @@ page below also links back here.
 @endnode
 
 @node TOCPage "Contents"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}MintVID Guide@{ub} - Contents
 
   @{" Overview "            LINK Overview}
@@ -45,7 +45,7 @@ page below also links back here.
 @endnode
 
 @node Overview "Overview"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}What MintVID is@{ub}
 
 MintVID plays video files, YouTube, and IPTV channels directly on the
@@ -85,11 +85,11 @@ matching CPU. PiStorm/Emu68 uses MintVID040. There is no separate AGA, RTG or
 PiStorm feature edition; display mode and practical playback performance
 depend on the hardware underneath it.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Installation "Installation"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}Installing MintVID@{ub}
 
 For a normal 68030, 68040 or 68060 system use the MintVID030, MintVID040 or
@@ -116,11 +116,11 @@ own.
   - AmiSSL v5 + amisslmaster.library for HTTPS, YouTube and online IPTV
     features when the build was compiled with SSL=1.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Controls "Controls"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}Playing a video@{ub}
 
 Run the controller, choose a movie, and select a display mode: AGA,
@@ -168,11 +168,11 @@ cleanly. The controller's file gadget identifies the selected file, and
 on launch mrplay reports the container type, video codec/FourCC,
 dimensions, frame rate and audio format to its console.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node GUIEditions "The GUI editions"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}Two Workbench-friendly GUI sets@{ub} run over the same player,
 parsers, playback settings, and status/control protocol:
 
@@ -186,11 +186,11 @@ path). Both editions drive the same underlying mrplay process and the
 same options, so behaviour matches between them - only the front end
 differs.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node IPTVBrowser "IPTV browser"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}Live channel directory@{ub}
 
 Both controllers include an IPTV... launcher for their matching
@@ -232,11 +232,11 @@ Building with SSL=1 enables the iptv-org directory download over HTTPS;
 without it, the browser stays usable for cached data and manual URLs,
 and a refresh explicitly reports that it needs rebuilding with SSL=1.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node YouTube "YouTube"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}Native YouTube playback@{ub}
 
 mrplay can resolve a public YouTube Live watch/share URL natively. It
@@ -284,11 +284,11 @@ directly, without a separate Play press.
 
 Build with SSL=1 and keep ytgui beside MintVID and mrplay.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Formats "Supported formats"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}Containers@{ub}: AVI, QuickTime MOV/MP4, Matroska/MKV, MPEG-TS/M2TS,
 raw MPEG-1 program streams, raw MJPEG/MPEG-4 Visual streams, and direct
 HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
@@ -313,11 +313,11 @@ fixed format, so the supported codec list can continue to grow. It is not a
 video editor or encoder: use ffmpeg or similar on a modern machine to prepare
 source material, then play the result on the Amiga.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Troubleshooting "Troubleshooting"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}"Could not load iptvgui / ytgui / mrplay"@{ub}
 
 Keep the whole release drawer together - MintVID, MintVID-GT, mrplay,
@@ -345,11 +345,11 @@ report. Direct AVI/MOV/MP4 URLs also need a finite, byte-addressable
 resource: the server must supply Content-Length or Content-Range and
 honour byte ranges when the container seeks.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Licensing "Licensing"
-@toc MAIN
+@toc MintVID.guide/MAIN
 @{b}MintVID's own code@{ub} (the portable core, the Amiga display/audio
 layers, and every GUI frontend) is MIT-licensed and available from its
 project repository.
@@ -373,11 +373,11 @@ fastest 68k MPEG-1 player, previously distributed on Aminet - but is a
 fresh, unrelated codebase and does not include or depend on RiVA's
 source.
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Support "Support MintVID"
-@toc MAIN
+@toc MintVID.guide/MAIN
 MintVID is made by Darren "boingball" Banfi, with a frankly unreasonable
 number of classic-Amiga test runs and LLM-assisted development sessions.
 
@@ -386,5 +386,5 @@ can help keep the hardware testing and development going at:
 
   https://buymeacoffee.com/boingball
 
-@{" Back to Contents " LINK MAIN}
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
