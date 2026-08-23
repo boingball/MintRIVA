@@ -1,38 +1,47 @@
-Short:            Multi-codec video player, ECS to PiStorm
+Short:            Multi-codec video player for 68030+ Amigas
 Uploader:         Darren Banfi <boingball@gmail.com>
 Author:           Darren "boingball" Banfi
 Type:             gfx/show
 Version:          1.0
-Requires:         WB3.0+; AmiSSL v5 for YouTube
+Requires:         AmigaOS 3.0+; AmiSSL v5 for HTTPS/YouTube/IPTV
 Architecture:     m68k-amigaos >= 68030
 
 Description:
 
-MintVID is a video player for real 68k Amiga hardware, built in the spirit
-of MintAMP (the libhelix-based audio player): a small portable C core with
-thin, Amiga-specific display/audio layers around it.
+MintVID is a multi-codec video player for accelerated 68k Amigas, from
+68030-class ECS/AGA systems through 68040/060 machines to PiStorm/Emu68.
+It supports native chipset and RTG output, local files, HTTP/HTTPS, HLS,
+IPTV and public YouTube playback.
+
+Codec support does not imply real-time playback on every CPU. Practical
+performance depends on processor speed, codec complexity, resolution,
+bitrate and display mode. Lightweight older codecs are the natural fit
+for classic accelerators; modern H.264 streaming is primarily aimed at
+PiStorm/Emu68-class systems.
 
 WHO THIS IS FOR
 
-For full features this is aimed at Amiga hardware with an FPGA/PiStorm-class
-accelerator who wants to play video files, watch YouTube, or browse IPTV
-channels directly on the Amiga - not just decode a file format nobody has
-anymore. One binary runs everywhere; nothing is locked to a CPU tier - every
-codec below will run on any supported machine, it is decode speed that
-decides what is actually watchable:
+For full features MintVID is aimed at accelerated Amiga hardware whose
+owner wants to play video files, watch YouTube, or browse IPTV channels
+directly on the Amiga. It is intended as a usable Amiga video player, not
+just a codec testbed.
 
-  - Amiga A1200 with 060 plain AGA, no FPU, no RTG - Cinepak plays smoothly
-    at small frame sizes with AGA C2P/dither or HAM output. Heavier codecs
-    (MJPEG, MPEG-4 Part 2) will decode, but crawl - roughly 7 fps on a bare
-    68060.
-  - PiStorm/Emu68 (ARM-hosted 68k) with RTG - the same player, but H.264/AVC
-    (Baseline through High Profile, CABAC, B-frames) becomes realistic.
-    Field-confirmed on a Pi3-based PiStorm 600: anything under roughly 200p
-    (e.g. YouTube/IPTV live streams) plays well.
+MintVID uses the same feature set across its 68030, 68040 and 68060 builds.
+Choose the build matching your CPU. There is no separate AGA, RTG or PiStorm
+edition; display mode and practical playback performance depend on the
+hardware underneath it.
 
-There is no separate "PiStorm build" or "AGA build" to choose between - one
-binary, and you pick what to play based on what your machine can actually
-keep up with.
+  - 68030-class ECS/AGA systems - best suited to lightweight codecs and
+    modest frame sizes. Cinepak is the natural starting point; heavier
+    formats may decode correctly without being practical in real time.
+  - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2 and
+    MPEG-4 Part 2 become more practical at modest resolutions, especially
+    with RTG. H.264 is still extremely demanding on a classic 68k.
+  - PiStorm/Emu68 - H.264/AVC (Baseline through High Profile, CABAC and
+    B-frames) becomes realistic. On the tested Pi3-based PiStorm 600,
+    low-resolution H.264 streams below roughly 200p have played well.
+    Faster PiStorm hardware should provide more headroom, but exact results
+    depend on the stream and configuration.
 
 WHAT IT PLAYS
 
@@ -44,40 +53,43 @@ WHAT IT PLAYS
     MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), and H.264/AVC Baseline/
     Main/High Profile.
   - Audio to Paula: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and fixed-point
-    AC-3 (stereo downmix).
+    AC-3 (stereo downmix). MP3/AAC decoding reuses the proven MintAMP/Helix
+    code.
   - Two complete GUI sets over the same player: ReAction (V44) and plain
-    GadTools/Intuition (V37) for a stock 3.0 install, each with matching
-    file, IPTV-directory and YouTube-search browser windows.
+    GadTools/Intuition (V37) for a standard AmigaOS 3.0 install, each with
+    matching file, IPTV-directory and YouTube-search browser windows.
 
-Every codec decoder in this package is validated frame-by-frame against
-ffmpeg's own decoder on a Linux host before it ever ships, and the portable
-core is additionally cross-built and run under a real big-endian m68k target
-(gcc-m68k-linux-gnu + qemu-user) to catch endianness/alignment bugs that a
-little-endian x86 host build cannot - see the project page for details.
+MintVID's core decoders are regression-tested against ffmpeg using the
+project's test fixtures where applicable. The portable core is also
+cross-built and exercised on a big-endian m68k target under QEMU to catch
+endianness and alignment problems that a little-endian x86 host build can
+miss - see the project page for details.
 
 WHAT IT IS NOT
 
-Not a decoder for one fixed format - it is a plugin architecture, so the
-codec list above will grow. Not a video *editor* or *encoder*: use ffmpeg
-or similar on a modern machine to prepare source material, then play the
-result on the Amiga. Timeline seeking (cursor left/right, 10 seconds at a
-time, landing on the nearest keyframe) works for local QuickTime MOV/MP4
-files; AVI, MKV, and network/live sources don't have a keyframe index yet,
-so cursor-right stays a fast-forward toggle there instead. Cursor up/down
-adjust Paula's volume, and once playback starts, the controller's Info:
-field - and, on RTG (CGX/P96), the video window's own title bar - mirrors
-a live H:MM:SS/M:SS playhead so you can see where a seek actually landed.
+MintVID uses a modular decoder architecture, so its supported format list can
+grow without tying the player to one fixed codec. It is not a video editor or
+encoder: use ffmpeg or similar on a modern machine to prepare source material,
+then play the result on the Amiga. Timeline seeking (cursor left/right,
+10 seconds at a time, landing on the nearest keyframe) works for local
+QuickTime MOV/MP4 files; AVI, MKV, and network/live sources don't have a
+keyframe index yet, so cursor-right stays a fast-forward toggle there instead.
+Cursor up/down adjust Paula's volume, and once playback starts, the
+controller's Info: field - and, on RTG (CGX/P96), the video window's own title
+bar - mirrors a live H:MM:SS/M:SS playhead so you can see where a seek actually
+landed.
 
 INSTALLATION
 
-Copy the whole archive to your Amiga and
-double-click MintVID - that is the whole program, with IPTV and YouTube
-browsing reachable from its own menus. Everything else in the drawer
-(mrplay, iptvgui, ytgui, the GadTools -GT set, mr_decode) is a support
-binary MintVID or the -GT controller loads on demand (a stock OS 3.0
-system without ReAction V44 should instead run MintVID-GT, the plain
-GadTools/Intuition equivalent). Keep the whole drawer together - nothing
-here is meant to be split up or copied out on its own.
+Choose the MintVID030, MintVID040 or MintVID060 drawer to match your CPU and
+copy that drawer to your Amiga. Keep its contents together.
+
+Run MintVID on systems with ReAction V44, or MintVID-GT for the plain
+GadTools/Intuition interface used by a standard AmigaOS 3.0 installation.
+IPTV and YouTube browsing are reachable from the controller's menus.
+Everything else in the drawer (mrplay, iptvgui, ytgui, the GadTools -GT set,
+mr_decode) is a support binary loaded on demand. Nothing in the release drawer
+is intended to be split up or copied out on its own.
 
 SOURCE / LICENSING
 

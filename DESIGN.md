@@ -1,8 +1,9 @@
 # MintVID — design & roadmap
 
 A codec-agnostic video player for 68k AmigaOS, in the spirit of **MintAMP**
-(the libhelix-based audio player): small, portable C at the core, thin
-Amiga-specific layers around it, and audio handled by MintAMP itself.
+(the libhelix-based audio player): small, portable C at the core and thin
+Amiga-specific layers around it. MP3/AAC decoding reuses the proven
+MintAMP/Helix code, with audio output through Paula.
 
 The project was inspired by **RiVA 0.54** (Fellner / Török / Richter) — the
 fastest 68k MPEG-1 player, written in hand-tuned 68k/AMMX assembly. Its
@@ -22,17 +23,18 @@ plug in and swap, so the core is portable C with a decoder vtable
 
 ## The hardware spread drives everything
 
-One player, one binary, must span a huge range:
+One codebase and feature set must span a huge range of accelerated 68k
+hardware:
 
 | Tier | Machine | Reality |
 |------|---------|---------|
-| Floor | A600 / stock AGA, 68030 | No FPU, no SIMD. Decode must be cheap: LUTs and block copies, small frames, dither to chunky. |
+| Floor | 68030+ accelerated ECS/AGA | No SIMD and limited integer throughput. Lightweight codecs, modest frame sizes and efficient chipset conversion matter most. |
 | Mid | 68040/060 + RTG | Real integer throughput; MPEG-1 / MJPEG viable at modest sizes. |
-| Moon | PiStorm / Emu68 + RTG | An ARM runs the 68k. Benchmarks like a very fast 68080. Heavier codecs become physically possible. |
+| Moon | PiStorm / Emu68 + RTG | An ARM runs the 68k. Heavier codecs become physically practical, with results depending on the host Pi and stream. |
 
 Design consequence: **codec choice is a tier, not a fixed decision.** The
-player picks/loads a decoder; a weak machine sticks to Cinepak, a PiStorm can
-run something much heavier from the *same* player.
+player picks/loads a decoder; a weaker machine sticks to Cinepak, while a
+PiStorm can run something much heavier from the same codebase.
 
 ## Codec strategy
 
@@ -50,9 +52,10 @@ the CPU, which usually means an older, decode-cheap codec.
 - **MPEG-1** — mid tier. Could wrap a portable decoder, or bridge to RiVA's
   engine as reference.
 - **Moon-shot** — H.264 Baseline/Main/High through Ittiam libavc's portable
-  integer C decoder, gated to fast/PiStorm machines. MP4 `avc1`, avcC setup,
-  CABAC, B-frames and display reordering are implemented; m68k/PiStorm
-  performance is the remaining experiment.
+  integer C decoder, gated in practice to fast/PiStorm machines. MP4 `avc1`,
+  avcC setup, CABAC, B-frames and display reordering are implemented; exact
+  real-time performance depends strongly on resolution, stream complexity and
+  hardware.
 
 Container: **AVI** (RIFF) and **QuickTime MOV** are both implemented behind one
 auto-detecting front end (`mr_demux.h`), so the player is container-blind —
@@ -64,7 +67,7 @@ than available RAM. Adding a container is a backend, like adding a codec.
 
 ```
              +------------------ platform (Amiga) ------------------+
-  file/async | RTG chunky blit   | AGA C2P + dither | MintAMP audio |
+  file/async | RTG chunky blit   | AGA C2P + dither | Paula audio   |
    reader ---+-------------------+------------------+---------------+
       |            ^ frames             ^ frames          ^ pcm
       v            |                    |                 |
@@ -78,16 +81,18 @@ than available RAM. Adding a container is a backend, like adding a codec.
 - **Portable core** (`player/core/`): demux, decoder registry + decoders, pixel
   formats. Builds and is tested on the dev host; no Amiga dependencies.
 - **Platform layer** (`player/amiga/`): screen/RTG setup and chunky blit, AGA
-  C2P + dither, file-backed packet IO, and the MintAMP audio backend.
-- **Sync**: audio is the master clock (MintAMP drives playback rate); video
-  drops/‌repeats frames to track it — same principle RiVA settled on.
+  C2P + dither, file-backed packet IO, Paula output, and the MintAMP/Helix
+  decoder integration used for MP3/AAC.
+- **Sync**: audio is the master clock; video drops/repeats frames to track it —
+  the same broad principle RiVA settled on.
 
 ## Validation approach
 
-Because there is no Amiga toolchain on the dev host, the portable core is
-proven against **ffmpeg** on the host: decode the same clip and compare to
-ffmpeg's own decoder frame-by-frame. Cinepak currently matches to a worst
-per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
+The portable core is regression-tested against **ffmpeg** on the development
+host where applicable, and is also cross-built and exercised on a big-endian
+m68k target under QEMU to catch endianness and alignment bugs that a
+little-endian host can hide. Cinepak currently matches to a worst per-frame
+mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 `cd player && make check`.
 
 ## Roadmap
@@ -138,7 +143,7 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       toggle; network/live sources are deliberately excluded.
 - [ ] Optional asm C2P hot loop; CD32 Akiko hardware C2P path (--akiko)
 - [x] MJPEG decoder (picojpeg adapter, `mr_mjpeg.c`) - ffmpeg-validated
-      (worst MAE 0.5/255); proves the codec plugin design with a 2nd codec
+      (worst MAE 0.5/255); proves the codec interface with a 2nd decoder
 - [x] AGA auto-fit: oversized clips (e.g. 640x480) are integer box-downscaled
       to fit a non-interlaced screen (`mr_scale_down_rgb24`); bad frames skip
       instead of stopping playback
@@ -161,10 +166,10 @@ per-frame mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       libavc, using its generic integer C backend: avcC/AVCC conversion, CABAC,
       B-slices and DPB display reordering. Exact 640x360 High Profile/B-frame
       sample decodes 171/171 frames and matches ffmpeg at worst MAE 1.06/255.
-      Gated in practice to PiStorm/Emu68-class machines. Field-confirmed on a
-      Pi3-based PiStorm 600: anything under ~200p (YouTube/IPTV live) plays
-      well. A faster PiStorm32/CM4 should do more but that headroom isn't
-      confirmed yet.
+      Gated in practice to PiStorm/Emu68-class machines. On the tested Pi3-based
+      PiStorm 600, low-resolution H.264 YouTube/IPTV streams below roughly 200p
+      have played well. A faster PiStorm32/CM4 should provide more headroom,
+      but that has not been quantified yet.
 - [x] Internet streaming: HTTP/HTTPS URL input, HLS live/VOD, and native
       YouTube resolution (see README)
 - [~] RTG fullscreen toggle is implemented with a borderless screen-sized CGX

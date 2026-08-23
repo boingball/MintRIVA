@@ -20,21 +20,24 @@
 
 Play local video, HTTP/HTTPS streams, HLS, IPTV and public YouTube content
 with native Amiga playback across AGA, HAM and RTG systems.
-The faster your 68k is running the more codecs will play smoothly.
+The faster your 68k, the higher the resolution and heavier the codec MintVID
+can handle in real time.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
-# MintVID
+## About MintVID
 
 A codec-agnostic video player for 68k AmigaOS — built in the spirit of
 MintAMP (the libhelix audio player): a small, portable C core with thin
-Amiga-specific layers, and audio handled by MintAMP.
+Amiga-specific layers. MP3/AAC decoding reuses the proven MintAMP/Helix code,
+with audio output through Paula.
 
-The goal is to go **beyond MPEG-1** on real Amiga hardware — from a stock
-A600/ECS up to a PiStorm/RTG machine — by enabling all codecs the only
-limitation is your 68k speed for what can be decoded in real time.
-See **[DESIGN.md](DESIGN.md)** for the full
-architecture and roadmap.
+The goal is to go **beyond MPEG-1** on accelerated 68k Amigas — from
+68030-class ECS/AGA systems through 68040/060 machines to PiStorm/RTG.
+MintVID provides a broad range of codecs, but what is practical in real time
+depends heavily on CPU speed, codec complexity, resolution, bitrate and
+display mode. Codec support does not imply real-time playback on every CPU.
+See **[DESIGN.md](DESIGN.md)** for the full architecture and roadmap.
 
 This repository began life inspired by **RiVA 0.54**, the fastest 68k MPEG-1
 player (Stephen Fellner, László Török, Henryk Richter). RiVA's assembly source
@@ -46,7 +49,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 
 | Component | State |
 |-----------|-------|
-| Decoder plugin interface + registry | ✅ |
+| Decoder interface + registry | ✅ |
 | Container-agnostic demux (auto-detect) | ✅ |
 | AVI, QuickTime MOV/MP4, Matroska/MKV and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
@@ -107,7 +110,7 @@ each `MintVID0xx/` directory next to the `MintVID` executable, and each
 `MintVID0xx.info` goes into `release/` itself, next to (not inside)
 `MintVID0xx/`, as its drawer icon - the normal AmigaOS convention of a
 `<name>.info` file living beside the `<name>` it decorates. The release
-target finishes by restoring the working binaries to the universal 030
+target finishes by restoring the working binaries to the baseline 68030
 build.
 
 ```sh
