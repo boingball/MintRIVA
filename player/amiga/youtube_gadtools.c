@@ -257,6 +257,8 @@ static int start_video(ytgt *app, const mr_youtube_search_result *video)
     return process != NULL;
 }
 
+static mr_youtube_search_result *selected(ytgt *app);
+
 /* Shared by the Play button and double-clicking a result - same checks and
  * status text either way. */
 static void play_selected(ytgt *app)
