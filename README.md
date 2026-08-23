@@ -71,11 +71,9 @@ names. Each contains `mrplay`, the ReAction `MintVID`/`iptvgui`/`ytgui` set, the
 GadTools `MintVID-GT`/`iptvgui-GT`/`ytgui-GT` set, and the command-line
 `mr_decode` codec probe/test harness. `MintVID` is the flagship binary (built
 from `mrgui.c`, whose Makefile target and output are named `MintVID`) - it
-is the one meant to carry the Workbench icon and be double-clicked; the release
-target also drops a `HideExtras` AmigaDOS script in each `MintVID0xx`
-directory that sets the Hidden protection bit on everything else (run it from
-an Amiga/emulator shell - a Linux cross build cannot set AmigaDOS protection
-bits itself). If `player/amiga/icons/MintVID.info` and the matching
+is the one meant to carry the Workbench icon and be double-clicked, with the
+rest alongside it in the same directory as support binaries it loads on
+demand. If `player/amiga/icons/MintVID.info` and the matching
 `MintVID030.info`/`MintVID040.info`/`MintVID060.info` drawer icons are
 present, the release target also copies them in: `MintVID.info` goes inside
 each `MintVID0xx/` directory next to the `MintVID` executable, and each
