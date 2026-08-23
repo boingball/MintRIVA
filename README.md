@@ -15,10 +15,11 @@
 ![GitHub stars](https://img.shields.io/github/stars/boingball/MintVID)
 ![GitHub last commit](https://img.shields.io/github/last-commit/boingball/MintVID)
 
-**Modern video playback and streaming for classic 68k Amigas.**
+**Modern video playback and streaming for classic accelerated 68k Amigas.**
 
 Play local video, HTTP/HTTPS streams, HLS, IPTV and public YouTube content
 with native Amiga playback across AGA, HAM and RTG systems.
+The faster your 68k is running the more codecs will play smoothly.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
@@ -29,8 +30,9 @@ MintAMP (the libhelix audio player): a small, portable C core with thin
 Amiga-specific layers, and audio handled by MintAMP.
 
 The goal is to go **beyond MPEG-1** on real Amiga hardware — from a stock
-A600/AGA up to a PiStorm/RTG machine — by matching the codec to the CPU rather
-than chasing heavier modern formats. See **[DESIGN.md](DESIGN.md)** for the full
+A600/ECS up to a PiStorm/RTG machine — by enabling all codecs the only
+limitation is your 68k speed for what can be decoded in real time.
+See **[DESIGN.md](DESIGN.md)** for the full
 architecture and roadmap.
 
 This repository began life inspired by **RiVA 0.54**, the fastest 68k MPEG-1
