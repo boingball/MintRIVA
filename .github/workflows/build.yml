@@ -158,7 +158,7 @@ jobs:
         run: |
           sudo chown -R "$(id -u):$(id -g)" player/release
 
-      - name: Confirm the release sets were produced
+      - name: Confirm the release sets and licence notices were produced
         shell: bash
         run: |
           set -euo pipefail
@@ -173,6 +173,23 @@ jobs:
               test -f "$dir/$program"
             done
           done
+
+          license_dir="player/release/LICENSES"
+          echo "Checking $license_dir"
+          test -d "$license_dir"
+          for notice in \
+            MintVID-LICENSE.txt \
+            THIRD-PARTY-LICENSES.txt \
+            GPL-2.0.txt \
+            libavc-LICENSE.txt \
+            libavc-NOTICE.txt \
+            MintAMP-LICENSE.txt \
+            RPSL.txt \
+            RCSL.txt
+          do
+            test -f "$license_dir/$notice"
+          done
+
           find player/release -maxdepth 2 -type f -print | sort
 
       - name: Create Nightly package
@@ -200,6 +217,8 @@ jobs:
             MintVID030 - Motorola 68030+
             MintVID040 - Motorola 68040+
             MintVID060 - Motorola 68060
+
+          The LICENSES drawer contains MintVID and third-party licence notices.
           EOF
 
           cp MintVID.readme player/release/MintVID.readme
@@ -235,7 +254,8 @@ jobs:
           **Actions run:** #${GITHUB_RUN_NUMBER}
 
           The ZIP contains ready-to-run **68030**, **68040** and **68060**
-          directories plus the plain-text and Markdown README files.
+          directories, the plain-text and Markdown README files, and the
+          **LICENSES** drawer with MintVID and third-party licence notices.
 
           This is a **pre-release/nightly** build. Numbered releases remain the
           recommended stable downloads.
