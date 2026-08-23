@@ -2388,7 +2388,21 @@ int main(int argc, char **argv)
                     if (audio_dec) mr_audio_decoder_reset(audio_dec);
                     qcount = 0; qhead = 0;
                     playback_started = 0;
-                    decoded_index = 0; mono_base_us = 0;
+                    /* decoded_index drives synthetic_pts (= decoded_index *
+                     * period_us, the same product either way period_us is
+                     * derived) below, used whenever a decoded frame's own
+                     * container PTS isn't available yet - e.g. while the
+                     * H.264 reorder buffer is still refilling right after
+                     * mr_decoder_reset() above, which every seek forces.
+                     * Resetting it to 0 here (as loop-restart/live-reconnect
+                     * correctly do, since those really do restart at time 0)
+                     * made those early post-seek frames report a small
+                     * near-zero pts even once the have_container_pts fix
+                     * below stopped clobbering real container timestamps -
+                     * seed it from the seek target instead, same as
+                     * last_container_pts_us. */
+                    decoded_index = period_us ? out_us / period_us : 0;
+                    mono_base_us = 0;
                     /* Unlike a loop-restart/live-reconnect (which genuinely
                      * begins again at container time 0, so a zero baseline is
                      * correct), a seek lands mid-file: seed the discontinuity
