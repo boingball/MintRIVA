@@ -422,6 +422,11 @@ release:
 	$(call build_release_cpu,68040,040)
 	$(call build_release_cpu,68060,060)
 	$(call build_release_cpu,68030,030)
+	@if [ -f ../MintVID.readme ]; then \
+		cp ../MintVID.readme "$(RELEASE_DIR)/MintVID.readme"; \
+	else \
+		echo "NOTE: MintVID.readme not found - copy the Aminet readme into $(RELEASE_DIR)/ by hand"; \
+	fi
 	@echo "Release binaries written to $(RELEASE_DIR)/"
 	@echo "Ready-to-run sets: MintVID030, MintVID040 and MintVID060"
 
