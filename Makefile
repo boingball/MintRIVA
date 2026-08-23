@@ -25,5 +25,13 @@ clean:
 
 # The normal MintVID release: ensure pinned dependencies are present, then
 # build the 68030/68040/68060 packages with AmiSSL and certificate checking.
+# If a Workbench icon for the LICENSES drawer exists locally, copy it beside
+# that drawer using the exact matching name Workbench expects.
 release: submodules
 	$(MAKE) -C player -f Makefile.amiga release SSL=1 SSLCERTS=1
+	@if [ -f player/amiga/icons/licences.info ]; then \
+		cp player/amiga/icons/licences.info player/release/LICENSES.info; \
+		echo "Added Workbench icon: player/release/LICENSES.info"; \
+	else \
+		echo "NOTE: player/amiga/icons/licences.info not found; LICENSES will use the default Workbench drawer icon"; \
+	fi
