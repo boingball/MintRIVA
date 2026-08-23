@@ -2381,6 +2381,10 @@ int main(int argc, char **argv)
                     stats.timing_rebases++;
                     continue;
                 }
+                printf("seek: mr_demux_seek() failed for target %lld us "
+                       "(container reports seekable but couldn't reposition)\n",
+                       (long long)target_us);
+                display_set_status(disp, "Seek failed");
             } else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
             while (paused && !quit) {
                 ev = player_event(disp);
