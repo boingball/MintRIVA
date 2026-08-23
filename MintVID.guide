@@ -1,0 +1,322 @@
+@database "MintVID.guide"
+@$VER: MintVID.guide 0.1 (23.8.2026)
+@author "Darren \"boingball\" Banfi"
+@(c) "2026 Darren Banfi"
+@wordwrap
+@smartwrap
+
+@node Main "MintVID Guide"
+@{b}MintVID@{ub} - a codec-agnostic video player for real 68k AmigaOS
+hardware, from a stock A600/AGA up to a PiStorm/RTG machine.
+
+This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
+topic below (click, or press Return on a highlighted link):
+
+  @{" Overview "            Link Overview}
+  @{" Installation "        Link Installation}
+  @{" Controls "            Link Controls}
+  @{" The GUI editions "    Link GUIEditions}
+  @{" IPTV browser "        Link IPTVBrowser}
+  @{" YouTube "             Link YouTube}
+  @{" Supported formats "   Link Formats}
+  @{" Troubleshooting "     Link Troubleshooting}
+  @{" Licensing "           Link Licensing}
+  @{" Support MintVID "     Link Support}
+
+Use this viewer's own Contents/Browser/Index buttons (or the Amiga key
+shortcuts your AmigaGuide reader shows in its menu) to move around; every
+page below also links back here.
+@endnode
+
+@node Overview "Overview"
+@{b}What MintVID is@{ub}
+
+MintVID plays video files, YouTube, and IPTV channels directly on the
+Amiga. It is built in the spirit of MintAMP (the libhelix-based audio
+player): a small portable C core with thin Amiga-specific display and
+audio layers around it, and MintAMP itself handles the audio decoding.
+
+The goal is to go beyond MPEG-1 on real Amiga hardware by matching the
+codec to the CPU, rather than chasing heavier modern formats:
+
+  - Stock A600/AGA, 68030, no FPU, no RTG
+    -> Cinepak, small frames, AGA C2P/dither or HAM output.
+  - 68040/060 with RTG (CyberGraphX/Picasso96)
+    -> Cinepak, MJPEG, MPEG-1/2 and MPEG-4 Part 2 at modest sizes.
+  - PiStorm/Emu68 (ARM-hosted 68k) with RTG
+    -> the same player, but H.264/AVC (Baseline through High Profile,
+       CABAC, B-frames) becomes realistic. Field-confirmed on a
+       Pi3-based PiStorm 600: anything under roughly 200p (e.g.
+       YouTube/IPTV live streams) plays well.
+
+There is no separate "PiStorm build" or "AGA build" to choose between -
+the player detects what screen/chipset it has, and a weaker machine
+simply sticks to the codecs it can afford.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node Installation "Installation"
+@{b}Installing MintVID@{ub}
+
+Copy the whole archive to your Amiga (or a shared PiStorm volume) and
+double-click @{b}MintVID@{ub} - that is the whole program, with IPTV and
+YouTube browsing reachable from its own menus.
+
+Everything else in the drawer (mrplay, iptvgui, ytgui, the GadTools -GT
+set, mr_decode) is a support binary MintVID or the -GT controller loads
+on demand. A stock OS 3.1 system without ReAction V44 should instead run
+@{b}MintVID-GT@{ub}, the plain GadTools/Intuition equivalent - it opens
+the matching -GT browsers automatically.
+
+Keep the whole drawer together; nothing here is meant to be split up or
+copied out on its own.
+
+@{b}Requirements@{ub}
+
+  - Kickstart 2.0 or later.
+  - A MintAMP-compatible audio.library setup for MP3/AAC playback.
+  - AmiSSL v5 + amisslmaster.library for HTTPS/HLS/YouTube, only if this
+    build was compiled with SSL=1.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node Controls "Controls"
+@{b}Playing a video@{ub}
+
+Run the controller, choose a movie, and select a display mode: AGA,
+HAM6, HAM8, or CGX. Laced and 2x apply to the three chipset modes; CGX
+playback opens a size-gadget window and scales the video as that window
+is resized. The C2P chooser selects the standard graphics.library path,
+CD32 Akiko hardware, or the Kalms converter for chipset playback (it is
+disabled for CGX).
+
+  Play          starts the selected movie
+  Pause         toggles playback
+  Stop          exits the player
+  Fast forward  toggles unpaced decode
+
+@{b}Fullscreen (RTG/CGX only)@{ub}
+
+Press @{b}F@{ub} to switch the live player between its resizeable window
+and a borderless public-screen-sized view, without restarting decoding;
+@{i}--fullscreen@{ui} starts in that view directly. Press F again - or use
+ytgui's Fullscreen button - to restore the previous window geometry. AGA
+display modes remain hotkey-driven and ignore the RTG-only fullscreen
+command.
+
+@{b}Seeking@{ub}
+
+Cursor left/right seek 10 seconds at a time for local QuickTime MOV/MP4
+files, landing on the nearest keyframe via the sample index - a real
+seek, not a fast-decode approximation. AVI, MKV, and network/live
+sources don't have a keyframe index yet, so cursor-right stays the
+fast-forward toggle for those instead.
+
+@{b}Every GUI@{ub} has a MintVID > About MintVID... menu with the project
+credits and support link, and MintVID > Quit to close that frontend
+cleanly. The controller's file gadget identifies the selected file, and
+on launch mrplay reports the container type, video codec/FourCC,
+dimensions, frame rate and audio format to its console.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node GUIEditions "The GUI editions"
+@{b}Two Workbench-friendly GUI sets@{ub} run over the same player,
+parsers, playback settings, and status/control protocol:
+
+  - @{b}MintVID@{ub}, iptvgui, ytgui use ReAction V44.
+  - @{b}MintVID-GT@{ub}, iptvgui-GT, ytgui-GT use only GadTools/Intuition
+    V37, for a standard AmigaOS 3.1 installation. Start MintVID-GT; it
+    opens the matching -GT browsers automatically.
+
+Keep one complete GUI set beside mrplay (or put mrplay on the command
+path). Both editions drive the same underlying mrplay process and the
+same options, so behaviour matches between them - only the front end
+differs.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node IPTVBrowser "IPTV browser"
+@{b}Live channel directory@{ub}
+
+Both controllers include an IPTV... launcher for their matching
+directory window. It reads valid cached channels.json and streams.json
+from PROGDIR:Cache/IPTV/ immediately; the default public directory is
+iptv-org (channels.json, streams.json, countries.json, categories.json).
+
+MintVID does not host or redistribute television channels: iptv-org is a
+collection of publicly available links, and individual links may be
+offline, geo-blocked, or require request headers.
+
+Cached JSON is used immediately, refreshed after 24 hours, and replaced
+only after a complete download parses successfully - a failed refresh
+leaves the prior cache intact. Manual HTTP/HTTPS media URLs, M3U8
+playlists, and simple #EXTM3U lists use the normal MintVID URL/player
+pipeline; playback still depends on the existing demuxers and codecs.
+HLS prefers supported low-resolution variants (640 px wide by default)
+and cannot make DRM, login-only, unsupported-codec, or dead streams
+playable.
+
+Only the selected country's channels are held in RAM; unrelated global
+streams are validated and discarded. Each channel retains up to four
+preferred stream URLs, and the window's Next Stream button advances
+through them without silently looping.
+
+IPTV playback inherits a snapshot of the ReAction controller's display,
+C2P, lace, and 2x selections when IPTV... is pressed; close and reopen
+the window after changing controller settings to pick up new ones. A
+Shell-launched iptvgui uses safe AGA/Standard, lace-off, 2x-off,
+low-bandwidth HLS defaults.
+
+Building with SSL=1 enables the iptv-org directory download over HTTPS;
+without it, the browser stays usable for cached data and manual URLs,
+and a refresh explicitly reports that it needs rebuilding with SSL=1.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node YouTube "YouTube"
+@{b}Native YouTube playback@{ub}
+
+mrplay can resolve a public YouTube Live watch/share URL natively. It
+fetches the watch page with a browser user agent, extracts the signed
+HLS manifest URL, validates it, and hands it to the normal HLS
+variant/segment pipeline. Resolution happens on the Amiga itself, so
+IP-bound signed URLs are not borrowed from a remote service.
+
+For ordinary uploads, the resolver also tries YouTube's muxed 360p MP4
+and, where still supplied, muxed 720p MP4 - both contain H.264 video and
+AAC audio together, so MintVID's existing seekable HTTP/MP4 path plays
+them without downloading or merging separate streams. Only a direct
+signed HTTPS Google Video URL is accepted; ciphered URLs and unresolved
+player challenges are rejected. Selecting 720p, 1080p, or Best tries
+720p first and falls back to 360p automatically; Low, 360p, and 480p
+stay on the 360p muxed format. There is no standard muxed 480p or 1080p
+target yet.
+
+This support is intentionally narrow: age/login/region-restricted
+videos, DRM, uploads without a usable muxed format, and YouTube's
+private-schema changes can all produce a clean unsupported error rather
+than a crash.
+
+@{b}Searching@{ub}
+
+The ReAction controller's YouTube... button opens the separate ytgui
+search window. It searches YouTube's public results page without an API
+key, shows the title and channel, and starts the selected result through
+the same native resolver. The Quality button cycles through Low, 360p,
+480p, 720p, 1080p, and unrestricted Best. The search-type selector
+defaults to Live and also offers All, Videos, and Shorts. Selecting a
+result and pressing Channel videos follows its channel ID to that
+channel's public uploads list.
+
+The transport row controls the separate player process directly: Play
+first cleanly replaces the current video, Pause and Fast toggle their
+modes, Vol -/+ adjusts Paula in steps, Fullscreen toggles the RTG
+window, and Stop exits the player.
+
+Build with SSL=1 and keep ytgui beside MintVID and mrplay.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node Formats "Supported formats"
+@{b}Containers@{ub}: AVI, QuickTime MOV/MP4, Matroska/MKV, MPEG-TS/M2TS,
+raw MPEG-1 program streams, raw MJPEG/MPEG-4 Visual streams, and direct
+HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
+
+@{b}Video codecs@{ub}: Cinepak, Microsoft Video 1, Microsoft RLE8,
+uncompressed UYVY422, H.263 baseline, Motion-JPEG, MPEG-1, MPEG-2 (with
+B-frames), MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), and H.264/AVC
+Baseline/Main/High Profile.
+
+@{b}Audio to Paula@{ub}: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and
+fixed-point AC-3 (stereo downmix) - all confirmed good quality on real
+hardware.
+
+Every codec decoder is validated frame-by-frame against ffmpeg's own
+decoder on a Linux host before it ships, and the portable core is also
+cross-built and run under a real big-endian m68k target to catch
+endianness/alignment bugs a little-endian x86 host build cannot.
+
+This is a plugin architecture, not a fixed decoder list - it will keep
+growing. It is not a video editor or encoder: use ffmpeg or similar on a
+modern machine to prepare source material, then play the result on the
+Amiga.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node Troubleshooting "Troubleshooting"
+@{b}"Could not load iptvgui / ytgui / mrplay"@{ub}
+
+Keep the whole release drawer together - MintVID, MintVID-GT, mrplay,
+iptvgui, ytgui and the -GT set all expect to find each other
+PROGDIR:-relative, in the same directory they shipped in.
+
+@{b}Stack overflows / crashes under libavc (H.264)@{ub}
+
+mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs
+substantially more stack than the classic Shell default. On systems that
+don't honour stack cookies, run "Stack 320000" before starting the
+player.
+
+@{b}HTTPS/YouTube/IPTV refresh says it needs SSL=1@{ub}
+
+That build was compiled without AmiSSL support. Rebuild with SSL=1 (and
+SSLCERTS=1 to verify server certificates), or use cached IPTV data and
+plain HTTP URLs in the meantime.
+
+@{b}A stream won't play@{ub}
+
+MintVID cannot make DRM, login-only, geo-blocked, or unsupported-codec
+streams playable - that is a property of the source, not a bug to
+report. Direct AVI/MOV/MP4 URLs also need a finite, byte-addressable
+resource: the server must supply Content-Length or Content-Range and
+honour byte ranges when the container seeks.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node Licensing "Licensing"
+@{b}MintVID's own code@{ub} (the portable core, the Amiga display/audio
+layers, and every GUI frontend) is MIT-licensed and available from its
+project repository.
+
+It links several dependencies that keep their own licences, and
+distributing a @{i}built binary@{ui} means complying with all of them at
+once, not just MIT:
+
+  - libmpeg2 (VideoLAN) and the fixed-point Rockbox/a52dec AC-3 core are
+    GPL-2.0-or-later, and are statically linked into mrplay. That makes
+    the compiled binary a combined work under GPL-2.0-or-later -
+    redistributing binaries obliges you to also offer corresponding
+    source, per the GPL, even though MintVID's own contribution is MIT.
+  - Ittiam libavc (H.264) is Apache-2.0.
+  - MintAMP/Helix is a separately licensed submodule; retain its
+    notices. In particular the Helix AAC decoder path it pulls in is
+    licensed under RealNetworks' RPSL, not GPL.
+
+This player was inspired by RiVA 0.54 (Fellner/Toeroek/Richter), the
+fastest 68k MPEG-1 player, previously distributed on Aminet - but is a
+fresh, unrelated codebase and does not include or depend on RiVA's
+source.
+
+@{" Back to Contents " Link Main}
+@endnode
+
+@node Support "Support MintVID"
+MintVID is made by Darren "boingball" Banfi, with a frankly unreasonable
+number of classic-Amiga test runs and LLM-assisted development sessions.
+
+If MintVID is useful - or if YouTube on an Amiga made you laugh - you
+can help keep the hardware testing and development going at:
+
+  https://buymeacoffee.com/boingball
+
+@{" Back to Contents " Link Main}
+@endnode
