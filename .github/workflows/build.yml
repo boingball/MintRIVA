@@ -202,7 +202,7 @@ jobs:
             MintVID060 - Motorola 68060
           EOF
 
-          cp README player/release/README
+          cp MintVID.readme player/release/MintVID.readme
           cp README.md player/release/README.md
 
           python3 - <<'PY'

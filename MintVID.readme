@@ -64,8 +64,10 @@ WHAT IT IS NOT
 Not a decoder for one fixed format - it is a plugin architecture, so the
 codec list above will grow. Not a video *editor* or *encoder*: use ffmpeg
 or similar on a modern machine to prepare source material, then play the
-result on the Amiga. True timeline seeking is not implemented in this
-release.
+result on the Amiga. Timeline seeking (cursor left/right, 10 seconds at a
+time, landing on the nearest keyframe) works for local QuickTime MOV/MP4
+files; AVI, MKV, and network/live sources don't have a keyframe index yet,
+so cursor-right stays a fast-forward toggle there instead.
 
 INSTALLATION
 
@@ -73,12 +75,10 @@ Copy the whole archive to your Amiga (or a shared PiStorm volume) and
 double-click MintVID - that is the whole program, with IPTV and YouTube
 browsing reachable from its own menus. Everything else in the drawer
 (mrplay, iptvgui, ytgui, the GadTools -GT set, mr_decode) is a support
-binary MintVID or the -GT controller loads on demand and is marked Hidden,
-so a normal Workbench listing only shows MintVID; enable "Show > All Files"
-in a Workbench window if you need to get at them directly (a stock OS 3.1
+binary MintVID or the -GT controller loads on demand (a stock OS 3.1
 system without ReAction V44 should instead run MintVID-GT, the plain
-GadTools/Intuition equivalent). Keep the whole drawer together either way -
-nothing here is meant to be split up or copied out on its own.
+GadTools/Intuition equivalent). Keep the whole drawer together - nothing
+here is meant to be split up or copied out on its own.
 
 SOURCE / LICENSING
 
