@@ -35,3 +35,17 @@ release: submodules
 	else \
 		echo "NOTE: player/amiga/icons/LICENSES.info not found; LICENSES will use the default Workbench drawer icon"; \
 	fi
+	@# Classic Amiga drawer icons store the NewWindow height as a big-endian
+	@# WORD at byte offset 84 (DiskObject header 78 + 6 bytes into DrawerData).
+	@# These icons were snapped at only 64 px high; make release copies 120 px
+	@# high while preserving their saved X/Y position and 265 px width.
+	@for icon in \
+		player/release/MintVID030.info \
+		player/release/MintVID040.info \
+		player/release/MintVID060.info \
+		player/release/LICENSES.info; do \
+		if [ -f "$$icon" ]; then \
+			printf '\000\170' | dd of="$$icon" bs=1 seek=84 conv=notrunc 2>/dev/null; \
+			echo "Set drawer window height to 120: $$icon"; \
+		fi; \
+	done
