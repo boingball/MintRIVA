@@ -29,12 +29,15 @@ hardware:
 | Tier | Machine | Reality |
 |------|---------|---------|
 | Floor | 68030+ accelerated ECS/AGA | No SIMD and limited integer throughput. Lightweight codecs, modest frame sizes and efficient chipset conversion matter most. |
-| Mid | 68040/060 + RTG | Real integer throughput; MPEG-1 / MJPEG viable at modest sizes. |
-| Moon | PiStorm / Emu68 + RTG | An ARM runs the 68k. Heavier codecs become physically practical, with results depending on the host Pi and stream. |
+| Mid | 68040/060, AGA or RTG | Older codecs become increasingly practical, but modern H.264 streaming remains well below real time on classic CPUs. A tested 68060 using AGA has managed roughly 7 fps at best at the lowest YouTube/IPTV resolutions. |
+| Moon | PiStorm / Emu68 | An ARM runs the 68k. Use the MintVID040 build; heavier codecs become physically practical, with results depending on the host Pi, display path and stream. |
+| Unverified | Vampire / Apollo 68080 | Not yet validated by the MintVID project. No optimised release build is officially recommended yet. |
 
 Design consequence: **codec choice is a tier, not a fixed decision.** The
-player picks/loads a decoder; a weaker machine sticks to Cinepak, while a
-PiStorm can run something much heavier from the same codebase.
+player picks/loads a decoder; a weaker machine sticks to Cinepak or another
+lightweight codec, while a PiStorm can run something much heavier from the
+same codebase. Supporting a codec means MintVID can decode it; it does not mean
+that codec is real-time on every supported CPU.
 
 ## Codec strategy
 
@@ -52,10 +55,11 @@ the CPU, which usually means an older, decode-cheap codec.
 - **MPEG-1** — mid tier. Could wrap a portable decoder, or bridge to RiVA's
   engine as reference.
 - **Moon-shot** — H.264 Baseline/Main/High through Ittiam libavc's portable
-  integer C decoder, gated in practice to fast/PiStorm machines. MP4 `avc1`,
-  avcC setup, CABAC, B-frames and display reordering are implemented; exact
-  real-time performance depends strongly on resolution, stream complexity and
-  hardware.
+  integer C decoder. The codec is supported on classic 68k, but practical
+  online H.264 viewing is aimed at PiStorm/Emu68 rather than 68040/060. MP4
+  `avc1`, avcC setup, CABAC, B-frames and display reordering are implemented;
+  exact performance depends strongly on resolution, stream complexity,
+  display path and hardware.
 
 Container: **AVI** (RIFF) and **QuickTime MOV** are both implemented behind one
 auto-detecting front end (`mr_demux.h`), so the player is container-blind —
@@ -166,10 +170,14 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       libavc, using its generic integer C backend: avcC/AVCC conversion, CABAC,
       B-slices and DPB display reordering. Exact 640x360 High Profile/B-frame
       sample decodes 171/171 frames and matches ffmpeg at worst MAE 1.06/255.
-      Gated in practice to PiStorm/Emu68-class machines. On the tested Pi3-based
-      PiStorm 600, low-resolution H.264 YouTube/IPTV streams below roughly 200p
-      have played well. A faster PiStorm32/CM4 should provide more headroom,
-      but that has not been quantified yet.
+      Classic 68040/060 systems can decode H.264 but should not be expected to
+      stream it in real time; the tested 68060/AGA system has been around 7 fps
+      at best at the lowest YouTube/IPTV resolutions. Practical H.264 streaming
+      is targeted at PiStorm/Emu68, using the MintVID040 build. On the tested
+      Pi3-based PiStorm 600, low-resolution H.264 YouTube/IPTV streams below
+      roughly 200p have played well. A faster PiStorm32/CM4 should provide more
+      headroom, but that has not been quantified yet. Vampire/Apollo 68080 has
+      not yet been validated.
 - [x] Internet streaming: HTTP/HTTPS URL input, HLS live/VOD, and native
       YouTube resolution (see README)
 - [~] RTG fullscreen toggle is implemented with a borderless screen-sized CGX
@@ -179,8 +187,8 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       MP3/AAC use the pinned MintAMP/Helix sources through
       `player/audio/mr_audio_decode.c`; host regression tests pass, and
       AC-3/general audio quality is confirmed good on real hardware.
-- [x] Moon-shot heavier codec, gated to fast/PiStorm machines: delivered as
-      H.264/AVC above
+- [x] Moon-shot heavier codec, gated to PiStorm-class practical streaming:
+      delivered as H.264/AVC above
 ```
 
 ## Legacy codec compatibility policy

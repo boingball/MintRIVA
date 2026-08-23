@@ -63,17 +63,26 @@ on processor speed, codec complexity, resolution, bitrate and display mode:
     formats may decode correctly without being practical in real time.
   - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2 and
     MPEG-4 Part 2 become more practical at modest resolutions, especially
-    with RTG. H.264/AVC is still extremely demanding on a classic 68k.
-  - PiStorm/Emu68 (ARM-hosted 68k) - H.264/AVC (Baseline through High
-    Profile, CABAC and B-frames) becomes realistic. On the tested Pi3-based
-    PiStorm 600, low-resolution H.264 streams below roughly 200p have played
-    well. Faster PiStorm hardware should provide more headroom, but exact
-    results depend on the stream and configuration.
+    with RTG. H.264/AVC remains far too demanding for normal real-time
+    YouTube/IPTV viewing on classic CPUs. On a tested 68060 using AGA,
+    lowest-resolution YouTube/IPTV H.264 playback has been around 7 fps at
+    best. Treat H.264 streaming here as a compatibility or demonstration
+    path rather than smooth video playback.
+  - PiStorm/Emu68 (ARM-hosted 68k) - use the MintVID040 build. H.264/AVC
+    (Baseline through High Profile, CABAC and B-frames) becomes much more
+    practical. On the tested Pi3-based PiStorm 600, low-resolution H.264
+    streams below roughly 200p have played well. Faster PiStorm hardware
+    should provide more headroom, but exact results depend on the stream
+    and configuration.
+  - Vampire/Apollo 68080 - not yet validated by the MintVID project. No
+    optimised build is officially recommended yet, and the MintVID060 build
+    should not be assumed to be correct solely from the CPU name.
 
 MintVID uses the same feature set across its 68030, 68040 and 68060 builds.
-Choose the build matching your CPU. There is no separate AGA, RTG or PiStorm
-edition; display mode and practical playback performance depend on the
-hardware underneath it.
+For normal classic systems use MintVID030, MintVID040 or MintVID060 for the
+matching CPU. PiStorm/Emu68 uses MintVID040. There is no separate AGA, RTG or
+PiStorm feature edition; display mode and practical playback performance
+depend on the hardware underneath it.
 
 @{" Back to Contents " Link TOCPage}
 @endnode
@@ -81,9 +90,11 @@ hardware underneath it.
 @node Installation "Installation"
 @{b}Installing MintVID@{ub}
 
-Choose the MintVID030, MintVID040 or MintVID060 drawer to match your CPU and
-copy that drawer to your Amiga (or a shared PiStorm volume). Keep its contents
-together.
+For a normal 68030, 68040 or 68060 system use the MintVID030, MintVID040 or
+MintVID060 drawer respectively. PiStorm/Emu68 users should use MintVID040.
+Vampire/Apollo 68080 has not yet been validated, so there is no official
+optimised-build recommendation for it yet. Copy the chosen drawer to your
+Amiga (or a shared PiStorm volume) and keep its contents together.
 
 Run @{b}MintVID@{ub} on systems with ReAction V44. A standard AmigaOS 3.0
 system without ReAction V44 should instead run @{b}MintVID-GT@{ub}, the plain
@@ -195,6 +206,11 @@ HLS prefers supported low-resolution variants (640 px wide by default)
 and cannot make DRM, login-only, unsupported-codec, or dead streams
 playable.
 
+On classic 68040/060 hardware, an H.264 IPTV stream decoding successfully
+does not mean it will be real-time. The tested 68060/AGA system has been
+around 7 fps at best at the lowest streaming resolutions. PiStorm/Emu68 is
+the intended tier for practical H.264 IPTV playback.
+
 Only the selected country's channels are held in RAM; unrelated global
 streams are validated and discarded. Each channel retains up to four
 preferred stream URLs, and the window's Next Stream button advances
@@ -231,6 +247,11 @@ player challenges are rejected. Selecting 720p, 1080p, or Best tries
 720p first and falls back to 360p automatically; Low, 360p, and 480p
 stay on the 360p muxed format. There is no standard muxed 480p or 1080p
 target yet.
+
+On classic 68040/060 machines this H.264 support is primarily compatibility
+and demonstration territory, not a claim of smooth YouTube playback. A
+tested 68060 with AGA has managed around 7 fps at best at the lowest online
+resolutions. PiStorm/Emu68 is the practical streaming target.
 
 This support is intentionally narrow: age/login/region-restricted
 videos, DRM, uploads without a usable muxed format, and YouTube's

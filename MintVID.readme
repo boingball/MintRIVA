@@ -21,27 +21,37 @@ PiStorm/Emu68-class systems.
 
 WHO THIS IS FOR
 
-For full features MintVID is aimed at accelerated Amiga hardware whose
-owner wants to play video files, watch YouTube, or browse IPTV channels
-directly on the Amiga. It is intended as a usable Amiga video player, not
-just a codec testbed.
+MintVID is aimed at accelerated Amiga hardware whose owner wants a broad
+video player with local-file, network, YouTube and IPTV support. On classic
+68030/040/060 accelerators, the supported online formats should not be read as
+a promise of smooth H.264 streaming; those features are also useful for
+compatibility testing and experimentation. PiStorm/Emu68-class systems are
+the main target for practical H.264 YouTube/IPTV use.
 
 MintVID uses the same feature set across its 68030, 68040 and 68060 builds.
-Choose the build matching your CPU. There is no separate AGA, RTG or PiStorm
-edition; display mode and practical playback performance depend on the
-hardware underneath it.
+There is no separate AGA, RTG or PiStorm feature edition; display mode and
+practical playback performance depend on the hardware underneath it.
 
   - 68030-class ECS/AGA systems - best suited to lightweight codecs and
     modest frame sizes. Cinepak is the natural starting point; heavier
     formats may decode correctly without being practical in real time.
   - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2 and
     MPEG-4 Part 2 become more practical at modest resolutions, especially
-    with RTG. H.264 is still extremely demanding on a classic 68k.
-  - PiStorm/Emu68 - H.264/AVC (Baseline through High Profile, CABAC and
-    B-frames) becomes realistic. On the tested Pi3-based PiStorm 600,
-    low-resolution H.264 streams below roughly 200p have played well.
-    Faster PiStorm hardware should provide more headroom, but exact results
-    depend on the stream and configuration.
+    with RTG. H.264/AVC remains far too demanding for normal real-time
+    YouTube/IPTV viewing on classic CPUs. On a tested 68060 using AGA,
+    lowest-resolution YouTube/IPTV H.264 playback has been around 7 fps at
+    best. Treat H.264 streaming on classic 040/060 hardware as a compatibility
+    or demonstration path rather than smooth video playback.
+  - PiStorm/Emu68 - use the MintVID040 build. This is the build targeted for
+    the Emu68/PiStorm environment. H.264/AVC (Baseline through High Profile,
+    CABAC and B-frames) becomes much more practical here. On the tested
+    Pi3-based PiStorm 600, low-resolution H.264 streams below roughly 200p
+    have played well. Faster PiStorm hardware should provide more headroom,
+    but exact results depend on the stream and configuration.
+  - Vampire/Apollo 68080 - not yet validated by the MintVID project, so no
+    optimised build is officially recommended yet. Do not assume the 68060
+    build is the correct choice solely from the CPU name; feedback from real
+    Vampire hardware is welcome.
 
 WHAT IT PLAYS
 
@@ -81,8 +91,11 @@ landed.
 
 INSTALLATION
 
-Choose the MintVID030, MintVID040 or MintVID060 drawer to match your CPU and
-copy that drawer to your Amiga. Keep its contents together.
+Choose the MintVID030, MintVID040 or MintVID060 drawer for a normal 68030,
+68040 or 68060 system respectively. PiStorm/Emu68 users should use
+MintVID040. Vampire/Apollo 68080 has not yet been validated, so there is no
+official optimised-build recommendation for it yet. Copy the chosen drawer to
+your Amiga and keep its contents together.
 
 Run MintVID on systems with ReAction V44, or MintVID-GT for the plain
 GadTools/Intuition interface used by a standard AmigaOS 3.0 installation.
