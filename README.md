@@ -9,6 +9,7 @@
 ![YouTube](https://img.shields.io/badge/YouTube-Native%20Playback-red)
 ![Streaming](https://img.shields.io/badge/Streaming-HLS%20%7C%20IPTV-green)
 ![Display](https://img.shields.io/badge/Display-AGA%20%7C%20HAM%20%7C%20RTG-blue)
+![AI](https://img.shields.io/badge/AI-assisted%20coding-6e7781)
 
 [![Support](https://img.shields.io/badge/Support-Buy%20Me%20a%20Coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/boingball)
 
