@@ -1407,6 +1407,16 @@ int main(int argc, char **argv)
     unsigned long rescue_hw_before = 0;
     uint64_t rescue_started_us = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
+    /* Bridges the seek origin across the gap a seek itself creates: a
+     * successful seek empties the video queue (qcount = 0), so front is
+     * NULL until a new frame is decoded and queued - real time, spent on a
+     * network fetch plus H.264 decode. A seek key pressed again inside that
+     * gap must still originate from where the previous seek actually
+     * landed, not from a stale/zero fallback, or repeated presses (holding
+     * the key, or just pressing faster than the queue refills) all land on
+     * the same target instead of accumulating. front->pts_us is preferred
+     * over this the moment it is available again (see cur_pts_us below). */
+    int64_t last_seek_pts_us = -1;
     playback_stats stats;
     scheduler_trace trace;
 
@@ -2361,11 +2371,13 @@ int main(int argc, char **argv)
                  * fast-forward toggle below; they have no keyframe index. */
                 uint64_t out_us;
                 int64_t cur_pts_us = front ? (int64_t)front->pts_us
+                                    : last_seek_pts_us >= 0 ? last_seek_pts_us
                                     : (have_deadline ? (int64_t)master_clock_us : 0);
                 int64_t target_us = cur_pts_us +
                     (ev == MR_EV_SEEK_FWD ? MR_SEEK_STEP_US : -MR_SEEK_STEP_US);
                 if (target_us < 0) target_us = 0;
                 if (mr_demux_seek(dx, (uint64_t)target_us, &out_us) == MR_OK) {
+                    last_seek_pts_us = (int64_t)out_us;
                     if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
                     display_set_status(disp, "Seeking...");
                     if (mr_decoder_reset(&dec) != MR_OK ||
