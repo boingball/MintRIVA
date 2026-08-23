@@ -20,7 +20,7 @@
 Play local video, HTTP/HTTPS streams, HLS, IPTV and public YouTube content
 with native Amiga playback across AGA, HAM and RTG systems.
 
-![MintVID playing YouTube](player/amiga/art/MintVID-YouTube.png)
+![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
 # MintVID
 
