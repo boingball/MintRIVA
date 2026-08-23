@@ -460,7 +460,8 @@ int main(int argc,char **argv)
     if(timer_open(&app)){timermask=1UL<<app.timer_port->mp_SigBit;timer_start(&app);}
     winmask=1UL<<app.window->UserPort->mp_SigBit;
     while(!done){struct IntuiMessage *msg;ULONG signals=Wait(winmask|timermask|SIGBREAKF_CTRL_C);
-      if(signals&SIGBREAKF_CTRL_C)break;if(timermask&&(signals&timermask)){
+      if(signals&SIGBREAKF_CTRL_C)break;
+      if(timermask&&(signals&timermask)){
         while(GetMsg(app.timer_port)) { }
         app.timer_running=0;poll_status(&app);timer_start(&app);}
       while((msg=GT_GetIMsg(app.window->UserPort))!=NULL){ULONG cls=msg->Class;UWORD code=msg->Code;struct Gadget *gad=(struct Gadget *)msg->IAddress;UWORD id=gad?gad->GadgetID:0;GT_ReplyIMsg(msg);

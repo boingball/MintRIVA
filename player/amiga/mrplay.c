@@ -286,7 +286,13 @@ static void player_update_position(int64_t pts_us)
 {
     int64_t diff;
     unsigned long secs, h, m, s;
-    char line[MR_PLAYER_STATUS_TEXT_MAX];
+    /* Wider than MR_PLAYER_STATUS_TEXT_MAX on purpose: gcc's -Wformat-
+     * truncation can't see that m/s are always 0-59, so it sizes its worst
+     * case off the full width of an unsigned long - give it enough headroom
+     * to prove this can't truncate. player_status_live() -> mr_player_
+     * status_set() safely truncates again to the real 208-byte field, same
+     * as every other status publish in this file. */
+    char line[MR_PLAYER_STATUS_TEXT_MAX + 32];
 
     if (pts_us < 0) return;
     diff = pts_us - position_status_last_pts_us;
