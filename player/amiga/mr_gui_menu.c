@@ -99,6 +99,8 @@ void mr_gui_show_about(struct Window *window, const char *edition)
         "%s\n\n"
         "Made by Darren 'boingball' Banfi\n"
         "Copyright 2026\n\n"
+        "Source and licence notices:\n"
+        "https://github.com/boingball/MintVID\n\n"
         "Support development and the LLM token fund:\n"
         "https://buymeacoffee.com/boingball\n\n"
         "Built with RiVA heritage, libavc, libmpeg2,\n"
