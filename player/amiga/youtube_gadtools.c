@@ -104,15 +104,18 @@ static void set_text(ytgt *app, struct Gadget *gadget, const char *text)
         RefreshGList(gadget, app->window, NULL, 1);
 }
 
+/* GadTools BUTTON_KIND gadgets render their label from the internal string
+ * GTTX_Text set at creation - Gadget->GadgetText is not what gets drawn, so
+ * poking it directly (as this used to do) silently does nothing: the button
+ * stays showing its original text no matter what is written there. Only
+ * GT_SetGadgetAttrs()/GTTX_Text actually changes what's on screen. */
 static void set_button_text(ytgt *app, struct Gadget *gadget,
                             const char *text)
 {
-    struct IntuiText *label;
     if (!app->window || !gadget)
         return;
-    label = gadget->GadgetText;
-    if (label)
-        label->IText = (UBYTE *)text;
+    GT_SetGadgetAttrs(gadget, app->window, NULL,
+                      GTTX_Text, (ULONG)text, TAG_DONE);
     RefreshGList(gadget, app->window, NULL, 1);
 }
 
