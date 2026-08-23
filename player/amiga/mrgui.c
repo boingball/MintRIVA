@@ -478,12 +478,27 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                    GA_Disabled, disable_chipset_options,
                    TAG_DONE);
-    SetGadgetAttrs((struct Gadget *)lace, window, NULL,
-                   GA_Disabled, disable_chipset_options,
-                   TAG_DONE);
-    SetGadgetAttrs((struct Gadget *)twox, window, NULL,
-                   GA_Disabled, disable_chipset_options,
-                   TAG_DONE);
+    /* Laced/2x only mean anything on the AGA/ECS/HAM chipset paths - RTG
+     * (CGX/P96) ignores them outright, so ghost them out and clear any tick
+     * left over from a chipset mode rather than leaving them clickable and
+     * apparently still selected once RTG is chosen. */
+    if (disable_chipset_options) {
+        SetGadgetAttrs((struct Gadget *)lace, window, NULL,
+                       GA_Disabled, TRUE,
+                       CHECKBOX_Checked, FALSE,
+                       TAG_DONE);
+        SetGadgetAttrs((struct Gadget *)twox, window, NULL,
+                       GA_Disabled, TRUE,
+                       CHECKBOX_Checked, FALSE,
+                       TAG_DONE);
+    } else {
+        SetGadgetAttrs((struct Gadget *)lace, window, NULL,
+                       GA_Disabled, FALSE,
+                       TAG_DONE);
+        SetGadgetAttrs((struct Gadget *)twox, window, NULL,
+                       GA_Disabled, FALSE,
+                       TAG_DONE);
+    }
 }
 
 static void start_player(Object *file, Object *mode, Object *c2p,
