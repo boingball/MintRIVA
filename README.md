@@ -75,8 +75,15 @@ is the one meant to carry the Workbench icon and be double-clicked; the release
 target also drops a `HideExtras` AmigaDOS script in each `MintVID0xx`
 directory that sets the Hidden protection bit on everything else (run it from
 an Amiga/emulator shell - a Linux cross build cannot set AmigaDOS protection
-bits itself). The release target finishes by restoring the working binaries
-to the universal 030 build.
+bits itself). If `player/amiga/icons/MintVID.info` and the matching
+`MintVID030.info`/`MintVID040.info`/`MintVID060.info` drawer icons are
+present, the release target also copies them in: `MintVID.info` goes inside
+each `MintVID0xx/` directory next to the `MintVID` executable, and each
+`MintVID0xx.info` goes into `release/` itself, next to (not inside)
+`MintVID0xx/`, as its drawer icon - the normal AmigaOS convention of a
+`<name>.info` file living beside the `<name>` it decorates. The release
+target finishes by restoring the working binaries to the universal 030
+build.
 
 ```sh
 git submodule update --init --recursive
