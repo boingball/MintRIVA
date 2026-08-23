@@ -1,10 +1,10 @@
-Short:            Multi-codec video player for 68030+ Amigas
+Short:            Multi-codec video player and streamer
 Uploader:         Darren Banfi <boingball@gmail.com>
 Author:           Darren "boingball" Banfi
 Type:             gfx/show
 Version:          1.0
-Requires:         AmigaOS 3.0+; AmiSSL v5 for HTTPS/YouTube/IPTV
-Architecture:     m68k-amigaos >= 68030
+Requires:         68030+; util/libs/AmiSSL-v5-OS3.lha for online features
+Architecture:     m68k-amigaos >= 3.0.0
 
 Description:
 
@@ -91,12 +91,23 @@ Everything else in the drawer (mrplay, iptvgui, ytgui, the GadTools -GT set,
 mr_decode) is a support binary loaded on demand. Nothing in the release drawer
 is intended to be split up or copied out on its own.
 
+PROJECT / SOURCE
+
+https://github.com/boingball/MintVID
+
+Clone with submodules to obtain the pinned MintAMP and libavc sources used by
+the build:
+  git clone --recurse-submodules https://github.com/boingball/MintVID.git
+
 SOURCE / LICENSING
 
-MintVID's own source is MIT-licensed and available from its project
-repository. It links several dependencies that keep their own licences
-(GPL-2.0-or-later, Apache-2.0, and RealNetworks RPSL among them) - see the
-project's README for the full breakdown before redistributing binaries.
+MintVID's own source is MIT-licensed. It links several dependencies that keep
+their own licences (GPL-2.0-or-later, Apache-2.0, and RealNetworks RPSL among
+them). The release archive includes a LICENSES drawer with the MintVID licence
+and upstream licence/notices available from the checked-out dependencies.
+See the project README for the full breakdown before redistributing binaries,
+and provide the corresponding source required by the licences of the binary
+components you redistribute.
 
 SUPPORT
 

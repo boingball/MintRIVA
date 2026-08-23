@@ -88,10 +88,10 @@ builds can be selected explicitly, or packaged together in `player/release/`:
 
 ```sh
 cd player
-make -f Makefile.amiga all SSL=1 CPU=68030
-make -f Makefile.amiga all SSL=1 CPU=68040
-make -f Makefile.amiga all SSL=1 CPU=68060
-make -f Makefile.amiga release SSL=1   # release/MintVID030, 040 and 060
+make -f Makefile.amiga all SSL=1 SSLCERTS=1 CPU=68030
+make -f Makefile.amiga all SSL=1 SSLCERTS=1 CPU=68040
+make -f Makefile.amiga all SSL=1 SSLCERTS=1 CPU=68060
+make -f Makefile.amiga release SSL=1 SSLCERTS=1   # release/MintVID030, 040 and 060
 ```
 
 Use the `.040` build for a PiStorm configured as a 68040 and `.060` only on a
@@ -112,6 +112,14 @@ each `MintVID0xx/` directory next to the `MintVID` executable, and each
 `<name>.info` file living beside the `<name>` it decorates. The release
 target finishes by restoring the working binaries to the baseline 68030
 build.
+
+The release target also creates `release/LICENSES/` and copies MintVID's own
+licence plus the available libmpeg2, libavc and MintAMP/Helix licence/notices
+from the checked-out dependencies. It fails rather than silently producing a
+binary release when the required notice files are missing. Binary distributors
+must still provide the corresponding source required by the licences; use a
+recursive checkout (`git clone --recurse-submodules`) so the pinned MintAMP and
+libavc sources are included.
 
 ```sh
 git submodule update --init --recursive
@@ -155,7 +163,8 @@ make -f Makefile.amiga mrplay SSL=1
 For compatibility with typical classic Amiga AmiSSL installations, that mode
 uses TLS and SNI but does not verify the server certificate by default. Build
 with `SSL=1 SSLCERTS=1` to enable the default CA roots and hostname
-verification.
+verification; this is the recommended setting for packaged online-enabled
+release builds.
 
 ### Live streaming resilience
 
@@ -164,9 +173,11 @@ The AmiSSL library, TLS context, and TLS session are initialised once and reused
 across segments, so each segment boundary reconnects with an abbreviated
 handshake instead of the full per-segment bring-up.
 
-- `--net-queue=N` — hold up to `N` decoded frames ahead (default 1 for network,
-  clamped to 32). A few frames absorb per-frame decode jitter; a deep buffer
-  (e.g. `--net-queue=24`) lets video sit ahead of the audio clock and present in
+- `--net-queue=N` — request a decoded-frame read-ahead target for network
+  playback. The default scheduling target is 1 frame and the hard ceiling is
+  48; the RAM-bounded frame ring may reserve more slots internally. A few
+  frames absorb per-frame decode jitter; a deep target (for example
+  `--net-queue=24`) lets video sit ahead of the audio clock and present in
   order, keeps the loop demuxing so the audio FIFO stays fed, and rides across a
   segment-boundary refetch. Costs one RGB frame of RAM per used slot.
 - `--live-resync` — recover from big disruptions. If a stall leaves playback
@@ -374,8 +385,9 @@ just MIT:
   In particular the Helix AAC decoder path it pulls in is licensed under
   RealNetworks' RPSL, not GPL — keep that distinct when redistributing.
 
-Retain all upstream licence notices (`player/vendor/*/LICENSE*`,
-`player/vendor/*/COPYING*`) when distributing source or binaries. RiVA 0.54,
+`THIRD-PARTY-LICENSES.txt` indexes the binary's third-party components and the
+`release` target copies the available upstream licence texts/notices into
+`release/LICENSES/`. Retain those files with binary distributions. RiVA 0.54,
 which inspired this project's design but is not included in this repository,
 is itself GPL-2.0 with dual GPL/MIT renderers — see the original RiVA release
 on Aminet.

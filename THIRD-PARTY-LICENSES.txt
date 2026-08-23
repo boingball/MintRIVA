@@ -1,0 +1,72 @@
+MintVID 1.0 - third-party licence index
+=======================================
+
+MintVID's own source code is MIT-licensed. See LICENSE in the project root.
+The mrplay binary also contains or links code from third-party projects with
+their own licence terms. Keep the accompanying licence and notice files with
+binary distributions, and provide corresponding source where the applicable
+licence requires it.
+
+Project / complete source tree:
+  https://github.com/boingball/MintVID
+
+For the pinned dependency revisions used by MintVID, clone recursively:
+  git clone --recurse-submodules https://github.com/boingball/MintVID.git
+
+Third-party components used by mrplay
+-------------------------------------
+
+libmpeg2 (VideoLAN)
+  Licence: GPL-2.0-or-later
+  Source:  player/vendor/libmpeg2/
+  Release notice: LICENSES/GPL-2.0.txt and LICENSES/libmpeg2-README.txt
+
+Rockbox/a52dec-derived fixed-point AC-3 core
+  Licence: GPL-2.0-or-later
+  Source:  player/vendor/liba52/
+  The GPL text supplied with the release also applies to this component.
+  Copyright/licence notices remain in the corresponding source files.
+
+Ittiam libavc
+  Licence: Apache License 2.0
+  Source:  player/vendor/libavc/ (pinned submodule)
+  Release notices: LICENSES/libavc-LICENSE.txt and LICENSES/libavc-NOTICE.txt
+
+MintAMP / Helix audio decoder code
+  Licence: see the pinned MintAMP submodule and its RealNetworks notices.
+  Source:  player/vendor/MintAMP/ (pinned submodule)
+  Release notices include MintAMP-LICENSE.txt, RPSL.txt and RCSL.txt.
+
+PL_MPEG - Dominic Szablewski / phoboslab.org
+  Licence: MIT (SPDX-License-Identifier: MIT in player/core/pl_mpeg.h)
+  Source:  player/core/pl_mpeg.h
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+
+Mikael Kalms' C2P collection
+  Source used by MintVID: player/vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
+  The bundled kalms-c2p readme states that all files outside its "others"
+  directory are Public Domain and may be used, modified and redistributed for
+  commercial or non-commercial purposes. MintVID uses a routine from the
+  "normal" directory. See player/vendor/kalms-c2p/readme.txt for the original
+  notice.
+
+This file supplements, rather than replaces, the upstream licence texts. The
+release packaging target copies the available GPL, Apache and MintAMP/Helix
+licence/notices into the LICENSES drawer automatically.
