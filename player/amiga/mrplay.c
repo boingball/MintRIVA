@@ -276,13 +276,16 @@ static void player_prepare_playing_status(const char *codec, const char *text)
 }
 
 /* Folds an "H:MM:SS"/"M:SS" playhead onto the end of the fixed stream
- * description and republishes it (live only, see player_status_live()) -
- * throttled to about once a second of the video's own timeline so this is a
- * once-a-second string format plus a Forbid()/Permit(), not a per-frame
- * cost. pts_us < 0 means the caller has no usable timestamp here (e.g. the
- * H.264 EOF drain loop, which only ever handles the last frame or two) and
- * just wants the one-time "now playing" latch below. */
-static void player_update_position(int64_t pts_us)
+ * description and republishes it (live only, see player_status_live()) for
+ * the IPTV/YouTube/main controllers' status line, and onto the video
+ * window's own title bar via display_set_status() - so the playhead is
+ * visible even with the controller window elsewhere. Throttled to about
+ * once a second of the video's own timeline, so this is a once-a-second
+ * string format plus a Forbid()/Permit() and one SetWindowTitles(), not a
+ * per-frame cost. pts_us < 0 means the caller has no usable timestamp here
+ * (e.g. the H.264 EOF drain loop, which only ever handles the last frame or
+ * two) and just wants the one-time "now playing" latch below. */
+static void player_update_position(amiga_display *disp, int64_t pts_us)
 {
     int64_t diff;
     unsigned long secs, h, m, s;
@@ -293,6 +296,7 @@ static void player_update_position(int64_t pts_us)
      * status_set() safely truncates again to the real 208-byte field, same
      * as every other status publish in this file. */
     char line[MR_PLAYER_STATUS_TEXT_MAX + 32];
+    char title[48];
 
     if (pts_us < 0) return;
     diff = pts_us - position_status_last_pts_us;
@@ -302,23 +306,32 @@ static void player_update_position(int64_t pts_us)
 
     secs = (unsigned long)(pts_us / 1000000);
     h = secs / 3600; m = (secs / 60) % 60; s = secs % 60;
-    if (h)
+    if (h) {
         snprintf(line, sizeof line, "%s | %lu:%02lu:%02lu",
                  playing_status_text, h, m, s);
-    else
+        snprintf(title, sizeof title, "MintVID - %lu:%02lu:%02lu", h, m, s);
+    } else {
         snprintf(line, sizeof line, "%s | %lu:%02lu",
                  playing_status_text, m, s);
+        snprintf(title, sizeof title, "MintVID - %lu:%02lu", m, s);
+    }
     player_status_live(playing_status_codec, line);
+    /* A no-op on AGA (no .status hook, and no window title bar to update in
+     * the first place) and harmless if a transient message (Buffering...,
+     * Seeking...) is showing - this only ever runs right after a frame was
+     * actually presented, which by definition means any such stall already
+     * cleared, so there is nothing to clobber. */
+    display_set_status(disp, title);
 }
 
-static void player_first_frame_presented(int64_t pts_us)
+static void player_first_frame_presented(amiga_display *disp, int64_t pts_us)
 {
     if (!playing_status_published) {
         playing_status_published = 1;
         player_status(MR_PLAYER_STATE_PLAYING, playing_status_codec,
                       playing_status_text);
     }
-    player_update_position(pts_us);
+    player_update_position(disp, pts_us);
 }
 
 /* Keep a failure status readable by the IPTV controller for a moment before we
@@ -584,7 +597,7 @@ static void present_service_frame(video_presenter *vp)
     else
         display_show_rgb(vp->disp, front->rgb, front->width, front->height,
                          front->stride, front->dirty_y0, front->dirty_y1);
-    player_first_frame_presented((int64_t)front->pts_us);
+    player_first_frame_presented(vp->disp, (int64_t)front->pts_us);
     if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
         h264_pipeline_checkpoint_player("post-display-service",
                                         *vp->qcount, *vp->playback_started);
@@ -2606,7 +2619,7 @@ int main(int argc, char **argv)
             else
                 display_show_rgb(disp, front->rgb, front->width, front->height,
                                  front->stride, front->dirty_y0, front->dirty_y1);
-            player_first_frame_presented((int64_t)front->pts_us);
+            player_first_frame_presented(disp, (int64_t)front->pts_us);
             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 5) {
                 h264_pipeline_checkpoint_player("post-display-main",
                                                 qcount, playback_started);
@@ -3267,13 +3280,13 @@ int main(int argc, char **argv)
             display_show_rgb(disp, dec.frame.data, dec.frame.width,
                              dec.frame.height, dec.frame.stride,
                              dec.frame.dirty_y0, dec.frame.dirty_y1);
-            player_first_frame_presented(-1);
+            player_first_frame_presented(disp, -1);
             total_display_us += monotonic_us() - a;
         } else {
             display_show_rgb(disp, dec.frame.data, dec.frame.width,
                              dec.frame.height, dec.frame.stride,
                              dec.frame.dirty_y0, dec.frame.dirty_y1);
-            player_first_frame_presented(-1);
+            player_first_frame_presented(disp, -1);
         }
         frames++;
     }

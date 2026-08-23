@@ -65,7 +65,15 @@ typedef struct {
     int            window_left, window_top, window_width, window_height;
     int            window_iw, window_ih;
     int            force_full_redraw;
-    const char    *title;    /* last status shown, for idempotent updates      */
+    /* Owned copy of the current title, not an alias of the caller's string:
+     * struct Window.Title is just a pointer Intuition never copies, so it
+     * must stay valid for as long as the window does (including across a
+     * later fullscreen reopen, see cgx_toggle_fullscreen()) - and some
+     * callers (the live playhead) reuse one buffer with new content every
+     * second, which a pointer identity compare cannot tell apart from "no
+     * change". title tracks what was last actually applied, for the cheap
+     * idempotent-update check in cgx_status(). */
+    char           title[80];
 } cgx_state;
 
 #define ESC_RAWKEY 0x45
@@ -317,7 +325,7 @@ static void *cgx_open(int w, int h, const char *title)
     s->fullscreen = g_display_fullscreen;
     s->source_w = w;
     s->source_h = h;
-    s->title = title;
+    snprintf(s->title, sizeof s->title, "%s", (title && *title) ? title : "MintVID");
     s->win = cgx_open_window(s, title, win_w, win_h, &s->screen);
     if (!s->win) { FreeVec(s); return NULL; }
 
@@ -750,14 +758,17 @@ static int cgx_toggle_fullscreen(void *h)
 static void cgx_status(void *h, const char *text)
 {
     cgx_state *s = (cgx_state *)h;
-    const char *title = (text && *text) ? text : "MintVID";
+    const char *want = (text && *text) ? text : "MintVID";
     if (!s || !s->win) return;
-    /* Callers pass string literals, so a pointer compare cheaply skips the
-     * common case of the same status being set repeatedly (e.g. every
-     * reconnect attempt). The second arg leaves the screen title unchanged. */
-    if (s->title == title) return;
-    s->title = title;
-    SetWindowTitles(s->win, (CONST_STRPTR)title, (CONST_STRPTR)~0UL);
+    /* Compare content, not the caller's pointer: some callers (the live
+     * playhead) reuse one buffer with new text every second, which a
+     * pointer identity check cannot tell apart from "no change" - this
+     * still cheaply skips the common case of the same status being set
+     * repeatedly (e.g. every reconnect attempt). The second arg to
+     * SetWindowTitles leaves the screen title unchanged. */
+    if (strcmp(s->title, want) == 0) return;
+    snprintf(s->title, sizeof s->title, "%s", want);
+    SetWindowTitles(s->win, (CONST_STRPTR)s->title, (CONST_STRPTR)~0UL);
 }
 
 static void cgx_close(void *h)
