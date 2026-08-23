@@ -84,7 +84,7 @@ matching CPU. PiStorm/Emu68 uses MintVID040. There is no separate AGA, RTG or
 PiStorm feature edition; display mode and practical playback performance
 depend on the hardware underneath it.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node Installation "Installation"
@@ -114,7 +114,7 @@ own.
   - AmiSSL v5 + amisslmaster.library for HTTPS, YouTube and online IPTV
     features when the build was compiled with SSL=1.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node Controls "Controls"
@@ -165,7 +165,7 @@ cleanly. The controller's file gadget identifies the selected file, and
 on launch mrplay reports the container type, video codec/FourCC,
 dimensions, frame rate and audio format to its console.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node GUIEditions "The GUI editions"
@@ -182,7 +182,7 @@ path). Both editions drive the same underlying mrplay process and the
 same options, so behaviour matches between them - only the front end
 differs.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node IPTVBrowser "IPTV browser"
@@ -227,7 +227,7 @@ Building with SSL=1 enables the iptv-org directory download over HTTPS;
 without it, the browser stays usable for cached data and manual URLs,
 and a refresh explicitly reports that it needs rebuilding with SSL=1.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node YouTube "YouTube"
@@ -278,7 +278,7 @@ directly, without a separate Play press.
 
 Build with SSL=1 and keep ytgui beside MintVID and mrplay.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node Formats "Supported formats"
@@ -306,7 +306,7 @@ fixed format, so the supported codec list can continue to grow. It is not a
 video editor or encoder: use ffmpeg or similar on a modern machine to prepare
 source material, then play the result on the Amiga.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node Troubleshooting "Troubleshooting"
@@ -337,7 +337,7 @@ report. Direct AVI/MOV/MP4 URLs also need a finite, byte-addressable
 resource: the server must supply Content-Length or Content-Range and
 honour byte ranges when the container seeks.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node Licensing "Licensing"
@@ -364,7 +364,7 @@ fastest 68k MPEG-1 player, previously distributed on Aminet - but is a
 fresh, unrelated codebase and does not include or depend on RiVA's
 source.
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
 
 @node Support "Support MintVID"
@@ -376,5 +376,5 @@ can help keep the hardware testing and development going at:
 
   https://buymeacoffee.com/boingball
 
-@{" Back to Contents " Link TOCPage}
+@{" Back to Contents " Link Main}
 @endnode
