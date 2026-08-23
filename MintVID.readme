@@ -1,11 +1,9 @@
-Short:            Multi-codec video player, AGA to PiStorm
+Short:            Multi-codec video player, ECS to PiStorm
 Uploader:         Darren Banfi <boingball@gmail.com>
 Author:           Darren "boingball" Banfi
 Type:             gfx/show
-Version:          0.1
-Requires:         Kickstart 2.0+; MintAMP-compatible audio.library setup for
-                  MP3/AAC; AmiSSL v5 + amisslmaster.library for HTTPS/HLS/
-                  YouTube (optional, only needed if built with SSL=1)
+Version:          1.0
+Requires:         WB3.0+; AmiSSL v5 for YouTube
 Architecture:     m68k-amigaos >= 68030
 
 Description:
@@ -16,20 +14,17 @@ thin, Amiga-specific display/audio layers around it.
 
 WHO THIS IS FOR
 
-Anyone still running actual Amiga hardware or an FPGA/PiStorm-class
+For full features this is aimed at Amiga hardware with an FPGA/PiStorm-class
 accelerator who wants to play video files, watch YouTube, or browse IPTV
 channels directly on the Amiga - not just decode a file format nobody has
 anymore. One binary runs everywhere; nothing is locked to a CPU tier - every
 codec below will run on any supported machine, it is decode speed that
 decides what is actually watchable:
 
-  - Stock A600 / plain AGA, 68030, no FPU, no RTG - Cinepak plays smoothly
+  - Amiga A1200 with 060 plain AGA, no FPU, no RTG - Cinepak plays smoothly
     at small frame sizes with AGA C2P/dither or HAM output. Heavier codecs
     (MJPEG, MPEG-4 Part 2) will decode, but crawl - roughly 7 fps on a bare
-    68060, let alone a 68030 - not something worth watching.
-  - 68040/060 with RTG (CyberGraphX/Picasso96) - Cinepak, MJPEG, MPEG-1/2
-    and MPEG-4 Part 2 become watchable at modest sizes. H.264/AVC will still
-    decode, just nowhere near fast enough to be worth it without PiStorm.
+    68060.
   - PiStorm/Emu68 (ARM-hosted 68k) with RTG - the same player, but H.264/AVC
     (Baseline through High Profile, CABAC, B-frames) becomes realistic.
     Field-confirmed on a Pi3-based PiStorm 600: anything under roughly 200p
@@ -49,7 +44,7 @@ WHAT IT PLAYS
     MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), and H.264/AVC Baseline/
     Main/High Profile.
   - Audio to Paula: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and fixed-point
-    AC-3 (stereo downmix) - all confirmed good quality on real hardware.
+    AC-3 (stereo downmix).
   - Two complete GUI sets over the same player: ReAction (V44) and plain
     GadTools/Intuition (V37) for a stock 3.0 install, each with matching
     file, IPTV-directory and YouTube-search browser windows.
@@ -72,7 +67,7 @@ so cursor-right stays a fast-forward toggle there instead.
 
 INSTALLATION
 
-Copy the whole archive to your Amiga (or a shared PiStorm volume) and
+Copy the whole archive to your Amiga and
 double-click MintVID - that is the whole program, with IPTV and YouTube
 browsing reachable from its own menus. Everything else in the drawer
 (mrplay, iptvgui, ytgui, the GadTools -GT set, mr_decode) is a support
@@ -87,10 +82,6 @@ MintVID's own source is MIT-licensed and available from its project
 repository. It links several dependencies that keep their own licences
 (GPL-2.0-or-later, Apache-2.0, and RealNetworks RPSL among them) - see the
 project's README for the full breakdown before redistributing binaries.
-
-This player was inspired by RiVA 0.54 (Fellner/Toeroek/Richter), the
-fastest 68k MPEG-1 player, previously distributed on Aminet - but is a
-fresh, unrelated codebase and does not include or depend on RiVA's source.
 
 SUPPORT
 
