@@ -954,6 +954,15 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
         in.i4_degrade_type = (1 << 1) | (1 << 3);
         in.i4_degrade_pics = 3;
         break;
+    case MR_H264_SPEED_TURBO_GT:
+        /* Preserve the reference P-frame chain like Turbo, but apply the
+         * maximum degradation policy to every decoded picture. libavc still
+         * limits cheap interpolation to non-reference pictures; the extra
+         * saving over Turbo is therefore chiefly I-frame deblocking. */
+        skip_mode = IVD_SKIP_B;
+        in.i4_degrade_type = (1 << 1) | (1 << 3);
+        in.i4_degrade_pics = 4;
+        break;
     case MR_H264_SPEED_FAST:
         /* Keep keyframes pristine; favour throughput everywhere else. */
         in.i4_degrade_type = (1 << 1) | (1 << 3);

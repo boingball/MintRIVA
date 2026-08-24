@@ -29,7 +29,8 @@ typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_BALANCED,
     MR_H264_SPEED_FAST,
     MR_H264_SPEED_TURBO,
-    MR_H264_SPEED_TURBO_PLUS
+    MR_H264_SPEED_TURBO_PLUS,
+    MR_H264_SPEED_TURBO_GT
 } mr_h264_speed_mode;
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
 void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
@@ -68,10 +69,13 @@ void mr_h264_set_input_annexb(mr_decoder *dec, int is_annexb);
 /* Select libavc's quality/performance trade-off. Balanced only degrades
  * non-reference pictures; Fast applies cheaper filtering to all non-key
  * pictures. Turbo keeps Fast's degrade policy and asks libavc to skip B
- * pictures; Turbo+ asks it to skip both P and B pictures. Turbo+ is the
- * deliberately aggressive option: depending on the stream's reference
- * structure it may be visibly much choppier than Turbo. Returns non-zero
- * when the decoder accepted both the degrade and frame-skip controls. */
+ * pictures; Turbo+ asks it to skip both P and B pictures. TurboGT keeps
+ * Turbo's B-only skip policy so the P-frame reference chain survives, but
+ * requests degradation on every decoded picture, including keyframes. In
+ * this libavc revision that additionally disables I-frame deblocking; faster
+ * inter prediction remains restricted to non-reference pictures.
+ * Returns non-zero when the decoder accepted both the degrade and frame-skip
+ * controls. */
 int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode);
 
 #endif /* MR_H264_H */
