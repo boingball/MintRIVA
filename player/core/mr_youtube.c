@@ -28,10 +28,12 @@
 #define YOUTUBE_ANDROID_VR_UA \
     "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
     "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-#define YOUTUBE_IOS_VERSION "21.26.4"
-#define YOUTUBE_IOS_UA \
-    "com.google.ios.youtube/21.26.4 " \
-    "(iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
+#define YOUTUBE_MWEB_VERSION "2.20260708.05.00"
+#define YOUTUBE_MWEB_UA \
+    "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) " \
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 " \
+    "Mobile/15E148 Safari/604.1,gzip(gfe)"
+#define YOUTUBE_MWEB_REFERER "https://m.youtube.com/"
 
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
@@ -481,7 +483,7 @@ static int options_prefer_720p(const mr_http_options *options)
 
 /* Returns 1 for immediately usable media, -1 when media was present but
  * carried an unsolved n challenge, and 0 for a failed/no-media reply.
- * allow_progressive is false for the Low-quality iOS probe: that request is
+ * allow_progressive is false for the Low-quality MWEB probe: that request is
  * useful only when it exposes a muxed HLS ladder containing 144p. */
 static int try_player_media(const char *api_url,
                             const mr_http_options *options,
@@ -529,7 +531,7 @@ int mr_youtube_resolve_media(const char *url,
                              char *out, size_t out_size,
                              mr_youtube_media_kind *kind)
 {
-    mr_http_options fetch_options, vr_options, ios_options;
+    mr_http_options fetch_options, vr_options, mweb_options;
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
@@ -582,7 +584,7 @@ int mr_youtube_resolve_media(const char *url,
                                 client_version, sizeof client_version))) {
         /* Low's 144p HLS probe is optional. A page that still provides the
          * established muxed 360p URL must remain playable even when it omits
-         * the Innertube configuration needed for the extra iOS request. */
+         * the Innertube configuration needed for the extra MWEB request. */
         if (want_low_hls &&
             mr_youtube_extract_progressive(html, 0, out, out_size, kind)) {
             g_last_client = "watch page";
@@ -603,35 +605,33 @@ int mr_youtube_resolve_media(const char *url,
         return 0;
     }
 
-    /* Low is the only mode that asks for recorded-video HLS. Some iOS player
-     * replies expose a muxed AVC+AAC ladder whose lowest rendition is 256x144.
-     * The existing HLS picker then selects that lowest rendition. Other quality
-     * modes retain the normal progressive/HLS path and are never forced to
-     * 144p. Treat this as a best-effort probe: if it fails, preserve the watch
-     * page's progressive 360p result as the compatibility fallback. */
+    /* Low is the only mode that asks for recorded-video HLS. MWEB is
+     * YouTube's remaining lightweight client with "ultralow" formats, and its
+     * HLS media currently does not strictly require a GVS PO token. The
+     * existing HLS picker selects the lowest muxed AVC+AAC rendition when one
+     * is returned. Other quality modes retain the normal progressive/HLS path
+     * and are never forced to 144p. Treat this as best effort: if it fails,
+     * preserve the watch page's progressive 360p compatibility fallback. */
     if (want_low_hls) {
         n = snprintf(json, sizeof json,
                      "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
                      "\"racyCheckOk\":true,\"context\":{\"client\":{"
-                     "\"clientName\":\"IOS\",\"clientVersion\":\"%s\","
-                     "\"deviceMake\":\"Apple\","
-                     "\"deviceModel\":\"iPhone16,2\","
-                     "\"userAgent\":\"%s\",\"osName\":\"iPhone\","
-                     "\"osVersion\":\"18.3.2.22D82\","
+                     "\"clientName\":\"MWEB\",\"clientVersion\":\"%s\","
+                     "\"userAgent\":\"%s\","
                      "\"hl\":\"en\",\"gl\":\"GB\"}}}",
-                     video_id, YOUTUBE_IOS_VERSION, YOUTUBE_IOS_UA);
+                     video_id, YOUTUBE_MWEB_VERSION, YOUTUBE_MWEB_UA);
         if (n <= 0 || (size_t)n >= sizeof json) {
             mr_free(html);
-            mr_source_set_error("YouTube iOS player request is too large");
+            mr_source_set_error("YouTube MWEB player request is too large");
             return 0;
         }
-        if (!mr_http_options_init(&ios_options, YOUTUBE_IOS_UA,
-                                  YOUTUBE_REFERER)) {
+        if (!mr_http_options_init(&mweb_options, YOUTUBE_MWEB_UA,
+                                  YOUTUBE_MWEB_REFERER)) {
             mr_free(html);
             return 0;
         }
-        result = try_player_media(api_url, &ios_options, json, "IOS",
-                                  YOUTUBE_IOS_UA, out, out_size, 0, 0, kind);
+        result = try_player_media(api_url, &mweb_options, json, "MWEB",
+                                  YOUTUBE_MWEB_UA, out, out_size, 0, 0, kind);
         if (result > 0) {
             mr_free(html);
             return 1;
