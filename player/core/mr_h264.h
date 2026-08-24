@@ -68,10 +68,13 @@ void mr_h264_set_input_annexb(mr_decoder *dec, int is_annexb);
 /* Select libavc's quality/performance trade-off. Balanced only degrades
  * non-reference pictures; Fast applies cheaper filtering to all non-key
  * pictures. Turbo keeps Fast's degrade policy and asks libavc to skip B
- * pictures; Turbo+ asks it to skip both P and B pictures. Turbo+ is the
- * deliberately aggressive option: depending on the stream's reference
- * structure it may be visibly much choppier than Turbo. Returns non-zero
- * when the decoder accepted both the degrade and frame-skip controls. */
+ * pictures. Turbo+ is the experimental "GT" policy: it still skips only B
+ * pictures so the P-frame reference chain survives, but requests libavc's
+ * maximum safe degradation on every decoded picture, including keyframes.
+ * This trades more image quality for throughput without falling back to the
+ * keyframe-heavy slideshow produced by skipping both P and B pictures.
+ * Returns non-zero when the decoder accepted both the degrade and frame-skip
+ * controls. */
 int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode);
 
 #endif /* MR_H264_H */
