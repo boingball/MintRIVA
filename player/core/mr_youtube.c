@@ -520,6 +520,11 @@ static int try_player_media(const char *api_url,
                                         kind);
     mr_free(reply);
     if (!ok) return 0;
+    /* A client that only supplied itag 18 has not satisfied a 720p request.
+     * Keep searching the remaining clients before starting the explicit
+     * second-pass 360p fallback. */
+    if (prefer_720p && *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P)
+        return 0;
     g_last_client = client;
     g_last_media_ua = media_ua;
     g_last_kind = *kind;
@@ -532,6 +537,7 @@ int mr_youtube_resolve_media(const char *url,
                              mr_youtube_media_kind *kind)
 {
     mr_http_options fetch_options, vr_options, mweb_options;
+    mr_http_options fallback_options;
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
@@ -565,10 +571,15 @@ int mr_youtube_resolve_media(const char *url,
     if (!want_low_hls &&
         mr_youtube_extract_progressive(html, prefer_720p, out, out_size,
                                        kind)) {
-        g_last_client = "watch page";
-        g_last_kind = *kind;
-        mr_free(html);
-        return 1;
+        if (!prefer_720p ||
+            *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+            g_last_client = "watch page";
+            g_last_kind = *kind;
+            mr_free(html);
+            return 1;
+        }
+        /* itag 18 is valid, but do not let this early 360p result prevent a
+         * later client from supplying the requested muxed itag 22. */
     }
 
     /* Modern watch pages often omit streamingData even for a public live
@@ -593,6 +604,7 @@ int mr_youtube_resolve_media(const char *url,
             return 1;
         }
         mr_free(html);
+        if (prefer_720p) goto fallback_360p;
         mr_source_set_error("YouTube page omitted player API configuration");
         return 0;
     }
@@ -731,6 +743,20 @@ int mr_youtube_resolve_media(const char *url,
                               1, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
+
+fallback_360p:
+    /* A 720p-or-higher selection is a preference, not a reason to fail.
+     * Only after every client has been checked for muxed itag 22 do a clean
+     * second pass using the established 360p policy. This prevents an early
+     * Android itag 18 result from short-circuiting later 720p-capable clients. */
+    if (prefer_720p) {
+        fallback_options = *options;
+        fallback_options.hls_low = 0;
+        fallback_options.hls_max_width = 640;
+        fallback_options.hls_max_height = 360;
+        return mr_youtube_resolve_media(url, &fallback_options, out, out_size,
+                                        kind);
+    }
     mr_source_set_error(saw_n_challenge
         ? "YouTube media URL requires a player n challenge"
         : "YouTube returned no compatible live HLS or muxed MP4");
