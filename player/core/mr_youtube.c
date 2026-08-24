@@ -580,6 +580,16 @@ int mr_youtube_resolve_media(const char *url,
                                 client_version, sizeof client_version) &&
          !extract_config_string(html, "INNERTUBE_CONTEXT_CLIENT_VERSION",
                                 client_version, sizeof client_version))) {
+        /* Low's 144p HLS probe is optional. A page that still provides the
+         * established muxed 360p URL must remain playable even when it omits
+         * the Innertube configuration needed for the extra iOS request. */
+        if (want_low_hls &&
+            mr_youtube_extract_progressive(html, 0, out, out_size, kind)) {
+            g_last_client = "watch page";
+            g_last_kind = *kind;
+            mr_free(html);
+            return 1;
+        }
         mr_free(html);
         mr_source_set_error("YouTube page omitted player API configuration");
         return 0;
