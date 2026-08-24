@@ -150,7 +150,9 @@ int main(int argc, char **argv)
                          !strcmp(speed, "fast") ? MR_H264_SPEED_FAST :
                          !strcmp(speed, "turbo") ? MR_H264_SPEED_TURBO :
                          (!strcmp(speed, "turbo+") || !strcmp(speed, "turbo-plus"))
-                             ? MR_H264_SPEED_TURBO_PLUS : -2;
+                             ? MR_H264_SPEED_TURBO_PLUS :
+                         (!strcmp(speed, "turbogt") || !strcmp(speed, "turbo-gt"))
+                             ? MR_H264_SPEED_TURBO_GT : -2;
             if (h264_speed < 0) {
                 fprintf(stderr, "invalid H.264 speed mode\n");
                 return 2;

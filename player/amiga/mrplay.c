@@ -1073,7 +1073,8 @@ static mr_h264_speed_mode effective_h264_speed(int requested)
         requested == MR_H264_SPEED_BALANCED ||
         requested == MR_H264_SPEED_FAST ||
         requested == MR_H264_SPEED_TURBO ||
-        requested == MR_H264_SPEED_TURBO_PLUS)
+        requested == MR_H264_SPEED_TURBO_PLUS ||
+        requested == MR_H264_SPEED_TURBO_GT)
         return (mr_h264_speed_mode)requested;
     /* Auto used to scale the degrade level with resolution, on the
      * assumption that a small picture is proportionally cheap enough to
@@ -1099,7 +1100,8 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
     mode = effective_h264_speed(requested);
-    name = mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip)" :
+    name = mode == MR_H264_SPEED_TURBO_GT ? "TurboGT (B-skip, all-frame degrade)" :
+           mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip)" :
            mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip)" :
            mode == MR_H264_SPEED_FAST ? "Fast" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
@@ -1513,7 +1515,7 @@ int main(int argc, char **argv)
                "[--2x] [--lace] [--ecs-fast] [--ecs32] [--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
-               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+] "
+               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
                "[--audio-rate=normal|low] [--no-audio] "
                "[--time]\n");
         return mrplay_exit(5);
@@ -1573,6 +1575,8 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "turbo")) h264_speed = MR_H264_SPEED_TURBO;
                 else if (!strcmp(mode, "turbo+") || !strcmp(mode, "turbo-plus"))
                     h264_speed = MR_H264_SPEED_TURBO_PLUS;
+                else if (!strcmp(mode, "turbogt") || !strcmp(mode, "turbo-gt"))
+                    h264_speed = MR_H264_SPEED_TURBO_GT;
                 else {
                     printf("invalid H.264 speed mode: %s\n", mode);
                     return mrplay_exit(5);
