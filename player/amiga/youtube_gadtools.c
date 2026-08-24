@@ -267,7 +267,11 @@ static void play_selected(ytgt *app)
     mr_master_options_apply(&app->options);
     if (!video) set_text(app, app->status, "Select a video first.");
     else if (!start_video(app, video)) set_text(app, app->status, "Could not start mrplay.");
-    else set_text(app, app->status, video->live ? "Resolving YouTube Live..." : "Resolving YouTube video...");
+    else if (video->live) set_text(app, app->status, "Resolving YouTube Live...");
+    else if (app->options.hls_low)
+        set_text(app, app->status,
+                 "Resolving YouTube Low (144p HLS, 360p fallback)...");
+    else set_text(app, app->status, "Resolving YouTube video...");
 }
 
 static void load_url(ytgt *app, const char *url, mr_youtube_search_mode mode,
