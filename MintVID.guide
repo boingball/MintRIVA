@@ -250,10 +250,12 @@ and, where still supplied, muxed 720p MP4 - both contain H.264 video and
 AAC audio together, so MintVID's existing seekable HTTP/MP4 path plays
 them without downloading or merging separate streams. Only a direct
 signed HTTPS Google Video URL is accepted; ciphered URLs and unresolved
-player challenges are rejected. Selecting 720p, 1080p, or Best tries
-720p first and falls back to 360p automatically; Low, 360p, and 480p
-stay on the 360p muxed format. There is no standard muxed 480p or 1080p
-target yet.
+player challenges are rejected. Low first tries a muxed HLS ladder and
+selects its lowest compatible rendition, normally 256x144 when YouTube
+exposes one; it falls back to the established 360p MP4 otherwise. The 360p
+and 480p settings stay on the 360p muxed format. Selecting 720p, 1080p,
+or Best tries 720p first and falls back to 360p automatically. There is no
+standard muxed 480p or 1080p target yet.
 
 On classic 68040/060 machines this H.264 support is primarily compatibility
 and demonstration territory, not a claim of smooth YouTube playback. A
