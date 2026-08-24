@@ -28,6 +28,10 @@
 #define YOUTUBE_ANDROID_VR_UA \
     "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
     "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+#define YOUTUBE_IOS_VERSION "21.26.4"
+#define YOUTUBE_IOS_UA \
+    "com.google.ios.youtube/21.26.4 " \
+    "(iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
 
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
@@ -220,7 +224,9 @@ int mr_youtube_media_http_options_init(mr_http_options *out,
     mr_http_options resolved;
     if (!mr_youtube_http_options_init(&resolved, base)) return 0;
     if (g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P ||
-        g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+        g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P ||
+        (g_last_kind == MR_YOUTUBE_MEDIA_HLS &&
+         strcmp(g_last_media_ua, YOUTUBE_BROWSER_UA))) {
         if (!mr_http_options_init(out, g_last_media_ua, YOUTUBE_REFERER))
             return 0;
         out->hls_low = resolved.hls_low;
@@ -474,12 +480,15 @@ static int options_prefer_720p(const mr_http_options *options)
 }
 
 /* Returns 1 for immediately usable media, -1 when media was present but
- * carried an unsolved n challenge, and 0 for a failed/no-media reply. */
+ * carried an unsolved n challenge, and 0 for a failed/no-media reply.
+ * allow_progressive is false for the Low-quality iOS probe: that request is
+ * useful only when it exposes a muxed HLS ladder containing 144p. */
 static int try_player_media(const char *api_url,
                             const mr_http_options *options,
                             const char *json, const char *client,
                             const char *media_ua, char *out, size_t out_size,
-                            int prefer_720p, mr_youtube_media_kind *kind)
+                            int prefer_720p, int allow_progressive,
+                            mr_youtube_media_kind *kind)
 {
     char *reply = NULL;
     size_t reply_len = 0;
@@ -501,6 +510,10 @@ static int try_player_media(const char *api_url,
         mr_free(reply);
         return -1;
     }
+    if (!allow_progressive) {
+        mr_free(reply);
+        return 0;
+    }
     ok = mr_youtube_extract_progressive(reply, prefer_720p, out, out_size,
                                         kind);
     mr_free(reply);
@@ -516,13 +529,14 @@ int mr_youtube_resolve_media(const char *url,
                              char *out, size_t out_size,
                              mr_youtube_media_kind *kind)
 {
-    mr_http_options fetch_options, vr_options;
+    mr_http_options fetch_options, vr_options, ios_options;
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
     char api_url[256], json[1024];
     int n, ok, result, saw_n_challenge = 0;
     int prefer_720p = options_prefer_720p(options);
+    int want_low_hls = options && options->hls_low;
     g_last_client = "";
     g_last_media_ua = YOUTUBE_BROWSER_UA;
     g_last_kind = MR_YOUTUBE_MEDIA_NONE;
@@ -546,7 +560,8 @@ int mr_youtube_resolve_media(const char *url,
         return 1;
     }
     if (ok) saw_n_challenge = 1;
-    if (mr_youtube_extract_progressive(html, prefer_720p, out, out_size,
+    if (!want_low_hls &&
+        mr_youtube_extract_progressive(html, prefer_720p, out, out_size,
                                        kind)) {
         g_last_client = "watch page";
         g_last_kind = *kind;
@@ -569,15 +584,59 @@ int mr_youtube_resolve_media(const char *url,
         mr_source_set_error("YouTube page omitted player API configuration");
         return 0;
     }
-    mr_free(html);
-    html = NULL;
     n = snprintf(api_url, sizeof api_url,
                  "https://www.youtube.com/youtubei/v1/player?key=%s&prettyPrint=false",
                  api_key);
     if (n <= 0 || (size_t)n >= sizeof api_url) {
+        mr_free(html);
         mr_source_set_error("YouTube player API URL is too long");
         return 0;
     }
+
+    /* Low is the only mode that asks for recorded-video HLS. Some iOS player
+     * replies expose a muxed AVC+AAC ladder whose lowest rendition is 256x144.
+     * The existing HLS picker then selects that lowest rendition. Other quality
+     * modes retain the normal progressive/HLS path and are never forced to
+     * 144p. Treat this as a best-effort probe: if it fails, preserve the watch
+     * page's progressive 360p result as the compatibility fallback. */
+    if (want_low_hls) {
+        n = snprintf(json, sizeof json,
+                     "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
+                     "\"racyCheckOk\":true,\"context\":{\"client\":{"
+                     "\"clientName\":\"IOS\",\"clientVersion\":\"%s\","
+                     "\"deviceMake\":\"Apple\","
+                     "\"deviceModel\":\"iPhone16,2\","
+                     "\"userAgent\":\"%s\",\"osName\":\"iPhone\","
+                     "\"osVersion\":\"18.3.2.22D82\","
+                     "\"hl\":\"en\",\"gl\":\"GB\"}}}",
+                     video_id, YOUTUBE_IOS_VERSION, YOUTUBE_IOS_UA);
+        if (n <= 0 || (size_t)n >= sizeof json) {
+            mr_free(html);
+            mr_source_set_error("YouTube iOS player request is too large");
+            return 0;
+        }
+        if (!mr_http_options_init(&ios_options, YOUTUBE_IOS_UA,
+                                  YOUTUBE_REFERER)) {
+            mr_free(html);
+            return 0;
+        }
+        result = try_player_media(api_url, &ios_options, json, "IOS",
+                                  YOUTUBE_IOS_UA, out, out_size, 0, 0, kind);
+        if (result > 0) {
+            mr_free(html);
+            return 1;
+        }
+        if (result < 0) saw_n_challenge = 1;
+        if (mr_youtube_extract_progressive(html, 0, out, out_size, kind)) {
+            g_last_client = "watch page";
+            g_last_kind = *kind;
+            mr_free(html);
+            return 1;
+        }
+    }
+    mr_free(html);
+    html = NULL;
+
     /* Streamlink's current live-only YouTube implementation uses this Android
      * profile without a JavaScript challenge solver. Prefer it because its HLS
      * response can avoid the WEB client's /n/ path challenge entirely. */
@@ -597,7 +656,7 @@ int mr_youtube_resolve_media(const char *url,
     }
     result = try_player_media(api_url, &fetch_options, json, "ANDROID",
                               YOUTUBE_ANDROID_UA, out, out_size, prefer_720p,
-                              kind);
+                              1, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -622,7 +681,7 @@ int mr_youtube_resolve_media(const char *url,
         return 0;
     result = try_player_media(api_url, &vr_options, json, "ANDROID_VR",
                               YOUTUBE_ANDROID_VR_UA, out, out_size,
-                              prefer_720p, kind);
+                              prefer_720p, 1, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -643,7 +702,7 @@ int mr_youtube_resolve_media(const char *url,
     }
     result = try_player_media(api_url, &fetch_options, json,
                               "WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
-                              out, out_size, prefer_720p, kind);
+                              out, out_size, prefer_720p, 1, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -659,7 +718,7 @@ int mr_youtube_resolve_media(const char *url,
         return 0;
     result = try_player_media(api_url, &fetch_options, json, "WEB",
                               YOUTUBE_BROWSER_UA, out, out_size, prefer_720p,
-                              kind);
+                              1, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
     mr_source_set_error(saw_n_challenge
