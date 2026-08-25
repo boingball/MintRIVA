@@ -73,12 +73,20 @@ typedef struct mr_yt_cookie {
     char value[MR_YT_COOKIE_VALUE_MAX];
 } mr_yt_cookie;
 
-static mr_yt_cookie g_mr_yt_cookies[MR_YT_COOKIE_SLOTS];
-static char g_mr_yt_cookie_header[MR_YT_COOKIE_HEADER_MAX];
+/* yt-dlp seeds these before its first YouTube request, even without a user
+ * cookie file. Match that anonymous session baseline so our VisionOS probe is
+ * truly comparable to the 20/20 yt-dlp control. */
+static mr_yt_cookie g_mr_yt_cookies[MR_YT_COOKIE_SLOTS] = {
+    { "PREF", "hl=en&tz=UTC" },
+    { "SOCS", "CAI" }
+};
+static char g_mr_yt_cookie_header[MR_YT_COOKIE_HEADER_MAX] =
+    "PREF=hl=en&tz=UTC; SOCS=CAI";
 static unsigned char g_mr_yt_response_header[MR_YT_RESPONSE_HEADER_MAX];
 static size_t g_mr_yt_response_header_len;
 static int g_mr_yt_current_request;
 static int g_mr_yt_response_header_done;
+static int g_mr_yt_logged_seed;
 static int g_mr_yt_logged_capture;
 static int g_mr_yt_logged_reuse;
 static int g_mr_yt_logged_safari_headers;
@@ -411,6 +419,11 @@ static int mr_yt_prepare_request(char *request, size_t cap, int length)
     g_mr_yt_current_request = youtube;
     g_mr_yt_response_header_len = 0;
     g_mr_yt_response_header_done = youtube ? 0 : 1;
+
+    if (youtube && !g_mr_yt_logged_seed) {
+        g_mr_yt_logged_seed = 1;
+        printf("YouTube HTTP session: seeded yt-dlp anonymous cookies\n");
+    }
 
     if (youtube) {
         char api_headers[MR_YT_API_HEADERS_MAX];
