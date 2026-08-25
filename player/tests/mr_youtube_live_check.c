@@ -1,10 +1,10 @@
 /*
  * Host-only live YouTube resolver probe.
  *
- * Runs one cold resolver attempt using the same portable resolver, HTTP cookie
- * layer and QuickJS n solver as mrplay.  The companion shell script launches
- * this executable repeatedly so every sample starts with a fresh process-local
- * cookie jar, matching separate Amiga mrplay launches.
+ * A normal invocation runs one cold resolver attempt.  --repeat runs several
+ * resolves inside one process so the process-local anonymous YouTube cookie
+ * jar survives between attempts; this lets the host tests compare cold starts
+ * against a warmed logged-out session without changing the resolver itself.
  */
 #include "../core/mr_youtube.h"
 #include "../core/mr_youtube_nsig.h"
@@ -12,6 +12,8 @@
 #include "../core/mr_source.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static const char *kind_name(mr_youtube_media_kind kind)
 {
@@ -26,16 +28,54 @@ static const char *kind_name(mr_youtube_media_kind kind)
     }
 }
 
-int main(int argc, char **argv)
+static int run_one(const char *url, const mr_http_options *options, int attempt)
 {
-    mr_http_options options;
     mr_youtube_media_kind kind = MR_YOUTUBE_MEDIA_NONE;
     char video_url[MR_HTTP_URL_MAX];
     char audio_url[MR_HTTP_URL_MAX];
     const char *client;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <youtube-url>\n", argv[0]);
+    video_url[0] = '\0';
+    audio_url[0] = '\0';
+
+    if (!mr_youtube_resolve_media_pair(url, options,
+                                       video_url, sizeof video_url,
+                                       audio_url, sizeof audio_url,
+                                       &kind)) {
+        fprintf(stderr, "RESULT ERROR attempt=%d client=%s error=%s\n",
+                attempt, mr_youtube_last_client(), mr_source_last_error());
+        return 0;
+    }
+
+    client = mr_youtube_last_client();
+    printf("RESULT %s attempt=%d client=%s audio_pair=%s\n",
+           kind_name(kind), attempt,
+           client && *client ? client : "unknown",
+           audio_url[0] ? "yes" : "no");
+    return 1;
+}
+
+int main(int argc, char **argv)
+{
+    mr_http_options options;
+    const char *url;
+    int count = 1;
+    int i;
+    int failures = 0;
+
+    if (argc == 2) {
+        url = argv[1];
+    } else if (argc == 4 && !strcmp(argv[1], "--repeat")) {
+        char *end = NULL;
+        long value = strtol(argv[2], &end, 10);
+        if (!end || *end || value < 1 || value > 10000) {
+            fprintf(stderr, "repeat count must be 1..10000\n");
+            return 2;
+        }
+        count = (int)value;
+        url = argv[3];
+    } else {
+        fprintf(stderr, "usage: %s [--repeat count] <youtube-url>\n", argv[0]);
         return 2;
     }
 
@@ -49,21 +89,13 @@ int main(int argc, char **argv)
     options.hls_max_width = 640;
 
     mr_youtube_set_nsig_solver(mr_youtube_nsig_transform_url, NULL);
-    video_url[0] = '\0';
-    audio_url[0] = '\0';
 
-    if (!mr_youtube_resolve_media_pair(argv[1], &options,
-                                       video_url, sizeof video_url,
-                                       audio_url, sizeof audio_url,
-                                       &kind)) {
-        fprintf(stderr, "RESULT ERROR client=%s error=%s\n",
-                mr_youtube_last_client(), mr_source_last_error());
-        return 1;
+    for (i = 1; i <= count; i++) {
+        if (count > 1)
+            printf("===== warm attempt %d/%d =====\n", i, count);
+        if (!run_one(url, &options, i)) failures++;
     }
 
-    client = mr_youtube_last_client();
-    printf("RESULT %s client=%s audio_pair=%s\n",
-           kind_name(kind), client && *client ? client : "unknown",
-           audio_url[0] ? "yes" : "no");
-    return 0;
+    mr_http_net_shutdown();
+    return failures ? 1 : 0;
 }
