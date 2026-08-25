@@ -227,6 +227,17 @@ int mr_youtube_nsig_solve(const char *player_js, size_t player_js_len,
     ok = 1;
 
 done:
+    if (runtime) {
+        JSMemoryUsage usage;
+        memset(&usage, 0, sizeof usage);
+        JS_ComputeMemoryUsage(runtime, &usage);
+        printf("YouTube: QuickJS runtime at teardown: %lu MB allocated, "
+               "%lu MB used, %lu allocations\n",
+               (unsigned long)(usage.malloc_size / (1024UL * 1024UL)),
+               (unsigned long)(usage.memory_used_size /
+                               (1024UL * 1024UL)),
+               (unsigned long)usage.malloc_count);
+    }
     if (result_text && context) JS_FreeCString(context, result_text);
     if (context && !JS_IsUndefined(result)) JS_FreeValue(context, result);
     if (context && !JS_IsUndefined(global)) JS_FreeValue(context, global);

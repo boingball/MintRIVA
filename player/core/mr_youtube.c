@@ -953,7 +953,8 @@ int mr_youtube_resolve_media_pair(const char *url,
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
-    char api_url[256], json[1024], player_js_url[MR_HTTP_URL_MAX];
+    char visitor_data[256], visitor_json[320];
+    char api_url[256], json[1536], player_js_url[MR_HTTP_URL_MAX];
     youtube_nsig_attempt nsig_attempt;
     int n, ok, result, saw_n_challenge = 0;
     unsigned signature_timestamp = 0;
@@ -962,6 +963,8 @@ int mr_youtube_resolve_media_pair(const char *url,
     int want_low_adaptive = adaptive_outputs && options && options->hls_low;
     int want_adaptive = adaptive_outputs && (want_low_adaptive || prefer_720p);
     player_js_url[0] = '\0';
+    visitor_data[0] = '\0';
+    visitor_json[0] = '\0';
     memset(&nsig_attempt, 0, sizeof nsig_attempt);
     g_last_client = "";
     g_last_media_ua = YOUTUBE_BROWSER_UA;
@@ -1067,6 +1070,21 @@ int mr_youtube_resolve_media_pair(const char *url,
         (void)extract_config_uint(html, "signatureTimestamp",
                                   &signature_timestamp);
     (void)extract_player_js_url(html, player_js_url, sizeof player_js_url);
+    if ((!extract_config_string(html, "VISITOR_DATA",
+                                visitor_data, sizeof visitor_data) &&
+         !extract_config_string(html,
+                                "INNERTUBE_CONTEXT_CLIENT_VISITOR_DATA",
+                                visitor_data, sizeof visitor_data)) ||
+        strpbrk(visitor_data, "\"\\"))
+        visitor_data[0] = '\0';
+    if (visitor_data[0]) {
+        n = snprintf(visitor_json, sizeof visitor_json,
+                     "\"visitorData\":\"%s\",", visitor_data);
+        if (n <= 0 || (size_t)n >= sizeof visitor_json)
+            visitor_json[0] = '\0';
+        else
+            printf("YouTube: reusing watch-page visitor identity\n");
+    }
 
     mr_free(html);
     html = NULL;
@@ -1081,6 +1099,7 @@ int mr_youtube_resolve_media_pair(const char *url,
         if (signature_timestamp)
             n = snprintf(json, sizeof json,
                          "{\"context\":{\"client\":{"
+                         "%s"
                          "\"clientName\":\"WEB\",\"clientVersion\":\"%s\","
                          "\"userAgent\":\"%s\",\"hl\":\"en\",\"gl\":\"GB\","
                          "\"timeZone\":\"UTC\",\"utcOffsetMinutes\":0}},"
@@ -1089,11 +1108,13 @@ int mr_youtube_resolve_media_pair(const char *url,
                          "\"html5Preference\":\"HTML5_PREF_WANTS\","
                          "\"signatureTimestamp\":%u}},"
                          "\"contentCheckOk\":true,\"racyCheckOk\":true}",
-                         YOUTUBE_WEB_SAFARI_VERSION, YOUTUBE_WEB_SAFARI_UA,
+                         visitor_json, YOUTUBE_WEB_SAFARI_VERSION,
+                         YOUTUBE_WEB_SAFARI_UA,
                          video_id, signature_timestamp);
         else
             n = snprintf(json, sizeof json,
                          "{\"context\":{\"client\":{"
+                         "%s"
                          "\"clientName\":\"WEB\",\"clientVersion\":\"%s\","
                          "\"userAgent\":\"%s\",\"hl\":\"en\",\"gl\":\"GB\","
                          "\"timeZone\":\"UTC\",\"utcOffsetMinutes\":0}},"
@@ -1101,7 +1122,8 @@ int mr_youtube_resolve_media_pair(const char *url,
                          "\"contentPlaybackContext\":{"
                          "\"html5Preference\":\"HTML5_PREF_WANTS\"}},"
                          "\"contentCheckOk\":true,\"racyCheckOk\":true}",
-                         YOUTUBE_WEB_SAFARI_VERSION, YOUTUBE_WEB_SAFARI_UA,
+                         visitor_json, YOUTUBE_WEB_SAFARI_VERSION,
+                         YOUTUBE_WEB_SAFARI_UA,
                          video_id);
         if (n <= 0 || (size_t)n >= sizeof json) {
             mr_source_set_error("YouTube Web Safari request is too large");

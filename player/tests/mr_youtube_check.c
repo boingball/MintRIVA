@@ -8,6 +8,7 @@
 static int failures;
 static int nsig_fetches;
 static int nsig_calls;
+static int nsig_saw_visitor;
 
 static void expect(int condition, const char *name)
 {
@@ -38,6 +39,7 @@ static int nsig_fetch_override(const char *url,
     static const char watch[] =
         "{\"INNERTUBE_API_KEY\":\"test-key\","
         "\"INNERTUBE_CLIENT_VERSION\":\"1.2.3\",\"STS\":12345,"
+        "\"VISITOR_DATA\":\"visitor-test\","
         "\"jsUrl\":\"\\/s\\/player\\/test\\/base.js\"}";
     static const char safari[] =
         "{\"streamingData\":{\"hlsManifestUrl\":\""
@@ -55,8 +57,11 @@ static int nsig_fetch_override(const char *url,
                               "https://www.youtube.com/s/player/test/base.js"))
         return return_fixture("synthetic current player", out, out_len,
                               max_size);
-    if (post_json && strstr(url, "/youtubei/v1/player?key=test-key"))
+    if (post_json && strstr(url, "/youtubei/v1/player?key=test-key")) {
+        if (strstr(post_json, "\"visitorData\":\"visitor-test\""))
+            nsig_saw_visitor = 1;
         return return_fixture(safari, out, out_len, max_size);
+    }
     return 0;
 }
 
@@ -269,7 +274,7 @@ int main(int argc, char **argv)
     expect(mr_http_options_init(&base_options, NULL, NULL),
            "native n integration options initialised");
     base_options.hls_low = 1;
-    nsig_fetches = nsig_calls = 0;
+    nsig_fetches = nsig_calls = nsig_saw_visitor = 0;
     mr_http_set_fetch_override(nsig_fetch_override);
     mr_youtube_set_nsig_solver(nsig_solver, NULL);
     expect(mr_youtube_resolve_media_pair(
@@ -281,6 +286,7 @@ int main(int argc, char **argv)
                    "https://manifest.googlevideo.com/api/manifest/"
                    "hls_variant/n/solved/file/index.m3u8") &&
            !audio_out[0] && nsig_fetches == 3 && nsig_calls == 1 &&
+           nsig_saw_visitor &&
            !strcmp(mr_youtube_last_client(), "WEB_SAFARI"),
            "Safari HLS n challenge uses current player and native solver");
     expect(mr_youtube_media_http_options_init(&youtube_options,
