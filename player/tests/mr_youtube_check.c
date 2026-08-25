@@ -42,7 +42,11 @@ static int nsig_fetch_override(const char *url,
     static const char safari[] =
         "{\"streamingData\":{\"hlsManifestUrl\":\""
         "https://manifest.googlevideo.com/api/manifest/"
-        "hls_variant/n/abc123/file/index.m3u8\"}}";
+        "hls_variant/n/abc123/file/index.m3u8\","
+        "\"adaptiveFormats\":[{\"itag\":140,"
+        "\"audioTrack\":{\"id\":\"en.4\","
+        "\"displayName\":\"English (original)\","
+        "\"audioIsDefault\":true}}]}}";
     (void)options;
     nsig_fetches++;
     if (!post_json && strstr(url, "/watch?v=EvsLqQS_80E"))
@@ -279,6 +283,10 @@ int main(int argc, char **argv)
            !audio_out[0] && nsig_fetches == 3 && nsig_calls == 1 &&
            !strcmp(mr_youtube_last_client(), "WEB_SAFARI"),
            "Safari HLS n challenge uses current player and native solver");
+    expect(mr_youtube_media_http_options_init(&youtube_options,
+                                               &base_options) &&
+           !strcmp(youtube_options.hls_audio_language, "en"),
+           "Safari HLS preserves original audio language for variant pick");
     mr_youtube_set_nsig_solver(NULL, NULL);
     mr_http_set_fetch_override(NULL);
 

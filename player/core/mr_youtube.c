@@ -41,6 +41,7 @@
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
 static mr_youtube_media_kind g_last_kind = MR_YOUTUBE_MEDIA_NONE;
+static char g_last_hls_audio_language[MR_HTTP_HLS_LANGUAGE_MAX];
 static mr_youtube_nsig_solver_fn g_nsig_solver;
 static void *g_nsig_solver_opaque;
 
@@ -252,9 +253,13 @@ int mr_youtube_media_http_options_init(mr_http_options *out,
         out->hls_max_fps = resolved.hls_max_fps;
         out->hls_live_start_segments = resolved.hls_live_start_segments;
         out->hls_buffer_segments = resolved.hls_buffer_segments;
+        memcpy(out->hls_audio_language, g_last_hls_audio_language,
+               sizeof out->hls_audio_language);
         return 1;
     }
     *out = resolved;
+    memcpy(out->hls_audio_language, g_last_hls_audio_language,
+           sizeof out->hls_audio_language);
     return 1;
 }
 
@@ -427,6 +432,73 @@ static const char *json_object_field(const char *object,
         if (p < object_end && *p == ',') p++;
     }
     return NULL;
+}
+
+static int text_contains_nocase(const char *text, const char *needle)
+{
+    size_t n = strlen(needle);
+    const char *p;
+    if (!text || !n) return 0;
+    for (p = text; *p; p++)
+        if (!ascii_ncasecmp(p, needle, n)) return 1;
+    return 0;
+}
+
+/* WEB_SAFARI recorded HLS duplicates every video resolution for each dubbed
+ * audio track. The master playlist labels those variants with
+ * YT-EXT-AUDIO-CONTENT-ID, while the authoritative "original"/default flag
+ * lives in streamingData's audioTrack objects. Preserve that language code so
+ * mr_hls can choose quality within the original-language variants. */
+static int extract_hls_audio_language(const char *json,
+                                      char *out, size_t out_size)
+{
+    static const char key[] = "\"audioTrack\"";
+    char fallback[MR_HTTP_HLS_LANGUAGE_MAX];
+    const char *p, *end;
+    if (!json || !out || out_size < 2) return 0;
+    out[0] = '\0';
+    fallback[0] = '\0';
+    end = json + strlen(json);
+    p = json;
+    while ((p = strstr(p, key)) != NULL) {
+        const char *object, *object_end, *id, *display_name, *is_default;
+        char id_text[MR_HTTP_HLS_LANGUAGE_MAX * 2];
+        char display_text[128];
+        char *dot;
+        p += sizeof key - 1;
+        object = skip_json_space(p, end);
+        if (object >= end || *object++ != ':') continue;
+        object = skip_json_space(object, end);
+        if (object >= end || *object != '{') continue;
+        object_end = json_compound_end(object, end, '{', '}');
+        if (!object_end) break;
+        id = json_object_field(object, object_end, "id");
+        display_name = json_object_field(object, object_end, "displayName");
+        is_default = json_object_field(object, object_end, "audioIsDefault");
+        display_text[0] = '\0';
+        if (id && decode_json_string(id, id_text, sizeof id_text)) {
+            dot = strchr(id_text, '.');
+            if (dot) *dot = '\0';
+            if (display_name)
+                (void)decode_json_string(display_name, display_text,
+                                         sizeof display_text);
+            if (id_text[0] &&
+                text_contains_nocase(display_text, "original")) {
+                if (strlen(id_text) + 1 > out_size) return 0;
+                strcpy(out, id_text);
+                return 1;
+            }
+            if (!fallback[0] && id_text[0] && is_default &&
+                !strncmp(is_default, "true", 4)) {
+                strncpy(fallback, id_text, sizeof fallback - 1);
+                fallback[sizeof fallback - 1] = '\0';
+            }
+        }
+        p = object_end;
+    }
+    if (!fallback[0] || strlen(fallback) + 1 > out_size) return 0;
+    strcpy(out, fallback);
+    return 1;
 }
 
 static int googlevideo_url(const char *url)
@@ -791,6 +863,12 @@ static int try_player_media(const char *api_url,
                           ? MR_YOUTUBE_MEDIA_HLS_VOD
                           : MR_YOUTUBE_MEDIA_HLS;
         *kind = g_last_kind;
+        if (extract_hls_audio_language(reply, g_last_hls_audio_language,
+                                       sizeof g_last_hls_audio_language))
+            printf("YouTube: original HLS audio language %s\n",
+                   g_last_hls_audio_language);
+        else
+            printf("YouTube: HLS audio language metadata unavailable\n");
         if (audio_out && audio_out_size) audio_out[0] = '\0';
         mr_free(reply);
         return 1;
@@ -888,6 +966,7 @@ int mr_youtube_resolve_media_pair(const char *url,
     g_last_client = "";
     g_last_media_ua = YOUTUBE_BROWSER_UA;
     g_last_kind = MR_YOUTUBE_MEDIA_NONE;
+    g_last_hls_audio_language[0] = '\0';
     if (kind) *kind = MR_YOUTUBE_MEDIA_NONE;
     if (audio_out && audio_out_size) audio_out[0] = '\0';
     if (!mr_youtube_is_url(url) || !video_out || video_out_size < 2 || !kind) {
@@ -905,6 +984,9 @@ int mr_youtube_resolve_media_pair(const char *url,
         g_last_client = "watch page";
         g_last_kind = MR_YOUTUBE_MEDIA_HLS;
         *kind = g_last_kind;
+        (void)extract_hls_audio_language(
+            html, g_last_hls_audio_language,
+            sizeof g_last_hls_audio_language);
         mr_free(html);
         return 1;
     }

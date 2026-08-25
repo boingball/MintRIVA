@@ -182,6 +182,77 @@ static int variant_codecs_supported(const char *stream_inf)
            range_contains_nocase(p, end, "mp1v");
 }
 
+/* Read a quoted or unquoted master-playlist attribute into out. Attribute
+ * names are matched only at the start of the tag or after a comma so a suffix
+ * cannot be mistaken for the real field. */
+static int variant_attribute(const char *line, const char *name,
+                             char *out, size_t out_size)
+{
+    const char *p = line;
+    size_t name_len = strlen(name), used = 0;
+    if (!out || out_size < 2) return 0;
+    out[0] = '\0';
+    while ((p = strstr(p, name)) != NULL) {
+        if ((p == line || p[-1] == ',' || p[-1] == ':') &&
+            p[name_len] == '=') break;
+        p += name_len;
+    }
+    if (!p) return 0;
+    p += name_len + 1;
+    if (*p == '"') {
+        p++;
+        while (*p && *p != '"') {
+            if (used + 1 >= out_size) return 0;
+            out[used++] = *p++;
+        }
+        if (*p != '"') return 0;
+    } else {
+        while (*p && *p != ',') {
+            if (used + 1 >= out_size) return 0;
+            out[used++] = *p++;
+        }
+    }
+    out[used] = '\0';
+    return used != 0;
+}
+
+static int language_equal(const char *a, const char *b)
+{
+    size_t i;
+    if (!a || !b) return 0;
+    for (i = 0; a[i] && b[i]; i++) {
+        int ca = (unsigned char)a[i], cb = (unsigned char)b[i];
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb)
+            return 0;
+    }
+    return a[i] == '\0' && b[i] == '\0';
+}
+
+/* YouTube appends a dot plus an internal track suffix to some content IDs.
+ * yt-dlp uses the portion before that dot as the language code too. */
+static int variant_language_rank(const char *stream_inf,
+                                 const mr_http_options *options,
+                                 char *language, size_t language_size)
+{
+    char content_id[MR_HTTP_HLS_LANGUAGE_MAX * 2];
+    char *dot;
+    if (language && language_size) language[0] = '\0';
+    if (!options || !options->hls_audio_language[0]) return 0;
+    if (!variant_attribute(stream_inf, "YT-EXT-AUDIO-CONTENT-ID",
+                           content_id, sizeof content_id))
+        return 1; /* unlabeled is safer than a known non-original dub */
+    dot = strchr(content_id, '.');
+    if (dot) *dot = '\0';
+    if (language && language_size) {
+        size_t n = strlen(content_id);
+        if (n < language_size)
+            memcpy(language, content_id, n + 1);
+    }
+    return language_equal(content_id, options->hls_audio_language) ? 2 : 0;
+}
+
 /* ---- segment list ------------------------------------------------------ */
 
 /* Ensure segs[] has room for one more entry; seg_start[] tracks nsegs + 1
@@ -294,8 +365,12 @@ static int pick_variant(char *text, const char *base_url,
     char fallback[HLS_URL_MAX]; /* lowest-bandwidth variant, ceiling ignored  */
     char *p = text;
     unsigned long chosen_bw = 0, fallback_bw = 0;
+    int chosen_language_rank = -1, fallback_language_rank = -1;
     int have_chosen = 0, have_fallback = 0, want_low, pending = 0;
     int pending_supported = 1;
+    int pending_language_rank = 0;
+    char pending_language[MR_HTTP_HLS_LANGUAGE_MAX];
+    char chosen_language[MR_HTTP_HLS_LANGUAGE_MAX];
     unsigned long pending_bw = 0;
     unsigned pending_width = 0, pending_height = 0, pending_fps = 0;
     want_low = options && options->hls_low;
@@ -306,6 +381,8 @@ static int pick_variant(char *text, const char *base_url,
             const char *fps = strstr(line, "FRAME-RATE=");
             pending = 1;
             pending_supported = variant_codecs_supported(line);
+            pending_language_rank = variant_language_rank(
+                line, options, pending_language, sizeof pending_language);
             pending_bw = bw ? strtoul(bw + 10, NULL, 10) : 0;
             pending_width = pending_height = pending_fps = 0;
             if (resolution)
@@ -318,9 +395,13 @@ static int pick_variant(char *text, const char *base_url,
             pending = 0;
             if (!pending_supported) continue;
             /* Always track the lowest-bandwidth variant as a safety net. */
-            if (!have_fallback || pending_bw < fallback_bw) {
+            if (!have_fallback ||
+                pending_language_rank > fallback_language_rank ||
+                (pending_language_rank == fallback_language_rank &&
+                 pending_bw < fallback_bw)) {
                 memcpy(fallback, line, sizeof fallback);
                 fallback_bw = pending_bw;
+                fallback_language_rank = pending_language_rank;
                 have_fallback = 1;
             }
             fits = !options ||
@@ -330,17 +411,27 @@ static int pick_variant(char *text, const char *base_url,
                      pending_height <= options->hls_max_height) &&
                     (!options->hls_max_fps ||
                      pending_fps <= options->hls_max_fps));
-            if (fits &&
-                (!have_chosen ||
-                 (want_low ? pending_bw < chosen_bw : pending_bw > chosen_bw))) {
+            if (fits && (!have_chosen ||
+                pending_language_rank > chosen_language_rank ||
+                (pending_language_rank == chosen_language_rank &&
+                 (want_low ? pending_bw < chosen_bw : pending_bw > chosen_bw)))) {
                 memcpy(chosen, line, sizeof chosen);
                 chosen_bw = pending_bw;
+                chosen_language_rank = pending_language_rank;
+                memcpy(chosen_language, pending_language,
+                       sizeof chosen_language);
                 have_chosen = 1;
             }
         }
     }
-    if (have_chosen && mr_http_resolve_url(base_url, chosen, out, out_size))
+    if (have_chosen && mr_http_resolve_url(base_url, chosen, out, out_size)) {
+        if (g_verbose && options && options->hls_audio_language[0])
+            printf("HLS: audio language %s selected%s\n",
+                   chosen_language[0] ? chosen_language : "unlabelled",
+                   chosen_language_rank == 2 ? " (original)" :
+                                                " (fallback)");
         return 1;
+    }
     if (have_fallback && mr_http_resolve_url(base_url, fallback, out, out_size))
         return 1;
     return 0;
@@ -619,6 +710,9 @@ mr_source *mr_hls_source_open_ex(const char *url,
         h->options.hls_max_width = options->hls_max_width;
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
+        memcpy(h->options.hls_audio_language,
+               options->hls_audio_language,
+               sizeof h->options.hls_audio_language);
     }
     st = merge_playlist(text, base, h, &added);
     mr_free(text);

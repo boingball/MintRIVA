@@ -56,13 +56,37 @@
  */
 static const char mr_min_stack[] __attribute__((used)) = "$STACK:640000";
 
+/* Keep only an emergency floor here. QuickJS's 192 MB setting is a ceiling,
+ * not a reservation, and real solves have been observed to consume roughly
+ * 80 MB transiently. A 128 MB Amiga may therefore work and must be allowed to
+ * try. The before/after figures make actual Amiga behaviour visible in logs. */
+#define YOUTUBE_QUICKJS_MIN_FREE (88UL * 1024UL * 1024UL)
+
 static int youtube_quickjs_nsig(const char *player_js, size_t player_js_len,
                                 const char *url,
                                 char *out, size_t out_size,
                                 void *opaque)
 {
-    int ok = mr_youtube_nsig_transform_url(player_js, player_js_len, url,
-                                            out, out_size, opaque);
+    ULONG free_any = AvailMem(MEMF_ANY);
+    ULONG largest = AvailMem(MEMF_ANY | MEMF_LARGEST);
+    int ok;
+    printf("YouTube: QuickJS memory before solve: %lu MB free, %lu MB "
+           "largest\n",
+           (unsigned long)(free_any / (1024UL * 1024UL)),
+           (unsigned long)(largest / (1024UL * 1024UL)));
+    if (free_any < YOUTUBE_QUICKJS_MIN_FREE) {
+        printf("YouTube: QuickJS n solver skipped below 88 MB emergency "
+               "floor; continuing 360p fallback\n");
+        return 0;
+    }
+    ok = mr_youtube_nsig_transform_url(player_js, player_js_len, url,
+                                        out, out_size, opaque);
+    free_any = AvailMem(MEMF_ANY);
+    largest = AvailMem(MEMF_ANY | MEMF_LARGEST);
+    printf("YouTube: QuickJS memory after solve: %lu MB free, %lu MB "
+           "largest\n",
+           (unsigned long)(free_any / (1024UL * 1024UL)),
+           (unsigned long)(largest / (1024UL * 1024UL)));
     if (!ok)
         printf("YouTube: QuickJS n solver: %s\n",
                mr_youtube_nsig_last_error());

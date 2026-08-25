@@ -26,6 +26,7 @@
 #define MR_HTTP_PATH_MAX 3840
 #define MR_HTTP_USER_AGENT_MAX 256
 #define MR_HTTP_REFERER_MAX 1024
+#define MR_HTTP_HLS_LANGUAGE_MAX 32
 
 typedef struct mr_http_options {
     char user_agent[MR_HTTP_USER_AGENT_MAX];
@@ -40,6 +41,12 @@ typedef struct mr_http_options {
     unsigned hls_max_width;
     unsigned hls_max_height;
     unsigned hls_max_fps;
+    /* Preferred HLS audio content language (for example "en" or "en-GB").
+     * YouTube's recorded Safari ladders duplicate every video rendition for
+     * each dubbed audio track and identify it with the non-standard
+     * YT-EXT-AUDIO-CONTENT-ID attribute. Empty preserves generic HLS
+     * bandwidth-only selection. */
+    char hls_audio_language[MR_HTTP_HLS_LANGUAGE_MAX];
 } mr_http_options;
 
 int mr_http_options_init(mr_http_options *options, const char *user_agent,

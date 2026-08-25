@@ -30,9 +30,19 @@ static const char *g_playlist =
     "seg1.ts\n"
     "#EXT-X-ENDLIST\n";
 
+static const char *g_master =
+    "#EXTM3U\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=90000,RESOLUTION=256x144,"
+    "CODECS=\"avc1.4d400c,mp4a.40.2\",YT-EXT-AUDIO-CONTENT-ID=es.4\n"
+    "spanish.m3u8\n"
+    "#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=256x144,"
+    "CODECS=\"avc1.4d400c,mp4a.40.2\",YT-EXT-AUDIO-CONTENT-ID=\"en.4\"\n"
+    "english.m3u8\n";
+
 static int  g_calls;
 static int  g_hint_calls;
 static char g_last_hint_url[256];
+static int  g_selected_language;
 
 static int fake_override(const char *url, const mr_http_options *options,
                          const char *post_json,
@@ -43,7 +53,14 @@ static int fake_override(const char *url, const mr_http_options *options,
     size_t len;
     (void)options; (void)post_json; (void)max_size;
     g_calls++;
-    if (strstr(url, "playlist.m3u8")) { body = g_playlist; len = strlen(body); }
+    if (strstr(url, "master.m3u8")) { body = g_master; len = strlen(body); }
+    else if (strstr(url, "english.m3u8")) {
+        g_selected_language = 1; body = g_playlist; len = strlen(body);
+    }
+    else if (strstr(url, "spanish.m3u8")) {
+        g_selected_language = 2; body = g_playlist; len = strlen(body);
+    }
+    else if (strstr(url, "playlist.m3u8")) { body = g_playlist; len = strlen(body); }
     else if (strstr(url, "seg0.ts"))  { body = "AAAA"; len = 4; }
     else if (strstr(url, "seg1.ts"))  { body = "BBBB"; len = 4; }
     else return 0;
@@ -66,6 +83,7 @@ static void fake_hint(const char *url, const mr_http_options *options)
 int main(void)
 {
     mr_source *s;
+    mr_http_options options;
     unsigned char buf[8];
     int fails = 0;
 
@@ -111,6 +129,37 @@ int main(void)
     }
 
     mr_source_close(s);
+
+    /* YouTube's recorded Safari ladders repeat every resolution for dubbed
+     * audio languages. Low must choose the lowest English/original variant,
+     * not the globally smallest variant (Spanish in this fixture). */
+    g_calls = g_selected_language = 0;
+    if (!mr_http_options_init(&options, NULL, NULL)) {
+        printf("FAIL: could not initialise language options\n");
+        fails++;
+    } else {
+        options.hls_low = 1;
+        strcpy(options.hls_audio_language, "en");
+        s = mr_hls_source_open_ex("http://test.invalid/master.m3u8",
+                                  &options);
+        if (!s) {
+            printf("FAIL: language-aware HLS open returned NULL: %s\n",
+                   mr_source_last_error());
+            fails++;
+        } else {
+            if (g_selected_language != 1) {
+                printf("FAIL: expected original English HLS variant, got %d\n",
+                       g_selected_language);
+                fails++;
+            }
+            if (!mr_source_read_at(s, 0, buf, 4) ||
+                memcmp(buf, "AAAA", 4) != 0) {
+                printf("FAIL: selected language segment mismatch\n");
+                fails++;
+            }
+            mr_source_close(s);
+        }
+    }
     mr_http_set_fetch_override(NULL);
     mr_http_set_prefetch_hint(NULL);
 
