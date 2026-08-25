@@ -5,9 +5,10 @@ set -eu
 
 COUNT=${1:-50}
 URL=${2:-}
+MODE=${3:-cold}
 
 if [ -z "$URL" ]; then
-    echo "usage: $0 [count] <youtube-url>" >&2
+    echo "usage: $0 [count] <youtube-url> [cold|safari-page]" >&2
     exit 2
 fi
 
@@ -18,6 +19,12 @@ if [ "$COUNT" -lt 1 ]; then
     echo "count must be at least 1" >&2
     exit 2
 fi
+
+case "$MODE" in
+    cold) PROBE_ARGS="" ;;
+    safari-page) PROBE_ARGS="--safari-page" ;;
+    *) echo "mode must be cold or safari-page" >&2; exit 2 ;;
+esac
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PLAYER=$(CDPATH= cd -- "$HERE/.." && pwd)
@@ -50,13 +57,22 @@ $CC -O2 -Wall -Wextra -std=c99 -g \
     -lm -lssl -lcrypto
 
 : > "$LOG"
+printf 'TEST MODE %s\n' "$MODE" | tee -a "$LOG"
 i=1
 while [ "$i" -le "$COUNT" ]; do
     echo "===== attempt $i/$COUNT =====" | tee -a "$LOG"
-    if ./$OUT "$URL" 2>&1 | tee -a "$LOG"; then
-        :
+    if [ -n "$PROBE_ARGS" ]; then
+        if ./$OUT $PROBE_ARGS "$URL" 2>&1 | tee -a "$LOG"; then
+            :
+        else
+            echo "probe process failed" | tee -a "$LOG"
+        fi
     else
-        echo "probe process failed" | tee -a "$LOG"
+        if ./$OUT "$URL" 2>&1 | tee -a "$LOG"; then
+            :
+        else
+            echo "probe process failed" | tee -a "$LOG"
+        fi
     fi
     i=$((i + 1))
 done
@@ -70,6 +86,7 @@ VISITOR_HEADERS=$(grep -c '^YouTube HTTP session: forwarding watch-page visitor 
 LOW=$((HLS + ADAPTIVE))
 
 printf '\n===== summary =====\n'
+printf 'mode:           %s\n' "$MODE"
 printf 'attempts:       %s\n' "$COUNT"
 printf 'Safari headers: %s/%s\n' "$SAFARI_HEADERS" "$COUNT"
 printf 'visitor header: %s/%s\n' "$VISITOR_HEADERS" "$COUNT"
