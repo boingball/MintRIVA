@@ -37,6 +37,20 @@ MintAMP / Helix audio decoder code
   Source:  player/vendor/MintAMP/ (pinned submodule)
   Release notices include MintAMP-LICENSE.txt, RPSL.txt and RCSL.txt.
 
+QuickJS
+  Licence: MIT
+  Source:  player/vendor/quickjs/ (pinned vendored source)
+  Release notice: LICENSES/QuickJS-LICENSE.txt
+  MintVID links only the core language runtime, without quickjs-libc or any
+  filesystem, process, socket or AmigaOS bindings.
+
+yt-dlp EJS
+  Licence: Unlicense; its bundled Meriyah and Astring dependencies retain
+           their ISC and MIT notices in the source bundle.
+  Source:  player/vendor/yt-dlp-ejs/
+  Release notice: LICENSES/yt-dlp-ejs-LICENSE.txt
+  The release embeds bytecode generated from the pinned EJS 0.8.0 assets.
+
 PL_MPEG - Dominic Szablewski / phoboslab.org
   Licence: MIT (SPDX-License-Identifier: MIT in player/core/pl_mpeg.h)
   Source:  player/core/pl_mpeg.h
@@ -68,5 +82,5 @@ Mikael Kalms' C2P collection
   notice.
 
 This file supplements, rather than replaces, the upstream licence texts. The
-release packaging target copies the available GPL, Apache and MintAMP/Helix
-licence/notices into the LICENSES drawer automatically.
+release packaging target copies the available GPL, Apache, MIT, Unlicense and
+MintAMP/Helix licence/notices into the LICENSES drawer automatically.

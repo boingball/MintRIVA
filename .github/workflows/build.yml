@@ -185,7 +185,9 @@ jobs:
             libavc-NOTICE.txt \
             MintAMP-LICENSE.txt \
             RPSL.txt \
-            RCSL.txt
+            RCSL.txt \
+            QuickJS-LICENSE.txt \
+            yt-dlp-ejs-LICENSE.txt
           do
             test -f "$license_dir/$notice"
           done

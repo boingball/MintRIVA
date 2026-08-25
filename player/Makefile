@@ -4,6 +4,14 @@
 
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -g
+QUICKJS_ROOT = vendor/quickjs
+QUICKJS_FLAGS = -I$(QUICKJS_ROOT) -D_GNU_SOURCE -DMR_QUICKJS_NO_THREADS \
+                -DCONFIG_VERSION=\"2026-06-04\" -fwrapv
+QUICKJS_SRC = $(QUICKJS_ROOT)/quickjs.c $(QUICKJS_ROOT)/dtoa.c \
+              $(QUICKJS_ROOT)/libregexp.c $(QUICKJS_ROOT)/libunicode.c \
+              $(QUICKJS_ROOT)/cutils.c
+EJS_BYTECODE = vendor/yt-dlp-ejs/yt_solver_lib_le.c \
+               vendor/yt-dlp-ejs/yt_solver_core_le.c
 include vendor/libavc_port/libavc.mk
 LIBMPEG2_ROOT = vendor/libmpeg2
 LIBMPEG2_FLAGS = -I$(LIBMPEG2_ROOT) -I$(LIBMPEG2_ROOT)/include \
@@ -211,6 +219,13 @@ mr_youtube_check: tests/mr_youtube_check.c core/mr_youtube.c core/mr_http.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_check.c core/mr_youtube.c \
 	    core/mr_http.c core/mr_source.c core/mr_hls.c
 
+mr_youtube_nsig_check: tests/mr_youtube_nsig_check.c \
+                       core/mr_youtube_nsig.c core/mr_youtube_nsig.h \
+                       $(QUICKJS_SRC) $(EJS_BYTECODE)
+	$(CC) $(CFLAGS) $(QUICKJS_FLAGS) -o $@ \
+	    tests/mr_youtube_nsig_check.c core/mr_youtube_nsig.c \
+	    $(QUICKJS_SRC) $(EJS_BYTECODE) -lm
+
 mr_hls_override_check: tests/mr_hls_override_check.c core/mr_hls.c \
                        core/mr_http.c core/mr_source.c core/mr_youtube.c
 	$(CC) $(CFLAGS) -o $@ tests/mr_hls_override_check.c core/mr_hls.c \
@@ -222,9 +237,10 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_iptv_check mr_youtube_check mr_youtube_nsig_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
+	./mr_youtube_nsig_check
 	./mr_hls_override_check
 	./mr_iptv_check
 	./mr_codec_registry_check
@@ -365,6 +381,6 @@ clean:
 	rm -f mr_aspect_check
 	rm -f mr_media_clock_check
 	rm -f mr_h264_m68k_check
-	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
+	rm -f mr_iptv_check mr_youtube_check mr_youtube_nsig_check mr_youtube_search_check
 
 .PHONY: all check check-audio check-http check-https check-libavc check-m68k clean

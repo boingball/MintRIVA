@@ -1,0 +1,32 @@
+QuickJS in MintVID
+==================
+
+This directory contains the embeddable QuickJS engine from:
+
+  https://github.com/bellard/quickjs
+
+Pinned upstream commit:
+
+  04be246001599f5995fa2f2d8c91a0f198d3f34c
+
+Upstream version file:
+
+  2026-06-04
+
+MintVID builds only the core interpreter. quickjs-libc.c is deliberately not
+included, so JavaScript has no filesystem, process, socket or operating-system
+bindings. MR_QUICKJS_NO_THREADS disables SharedArrayBuffer/Atomics support;
+the YouTube challenge solver does not require it and classic AmigaOS does not
+provide pthreads.
+
+MR_QUICKJS_PORTABLE_TIME selects standard-C time fallbacks for the AmigaOS
+build, whose C library does not guarantee POSIX gettimeofday(), localtime_r()
+or tm_gmtoff. The EJS solver does not depend on sub-second Date/Math.random
+seeding.
+
+The upstream MIT licence is retained as LICENSE.
+
+For repository-tooling compatibility, the large upstream quickjs.c translation
+unit is mechanically divided at top-level function boundaries into three
+quickjs_part*.inc files and reassembled by the small quickjs.c wrapper. This
+does not create separate translation units or alter the generated program.

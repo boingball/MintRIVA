@@ -237,12 +237,23 @@ playback clock. Seeking is disabled during dual-stream playback for now.
 
 For 720p and higher selections the same Safari HLS probe runs before the muxed
 and adaptive MP4 choices. Safari HLS availability is selective and is treated
-as best effort. If no compatible HLS or adaptive pair is present, or either
+as best effort. When Safari returns an HLS URL carrying YouTube's `n`
+challenge, `mrplay` downloads that video's current player and runs the pinned
+yt-dlp EJS extractor in an embedded, API-less QuickJS context. This remains a
+fully Amiga-side path: there is no proxy, token server, helper executable or
+JavaScript sidecar. If the player cannot be transformed, no compatible HLS or
+adaptive pair is present, or either
 signed adaptive track cannot be opened, playback automatically retries
 YouTube's established muxed 360p MP4
 (`itag 18`). The 360p and 480p settings select that muxed format directly.
-Only direct signed HTTPS Google Video URLs are accepted; ciphered URLs and
-unresolved player `n` challenges are rejected.
+Only direct signed HTTPS Google Video URLs are accepted; ciphered URLs and any
+`n` challenge that remains unresolved are rejected.
+
+The QuickJS attempt is intentionally bounded and transient. Current real
+YouTube player scripts need roughly 160 MiB of temporary Fast RAM in the host
+conformance check (the runtime ceiling is 192 MiB), and extraction takes about
+five seconds on the development PC; a PiStorm will take longer. Systems without
+enough free memory simply continue to the existing 360p fallback.
 
 On classic 68040/060 hardware, successful H.264 decoding should not be read as
 a claim of smooth YouTube playback. A tested 68060 using AGA has managed around

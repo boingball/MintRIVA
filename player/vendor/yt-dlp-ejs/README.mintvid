@@ -1,0 +1,31 @@
+yt-dlp EJS in MintVID
+====================
+
+These two minified JavaScript files are unmodified release assets from
+yt-dlp-ejs 0.8.0:
+
+  https://github.com/yt-dlp/ejs/releases/tag/0.8.0
+
+  yt.solver.core.min.js
+    SHA-256 18da6ce0758b416e7ae645084f4f8801f9f9d59d6c477c05eaa0ff94ebd8cc00
+
+  yt.solver.lib.min.js
+    SHA-256 c55987fe697e5b9ee18830163f7af85327e9bb5c3e674b969d38c8d205eaa577
+
+The library bundle includes Meriyah 6.1.4 and Astring 1.9.0. Their ISC/MIT
+licence texts are preserved in the bundle's leading comment. The solver itself
+is released under the Unlicense; the upstream LICENSE is retained here.
+
+The corresponding yt_solver_*_le.c and yt_solver_*_be.c files were generated
+from these exact assets with the pinned QuickJS qjsc compiler. MintVID embeds
+the correct byte order directly in mrplay; the .js files remain here as the
+auditable source inputs and are not release-time sidecars.
+
+Generation used qjsc `-c -s` for the little-endian objects and `-c -s -x` for
+the big-endian objects, followed only by renaming the generated C files and
+their array symbols to the names in this directory. The two large library
+array initializers are mechanically divided into part include files and
+reassembled by their small C wrappers; the byte sequences are unchanged.
+
+MintVID evaluates the bytecode inside its embedded QuickJS context. It does
+not expose file, process, socket or AmigaOS functions to that context.

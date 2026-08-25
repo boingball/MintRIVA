@@ -6,6 +6,8 @@
 #include <string.h>
 
 static int failures;
+static int nsig_fetches;
+static int nsig_calls;
 
 static void expect(int condition, const char *name)
 {
@@ -13,6 +15,62 @@ static void expect(int condition, const char *name)
         fprintf(stderr, "FAIL: %s\n", name);
         failures++;
     }
+}
+
+static int return_fixture(const char *text, unsigned char **out,
+                          size_t *out_len, size_t max_size)
+{
+    size_t len = strlen(text);
+    if (len > max_size) return 0;
+    *out = (unsigned char *)mr_alloc(len + 1);
+    if (!*out) return 0;
+    memcpy(*out, text, len + 1);
+    *out_len = len;
+    return 1;
+}
+
+static int nsig_fetch_override(const char *url,
+                               const mr_http_options *options,
+                               const char *post_json,
+                               unsigned char **out, size_t *out_len,
+                               size_t max_size)
+{
+    static const char watch[] =
+        "{\"INNERTUBE_API_KEY\":\"test-key\","
+        "\"INNERTUBE_CLIENT_VERSION\":\"1.2.3\",\"STS\":12345,"
+        "\"jsUrl\":\"\\/s\\/player\\/test\\/base.js\"}";
+    static const char safari[] =
+        "{\"streamingData\":{\"hlsManifestUrl\":\""
+        "https://manifest.googlevideo.com/api/manifest/"
+        "hls_variant/n/abc123/file/index.m3u8\"}}";
+    (void)options;
+    nsig_fetches++;
+    if (!post_json && strstr(url, "/watch?v=EvsLqQS_80E"))
+        return return_fixture(watch, out, out_len, max_size);
+    if (!post_json && !strcmp(url,
+                              "https://www.youtube.com/s/player/test/base.js"))
+        return return_fixture("synthetic current player", out, out_len,
+                              max_size);
+    if (post_json && strstr(url, "/youtubei/v1/player?key=test-key"))
+        return return_fixture(safari, out, out_len, max_size);
+    return 0;
+}
+
+static int nsig_solver(const char *player_js, size_t player_js_len,
+                       const char *url, char *out, size_t out_size,
+                       void *opaque)
+{
+    static const char solved[] =
+        "https://manifest.googlevideo.com/api/manifest/"
+        "hls_variant/n/solved/file/index.m3u8";
+    (void)opaque;
+    nsig_calls++;
+    if (player_js_len != strlen("synthetic current player") ||
+        memcmp(player_js, "synthetic current player", player_js_len) ||
+        !strstr(url, "/n/abc123/") || sizeof solved > out_size)
+        return 0;
+    memcpy(out, solved, sizeof solved);
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -203,6 +261,26 @@ int main(int argc, char **argv)
            "truncated progressive output rejected");
     expect(!strcmp(mr_youtube_last_client(), ""),
            "client diagnostic empty before a successful resolution");
+
+    expect(mr_http_options_init(&base_options, NULL, NULL),
+           "native n integration options initialised");
+    base_options.hls_low = 1;
+    nsig_fetches = nsig_calls = 0;
+    mr_http_set_fetch_override(nsig_fetch_override);
+    mr_youtube_set_nsig_solver(nsig_solver, NULL);
+    expect(mr_youtube_resolve_media_pair(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out,
+               audio_out, sizeof audio_out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_HLS_VOD &&
+           !strcmp(out,
+                   "https://manifest.googlevideo.com/api/manifest/"
+                   "hls_variant/n/solved/file/index.m3u8") &&
+           !audio_out[0] && nsig_fetches == 3 && nsig_calls == 1 &&
+           !strcmp(mr_youtube_last_client(), "WEB_SAFARI"),
+           "Safari HLS n challenge uses current player and native solver");
+    mr_youtube_set_nsig_solver(NULL, NULL);
+    mr_http_set_fetch_override(NULL);
 
     if (failures) return 1;
     puts("YouTube resolver checks passed");

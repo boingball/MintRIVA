@@ -17,6 +17,7 @@
 #include "../core/mr_hls.h"
 #include "../core/mr_http.h"
 #include "../core/mr_youtube.h"
+#include "../core/mr_youtube_nsig.h"
 #include "hls_fetch.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_rawvideo.h"
@@ -51,9 +52,22 @@
  * Shells commonly provide only 4 KiB, which corrupts memory during H.264
  * playback and makes the eventual EOF/ESC teardown appear to crash.  AmigaOS
  * versions with stack-cookie support raise the process stack to this minimum;
- * older systems can use "Stack 320000" before launching mrplay.
+ * older systems can use "Stack 640000" before launching mrplay.
  */
-static const char mr_min_stack[] __attribute__((used)) = "$STACK:320000";
+static const char mr_min_stack[] __attribute__((used)) = "$STACK:640000";
+
+static int youtube_quickjs_nsig(const char *player_js, size_t player_js_len,
+                                const char *url,
+                                char *out, size_t out_size,
+                                void *opaque)
+{
+    int ok = mr_youtube_nsig_transform_url(player_js, player_js_len, url,
+                                            out, out_size, opaque);
+    if (!ok)
+        printf("YouTube: QuickJS n solver: %s\n",
+               mr_youtube_nsig_last_error());
+    return ok;
+}
 
 /*
  * mrplay handles Ctrl-C / Ctrl-F itself: the IPTV controller signals them to
@@ -1419,6 +1433,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
 int main(int argc, char **argv)
 {
     g_main_task = FindTask(NULL);
+    mr_youtube_set_nsig_solver(youtube_quickjs_nsig, NULL);
     long len = 0;
     unsigned char *buf = NULL;
     mr_demux *dx, *audio_dx = NULL;

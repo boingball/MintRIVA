@@ -254,10 +254,19 @@ opens adaptive video and audio as two MP4 streams, feeds audio ahead of
 video, and keeps audio as the playback clock. Seeking is disabled during
 dual-stream playback for now.
 
+If Safari HLS carries YouTube's player n challenge, mrplay downloads the
+current player and evaluates the pinned yt-dlp EJS extractor inside an
+embedded QuickJS context. This is still Amiga-only: there is no proxy,
+token server, helper program, or JavaScript sidecar. QuickJS has no file,
+network, process, or AmigaOS bindings. Current player scripts need roughly
+160 MiB of temporary Fast RAM and can take substantially longer on a
+PiStorm than on a PC. Failure or insufficient memory leaves the normal
+360p fallback available.
+
 If either adaptive track is absent or cannot be opened, MintVID retries the
 established muxed 360p MP4 automatically. The 360p and 480p settings select
 muxed 360p directly. Only direct signed HTTPS Google Video URLs are accepted;
-ciphered URLs and unresolved player challenges are rejected.
+ciphered URLs and challenges which QuickJS cannot resolve are rejected.
 
 On classic 68040/060 machines this H.264 support is primarily compatibility
 and demonstration territory, not a claim of smooth YouTube playback. A

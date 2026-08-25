@@ -1,9 +1,10 @@
 /*
  * MintVID - native YouTube live, progressive and adaptive MP4 resolver.
  *
- * No JavaScript engine or signature decipher is attempted. Public live HLS is
- * handed to the existing HLS path. Compatible recorded uploads may provide
- * muxed itag 18/22 or separate, directly signed H.264 and AAC MP4 tracks.
+ * Public live HLS is handed to the existing HLS path. Compatible recorded
+ * uploads may provide muxed itag 18/22 or separate, directly signed H.264 and
+ * AAC MP4 tracks. mrplay may install a sandboxed native n-challenge callback;
+ * the portable resolver itself remains independent of a JavaScript engine.
  */
 #include "mr_youtube.h"
 
@@ -15,6 +16,7 @@
 #include <string.h>
 
 #define YOUTUBE_PAGE_MAX (4UL * 1024 * 1024)
+#define YOUTUBE_PLAYER_JS_MAX (8UL * 1024 * 1024)
 #define YOUTUBE_BROWSER_UA \
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " \
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -39,6 +41,15 @@
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
 static mr_youtube_media_kind g_last_kind = MR_YOUTUBE_MEDIA_NONE;
+static mr_youtube_nsig_solver_fn g_nsig_solver;
+static void *g_nsig_solver_opaque;
+
+void mr_youtube_set_nsig_solver(mr_youtube_nsig_solver_fn solver,
+                                void *opaque)
+{
+    g_nsig_solver = solver;
+    g_nsig_solver_opaque = opaque;
+}
 
 static int ascii_tolower(int c)
 {
@@ -204,8 +215,8 @@ static int is_google_hls(const char *url)
 
 /* YouTube's /n/<value> path component is a throttling challenge, unrelated to
  * a PO token. The value must be transformed by code extracted from the current
- * player JavaScript before GVS will serve the media. This native resolver has
- * no JavaScript engine, so never hand an unsolved URL to HLS. */
+ * player JavaScript before GVS will serve the media. mrplay may install the
+ * isolated QuickJS callback below; never hand an unsolved URL to HLS. */
 static int manifest_needs_n_transform(const char *url)
 {
     return url && strstr(url, "/n/") != NULL;
@@ -287,6 +298,35 @@ static int extract_config_uint(const char *html, const char *name,
     if (!value) return 0;
     *out = value;
     return 1;
+}
+
+static int extract_player_js_url(const char *html, char *out,
+                                 size_t out_size)
+{
+    static const char *keys[] = { "PLAYER_JS_URL", "jsUrl" };
+    char value[MR_HTTP_URL_MAX];
+    size_t i, value_len;
+    if (!html || !out || out_size < 2) return 0;
+    out[0] = '\0';
+    for (i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        int n;
+        if (!extract_config_string(html, keys[i], value, sizeof value))
+            continue;
+        value_len = strlen(value);
+        if (!value_len || !strstr(value, "/s/player/") ||
+            !strstr(value, ".js") || strpbrk(value, "\r\n\t"))
+            continue;
+        if (!strncmp(value, "/s/player/", 10))
+            n = snprintf(out, out_size, "https://www.youtube.com%s", value);
+        else if (!strncmp(value, "https://www.youtube.com/s/player/", 33))
+            n = snprintf(out, out_size, "%s", value);
+        else
+            continue;
+        if (n > 0 && (size_t)n < out_size) return 1;
+        out[0] = '\0';
+        return 0;
+    }
+    return 0;
 }
 
 int mr_youtube_extract_live_manifest(const char *html, char *out,
@@ -666,6 +706,46 @@ static int options_prefer_720p(const mr_http_options *options)
     return 1;
 }
 
+typedef struct youtube_nsig_attempt {
+    const char *player_url;
+    const mr_http_options *options;
+    int attempted;
+} youtube_nsig_attempt;
+
+static int try_native_n_transform(youtube_nsig_attempt *attempt,
+                                  const char *url,
+                                  char *out, size_t out_size)
+{
+    char *player_js = NULL;
+    size_t player_js_len = 0;
+    int ok;
+    if (!attempt || attempt->attempted) return 0;
+    attempt->attempted = 1;
+    if (!g_nsig_solver) {
+        printf("YouTube: native n solver is not installed\n");
+        return 0;
+    }
+    if (!attempt->player_url || !attempt->player_url[0]) {
+        printf("YouTube: watch page omitted the current player JS URL\n");
+        return 0;
+    }
+    printf("YouTube: downloading current player JS for native n solve\n");
+    if (!mr_http_fetch_text(attempt->player_url, attempt->options,
+                            &player_js, &player_js_len,
+                            YOUTUBE_PLAYER_JS_MAX)) {
+        printf("YouTube: current player JS download failed\n");
+        return 0;
+    }
+    ok = g_nsig_solver(player_js, player_js_len, url, out, out_size,
+                       g_nsig_solver_opaque);
+    mr_free(player_js);
+    if (!ok) {
+        printf("YouTube: native n solver could not transform this player\n");
+        return 0;
+    }
+    return 1;
+}
+
 /* Returns 1 for immediately usable media, -1 when media was present but
  * carried an unsolved n challenge, and 0 for a failed/no-media reply. */
 static int try_player_media(const char *api_url,
@@ -675,11 +755,13 @@ static int try_player_media(const char *api_url,
                             char *video_out, size_t video_out_size,
                             char *audio_out, size_t audio_out_size,
                             int prefer_720p, int want_adaptive,
+                            youtube_nsig_attempt *nsig_attempt,
                             mr_youtube_media_kind *kind)
 {
     char *reply = NULL;
+    char solved_url[MR_HTTP_URL_MAX];
     size_t reply_len = 0;
-    int ok, progressive_ok = 0;
+    int ok, progressive_ok = 0, nsig_solved = 0;
     if (!mr_http_post_json(api_url, options, json, &reply, &reply_len,
                            YOUTUBE_PAGE_MAX)) {
         printf("YouTube: %s player request failed\n", client);
@@ -687,7 +769,22 @@ static int try_player_media(const char *api_url,
     }
     (void)reply_len;
     ok = mr_youtube_extract_live_manifest(reply, video_out, video_out_size);
-    if (ok && !manifest_needs_n_transform(video_out)) {
+    if (ok && manifest_needs_n_transform(video_out) &&
+        try_native_n_transform(nsig_attempt, video_out,
+                               solved_url, sizeof solved_url) &&
+        is_google_hls(solved_url)) {
+        if (strlen(solved_url) + 1 > video_out_size) {
+            printf("YouTube: transformed HLS URL exceeds output buffer\n");
+        } else {
+            memcpy(video_out, solved_url, strlen(solved_url) + 1);
+            nsig_solved = 1;
+            printf("YouTube: native QuickJS n challenge solved\n");
+        }
+    }
+    /* A successfully transformed path still contains /n/<new-value>; the
+     * callback result, not the continued presence of the component, tells us
+     * it is solved. */
+    if (ok && (nsig_solved || !manifest_needs_n_transform(video_out))) {
         g_last_client = client;
         g_last_media_ua = media_ua;
         g_last_kind = !strcmp(client, "WEB_SAFARI")
@@ -778,13 +875,16 @@ int mr_youtube_resolve_media_pair(const char *url,
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
-    char api_url[256], json[1024];
+    char api_url[256], json[1024], player_js_url[MR_HTTP_URL_MAX];
+    youtube_nsig_attempt nsig_attempt;
     int n, ok, result, saw_n_challenge = 0;
     unsigned signature_timestamp = 0;
     int prefer_720p = options_prefer_720p(options);
     int adaptive_outputs = audio_out && audio_out_size >= 2;
     int want_low_adaptive = adaptive_outputs && options && options->hls_low;
     int want_adaptive = adaptive_outputs && (want_low_adaptive || prefer_720p);
+    player_js_url[0] = '\0';
+    memset(&nsig_attempt, 0, sizeof nsig_attempt);
     g_last_client = "";
     g_last_media_ua = YOUTUBE_BROWSER_UA;
     g_last_kind = MR_YOUTUBE_MEDIA_NONE;
@@ -884,9 +984,12 @@ int mr_youtube_resolve_media_pair(const char *url,
     if (!extract_config_uint(html, "STS", &signature_timestamp))
         (void)extract_config_uint(html, "signatureTimestamp",
                                   &signature_timestamp);
+    (void)extract_player_js_url(html, player_js_url, sizeof player_js_url);
 
     mr_free(html);
     html = NULL;
+    nsig_attempt.player_url = player_js_url;
+    nsig_attempt.options = &fetch_options;
 
     /* Safari is the remaining anonymous recorded-video escape hatch worth
      * trying: YouTube may return a pre-muxed HLS ladder, and HLS GVS requests
@@ -931,7 +1034,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                                   "WEB_SAFARI", YOUTUBE_WEB_SAFARI_UA,
                                   video_out, video_out_size,
                                   audio_out, audio_out_size,
-                                  prefer_720p, 1, kind);
+                                  prefer_720p, 1, &nsig_attempt, kind);
         if (result > 0) return 1;
         if (result < 0) saw_n_challenge = 1;
     }
@@ -957,7 +1060,8 @@ int mr_youtube_resolve_media_pair(const char *url,
                               YOUTUBE_ANDROID_LIVE_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, kind);
+                              prefer_720p, want_adaptive,
+                              &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -986,7 +1090,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                                   "ANDROID_VOD", YOUTUBE_ANDROID_UA,
                                   video_out, video_out_size,
                                   audio_out, audio_out_size,
-                                  prefer_720p, 1, kind);
+                                  prefer_720p, 1, &nsig_attempt, kind);
         if (result > 0) return 1;
         if (result < 0) saw_n_challenge = 1;
     }
@@ -1013,7 +1117,8 @@ int mr_youtube_resolve_media_pair(const char *url,
                               YOUTUBE_ANDROID_VR_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, kind);
+                              prefer_720p, want_adaptive,
+                              &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -1036,7 +1141,8 @@ int mr_youtube_resolve_media_pair(const char *url,
                               "WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, kind);
+                              prefer_720p, want_adaptive,
+                              &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -1054,7 +1160,8 @@ int mr_youtube_resolve_media_pair(const char *url,
                               YOUTUBE_BROWSER_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, kind);
+                              prefer_720p, want_adaptive,
+                              &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 

@@ -12,6 +12,19 @@
 
 struct mr_http_options;
 
+/* Optional native n-challenge callback. mrplay installs the embedded QuickJS
+ * implementation; lightweight GUI/test users of mr_youtube.c remain free of
+ * the interpreter. The callback receives the downloaded current player and a
+ * media URL, and must return the same URL with its n value transformed. */
+typedef int (*mr_youtube_nsig_solver_fn)(const char *player_js,
+                                         size_t player_js_len,
+                                         const char *url,
+                                         char *out, size_t out_size,
+                                         void *opaque);
+
+void mr_youtube_set_nsig_solver(mr_youtube_nsig_solver_fn solver,
+                                void *opaque);
+
 /* True only for HTTP(S) URLs on YouTube's own watch/share hosts. */
 int mr_youtube_is_url(const char *url);
 int mr_youtube_extract_video_id(const char *url, char out[12]);
