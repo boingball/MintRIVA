@@ -5,8 +5,11 @@
  * observes only final HTTP request strings and decrypted response bytes.  It
  * keeps anonymous youtube.com Set-Cookie values in RAM and adds them to later
  * youtube.com requests, giving WEB_SAFARI the same session continuity a browser
- * has.  Cookies are never sent to googlevideo.com (or any non-youtube host),
- * never written to disk and never logged.
+ * has.  WEB_SAFARI player POSTs also receive the browser Innertube headers used
+ * by YouTube's web client, including the watch-page visitor identity when one
+ * was present in the request JSON. Cookies/identity are never sent to
+ * googlevideo.com (or any non-youtube host), never written to disk and never
+ * logged.
  */
 #include "mr_http.h"
 #include "mr_alloc.h"
@@ -61,6 +64,9 @@
 #define MR_YT_COOKIE_VALUE_MAX   384
 #define MR_YT_COOKIE_HEADER_MAX  2048
 #define MR_YT_RESPONSE_HEADER_MAX 16384
+#define MR_YT_VISITOR_MAX        256
+#define MR_YT_SAFARI_HEADERS_MAX 768
+#define MR_YT_WEB_CLIENT_VERSION "2.20260708.00.00"
 
 typedef struct mr_yt_cookie {
     char name[MR_YT_COOKIE_NAME_MAX];
@@ -75,6 +81,8 @@ static int g_mr_yt_current_request;
 static int g_mr_yt_response_header_done;
 static int g_mr_yt_logged_capture;
 static int g_mr_yt_logged_reuse;
+static int g_mr_yt_logged_safari_headers;
+static int g_mr_yt_logged_visitor_header;
 
 static int mr_yt_ascii_tolower(int c)
 {
@@ -311,6 +319,65 @@ static int mr_yt_request_host(const char *request,
     return 1;
 }
 
+static int mr_yt_extract_request_visitor(const char *request,
+                                         char *out, size_t out_size)
+{
+    static const char marker[] = "\"visitorData\":\"";
+    const char *header_end, *p;
+    size_t used = 0;
+
+    if (!request || !out || out_size < 2) return 0;
+    out[0] = '\0';
+    header_end = strstr(request, "\r\n\r\n");
+    if (!header_end) return 0;
+    p = strstr(header_end + 4, marker);
+    if (!p) return 0;
+    p += sizeof marker - 1;
+    while (*p && *p != '"') {
+        unsigned char c = (unsigned char)*p++;
+        if (c < 0x21 || c > 0x7e || c == '\\' ||
+            used + 1 >= out_size)
+            return 0;
+        out[used++] = (char)c;
+    }
+    if (*p != '"' || !used) return 0;
+    out[used] = '\0';
+    return 1;
+}
+
+static size_t mr_yt_build_safari_api_headers(const char *request,
+                                              char *out, size_t out_size,
+                                              int *have_visitor)
+{
+    char visitor[MR_YT_VISITOR_MAX];
+    int n;
+    size_t used;
+
+    if (have_visitor) *have_visitor = 0;
+    if (!request || !out || out_size < 2 ||
+        strncmp(request, "POST /youtubei/v1/player", 26) ||
+        !strstr(request, "Safari/605.1.15") ||
+        strstr(request, "\r\nX-YouTube-Client-Name:"))
+        return 0;
+
+    n = snprintf(out, out_size,
+                 "Origin: https://www.youtube.com\r\n"
+                 "X-YouTube-Client-Name: 1\r\n"
+                 "X-YouTube-Client-Version: %s\r\n",
+                 MR_YT_WEB_CLIENT_VERSION);
+    if (n <= 0 || (size_t)n >= out_size) return 0;
+    used = (size_t)n;
+
+    if (mr_yt_extract_request_visitor(request, visitor, sizeof visitor)) {
+        n = snprintf(out + used, out_size - used,
+                     "X-Goog-Visitor-Id: %s\r\n", visitor);
+        if (n <= 0 || (size_t)n >= out_size - used) return 0;
+        used += (size_t)n;
+        if (have_visitor) *have_visitor = 1;
+    }
+    return used;
+}
+
 static int mr_yt_prepare_request(char *request, size_t cap, int length)
 {
     const char *host;
@@ -325,6 +392,31 @@ static int mr_yt_prepare_request(char *request, size_t cap, int length)
     g_mr_yt_current_request = youtube;
     g_mr_yt_response_header_len = 0;
     g_mr_yt_response_header_done = youtube ? 0 : 1;
+
+    if (youtube) {
+        char safari_headers[MR_YT_SAFARI_HEADERS_MAX];
+        int have_visitor = 0;
+        size_t add = mr_yt_build_safari_api_headers(
+            request, safari_headers, sizeof safari_headers, &have_visitor);
+        if (add) {
+            char *header_end = strstr(request, "\r\n\r\n");
+            if (header_end && (size_t)length + add < cap) {
+                size_t insert = (size_t)(header_end - request) + 2;
+                memmove(request + insert + add, request + insert,
+                        (size_t)length - insert + 1);
+                memcpy(request + insert, safari_headers, add);
+                length += (int)add;
+                if (!g_mr_yt_logged_safari_headers) {
+                    g_mr_yt_logged_safari_headers = 1;
+                    printf("YouTube HTTP session: adding WEB_SAFARI API headers\n");
+                }
+                if (have_visitor && !g_mr_yt_logged_visitor_header) {
+                    g_mr_yt_logged_visitor_header = 1;
+                    printf("YouTube HTTP session: forwarding watch-page visitor header\n");
+                }
+            }
+        }
+    }
 
     if (youtube && g_mr_yt_cookie_header[0] &&
         !strstr(request, "\r\nCookie:")) {
