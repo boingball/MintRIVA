@@ -230,7 +230,8 @@ int mr_youtube_media_http_options_init(mr_http_options *out,
         g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P ||
         g_last_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P ||
         g_last_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_720P ||
-        (g_last_kind == MR_YOUTUBE_MEDIA_HLS &&
+        ((g_last_kind == MR_YOUTUBE_MEDIA_HLS ||
+          g_last_kind == MR_YOUTUBE_MEDIA_HLS_VOD) &&
          strcmp(g_last_media_ua, YOUTUBE_BROWSER_UA))) {
         if (!mr_http_options_init(out, g_last_media_ua, YOUTUBE_REFERER))
             return 0;
@@ -689,7 +690,9 @@ static int try_player_media(const char *api_url,
     if (ok && !manifest_needs_n_transform(video_out)) {
         g_last_client = client;
         g_last_media_ua = media_ua;
-        g_last_kind = MR_YOUTUBE_MEDIA_HLS;
+        g_last_kind = !strcmp(client, "WEB_SAFARI")
+                          ? MR_YOUTUBE_MEDIA_HLS_VOD
+                          : MR_YOUTUBE_MEDIA_HLS;
         *kind = g_last_kind;
         if (audio_out && audio_out_size) audio_out[0] = '\0';
         mr_free(reply);

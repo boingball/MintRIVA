@@ -1692,6 +1692,8 @@ int main(int argc, char **argv)
                        youtube_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_720P;
         if (youtube_kind == MR_YOUTUBE_MEDIA_HLS)
             printf("YouTube: live HLS manifest found\n");
+        else if (youtube_kind == MR_YOUTUBE_MEDIA_HLS_VOD)
+            printf("YouTube: recorded Safari HLS ladder found\n");
         else if (youtube_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P)
             printf("YouTube: adaptive 144p H.264 video plus AAC audio found\n");
         else if (youtube_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_720P)

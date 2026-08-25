@@ -30,6 +30,7 @@ int mr_youtube_extract_live_manifest(const char *html, char *out,
 typedef enum mr_youtube_media_kind {
     MR_YOUTUBE_MEDIA_NONE = 0,
     MR_YOUTUBE_MEDIA_HLS,
+    MR_YOUTUBE_MEDIA_HLS_VOD,
     MR_YOUTUBE_MEDIA_PROGRESSIVE_360P,
     MR_YOUTUBE_MEDIA_PROGRESSIVE_720P,
     MR_YOUTUBE_MEDIA_ADAPTIVE_144P,
