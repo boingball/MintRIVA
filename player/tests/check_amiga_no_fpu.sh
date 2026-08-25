@@ -21,11 +21,14 @@ trap 'rm -f "$listing" "$matches"' EXIT HUP INT TERM
 
 "$objdump" -d "$binary" > "$listing"
 
-# Binutils writes an instruction as an address, encoded words, then a mnemonic.
-# No integer m68k mnemonic begins with lower-case 'f'; symbol names are enclosed
-# in angle brackets and therefore do not match the whitespace boundary here.
-if grep -E '^[[:space:]]*[0-9a-fA-F]+:.*[[:space:]]f[a-z][a-z0-9.]*([[:space:]]|$)' \
-        "$listing" > "$matches"; then
+# Binutils tab-separates address, encoded words, and mnemonic.  Inspecting only
+# field three is important: ordinary branch displacements often contain words
+# such as fff4, which must not be mistaken for an instruction name.  No integer
+# m68k mnemonic begins with lower-case 'f'.
+awk -F '\t' '
+    tolower($3) ~ /^[[:space:]]*f[a-z][a-z0-9.]*/ { print }
+' "$listing" > "$matches"
+if [ -s "$matches" ]; then
     echo "ERROR: hardware FPU instructions found in $binary:" >&2
     sed -n '1,40p' "$matches" >&2
     exit 1
