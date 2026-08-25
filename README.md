@@ -73,7 +73,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | Container-agnostic demux (auto-detect) | ✅ |
 | AVI, QuickTime MOV/MP4, Matroska/MKV and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
-| Public YouTube URLs | ✅ live HLS plus experimental muxed 144p HLS and 360p/720p MP4 H.264/AAC playback for compatible uploads |
+| Public YouTube URLs | ✅ live HLS plus experimental adaptive 144p/720p H.264+AAC playback, with muxed 360p fallback, for compatible uploads |
 | YouTube search | ✅ no-key ReAction and OS 3.0 GadTools browsers; All/Videos/Live/Shorts filters and native playback handoff |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
@@ -225,20 +225,19 @@ remote service. `--hls-low` and the HLS quality ceilings still apply.
 The HTTP/HLS path accepts signed URLs up to 4095 bytes, since current YouTube
 manifest URLs can exceed the older 1 KiB media-URL limit.
 
-For ordinary uploads, the resolver also experiments with YouTube's muxed
-360p MP4 (`itag 18`) and, where still supplied, muxed 720p MP4 (`itag 22`).
-Those formats contain H.264 video and AAC audio together,
-so it can use MintVID's existing seekable HTTP/MP4 path without downloading or
-merging separate streams. Only a direct signed HTTPS Google Video URL is
-accepted; ciphered URLs and unresolved player `n` challenges are rejected.
-The Low setting first makes a best-effort request for a muxed HLS ladder and
-selects its lowest compatible rendition, normally 256x144 when one is exposed;
-it falls back to the established 360p MP4 when that private YouTube path is not
-available. The 360p and 480p settings retain the 360p muxed format. Selecting
-720p, 1080p, or Best tries 720p first and falls back to 360p automatically.
-There is no standard muxed 480p or 1080p target here: dependable higher
-resolutions require separate adaptive video and audio streams and are deferred
-to the next phase.
+For ordinary uploads, Low now tries YouTube's separate 144p H.264 video
+(`itag 160`) and AAC audio (`itag 139`, then `140`) tracks. Selecting 720p,
+1080p, or Best still prefers the muxed 720p MP4 (`itag 22`) when YouTube
+supplies it, then tries separate 720p H.264 video (`itag 136`) and AAC audio
+(`itag 140`, then `139`). The player opens the two adaptive MP4s independently,
+keeps the audio buffer fed ahead of video, and retains audio as the master
+playback clock. Seeking is disabled during dual-stream playback for now.
+
+If a compatible adaptive pair is absent, or either signed track cannot be
+opened, playback automatically retries YouTube's established muxed 360p MP4
+(`itag 18`). The 360p and 480p settings select that muxed format directly.
+Only direct signed HTTPS Google Video URLs are accepted; ciphered URLs and
+unresolved player `n` challenges are rejected.
 
 On classic 68040/060 hardware, successful H.264 decoding should not be read as
 a claim of smooth YouTube playback. A tested 68060 using AGA has managed around
@@ -246,17 +245,18 @@ a claim of smooth YouTube playback. A tested 68060 using AGA has managed around
 H.264 streaming target.
 
 This remains intentionally narrow: age/login/region-restricted videos, DRM,
-uploads without a usable muxed 360p/720p format, and private-schema changes can
-all produce a clean unsupported error. YouTube can change these internal clients
-and responses, so the resolver may require maintenance.
+uploads without usable direct adaptive tracks or a muxed 360p format, and
+private-schema changes can all produce a clean unsupported error. YouTube can
+change these internal clients and responses, so the resolver may require
+maintenance.
 
 The ReAction controller's **YouTube...** button opens the separate `ytgui`
 search window. It searches YouTube's public results page without an API key,
 shows the title and channel, and starts the selected result through the same
 native resolver. The **Quality** button cycles through Low, 360p, 480p, 720p,
-1080p, and unrestricted Best. For recorded videos, Low tries muxed 144p HLS
-with a 360p MP4 fallback; 360p/480p use 360p; and 720p/1080p/Best try the
-compatible muxed 720p format before falling back to 360p.
+1080p, and unrestricted Best. For recorded videos, Low tries adaptive 144p
+H.264 plus AAC with a muxed 360p fallback; 360p/480p use muxed 360p; and
+720p/1080p/Best try muxed or adaptive 720p before falling back to 360p.
 The search-type selector defaults to **Live** and also offers **All**,
 **Videos**, and **Shorts**. Build with `SSL=1` and keep `ytgui` beside `MintVID`
 and `mrplay`. As with watch-page

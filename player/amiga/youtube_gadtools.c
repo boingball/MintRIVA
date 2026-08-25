@@ -270,7 +270,7 @@ static void play_selected(ytgt *app)
     else if (video->live) set_text(app, app->status, "Resolving YouTube Live...");
     else if (app->options.hls_low)
         set_text(app, app->status,
-                 "Resolving YouTube Low (144p HLS, 360p fallback)...");
+                 "Resolving YouTube Low (adaptive 144p, 360p fallback)...");
     else set_text(app, app->status, "Resolving YouTube video...");
 }
 

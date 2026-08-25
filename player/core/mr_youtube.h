@@ -2,7 +2,8 @@
  * MintVID - minimal YouTube media resolver.
  *
  * This is deliberately not a general YouTube extractor. It accepts public
- * live HLS plus directly usable muxed 360p/720p MP4s for compatible uploads.
+ * live HLS, directly usable muxed MP4s and selected H.264/AAC adaptive pairs
+ * for compatible uploads.
  */
 #ifndef MR_YOUTUBE_H
 #define MR_YOUTUBE_H
@@ -30,7 +31,9 @@ typedef enum mr_youtube_media_kind {
     MR_YOUTUBE_MEDIA_NONE = 0,
     MR_YOUTUBE_MEDIA_HLS,
     MR_YOUTUBE_MEDIA_PROGRESSIVE_360P,
-    MR_YOUTUBE_MEDIA_PROGRESSIVE_720P
+    MR_YOUTUBE_MEDIA_PROGRESSIVE_720P,
+    MR_YOUTUBE_MEDIA_ADAPTIVE_144P,
+    MR_YOUTUBE_MEDIA_ADAPTIVE_720P
 } mr_youtube_media_kind;
 
 /* Name and kind used by the most recent successful resolution. */
@@ -48,6 +51,15 @@ int mr_youtube_extract_progressive(const char *json, int prefer_720p,
                                    char *out, size_t out_size,
                                    mr_youtube_media_kind *kind);
 
+/* Extract directly usable adaptive MP4 tracks from a player response. Low
+ * selects H.264 itag 160 plus AAC itag 139/140; high selects H.264 itag 136
+ * plus AAC itag 140/139. Both URLs must be signed Google Video URLs without
+ * an unresolved n transform. */
+int mr_youtube_extract_adaptive(const char *json, int prefer_720p,
+                                char *video_out, size_t video_out_size,
+                                char *audio_out, size_t audio_out_size,
+                                mr_youtube_media_kind *kind);
+
 /* Apply the media client's HTTP identity after a successful resolution. */
 int mr_youtube_media_http_options_init(struct mr_http_options *out,
                                        const struct mr_http_options *base);
@@ -57,6 +69,16 @@ int mr_youtube_resolve_media(const char *url,
                              const struct mr_http_options *options,
                              char *out, size_t out_size,
                              mr_youtube_media_kind *kind);
+
+/* Resolve a recorded video to either one muxed URL or separate adaptive video
+ * and audio URLs. audio_out remains empty for live HLS and muxed MP4 results.
+ * When a requested adaptive pair is unavailable the resolver retains the
+ * established muxed 360p fallback. */
+int mr_youtube_resolve_media_pair(const char *url,
+                                  const struct mr_http_options *options,
+                                  char *video_out, size_t video_out_size,
+                                  char *audio_out, size_t audio_out_size,
+                                  mr_youtube_media_kind *kind);
 
 /* Download a public YouTube watch page and resolve its signed live manifest. */
 int mr_youtube_resolve_live(const char *url,

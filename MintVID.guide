@@ -245,27 +245,27 @@ HLS manifest URL, validates it, and hands it to the normal HLS
 variant/segment pipeline. Resolution happens on the Amiga itself, so
 IP-bound signed URLs are not borrowed from a remote service.
 
-For ordinary uploads, the resolver also tries YouTube's muxed 360p MP4
-and, where still supplied, muxed 720p MP4 - both contain H.264 video and
-AAC audio together, so MintVID's existing seekable HTTP/MP4 path plays
-them without downloading or merging separate streams. Only a direct
-signed HTTPS Google Video URL is accepted; ciphered URLs and unresolved
-player challenges are rejected. Low first tries a muxed HLS ladder and
-selects its lowest compatible rendition, normally 256x144 when YouTube
-exposes one; it falls back to the established 360p MP4 otherwise. The 360p
-and 480p settings stay on the 360p muxed format. Selecting 720p, 1080p,
-or Best tries 720p first and falls back to 360p automatically. There is no
-standard muxed 480p or 1080p target yet.
+For ordinary uploads, Low tries separate 144p H.264 video and AAC audio
+tracks. Selecting 720p, 1080p, or Best first tries muxed 720p where YouTube
+still supplies it, then separate 720p H.264 video and AAC audio. MintVID
+opens adaptive video and audio as two MP4 streams, feeds audio ahead of
+video, and keeps audio as the playback clock. Seeking is disabled during
+dual-stream playback for now.
+
+If either adaptive track is absent or cannot be opened, MintVID retries the
+established muxed 360p MP4 automatically. The 360p and 480p settings select
+muxed 360p directly. Only direct signed HTTPS Google Video URLs are accepted;
+ciphered URLs and unresolved player challenges are rejected.
 
 On classic 68040/060 machines this H.264 support is primarily compatibility
 and demonstration territory, not a claim of smooth YouTube playback. A
 tested 68060 with AGA has managed around 7 fps at best at the lowest online
 resolutions. PiStorm/Emu68 is the practical streaming target.
 
-This support is intentionally narrow: age/login/region-restricted
-videos, DRM, uploads without a usable muxed format, and YouTube's
-private-schema changes can all produce a clean unsupported error rather
-than a crash.
+This support is intentionally narrow: age/login/region-restricted videos,
+DRM, uploads without usable direct adaptive tracks or muxed 360p, and
+YouTube's private-schema changes can all produce a clean unsupported error
+rather than a crash.
 
 @{b}Searching@{ub}
 

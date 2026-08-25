@@ -17,7 +17,7 @@ static void expect(int condition, const char *name)
 
 int main(int argc, char **argv)
 {
-    char out[1024];
+    char out[1024], audio_out[1024];
     char video_id[12];
     mr_youtube_media_kind media_kind;
     mr_http_options base_options, youtube_options;
@@ -44,6 +44,20 @@ int main(int argc, char **argv)
         "{\"itag\":22,\"mimeType\":\"video/mp4; codecs=\\\"avc1.64001F, "
         "mp4a.40.2\\\"\",\"width\":1280,\"height\":720,"
         "\"url\":\"https://r2.googlevideo.com/720\"}]}}";
+    const char *adaptive =
+        "{\"streamingData\":{\"adaptiveFormats\":["
+        "{\"itag\":160,\"mimeType\":\"video/mp4; "
+        "codecs=\\\"avc1.4d400c\\\"\","
+        "\"url\":\"https://r1.googlevideo.com/144-video\"},"
+        "{\"itag\":136,\"mimeType\":\"video/mp4; "
+        "codecs=\\\"avc1.4d401f\\\"\","
+        "\"url\":\"https://r1.googlevideo.com/720-video\"},"
+        "{\"itag\":139,\"mimeType\":\"audio/mp4; "
+        "codecs=\\\"mp4a.40.5\\\"\","
+        "\"url\":\"https://r1.googlevideo.com/low-audio\"},"
+        "{\"itag\":140,\"mimeType\":\"audio/mp4; "
+        "codecs=\\\"mp4a.40.2\\\"\","
+        "\"url\":\"https://r1.googlevideo.com/audio\"}]}}";
 
     if (argc == 2 || (argc == 3 && !strcmp(argv[1], "--post"))) {
         char *html = NULL;
@@ -160,6 +174,31 @@ int main(int argc, char **argv)
                "\"mimeType\":\"video/mp4; codecs=\\\"avc1.4d401e\\\"\","
                "\"url\":\"https://r1.googlevideo.com/video-only\"}]}",
                out, sizeof out), "adaptive video-only format rejected");
+    expect(mr_youtube_extract_adaptive(adaptive, 0,
+                                       out, sizeof out,
+                                       audio_out, sizeof audio_out,
+                                       &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P &&
+           !strcmp(out, "https://r1.googlevideo.com/144-video") &&
+           !strcmp(audio_out, "https://r1.googlevideo.com/low-audio"),
+           "adaptive 144p H.264 plus low AAC pair extracted");
+    expect(mr_youtube_extract_adaptive(adaptive, 1,
+                                       out, sizeof out,
+                                       audio_out, sizeof audio_out,
+                                       &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_720P &&
+           !strcmp(out, "https://r1.googlevideo.com/720-video") &&
+           !strcmp(audio_out, "https://r1.googlevideo.com/audio"),
+           "adaptive 720p H.264 plus AAC pair extracted");
+    expect(!mr_youtube_extract_adaptive(
+               "{\"adaptiveFormats\":[{\"itag\":160,"
+               "\"mimeType\":\"video/mp4; codecs=\\\"avc1.4d400c\\\"\","
+               "\"url\":\"https://r1.googlevideo.com/v?n=unsolved\"},"
+               "{\"itag\":139,\"mimeType\":\"audio/mp4; "
+               "codecs=\\\"mp4a.40.5\\\"\","
+               "\"url\":\"https://r1.googlevideo.com/a\"}]}", 0,
+               out, sizeof out, audio_out, sizeof audio_out, &media_kind),
+           "adaptive pair with unresolved video n challenge rejected");
     expect(!mr_youtube_extract_progressive_360p(progressive, out, 24),
            "truncated progressive output rejected");
     expect(!strcmp(mr_youtube_last_client(), ""),

@@ -842,7 +842,7 @@ int main(int argc, char **argv)
                         set_status(status, window, video->live
                                    ? "Resolving YouTube Live..."
                                    : (quality_index == 0
-                                      ? "Resolving YouTube Low (144p HLS, 360p fallback)..."
+                                      ? "Resolving YouTube Low (adaptive 144p, 360p fallback)..."
                                       : (quality_index >= 3
                                          ? "Resolving YouTube 720p (360p fallback)..."
                                          : "Resolving YouTube 360p video...")));

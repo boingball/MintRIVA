@@ -1421,7 +1421,7 @@ int main(int argc, char **argv)
     g_main_task = FindTask(NULL);
     long len = 0;
     unsigned char *buf = NULL;
-    mr_demux *dx;
+    mr_demux *dx, *audio_dx = NULL;
     const mr_video_info *vi;
     const mr_audio_info *ai;
     const mr_codec *codec;
@@ -1447,13 +1447,18 @@ int main(int argc, char **argv)
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     const char *media_path = NULL;
+    const char *youtube_watch_url = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
     char youtube_media[MR_HTTP_URL_MAX];
+    char youtube_audio[MR_HTTP_URL_MAX];
     char video_description[96], audio_description[96];
     char playing_detail[MR_PLAYER_STATUS_TEXT_MAX];
     mr_youtube_media_kind youtube_kind = MR_YOUTUBE_MEDIA_NONE;
+    int youtube_dual = 0;
     mr_http_options http_options;
+    mr_http_options youtube_resolve_options;
+    int have_youtube_resolve_options = 0;
     int have_http_options = 0;
     media_clock mc;
     memset(&mc, 0, sizeof mc);
@@ -1467,7 +1472,7 @@ int main(int argc, char **argv)
      * behind, printing decode=0 ms/display=0 ms when a report just fired. */
     uint64_t total_decode_us = 0, total_display_us = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
-    int qhead = 0, qcount = 0, input_eof = 0;
+    int qhead = 0, qcount = 0, input_eof = 0, audio_input_eof = 0;
     int oom_warned = 0; /* set after first queue_copy OOM is logged */
     int rescue_active = 0;
     int rescue_priority = 0;
@@ -1639,6 +1644,8 @@ int main(int argc, char **argv)
             return mrplay_exit(5);
         }
         http_options = youtube_options;
+        youtube_resolve_options = youtube_options;
+        have_youtube_resolve_options = 1;
         have_http_options = 1;
     }
     if (want_time) {
@@ -1651,7 +1658,7 @@ int main(int argc, char **argv)
     }
     if (mr_youtube_is_url(media_path)) {
         if (hls_low)
-            printf("YouTube quality request: Low (muxed HLS, 360p fallback)\n");
+            printf("YouTube quality request: Low (adaptive 144p, muxed 360p fallback)\n");
         else if ((hls_max_height && hls_max_height >= 720) ||
                  (!hls_max_height && hls_max_width >= 1280) ||
                  (!hls_max_height && !hls_max_width))
@@ -1661,12 +1668,16 @@ int main(int argc, char **argv)
         printf("YouTube: resolving...\n");
         player_status(MR_PLAYER_STATE_OPENING, "",
                       "Resolving YouTube media...");
-        if (!mr_youtube_resolve_media(media_path,
-                                      have_http_options ? &http_options : NULL,
-                                      youtube_media, sizeof youtube_media,
-                                      &youtube_kind) ||
+        youtube_watch_url = media_path;
+        youtube_audio[0] = '\0';
+        if (!mr_youtube_resolve_media_pair(
+                media_path, have_http_options ? &http_options : NULL,
+                youtube_media, sizeof youtube_media,
+                youtube_audio, sizeof youtube_audio, &youtube_kind) ||
             !mr_youtube_media_http_options_init(
-                &http_options, have_http_options ? &http_options : NULL)) {
+                &http_options,
+                have_youtube_resolve_options ? &youtube_resolve_options
+                                             : NULL)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];
             const char *why = mr_source_last_error();
             printf("cannot resolve YouTube media: %s\n", why);
@@ -1677,8 +1688,14 @@ int main(int argc, char **argv)
         }
         have_http_options = 1;
         media_path = youtube_media;
+        youtube_dual = youtube_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P ||
+                       youtube_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_720P;
         if (youtube_kind == MR_YOUTUBE_MEDIA_HLS)
             printf("YouTube: live HLS manifest found\n");
+        else if (youtube_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P)
+            printf("YouTube: adaptive 144p H.264 video plus AAC audio found\n");
+        else if (youtube_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_720P)
+            printf("YouTube: adaptive 720p H.264 video plus AAC audio found\n");
         else if (youtube_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P)
             printf("YouTube: progressive 720p MP4 found\n");
         else
@@ -1716,10 +1733,61 @@ int main(int argc, char **argv)
 
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
+    if (youtube_dual && dx)
+        audio_dx = mr_demux_open_file_ex(
+            youtube_audio, have_http_options ? &http_options : NULL);
+
+    /* Adaptive tracks are an optimisation, never a reason to lose playback.
+     * A direct URL can resolve successfully and still fail later (expired
+     * signature, CDN/PO-token policy, malformed track). Validate both demuxes
+     * before decoder setup and retry the same watch URL through the established
+     * muxed itag-18 path when either half is unusable. */
+    if (youtube_dual &&
+        (!dx || !audio_dx || !mr_demux_video(dx)->valid ||
+         !mr_demux_audio(audio_dx)->valid)) {
+        mr_http_options fallback_options = have_youtube_resolve_options
+                                               ? youtube_resolve_options
+                                               : http_options;
+        char reason[MR_PLAYER_STATUS_TEXT_MAX];
+        printf("YouTube: adaptive tracks could not be opened (%s); "
+               "retrying muxed 360p\n",
+               mr_demux_last_open_error() ? mr_demux_last_open_error()
+                                          : "invalid track");
+        if (audio_dx) { mr_demux_close(audio_dx); audio_dx = NULL; }
+        if (dx) { mr_demux_close(dx); dx = NULL; }
+        fallback_options.hls_low = 0;
+        fallback_options.hls_max_width = 640;
+        fallback_options.hls_max_height = 360;
+        youtube_audio[0] = '\0';
+        if (!mr_youtube_resolve_media(
+                youtube_watch_url, &fallback_options,
+                youtube_media, sizeof youtube_media, &youtube_kind) ||
+            !mr_youtube_media_http_options_init(&http_options,
+                                                 &fallback_options)) {
+            const char *why = mr_source_last_error();
+            snprintf(reason, sizeof reason, "YouTube fallback: %s",
+                     why ? why : "resolution failed");
+            printf("cannot resolve YouTube 360p fallback: %s\n",
+                   why ? why : "resolution failed");
+            player_status(MR_PLAYER_STATE_ERROR, "", reason);
+            status_hold();
+            return mrplay_exit(10);
+        }
+        media_path = youtube_media;
+        youtube_dual = 0;
+        dx = mr_demux_open_file_ex(media_path, &http_options);
+        if (dx)
+            printf("YouTube: muxed 360p fallback opened\n");
+    }
     if (dx) {
-        printf("streaming %s from %s\n", mr_demux_container_name(dx),
-               !strncmp(media_path, "http://", 7) ||
-               !strncmp(media_path, "https://", 8) ? "network" : "disk");
+        if (youtube_dual)
+            printf("streaming dual %s video + %s audio from network\n",
+                   mr_demux_container_name(dx),
+                   mr_demux_container_name(audio_dx));
+        else
+            printf("streaming %s from %s\n", mr_demux_container_name(dx),
+                   !strncmp(media_path, "http://", 7) ||
+                   !strncmp(media_path, "https://", 8) ? "network" : "disk");
     } else {
         if (mr_demux_is_file_backed_container(media_path)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];
@@ -1773,13 +1841,14 @@ int main(int argc, char **argv)
     }
 
     vi = mr_demux_video(dx);
-    ai = mr_demux_audio(dx);
+    ai = audio_dx ? mr_demux_audio(audio_dx) : mr_demux_audio(dx);
     mr_demux_describe_video_codec(dx, video_description,
                                   sizeof video_description);
-    mr_demux_describe_audio_codec(dx, audio_description,
+    mr_demux_describe_audio_codec(audio_dx ? audio_dx : dx, audio_description,
                                   sizeof audio_description);
-    printf("codec probe: container=%s, video=%s, audio=%s\n",
-           mr_demux_container_name(dx), video_description, audio_description);
+    printf("codec probe: container=%s%s, video=%s, audio=%s\n",
+           mr_demux_container_name(dx), audio_dx ? "+external-audio" : "",
+           video_description, audio_description);
     codec = mr_codec_find(vi->fourcc);
     if (!codec) { char reason[MR_PLAYER_STATUS_TEXT_MAX];
                   snprintf(reason, sizeof reason, "%s has no decoder",
@@ -1787,6 +1856,7 @@ int main(int argc, char **argv)
                   printf("no decoder: %s\n", reason);
                   player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
                   status_hold();
+                  if (audio_dx) mr_demux_close(audio_dx);
                   mr_demux_close(dx);
                   free(buf); return mrplay_exit(10); }
 
@@ -1804,6 +1874,7 @@ int main(int argc, char **argv)
                  codec->name);
         player_status(MR_PLAYER_STATE_ERROR, codec->name, reason);
         status_hold();
+        if (audio_dx) mr_demux_close(audio_dx);
         mr_demux_close(dx);
         free(buf); return mrplay_exit(10);
     }
@@ -1811,6 +1882,7 @@ int main(int argc, char **argv)
         player_status(MR_PLAYER_STATE_ERROR, codec->name,
                       "H.264 performance mode was rejected by decoder");
         status_hold();
+        if (audio_dx) mr_demux_close(audio_dx);
         mr_decoder_close(&dec); mr_demux_close(dx);
         free(buf); return mrplay_exit(10);
     }
@@ -1853,6 +1925,7 @@ int main(int argc, char **argv)
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
                                "cannot open a display (RTG or AGA)");
                  status_hold();
+                 if (audio_dx) mr_demux_close(audio_dx);
                  mr_decoder_close(&dec); mr_demux_close(dx);
                  free(buf); return mrplay_exit(10); }
     printf("display backend: %s\n", display_backend_name(disp));
@@ -2446,9 +2519,9 @@ int main(int argc, char **argv)
             if (ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK)
                 printf("seek: received %s, can_seek=%d\n",
                        ev == MR_EV_SEEK_FWD ? "FWD" : "BACK",
-                       mr_demux_can_seek(dx));
+                       !audio_dx && mr_demux_can_seek(dx));
             if ((ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK) &&
-                mr_demux_can_seek(dx)) {
+                !audio_dx && mr_demux_can_seek(dx)) {
                 /* Real offline-file seek: jump the demux index straight to
                  * the nearest keyframe, then re-prime exactly like the
                  * loop-restart/live-reconnect paths above do - same reset
@@ -2721,6 +2794,7 @@ int main(int argc, char **argv)
         if (input_eof && !qcount && loop) {
             if (audio) audio_set_running(audio, 0);
             mr_demux_rewind(dx);
+            if (audio_dx) mr_demux_rewind(audio_dx);
             if (mr_decoder_reset(&dec) != MR_OK ||
                 !apply_h264_speed(&dec, h264_speed, 0)) break;
             /* mr_decoder_reset() closes and reopens the codec, so a fresh
@@ -2730,7 +2804,8 @@ int main(int argc, char **argv)
             if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
-            input_eof = 0; decoded_index = 0; mono_base_us = 0;
+            input_eof = 0; audio_input_eof = 0;
+            decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
@@ -2842,7 +2917,11 @@ int main(int argc, char **argv)
          * visible judder and excessive RGB memory use. */
             int feed_audio_full = audio && qcount >= target_depth &&
                                   audio_ms < cushion_ms;
-            int can_decode = !input_eof && !(!rescue_active && rescue_priority) &&
+            int read_dual_audio = audio_dx && audio && !audio_input_eof &&
+                                  (rescue_active || startup_refill ||
+                                   audio_ms < cushion_ms);
+            int can_decode = (!input_eof || read_dual_audio) &&
+                             !(!rescue_active && rescue_priority) &&
                              (rescue_active || startup_refill ||
                               qcount < target_depth || feed_audio_full);
             if (can_decode && playback_started && qcount) {
@@ -2881,7 +2960,8 @@ int main(int argc, char **argv)
                  * read never stalls, so nothing is released and behaviour there
                  * is unchanged. */
                 if (network_source) presenter.released = 1;
-                mr_status next = mr_demux_next_packet(dx, &pkt);
+                mr_demux *packet_dx = read_dual_audio ? audio_dx : dx;
+                mr_status next = mr_demux_next_packet(packet_dx, &pkt);
                 presenter.released = 0;
                 if (want_time) {
                     uint64_t blocked = monotonic_us() - a;
@@ -2892,7 +2972,10 @@ int main(int argc, char **argv)
                 if (rescue_active) {
                     rescue_episode_packets++; stats.rescue_packets++;
                 }
-                if (next != MR_OK) input_eof = 1;
+                if (next != MR_OK) {
+                    if (packet_dx == audio_dx) audio_input_eof = 1;
+                    else input_eof = 1;
+                }
                 else if (!pkt.is_video) {
                     if (audio && audio_dec) {
                         trace_phase(&trace, "audio-decode");
@@ -3344,6 +3427,7 @@ int main(int argc, char **argv)
     if (audio) audio_close(audio);
     display_close(disp);
     mr_decoder_close(&dec);
+    if (audio_dx) mr_demux_close(audio_dx);
     mr_demux_close(dx);
     free(buf);
     return mrplay_exit(0);

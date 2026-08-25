@@ -1,9 +1,9 @@
 /*
- * MintVID - native YouTube live and progressive MP4 resolver.
+ * MintVID - native YouTube live, progressive and adaptive MP4 resolver.
  *
  * No JavaScript engine or signature decipher is attempted. Public live HLS is
- * handed to the existing HLS path; compatible recorded uploads may provide
- * itag 18/22, HTTPS Google Video MP4s containing H.264 and AAC at 360p/720p.
+ * handed to the existing HLS path. Compatible recorded uploads may provide
+ * muxed itag 18/22 or separate, directly signed H.264 and AAC MP4 tracks.
  */
 #include "mr_youtube.h"
 
@@ -28,13 +28,6 @@
 #define YOUTUBE_ANDROID_VR_UA \
     "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
     "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-#define YOUTUBE_MWEB_VERSION "2.20260708.05.00"
-#define YOUTUBE_MWEB_UA \
-    "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) " \
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 " \
-    "Mobile/15E148 Safari/604.1,gzip(gfe)"
-#define YOUTUBE_MWEB_REFERER "https://m.youtube.com/"
-
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
 static mr_youtube_media_kind g_last_kind = MR_YOUTUBE_MEDIA_NONE;
@@ -227,6 +220,8 @@ int mr_youtube_media_http_options_init(mr_http_options *out,
     if (!mr_youtube_http_options_init(&resolved, base)) return 0;
     if (g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P ||
         g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P ||
+        g_last_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P ||
+        g_last_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_720P ||
         (g_last_kind == MR_YOUTUBE_MEDIA_HLS &&
          strcmp(g_last_media_ua, YOUTUBE_BROWSER_UA))) {
         if (!mr_http_options_init(out, g_last_media_ua, YOUTUBE_REFERER))
@@ -471,6 +466,100 @@ int mr_youtube_extract_progressive_360p(const char *json, char *out,
     return extract_progressive_itag(json, 18, out, out_size);
 }
 
+static int json_itag_equals(const char *value, unsigned wanted)
+{
+    unsigned got = 0;
+    const char *p = value;
+    if (!p || *p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') {
+        got = got * 10U + (unsigned)(*p - '0');
+        p++;
+    }
+    return got == wanted &&
+           (*p == ',' || *p == '}' || *p == ' ' || *p == '\t' ||
+            *p == '\r' || *p == '\n');
+}
+
+static int extract_adaptive_itag(const char *json, unsigned wanted_itag,
+                                 const char *media_type,
+                                 const char *codec_name,
+                                 char *out, size_t out_size)
+{
+    static const char adaptive_key[] = "\"adaptiveFormats\"";
+    const char *p, *end;
+    if (!json || !out || out_size < 2) return 0;
+    out[0] = '\0';
+    end = json + strlen(json);
+    p = json;
+    while ((p = strstr(p, adaptive_key)) != NULL) {
+        const char *array, *array_end;
+        p += sizeof adaptive_key - 1;
+        array = skip_json_space(p, end);
+        if (array >= end || *array++ != ':') continue;
+        array = skip_json_space(array, end);
+        if (array >= end || *array != '[') continue;
+        array_end = json_compound_end(array, end, '[', ']');
+        if (!array_end) return 0;
+        p = array + 1;
+        while (p < array_end - 1) {
+            const char *object_end, *itag, *mime, *media_url;
+            char mime_text[160];
+            p = skip_json_space(p, array_end - 1);
+            if (p >= array_end - 1) break;
+            if (*p != '{') {
+                const char *next = json_value_end(p, array_end - 1);
+                if (!next) return 0;
+                p = next;
+                if (p < array_end - 1 && *p == ',') p++;
+                continue;
+            }
+            object_end = json_compound_end(p, array_end, '{', '}');
+            if (!object_end) return 0;
+            itag = json_object_field(p, object_end, "itag");
+            mime = json_object_field(p, object_end, "mimeType");
+            media_url = json_object_field(p, object_end, "url");
+            if (json_itag_equals(itag, wanted_itag) && mime &&
+                decode_json_string(mime, mime_text, sizeof mime_text) &&
+                strstr(mime_text, media_type) && strstr(mime_text, codec_name) &&
+                media_url && decode_json_string(media_url, out, out_size) &&
+                googlevideo_url(out) && !url_has_n_parameter(out))
+                return 1;
+            p = object_end;
+            if (p < array_end - 1 && *p == ',') p++;
+        }
+        p = array_end;
+    }
+    out[0] = '\0';
+    return 0;
+}
+
+int mr_youtube_extract_adaptive(const char *json, int prefer_720p,
+                                char *video_out, size_t video_out_size,
+                                char *audio_out, size_t audio_out_size,
+                                mr_youtube_media_kind *kind)
+{
+    unsigned video_itag = prefer_720p ? 136U : 160U;
+    unsigned first_audio = prefer_720p ? 140U : 139U;
+    unsigned second_audio = prefer_720p ? 139U : 140U;
+    if (!kind || !video_out || !audio_out) return 0;
+    *kind = MR_YOUTUBE_MEDIA_NONE;
+    video_out[0] = '\0';
+    audio_out[0] = '\0';
+    if (!extract_adaptive_itag(json, video_itag, "video/mp4", "avc1",
+                               video_out, video_out_size))
+        return 0;
+    if (!extract_adaptive_itag(json, first_audio, "audio/mp4", "mp4a",
+                               audio_out, audio_out_size) &&
+        !extract_adaptive_itag(json, second_audio, "audio/mp4", "mp4a",
+                               audio_out, audio_out_size)) {
+        video_out[0] = '\0';
+        return 0;
+    }
+    *kind = prefer_720p ? MR_YOUTUBE_MEDIA_ADAPTIVE_720P
+                        : MR_YOUTUBE_MEDIA_ADAPTIVE_144P;
+    return 1;
+}
+
 static int options_prefer_720p(const mr_http_options *options)
 {
     if (!options || options->hls_low) return 0;
@@ -482,31 +571,32 @@ static int options_prefer_720p(const mr_http_options *options)
 }
 
 /* Returns 1 for immediately usable media, -1 when media was present but
- * carried an unsolved n challenge, and 0 for a failed/no-media reply.
- * allow_progressive is false for the Low-quality MWEB probe: that request is
- * useful only when it exposes a muxed HLS ladder containing 144p. */
+ * carried an unsolved n challenge, and 0 for a failed/no-media reply. */
 static int try_player_media(const char *api_url,
                             const mr_http_options *options,
                             const char *json, const char *client,
-                            const char *media_ua, char *out, size_t out_size,
-                            int prefer_720p, int allow_progressive,
+                            const char *media_ua,
+                            char *video_out, size_t video_out_size,
+                            char *audio_out, size_t audio_out_size,
+                            int prefer_720p, int want_adaptive,
                             mr_youtube_media_kind *kind)
 {
     char *reply = NULL;
     size_t reply_len = 0;
-    int ok;
+    int ok, progressive_ok = 0;
     if (!mr_http_post_json(api_url, options, json, &reply, &reply_len,
                            YOUTUBE_PAGE_MAX)) {
         printf("YouTube: %s player request failed\n", client);
         return 0;
     }
     (void)reply_len;
-    ok = mr_youtube_extract_live_manifest(reply, out, out_size);
-    if (ok && !manifest_needs_n_transform(out)) {
+    ok = mr_youtube_extract_live_manifest(reply, video_out, video_out_size);
+    if (ok && !manifest_needs_n_transform(video_out)) {
         g_last_client = client;
         g_last_media_ua = media_ua;
         g_last_kind = MR_YOUTUBE_MEDIA_HLS;
         *kind = g_last_kind;
+        if (audio_out && audio_out_size) audio_out[0] = '\0';
         mr_free(reply);
         return 1;
     }
@@ -516,39 +606,71 @@ static int try_player_media(const char *api_url,
         mr_free(reply);
         return -1;
     }
-    if (!allow_progressive) {
-        printf("YouTube: %s supplied no usable muxed HLS\n", client);
+    if (prefer_720p) {
+        progressive_ok = mr_youtube_extract_progressive(
+            reply, 1, video_out, video_out_size, kind);
+        if (progressive_ok && *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+            if (audio_out && audio_out_size) audio_out[0] = '\0';
+            g_last_client = client;
+            g_last_media_ua = media_ua;
+            g_last_kind = *kind;
+            mr_free(reply);
+            return 1;
+        }
+        if (want_adaptive &&
+            mr_youtube_extract_adaptive(reply, 1,
+                                        video_out, video_out_size,
+                                        audio_out, audio_out_size, kind)) {
+            g_last_client = client;
+            g_last_media_ua = media_ua;
+            g_last_kind = *kind;
+            mr_free(reply);
+            return 1;
+        }
+        if (progressive_ok)
+            printf("YouTube: %s supplied only muxed 360p; continuing 720p search\n",
+                   client);
+        else
+            printf("YouTube: %s supplied no compatible 720p H.264 stream\n",
+                   client);
         mr_free(reply);
         return 0;
     }
-    ok = mr_youtube_extract_progressive(reply, prefer_720p, out, out_size,
-                                        kind);
-    mr_free(reply);
-    if (!ok) {
-        if (prefer_720p)
-            printf("YouTube: %s supplied no muxed 720p MP4\n", client);
-        return 0;
-    }
-    /* A client that only supplied itag 18 has not satisfied a 720p request.
-     * Keep searching the remaining clients before starting the explicit
-     * second-pass 360p fallback. */
-    if (prefer_720p && *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P) {
-        printf("YouTube: %s supplied only muxed 360p; continuing 720p search\n",
+
+    if (want_adaptive) {
+        if (mr_youtube_extract_adaptive(reply, 0,
+                                        video_out, video_out_size,
+                                        audio_out, audio_out_size, kind)) {
+            g_last_client = client;
+            g_last_media_ua = media_ua;
+            g_last_kind = *kind;
+            mr_free(reply);
+            return 1;
+        }
+        printf("YouTube: %s supplied no compatible 144p H.264/AAC pair\n",
                client);
+        mr_free(reply);
         return 0;
     }
+
+    ok = mr_youtube_extract_progressive(reply, 0, video_out,
+                                        video_out_size, kind);
+    mr_free(reply);
+    if (!ok) return 0;
+    if (audio_out && audio_out_size) audio_out[0] = '\0';
     g_last_client = client;
     g_last_media_ua = media_ua;
     g_last_kind = *kind;
     return 1;
 }
 
-int mr_youtube_resolve_media(const char *url,
-                             const mr_http_options *options,
-                             char *out, size_t out_size,
-                             mr_youtube_media_kind *kind)
+int mr_youtube_resolve_media_pair(const char *url,
+                                  const mr_http_options *options,
+                                  char *video_out, size_t video_out_size,
+                                  char *audio_out, size_t audio_out_size,
+                                  mr_youtube_media_kind *kind)
 {
-    mr_http_options fetch_options, vr_options, mweb_options;
+    mr_http_options fetch_options, vr_options;
     mr_http_options fallback_options;
     char *html = NULL;
     size_t html_len = 0;
@@ -556,12 +678,15 @@ int mr_youtube_resolve_media(const char *url,
     char api_url[256], json[1024];
     int n, ok, result, saw_n_challenge = 0;
     int prefer_720p = options_prefer_720p(options);
-    int want_low_hls = options && options->hls_low;
+    int adaptive_outputs = audio_out && audio_out_size >= 2;
+    int want_low_adaptive = adaptive_outputs && options && options->hls_low;
+    int want_adaptive = adaptive_outputs && (want_low_adaptive || prefer_720p);
     g_last_client = "";
     g_last_media_ua = YOUTUBE_BROWSER_UA;
     g_last_kind = MR_YOUTUBE_MEDIA_NONE;
     if (kind) *kind = MR_YOUTUBE_MEDIA_NONE;
-    if (!mr_youtube_is_url(url) || !out || out_size < 2 || !kind) {
+    if (audio_out && audio_out_size) audio_out[0] = '\0';
+    if (!mr_youtube_is_url(url) || !video_out || video_out_size < 2 || !kind) {
         mr_source_set_error("invalid YouTube URL or output buffer");
         return 0;
     }
@@ -571,8 +696,8 @@ int mr_youtube_resolve_media(const char *url,
                             YOUTUBE_PAGE_MAX))
         return 0;
     (void)html_len;
-    ok = mr_youtube_extract_live_manifest(html, out, out_size);
-    if (ok && !manifest_needs_n_transform(out)) {
+    ok = mr_youtube_extract_live_manifest(html, video_out, video_out_size);
+    if (ok && !manifest_needs_n_transform(video_out)) {
         g_last_client = "watch page";
         g_last_kind = MR_YOUTUBE_MEDIA_HLS;
         *kind = g_last_kind;
@@ -580,18 +705,39 @@ int mr_youtube_resolve_media(const char *url,
         return 1;
     }
     if (ok) saw_n_challenge = 1;
-    if (!want_low_hls &&
-        mr_youtube_extract_progressive(html, prefer_720p, out, out_size,
-                                       kind)) {
-        if (!prefer_720p ||
-            *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+    if (prefer_720p) {
+        ok = mr_youtube_extract_progressive(html, 1, video_out,
+                                            video_out_size, kind);
+        if (ok && *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
             g_last_client = "watch page";
             g_last_kind = *kind;
             mr_free(html);
             return 1;
         }
-        /* itag 18 is valid, but do not let this early 360p result prevent a
-         * later client from supplying the requested muxed itag 22. */
+        if (want_adaptive &&
+            mr_youtube_extract_adaptive(html, 1,
+                                        video_out, video_out_size,
+                                        audio_out, audio_out_size, kind)) {
+            g_last_client = "watch page";
+            g_last_kind = *kind;
+            mr_free(html);
+            return 1;
+        }
+    } else if (want_low_adaptive) {
+        if (mr_youtube_extract_adaptive(html, 0,
+                                        video_out, video_out_size,
+                                        audio_out, audio_out_size, kind)) {
+            g_last_client = "watch page";
+            g_last_kind = *kind;
+            mr_free(html);
+            return 1;
+        }
+    } else if (mr_youtube_extract_progressive(html, 0, video_out,
+                                               video_out_size, kind)) {
+        g_last_client = "watch page";
+        g_last_kind = *kind;
+        mr_free(html);
+        return 1;
     }
 
     /* Modern watch pages often omit streamingData even for a public live
@@ -605,18 +751,16 @@ int mr_youtube_resolve_media(const char *url,
                                 client_version, sizeof client_version) &&
          !extract_config_string(html, "INNERTUBE_CONTEXT_CLIENT_VERSION",
                                 client_version, sizeof client_version))) {
-        /* Low's 144p HLS probe is optional. A page that still provides the
-         * established muxed 360p URL must remain playable even when it omits
-         * the Innertube configuration needed for the extra MWEB request. */
-        if (want_low_hls &&
-            mr_youtube_extract_progressive(html, 0, out, out_size, kind)) {
+        if ((want_low_adaptive || prefer_720p) &&
+            mr_youtube_extract_progressive(html, 0, video_out,
+                                           video_out_size, kind)) {
             g_last_client = "watch page";
             g_last_kind = *kind;
             mr_free(html);
             return 1;
         }
         mr_free(html);
-        if (prefer_720p) goto fallback_360p;
+        if (prefer_720p || want_low_adaptive) goto fallback_360p;
         mr_source_set_error("YouTube page omitted player API configuration");
         return 0;
     }
@@ -629,45 +773,6 @@ int mr_youtube_resolve_media(const char *url,
         return 0;
     }
 
-    /* Low is the only mode that asks for recorded-video HLS. MWEB is
-     * YouTube's remaining lightweight client with "ultralow" formats, and its
-     * HLS media currently does not strictly require a GVS PO token. The
-     * existing HLS picker selects the lowest muxed AVC+AAC rendition when one
-     * is returned. Other quality modes retain the normal progressive/HLS path
-     * and are never forced to 144p. Treat this as best effort: if it fails,
-     * preserve the watch page's progressive 360p compatibility fallback. */
-    if (want_low_hls) {
-        n = snprintf(json, sizeof json,
-                     "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
-                     "\"racyCheckOk\":true,\"context\":{\"client\":{"
-                     "\"clientName\":\"MWEB\",\"clientVersion\":\"%s\","
-                     "\"userAgent\":\"%s\","
-                     "\"hl\":\"en\",\"gl\":\"GB\"}}}",
-                     video_id, YOUTUBE_MWEB_VERSION, YOUTUBE_MWEB_UA);
-        if (n <= 0 || (size_t)n >= sizeof json) {
-            mr_free(html);
-            mr_source_set_error("YouTube MWEB player request is too large");
-            return 0;
-        }
-        if (!mr_http_options_init(&mweb_options, YOUTUBE_MWEB_UA,
-                                  YOUTUBE_MWEB_REFERER)) {
-            mr_free(html);
-            return 0;
-        }
-        result = try_player_media(api_url, &mweb_options, json, "MWEB",
-                                  YOUTUBE_MWEB_UA, out, out_size, 0, 0, kind);
-        if (result > 0) {
-            mr_free(html);
-            return 1;
-        }
-        if (result < 0) saw_n_challenge = 1;
-        if (mr_youtube_extract_progressive(html, 0, out, out_size, kind)) {
-            g_last_client = "watch page";
-            g_last_kind = *kind;
-            mr_free(html);
-            return 1;
-        }
-    }
     mr_free(html);
     html = NULL;
 
@@ -689,14 +794,15 @@ int mr_youtube_resolve_media(const char *url,
         return 0;
     }
     result = try_player_media(api_url, &fetch_options, json, "ANDROID",
-                              YOUTUBE_ANDROID_UA, out, out_size, prefer_720p,
-                              1, kind);
+                              YOUTUBE_ANDROID_UA,
+                              video_out, video_out_size,
+                              audio_out, audio_out_size,
+                              prefer_720p, want_adaptive, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
     /* Android VR still exposes the classic muxed 360p MP4 on many public
-     * recorded videos. This is MintVID's deliberately narrow VOD target:
-     * itag 18 contains H.264 video and AAC audio in one seekable file. */
+     * recorded videos and may also expose the selected adaptive tracks. */
     n = snprintf(json, sizeof json,
                  "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
                  "\"racyCheckOk\":true,\"context\":{\"client\":{"
@@ -714,8 +820,10 @@ int mr_youtube_resolve_media(const char *url,
                               YOUTUBE_REFERER))
         return 0;
     result = try_player_media(api_url, &vr_options, json, "ANDROID_VR",
-                              YOUTUBE_ANDROID_VR_UA, out, out_size,
-                              prefer_720p, 1, kind);
+                              YOUTUBE_ANDROID_VR_UA,
+                              video_out, video_out_size,
+                              audio_out, audio_out_size,
+                              prefer_720p, want_adaptive, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -736,7 +844,9 @@ int mr_youtube_resolve_media(const char *url,
     }
     result = try_player_media(api_url, &fetch_options, json,
                               "WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
-                              out, out_size, prefer_720p, 1, kind);
+                              video_out, video_out_size,
+                              audio_out, audio_out_size,
+                              prefer_720p, want_adaptive, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
@@ -751,29 +861,40 @@ int mr_youtube_resolve_media(const char *url,
     if (n <= 0 || (size_t)n >= sizeof json)
         return 0;
     result = try_player_media(api_url, &fetch_options, json, "WEB",
-                              YOUTUBE_BROWSER_UA, out, out_size, prefer_720p,
-                              1, kind);
+                              YOUTUBE_BROWSER_UA,
+                              video_out, video_out_size,
+                              audio_out, audio_out_size,
+                              prefer_720p, want_adaptive, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
 fallback_360p:
-    /* A 720p-or-higher selection is a preference, not a reason to fail.
-     * Only after every client has been checked for muxed itag 22 do a clean
-     * second pass using the established 360p policy. This prevents an early
-     * Android itag 18 result from short-circuiting later 720p-capable clients. */
-    if (prefer_720p) {
-        printf("YouTube: no muxed 720p found; retrying with 360p\n");
+    if (prefer_720p || want_low_adaptive) {
+        printf(want_low_adaptive
+               ? "YouTube: no adaptive 144p pair found; retrying with muxed 360p\n"
+               : "YouTube: no compatible 720p stream found; retrying with muxed 360p\n");
         fallback_options = *options;
         fallback_options.hls_low = 0;
         fallback_options.hls_max_width = 640;
         fallback_options.hls_max_height = 360;
-        return mr_youtube_resolve_media(url, &fallback_options, out, out_size,
-                                        kind);
+        if (audio_out && audio_out_size) audio_out[0] = '\0';
+        return mr_youtube_resolve_media_pair(
+            url, &fallback_options, video_out, video_out_size,
+            NULL, 0, kind);
     }
     mr_source_set_error(saw_n_challenge
         ? "YouTube media URL requires a player n challenge"
-        : "YouTube returned no compatible live HLS or muxed MP4");
+        : "YouTube returned no compatible HLS, adaptive pair, or muxed MP4");
     return 0;
+}
+
+int mr_youtube_resolve_media(const char *url,
+                             const mr_http_options *options,
+                             char *out, size_t out_size,
+                             mr_youtube_media_kind *kind)
+{
+    return mr_youtube_resolve_media_pair(url, options, out, out_size,
+                                         NULL, 0, kind);
 }
 
 int mr_youtube_resolve_live(const char *url,
