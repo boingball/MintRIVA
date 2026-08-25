@@ -32,7 +32,6 @@
 #ifndef MR_QUICKJS_PORTABLE_TIME
 #include <sys/time.h>
 #endif
-#include <fenv.h>
 #include <math.h>
 #if defined(__APPLE__)
 #include <malloc/malloc.h>

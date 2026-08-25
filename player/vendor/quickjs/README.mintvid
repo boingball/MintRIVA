@@ -24,6 +24,9 @@ build, whose C library does not guarantee POSIX gettimeofday(), localtime_r()
 or tm_gmtoff. The EJS solver does not depend on sub-second Date/Math.random
 seeding.
 
+The unused upstream fenv.h include is omitted because Bebbo's AmigaOS C
+library does not provide that header; QuickJS 2026-06-04 makes no fenv calls.
+
 The upstream MIT licence is retained as LICENSE.
 
 For repository-tooling compatibility, the large upstream quickjs.c translation
