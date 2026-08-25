@@ -38,6 +38,10 @@
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 " \
     "Safari/605.1.15,gzip(gfe)"
+#define YOUTUBE_VISIONOS_VERSION "1.02"
+#define YOUTUBE_VISIONOS_UA \
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) " \
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
 static mr_youtube_media_kind g_last_kind = MR_YOUTUBE_MEDIA_NONE;
@@ -859,7 +863,8 @@ static int try_player_media(const char *api_url,
     if (ok && (nsig_solved || !manifest_needs_n_transform(video_out))) {
         g_last_client = client;
         g_last_media_ua = media_ua;
-        g_last_kind = !strcmp(client, "WEB_SAFARI")
+        g_last_kind = (!strcmp(client, "WEB_SAFARI") ||
+                       !strcmp(client, "VISIONOS"))
                           ? MR_YOUTUBE_MEDIA_HLS_VOD
                           : MR_YOUTUBE_MEDIA_HLS;
         *kind = g_last_kind;
@@ -948,8 +953,8 @@ int mr_youtube_resolve_media_pair(const char *url,
                                   char *audio_out, size_t audio_out_size,
                                   mr_youtube_media_kind *kind)
 {
-    mr_http_options fetch_options, safari_options, android_options, vr_options;
-    mr_http_options fallback_options;
+    mr_http_options fetch_options, safari_options, visionos_options;
+    mr_http_options android_options, vr_options, fallback_options;
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
@@ -1093,10 +1098,40 @@ int mr_youtube_resolve_media_pair(const char *url,
     nsig_attempt.player_url = player_js_url;
     nsig_attempt.options = &fetch_options;
 
-    /* Safari is the remaining anonymous recorded-video escape hatch worth
-     * trying: YouTube may return a pre-muxed HLS ladder, and HLS GVS requests
-     * currently do not require a PO token. Availability is selective, so this
-     * is strictly best effort and retains the adaptive/itag-18 fallbacks. */
+    /* Current yt-dlp uses the anonymous VISIONOS client as its JS-less default.
+     * It provides a full recorded-video HLS ladder without the WEB_SAFARI
+     * trusted-session lottery. Keep this first experiment Low-only so the
+     * established Turbo/TurboGT/Turbo+ paths remain unchanged. */
+    if (want_low_adaptive) {
+        n = snprintf(json, sizeof json,
+                     "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
+                     "\"racyCheckOk\":true,\"context\":{\"client\":{"
+                     "\"clientName\":\"VISIONOS\",\"clientVersion\":\"%s\","
+                     "\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\","
+                     "\"userAgent\":\"%s\",\"osName\":\"visionOS\","
+                     "\"osVersion\":\"26.5.23O471\",\"hl\":\"en\","
+                     "\"gl\":\"GB\"}}}",
+                     video_id, YOUTUBE_VISIONOS_VERSION, YOUTUBE_VISIONOS_UA);
+        if (n <= 0 || (size_t)n >= sizeof json) {
+            mr_source_set_error("YouTube VisionOS request is too large");
+            return 0;
+        }
+        if (!mr_http_options_init(&visionos_options, YOUTUBE_VISIONOS_UA,
+                                  YOUTUBE_REFERER))
+            return 0;
+        printf("YouTube: trying VISIONOS recorded HLS\n");
+        result = try_player_media(api_url, &visionos_options, json,
+                                  "VISIONOS", YOUTUBE_VISIONOS_UA,
+                                  video_out, video_out_size,
+                                  audio_out, audio_out_size,
+                                  0, 0, &nsig_attempt, kind);
+        if (result > 0) return 1;
+        if (result < 0) saw_n_challenge = 1;
+    }
+
+    /* Safari remains a best-effort recorded-video fallback. YouTube may return
+     * a pre-muxed HLS ladder, but availability is selective/trusted-session
+     * dependent, so Low now prefers VisionOS before reaching this path. */
     if (want_adaptive) {
         if (signature_timestamp)
             n = snprintf(json, sizeof json,
