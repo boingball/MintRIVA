@@ -26,7 +26,7 @@ QEMU_M68K=${QEMU_M68K:-qemu-m68k}
 LIBAVC_FLAGS="-Ivendor/libavc_port -Ivendor/libavc/common -Ivendor/libavc/decoder -include vendor/libavc_port/compat.h -fno-strict-aliasing -fwrapv"
 LIBMPEG2_FLAGS="-Ivendor/libmpeg2 -Ivendor/libmpeg2/include -Ivendor/libmpeg2/libmpeg2"
 WARN_SILENCE="-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable -Wno-sign-compare -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits"
-QUICKJS_FLAGS="-Ivendor/quickjs -D_GNU_SOURCE -DMR_QUICKJS_NO_THREADS -DMR_QUICKJS_BYTECODE_BE -fwrapv"
+QUICKJS_FLAGS="-Ivendor/quickjs -D_GNU_SOURCE -DMR_QUICKJS_NO_THREADS -DMR_QUICKJS_BYTECODE_BE -DMR_QUICKJS_FMOD_COMPAT -fwrapv"
 QUICKJS_SRC="vendor/quickjs/quickjs.c vendor/quickjs/dtoa.c vendor/quickjs/libregexp.c vendor/quickjs/libunicode.c vendor/quickjs/cutils.c"
 # -DMR_H264_STAGE_PROFILE=1: the mc/deblock/recon/intra timing wrappers
 # (ih264d_stage_profile.c) are opt-in on a real playback build (real
@@ -178,7 +178,8 @@ $CC -o "$BUILD/mr_media_clock_check.m68k" tests/mr_media_clock_check.c \
 
 echo "== building mr_youtube_nsig_check.m68k (QuickJS big-endian bytecode) =="
 $CC $QUICKJS_FLAGS -o "$BUILD/mr_youtube_nsig_check.m68k" \
-    tests/mr_youtube_nsig_check.c core/mr_youtube_nsig.c $QUICKJS_SRC \
+    tests/mr_youtube_nsig_check.c tests/mr_quickjs_fmod.c \
+    core/mr_youtube_nsig.c $QUICKJS_SRC \
     vendor/yt-dlp-ejs/yt_solver_lib_be.c \
     vendor/yt-dlp-ejs/yt_solver_core_be.c -lm
 

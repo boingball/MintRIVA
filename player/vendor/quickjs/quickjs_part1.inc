@@ -52,6 +52,11 @@
 #define CONFIG_VERSION "2026-06-04"
 #endif
 
+#ifdef MR_QUICKJS_FMOD_COMPAT
+double mr_quickjs_fmod(double x, double y);
+#define fmod mr_quickjs_fmod
+#endif
+
 #ifdef MR_QUICKJS_PORTABLE_LIBC
 #ifndef alloca
 #define alloca(size) __builtin_alloca(size)
