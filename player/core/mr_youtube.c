@@ -853,7 +853,9 @@ static int try_player_media(const char *api_url,
     int ok, progressive_ok = 0, nsig_solved = 0;
     if (!mr_http_post_json(api_url, options, json, &reply, &reply_len,
                            YOUTUBE_PAGE_MAX)) {
-        printf("YouTube: %s player request failed\n", client);
+        const char *why = mr_source_last_error();
+        printf("YouTube: %s player request failed: %s\n", client,
+               why && *why ? why : "unknown error");
         return 0;
     }
     (void)reply_len;
