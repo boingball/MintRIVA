@@ -9,6 +9,7 @@ static int failures;
 static int nsig_fetches;
 static int nsig_calls;
 static int nsig_saw_visitor;
+static int nsig_visionos_posts;
 
 static void expect(int condition, const char *name)
 {
@@ -58,6 +59,12 @@ static int nsig_fetch_override(const char *url,
         return return_fixture("synthetic current player", out, out_len,
                               max_size);
     if (post_json && strstr(url, "/youtubei/v1/player?key=test-key")) {
+        /* Low now tries anonymous VisionOS before Safari. Keep this fixture
+         * focused on Safari n solving by making the VisionOS attempt empty. */
+        if (strstr(post_json, "\"clientName\":\"VISIONOS\"")) {
+            nsig_visionos_posts++;
+            return return_fixture("{}", out, out_len, max_size);
+        }
         if (strstr(post_json, "\"visitorData\":\"visitor-test\""))
             nsig_saw_visitor = 1;
         return return_fixture(safari, out, out_len, max_size);
@@ -274,7 +281,7 @@ int main(int argc, char **argv)
     expect(mr_http_options_init(&base_options, NULL, NULL),
            "native n integration options initialised");
     base_options.hls_low = 1;
-    nsig_fetches = nsig_calls = nsig_saw_visitor = 0;
+    nsig_fetches = nsig_calls = nsig_saw_visitor = nsig_visionos_posts = 0;
     mr_http_set_fetch_override(nsig_fetch_override);
     mr_youtube_set_nsig_solver(nsig_solver, NULL);
     expect(mr_youtube_resolve_media_pair(
@@ -285,10 +292,10 @@ int main(int argc, char **argv)
            !strcmp(out,
                    "https://manifest.googlevideo.com/api/manifest/"
                    "hls_variant/n/solved/file/index.m3u8") &&
-           !audio_out[0] && nsig_fetches == 3 && nsig_calls == 1 &&
-           nsig_saw_visitor &&
+           !audio_out[0] && nsig_fetches == 4 && nsig_calls == 1 &&
+           nsig_visionos_posts == 1 && nsig_saw_visitor &&
            !strcmp(mr_youtube_last_client(), "WEB_SAFARI"),
-           "Safari HLS n challenge uses current player and native solver");
+           "VisionOS miss falls through to Safari native n solver");
     expect(mr_youtube_media_http_options_init(&youtube_options,
                                                &base_options) &&
            !strcmp(youtube_options.hls_audio_language, "en"),
