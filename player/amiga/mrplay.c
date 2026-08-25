@@ -1782,18 +1782,34 @@ int main(int argc, char **argv)
      * A direct URL can resolve successfully and still fail later (expired
      * signature, CDN/PO-token policy, malformed track). Validate both demuxes
      * before decoder setup and retry the same watch URL through the established
-     * muxed itag-18 path when either half is unusable. */
-    if (youtube_dual &&
-        (!dx || !audio_dx || !mr_demux_video(dx)->valid ||
-         !mr_demux_audio(audio_dx)->valid)) {
+     * muxed itag-18 path when either half is unusable.
+     *
+     * A recorded HLS ladder (VisionOS in particular - its master playlist is
+     * demuxed into video-only and audio-only renditions, unlike WEB_SAFARI's
+     * muxed one, and mr_hls.c only ever opens a single variant) can likewise
+     * resolve successfully and hand back a video-only stream. Same unusable-
+     * track symptom as a broken adaptive pair, so the same muxed fallback
+     * applies. */
+    int hls_vod_silent = !youtube_dual && dx &&
+                         youtube_kind == MR_YOUTUBE_MEDIA_HLS_VOD &&
+                         mr_demux_video(dx)->valid &&
+                         !mr_demux_audio(dx)->valid;
+    if ((youtube_dual &&
+         (!dx || !audio_dx || !mr_demux_video(dx)->valid ||
+          !mr_demux_audio(audio_dx)->valid)) ||
+        hls_vod_silent) {
         mr_http_options fallback_options = have_youtube_resolve_options
                                                ? youtube_resolve_options
                                                : http_options;
         char reason[MR_PLAYER_STATUS_TEXT_MAX];
-        printf("YouTube: adaptive tracks could not be opened (%s); "
-               "retrying muxed 360p\n",
-               mr_demux_last_open_error() ? mr_demux_last_open_error()
-                                          : "invalid track");
+        if (hls_vod_silent)
+            printf("YouTube: recorded HLS has no audio track (%s); "
+                   "retrying muxed 360p\n", mr_youtube_last_client());
+        else
+            printf("YouTube: adaptive tracks could not be opened (%s); "
+                   "retrying muxed 360p\n",
+                   mr_demux_last_open_error() ? mr_demux_last_open_error()
+                                              : "invalid track");
         if (audio_dx) { mr_demux_close(audio_dx); audio_dx = NULL; }
         if (dx) { mr_demux_close(dx); dx = NULL; }
         fallback_options.hls_low = 0;
