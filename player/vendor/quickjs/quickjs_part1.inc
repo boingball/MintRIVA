@@ -48,6 +48,12 @@
 #include "libunicode.h"
 #include "dtoa.h"
 
+#ifdef MR_QUICKJS_PORTABLE_LIBC
+#ifndef alloca
+#define alloca(size) __builtin_alloca(size)
+#endif
+#endif
+
 #define OPTIMIZE         1
 #define SHORT_OPCODES    1
 #if defined(__EMSCRIPTEN__)
@@ -56,7 +62,9 @@
 #define DIRECT_DISPATCH  1
 #endif
 
-#if defined(__APPLE__)
+#if defined(MR_QUICKJS_PORTABLE_LIBC)
+#define MALLOC_OVERHEAD  ((int)sizeof(size_t))
+#elif defined(__APPLE__)
 #define MALLOC_OVERHEAD  0
 #else
 #define MALLOC_OVERHEAD  8
@@ -2137,7 +2145,9 @@ void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque)
 /* default memory allocation functions with memory limitation */
 static size_t js_def_malloc_usable_size(const void *ptr)
 {
-#if defined(__APPLE__)
+#if defined(MR_QUICKJS_PORTABLE_LIBC)
+    return ((const size_t *)ptr)[-1];
+#elif defined(__APPLE__)
     return malloc_size(ptr);
 #elif defined(_WIN32)
     return _msize((void *)ptr);
@@ -2161,7 +2171,20 @@ static void *js_def_malloc(JSMallocState *s, size_t size)
     if (unlikely(s->malloc_size + size > s->malloc_limit))
         return NULL;
 
+#ifdef MR_QUICKJS_PORTABLE_LIBC
+    {
+        size_t *block;
+        if (size > SIZE_MAX - sizeof(*block))
+            return NULL;
+        block = malloc(size + sizeof(*block));
+        if (!block)
+            return NULL;
+        *block = size;
+        ptr = block + 1;
+    }
+#else
     ptr = malloc(size);
+#endif
     if (!ptr)
         return NULL;
 
@@ -2177,7 +2200,11 @@ static void js_def_free(JSMallocState *s, void *ptr)
 
     s->malloc_count--;
     s->malloc_size -= js_def_malloc_usable_size(ptr) + MALLOC_OVERHEAD;
+#ifdef MR_QUICKJS_PORTABLE_LIBC
+    free((size_t *)ptr - 1);
+#else
     free(ptr);
+#endif
 }
 
 static void *js_def_realloc(JSMallocState *s, void *ptr, size_t size)
@@ -2199,9 +2226,22 @@ static void *js_def_realloc(JSMallocState *s, void *ptr, size_t size)
     if (s->malloc_size + size - old_size > s->malloc_limit)
         return NULL;
 
+#ifdef MR_QUICKJS_PORTABLE_LIBC
+    {
+        size_t *block;
+        if (size > SIZE_MAX - sizeof(*block))
+            return NULL;
+        block = realloc((size_t *)ptr - 1, size + sizeof(*block));
+        if (!block)
+            return NULL;
+        *block = size;
+        ptr = block + 1;
+    }
+#else
     ptr = realloc(ptr, size);
     if (!ptr)
         return NULL;
+#endif
 
     s->malloc_size += js_def_malloc_usable_size(ptr) - old_size;
     return ptr;

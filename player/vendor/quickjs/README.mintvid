@@ -27,6 +27,11 @@ seeding.
 The unused upstream fenv.h include is omitted because Bebbo's AmigaOS C
 library does not provide that header; QuickJS 2026-06-04 makes no fenv calls.
 
+MR_QUICKJS_PORTABLE_LIBC maps alloca to GCC's builtin and adds a size prefix
+to QuickJS's default allocations. This replaces malloc_usable_size(), which
+the AmigaOS C library does not provide, while retaining the runtime's real
+192 MiB allocation ceiling.
+
 The upstream MIT licence is retained as LICENSE.
 
 For repository-tooling compatibility, the large upstream quickjs.c translation

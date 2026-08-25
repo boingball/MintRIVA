@@ -112,6 +112,7 @@ QUICKJS_ROOT = vendor/quickjs
 QUICKJS_FLAGS = -I$(QUICKJS_ROOT) -D_GNU_SOURCE -DMR_QUICKJS_NO_THREADS \
                 -DMR_QUICKJS_BYTECODE_BE \
                 -DMR_QUICKJS_PORTABLE_TIME \
+                -DMR_QUICKJS_PORTABLE_LIBC \
                 -DCONFIG_VERSION=\"2026-06-04\" -fwrapv
 QUICKJS_SRC = $(QUICKJS_ROOT)/quickjs.c $(QUICKJS_ROOT)/dtoa.c \
               $(QUICKJS_ROOT)/libregexp.c $(QUICKJS_ROOT)/libunicode.c \
