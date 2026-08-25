@@ -214,7 +214,7 @@ static __maybe_unused void re_string_list_dump(const char *str, const REStringLi
     j = 0;
     for(i = 0; i < s->hash_size; i++) {
         for(p = s->hash_table[i]; p != NULL; p = p->next) {
-            printf("  %d/%d: '", j, s->n_strings);
+        printf("  %d/%d: '", j, (int)s->n_strings);
             for(k = 0; k < p->len; k++) {
                 lre_print_char(p->buf[k], FALSE);
             }

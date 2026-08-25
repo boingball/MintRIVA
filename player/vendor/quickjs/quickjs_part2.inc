@@ -15008,7 +15008,7 @@ static __exception int ss_check(JSContext *ctx, StackSizeState *s,
             return -1;
         } else if (s->catch_pos_tab[pos] != catch_pos) {
             JS_ThrowInternalError(ctx, "inconsistent catch position: %d %d (pc=%d)",
-                                  s->catch_pos_tab[pos], catch_pos, pos);
+                                  (int)s->catch_pos_tab[pos], catch_pos, pos);
             return -1;
         } else {
             return 0;
@@ -17540,7 +17540,7 @@ static int JS_WriteObjectRec(BCWriterState *s, JSValueConst obj)
         break;
     default:
     invalid_tag:
-        JS_ThrowInternalError(s->ctx, "unsupported tag (%d)", tag);
+        JS_ThrowInternalError(s->ctx, "unsupported tag (%d)", (int)tag);
         goto fail;
     }
     return 0;

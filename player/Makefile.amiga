@@ -109,11 +109,15 @@ YTGUI_GT = amiga/youtube_gadtools.c youtube/mr_youtube_search.c \
            core/mr_play_options.c $(GUI_MENU)
 MINTAMP_ROOT ?= vendor/MintAMP
 QUICKJS_ROOT = vendor/quickjs
+# QuickJS is the first MintVID component to exercise JavaScript number
+# arithmetic heavily.  Keep the whole mrplay link soft-float: the release
+# profiles must remain usable on EC/no-FPU CPUs, and a Line-F instruction in
+# the separately created HLS process cannot be recovered by the main task.
 QUICKJS_FLAGS = -I$(QUICKJS_ROOT) -D_GNU_SOURCE -DMR_QUICKJS_NO_THREADS \
                 -DMR_QUICKJS_BYTECODE_BE \
                 -DMR_QUICKJS_PORTABLE_TIME \
                 -DMR_QUICKJS_PORTABLE_LIBC \
-                -DCONFIG_VERSION=\"2026-06-04\" -fwrapv
+                -DCONFIG_VERSION=\"2026-06-04\" -fwrapv -msoft-float
 QUICKJS_SRC = $(QUICKJS_ROOT)/quickjs.c $(QUICKJS_ROOT)/dtoa.c \
               $(QUICKJS_ROOT)/libregexp.c $(QUICKJS_ROOT)/libunicode.c \
               $(QUICKJS_ROOT)/cutils.c

@@ -992,7 +992,8 @@ static JSValue JS_ReadObjectRec(BCReaderState *s)
             bc_read_trace(s, "%u\n", val);
             if (val >= s->objects_count) {
                 return JS_ThrowSyntaxError(ctx, "invalid object reference (%u >= %u)",
-                                           val, s->objects_count);
+                                           (unsigned int)val,
+                                           (unsigned int)s->objects_count);
             }
             obj = JS_DupValue(ctx, JS_MKPTR(JS_TAG_OBJECT, s->objects[val]));
         }
@@ -6667,7 +6668,8 @@ static JSValue js_parseInt(JSContext *ctx, JSValueConst this_val,
                            int argc, JSValueConst *argv)
 {
     const char *str, *p;
-    int radix, flags;
+    int flags;
+    int32_t radix;
     JSValue ret;
 
     str = JS_ToCString(ctx, argv[0]);
@@ -9647,10 +9649,10 @@ static JSValue js_regexp_escape(JSContext *ctx, JSValueConst this_val,
             string_buffer_putc8(b, c);
         } else if (c < 256) {
         hex2:
-            snprintf(s, sizeof(s), "\\x%02x", c);
+            snprintf(s, sizeof(s), "\\x%02x", (unsigned int)c);
             string_buffer_puts8(b, s);
         } else if (is_surrogate(c) || lre_is_space(c)) {
-            snprintf(s, sizeof(s), "\\u%04x", c);
+            snprintf(s, sizeof(s), "\\u%04x", (unsigned int)c);
             string_buffer_puts8(b, s);
         } else {
             string_buffer_putc(b, c);
@@ -11561,7 +11563,7 @@ static int JS_ToQuotedString(JSContext *ctx, StringBuffer *b, JSValueConst val1)
             break;
         default:
             if (c < 32 || is_surrogate(c)) {
-                snprintf(buf, sizeof(buf), "\\u%04x", c);
+                snprintf(buf, sizeof(buf), "\\u%04x", (unsigned int)c);
                 if (string_buffer_puts8(b, buf))
                     goto fail;
             } else {
@@ -15473,7 +15475,7 @@ static __exception int remainingElementsCount_add(JSContext *ctx,
                                                   int addend)
 {
     JSValue val;
-    int remainingElementsCount;
+    int32_t remainingElementsCount;
 
     val = JS_GetPropertyUint32(ctx, resolve_element_env, 0);
     if (JS_IsException(val))
@@ -15504,7 +15506,8 @@ static JSValue js_promise_all_resolve_element(JSContext *ctx,
     JSValueConst resolve = func_data[3];
     JSValueConst resolve_element_env = func_data[4];
     JSValue ret, obj;
-    int is_zero, index;
+    int is_zero;
+    int32_t index;
 
     if (JS_ToInt32(ctx, &index, func_data[1]))
         return JS_EXCEPTION;

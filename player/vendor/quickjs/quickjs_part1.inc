@@ -3089,7 +3089,7 @@ static __maybe_unused void JS_DumpAtoms(JSRuntime *rt)
             printf("  %d: { %d %08x ", i, p->atom_type, p->hash);
             if (!(p->len == 0 && p->is_wide_char != 0))
                 JS_DumpString(rt, p);
-            printf(" %d }\n", p->hash_next);
+            printf(" %d }\n", (int)p->hash_next);
         }
     }
     printf("}\n");
@@ -3595,7 +3595,8 @@ static const char *JS_AtomGetStrRT(JSRuntime *rt, char *buf, int buf_size,
                                    JSAtom atom)
 {
     if (__JS_AtomIsTaggedInt(atom)) {
-        snprintf(buf, buf_size, "%u", __JS_AtomToUInt32(atom));
+        snprintf(buf, buf_size, "%u",
+                 (unsigned int)__JS_AtomToUInt32(atom));
     } else {
         JSAtomStruct *p;
         assert(atom < rt->atom_size);
@@ -7486,7 +7487,8 @@ static int find_line_num(JSContext *ctx, JSFunctionBytecode *b,
                          uint32_t pc_value, int *pcol_num)
 {
     const uint8_t *p_end, *p;
-    int new_line_num, line_num, pc, v, ret, new_col_num, col_num;
+    int new_line_num, line_num, pc, ret, new_col_num, col_num;
+    int32_t v;
     uint32_t val;
     unsigned int op;
 
@@ -11692,7 +11694,7 @@ static __maybe_unused void js_bigint_dump1(JSContext *ctx, const char *str,
     printf("%s: ", str);
     for(i = len - 1; i >= 0; i--) {
 #if JS_LIMB_BITS == 32
-        printf(" %08x", tab[i]);
+        printf(" %08x", (unsigned int)tab[i]);
 #else
         printf(" %016" PRIx64, tab[i]);
 #endif
@@ -13874,7 +13876,8 @@ static void js_print_string(JSPrintValueState *s, JSValueConst val)
     js_putc(s, sep);
     if (js_string_get_length(val) > s->options.max_string_length) {
         uint32_t n = js_string_get_length(val) - s->options.max_string_length;
-        js_printf(s, "... %u more character%s", n, n > 1 ? "s" : "");
+        js_printf(s, "... %u more character%s", (unsigned int)n,
+                  n > 1 ? "s" : "");
     }
 }
 
@@ -13908,7 +13911,7 @@ static void js_print_atom(JSPrintValueState *s, JSAtom atom)
 {
     int i;
     if (__JS_AtomIsTaggedInt(atom)) {
-        js_printf(s, "%u", __JS_AtomToUInt32(atom));
+        js_printf(s, "%u", (unsigned int)__JS_AtomToUInt32(atom));
     } else if (atom == JS_ATOM_NULL) {
         js_puts(s, "<null>");
     } else {
@@ -13969,7 +13972,8 @@ static void js_print_more_items(JSPrintValueState *s, int *pcomma_state,
                                 uint32_t n)
 {
     js_print_comma(s, pcomma_state);
-    js_printf(s, "... %u more item%s", n, n > 1 ? "s" : "");
+    js_printf(s, "... %u more item%s", (unsigned int)n,
+              n > 1 ? "s" : "");
 }
 
 /* similar to js_regexp_toString() but without side effect */
@@ -14105,7 +14109,8 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
             if (p->u.array.count < len) {
                 n = len - p->u.array.count;
                 js_print_comma(s, &comma_state);
-                js_printf(s, "<%u empty item%s>", n, n > 1 ? "s" : "");
+                js_printf(s, "<%u empty item%s>", (unsigned int)n,
+                          n > 1 ? "s" : "");
             }
         }
     } else if (p->class_id >= JS_CLASS_UINT8C_ARRAY && p->class_id <= JS_CLASS_FLOAT64_ARRAY) {
@@ -14114,7 +14119,7 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
         int64_t v;
 
         js_print_atom(s, rt->class_array[p->class_id].class_name);
-        js_printf(s, "(%u) [ ", p->u.array.count);
+        js_printf(s, "(%u) [ ", (unsigned int)p->u.array.count);
 
         is_array = TRUE;
         len1 = min_uint32(p->u.array.count, s->options.max_item_count);
@@ -14186,7 +14191,7 @@ static void js_print_object(JSPrintValueState *s, JSObject *p)
         if (!ms)
             goto default_obj;
         js_print_atom(s, rt->class_array[p->class_id].class_name);
-        js_printf(s, "(%u) { ", ms->record_count);
+        js_printf(s, "(%u) { ", (unsigned int)ms->record_count);
         i = 0;
         list_for_each(el, &ms->records) {
             JSMapRecord *mr = list_entry(el, JSMapRecord, link);
@@ -14376,13 +14381,14 @@ static void js_print_value(JSPrintValueState *s, JSValueConst val)
             /* In order to avoid allocations we just dump the limbs */
             sgn = js_bigint_sign(p);
             if (sgn)
-                js_printf(s, "BigInt.asIntN(%d,", p->len * JS_LIMB_BITS);
+                js_printf(s, "BigInt.asIntN(%d,",
+                          (int)(p->len * JS_LIMB_BITS));
             js_printf(s, "0x");
             for(i = p->len - 1; i >= 0; i--) {
                 if (i != p->len - 1)
                     js_putc(s, '_');
 #if JS_LIMB_BITS == 32
-                js_printf(s, "%08x", p->tab[i]);
+                js_printf(s, "%08x", (unsigned int)p->tab[i]);
 #else
                 js_printf(s, "%016" PRIx64, p->tab[i]);
 #endif
@@ -14396,7 +14402,8 @@ static void js_print_value(JSPrintValueState *s, JSValueConst val)
     case JS_TAG_STRING_ROPE:
         if (s->options.raw_dump && tag == JS_TAG_STRING_ROPE) {
             JSStringRope *r = JS_VALUE_GET_STRING_ROPE(val);
-            js_printf(s, "[rope len=%d depth=%d]", r->len, r->depth);
+            js_printf(s, "[rope len=%d depth=%d]",
+                      (int)r->len, (int)r->depth);
         } else {
             js_print_string(s, val);
         }
@@ -14443,7 +14450,7 @@ static void js_print_value(JSPrintValueState *s, JSValueConst val)
         js_puts(s, "[module]");
         break;
     default:
-        js_printf(s, "[unknown tag %d]", tag);
+        js_printf(s, "[unknown tag %d]", (int)tag);
         break;
     }
 }
