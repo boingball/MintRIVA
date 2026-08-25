@@ -1,37 +1,35 @@
 #!/bin/sh
-# Reject hardware floating-point instructions in a finished Amiga executable.
+# Reject hardware floating-point instructions in generated Amiga assembly.
 #
 # QuickJS implements JavaScript Number and therefore needs floating-point
 # arithmetic, but MintVID's classic releases must remain usable on CPUs with no
-# FPU (including PiStorm configurations).  -msoft-float protects code generated
-# from MintVID/QuickJS sources; this linked-image check also catches an FPU
-# implementation pulled from libgcc, libm, or another static archive.
+# FPU (including PiStorm configurations).  Each QuickJS source is compiled to
+# assembly with the release flags and checked before the normal link.
+#
+# Do not scan the linked Amiga Hunk with objdump: Bebbo places constant tables
+# and the embedded EJS bytecode in code hunks, so a linear disassembler decodes
+# data as convincing but bogus FPU instructions.
 set -eu
 
-if [ "$#" -ne 2 ]; then
-    echo "usage: $0 <amiga-executable> <m68k-objdump>" >&2
+if [ "$#" -lt 1 ]; then
+    echo "usage: $0 <generated-assembly> [...]" >&2
     exit 2
 fi
 
-binary=$1
-objdump=$2
-listing=$(mktemp "${TMPDIR:-/tmp}/mintvid-no-fpu.XXXXXX")
 matches=$(mktemp "${TMPDIR:-/tmp}/mintvid-no-fpu-matches.XXXXXX")
-trap 'rm -f "$listing" "$matches"' EXIT HUP INT TERM
+trap 'rm -f "$matches"' EXIT HUP INT TERM
 
-"$objdump" -d "$binary" > "$listing"
-
-# Binutils tab-separates address, encoded words, and mnemonic.  Inspecting only
-# field three is important: ordinary branch displacements often contain words
-# such as fff4, which must not be mistaken for an instruction name.  No integer
-# m68k mnemonic begins with lower-case 'f'.
-awk -F '\t' '
-    tolower($3) ~ /^[[:space:]]*f[a-z][a-z0-9.]*/ { print }
-' "$listing" > "$matches"
+# No integer m68k instruction mnemonic begins with lower-case 'f'.  Requiring
+# whitespace after it excludes labels such as "fail:".
+awk '
+    tolower($0) ~ /^[[:space:]]*f[a-z][a-z0-9.]*[[:space:]]/ {
+        print FILENAME ":" FNR ":" $0
+    }
+' "$@" > "$matches"
 if [ -s "$matches" ]; then
-    echo "ERROR: hardware FPU instructions found in $binary:" >&2
+    echo "ERROR: hardware FPU instructions found in generated assembly:" >&2
     sed -n '1,40p' "$matches" >&2
     exit 1
 fi
 
-echo "No hardware FPU instructions found in $binary"
+echo "No hardware FPU instructions emitted for QuickJS"

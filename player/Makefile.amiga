@@ -332,6 +332,22 @@ mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(KALMS_OBJ) \
 	    $(LDFLAGS) -lm
 
+# QuickJS uses JavaScript Number heavily, but all classic MintVID profiles are
+# deliberately no-FPU. Compile every QuickJS translation unit to assembly with
+# the exact release flags and reject real hardware-FPU mnemonics. A linked Hunk
+# cannot be checked reliably because Bebbo stores const data/embedded bytecode
+# in code hunks and objdump consequently interprets some data as instructions.
+QUICKJS_ASM_CHECK_DIR = build/quickjs-asm-$(CPU)
+quickjs-no-fpu-check: check-cc $(QUICKJS_SRC) tests/check_amiga_no_fpu.sh
+	@mkdir -p $(QUICKJS_ASM_CHECK_DIR)
+	@set -e; for source in $(QUICKJS_SRC); do \
+	    name=$$(basename "$$source" .c); \
+	    echo "Checking no-FPU codegen: $$source"; \
+	    $(CC) $(CFLAGS) $(QUICKJS_FLAGS) -S \
+	        -o "$(QUICKJS_ASM_CHECK_DIR)/$$name.s" "$$source"; \
+	done
+	@sh tests/check_amiga_no_fpu.sh $(QUICKJS_ASM_CHECK_DIR)/*.s
+
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
 	  echo "ERROR: vasmm68k_mot is required for the Kalms Motorola-syntax source."; \
@@ -481,4 +497,4 @@ release:
 	@echo "For Aminet binary distribution, also provide corresponding source from a recursive checkout."
 
 .PHONY: all release clean check-cc check-mintamp check-libavc check-kalms \
-	kalms_c2p_check
+	kalms_c2p_check quickjs-no-fpu-check

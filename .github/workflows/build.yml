@@ -95,9 +95,10 @@ jobs:
                 AMIGA_ROOT="$AMIGA_ROOT" \
                 CPU=${{ matrix.cpu }} \
                 SSL=1 SSLCERTS=1
-              AMIGA_OBJDUMP="$("$AMIGA_GCC" -print-prog-name=objdump)"
-              test -x "$AMIGA_OBJDUMP"
-              sh tests/check_amiga_no_fpu.sh mrplay "$AMIGA_OBJDUMP"
+              make -f Makefile.amiga quickjs-no-fpu-check \
+                AMIGA_ROOT="$AMIGA_ROOT" \
+                CPU=${{ matrix.cpu }} \
+                SSL=1 SSLCERTS=1
             '
 
       - name: Confirm the programs were produced
