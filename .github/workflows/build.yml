@@ -70,6 +70,10 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [68030, 68040, 68060]
 
     steps:
       - name: Check out the code and submodules
@@ -89,7 +93,11 @@ jobs:
               "$AMIGA_GCC" --version | head -1
               make -f Makefile.amiga all \
                 AMIGA_ROOT="$AMIGA_ROOT" \
+                CPU=${{ matrix.cpu }} \
                 SSL=1 SSLCERTS=1
+              AMIGA_OBJDUMP="$("$AMIGA_GCC" -print-prog-name=objdump)"
+              test -x "$AMIGA_OBJDUMP"
+              sh tests/check_amiga_no_fpu.sh mrplay "$AMIGA_OBJDUMP"
             '
 
       - name: Confirm the programs were produced
@@ -102,7 +110,7 @@ jobs:
       - name: Upload compiled programs
         uses: actions/upload-artifact@v4
         with:
-          name: MintVID-AmigaOS
+          name: MintVID-AmigaOS-${{ matrix.cpu }}
           path: |
             player/mrplay
             player/MintVID
