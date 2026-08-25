@@ -58,7 +58,10 @@ static int nsig_fetch_override(const char *url,
                               "https://www.youtube.com/s/player/test/base.js"))
         return return_fixture("synthetic current player", out, out_len,
                               max_size);
-    if (post_json && strstr(url, "/youtubei/v1/player?key=test-key")) {
+    if (post_json &&
+        (strstr(url, "/youtubei/v1/player?key=test-key") ||
+         (strstr(url, "/youtubei/v1/player?prettyPrint=false") &&
+          strstr(post_json, "\"clientName\":\"VISIONOS\"")))) {
         /* Low now tries anonymous VisionOS before Safari. Keep this fixture
          * focused on Safari n solving by making the VisionOS attempt empty. */
         if (strstr(post_json, "\"clientName\":\"VISIONOS\"")) {
