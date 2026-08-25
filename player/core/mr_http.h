@@ -78,6 +78,13 @@ int mr_http_post_json(const char *url, const mr_http_options *options,
                       const char *json, char **out, size_t *out_len,
                       size_t max_size);
 
+/* mr_youtube.c deliberately includes mr_youtube.h + mr_alloc.h before this
+ * header. Only in that translation unit, install the narrow WEB_SAFARI retry
+ * adapter; generic HTTP users and mr_http.c itself remain untouched. */
+#if defined(MR_YOUTUBE_H) && defined(MR_ALLOC_H)
+#include "mr_youtube_http_retry.h"
+#endif
+
 /* Unconditional variants of the two functions above: always perform the fetch
  * on the calling task, ignoring any installed override. Only the override's
  * own implementation should call these - everyone else wants the (possibly
