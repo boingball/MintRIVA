@@ -17,6 +17,7 @@
 
 #define YOUTUBE_PAGE_MAX (4UL * 1024 * 1024)
 #define YOUTUBE_PLAYER_JS_MAX (8UL * 1024 * 1024)
+#define YOUTUBE_VISITOR_MAX 1024
 #define YOUTUBE_BROWSER_UA \
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " \
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -42,6 +43,8 @@
 #define YOUTUBE_VISIONOS_UA \
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) " \
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+#define YOUTUBE_VISIONOS_API_URL \
+    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
 static mr_youtube_media_kind g_last_kind = MR_YOUTUBE_MEDIA_NONE;
@@ -272,6 +275,32 @@ static int extract_config_string(const char *html, const char *name,
     if (*p++ != ':') return 0;
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
     return decode_json_string(p, out, out_size);
+}
+
+static int extract_config_string_any(const char *html, const char *name,
+                                     char *out, size_t out_size)
+{
+    char key[80];
+    const char *p;
+    int n = snprintf(key, sizeof key, "\"%s\"", name);
+    if (!html || !name || !out || out_size < 2 ||
+        n <= 0 || (size_t)n >= sizeof key)
+        return 0;
+    p = html;
+    while ((p = strstr(p, key)) != NULL) {
+        const char *value = p + (size_t)n;
+        while (*value == ' ' || *value == '\t' ||
+               *value == '\r' || *value == '\n') value++;
+        if (*value++ == ':') {
+            while (*value == ' ' || *value == '\t' ||
+                   *value == '\r' || *value == '\n') value++;
+            if (decode_json_string(value, out, out_size) && out[0])
+                return 1;
+        }
+        p += (size_t)n;
+    }
+    out[0] = '\0';
+    return 0;
 }
 
 static int extract_config_uint(const char *html, const char *name,
@@ -939,8 +968,9 @@ int mr_youtube_resolve_media_pair(const char *url,
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
-    char visitor_data[256], visitor_json[320];
-    char api_url[256], json[1536], player_js_url[MR_HTTP_URL_MAX];
+    char visitor_data[YOUTUBE_VISITOR_MAX];
+    char visitor_json[YOUTUBE_VISITOR_MAX + 32];
+    char api_url[256], json[2048], player_js_url[MR_HTTP_URL_MAX];
     youtube_nsig_attempt nsig_attempt;
     int n, ok, result, saw_n_challenge = 0;
     unsigned signature_timestamp = 0;
@@ -1048,13 +1078,13 @@ int mr_youtube_resolve_media_pair(const char *url,
         (void)extract_config_uint(html, "signatureTimestamp",
                                   &signature_timestamp);
     (void)extract_player_js_url(html, player_js_url, sizeof player_js_url);
-    if ((!extract_config_string(html, "VISITOR_DATA",
-                                visitor_data, sizeof visitor_data) &&
-         !extract_config_string(html,
-                                "INNERTUBE_CONTEXT_CLIENT_VISITOR_DATA",
-                                visitor_data, sizeof visitor_data) &&
-         !extract_config_string(html, "visitorData",
-                                visitor_data, sizeof visitor_data)) ||
+    if ((!extract_config_string_any(html, "VISITOR_DATA",
+                                    visitor_data, sizeof visitor_data) &&
+         !extract_config_string_any(html,
+                                    "INNERTUBE_CONTEXT_CLIENT_VISITOR_DATA",
+                                    visitor_data, sizeof visitor_data) &&
+         !extract_config_string_any(html, "visitorData",
+                                    visitor_data, sizeof visitor_data)) ||
         strpbrk(visitor_data, "\"\\"))
         visitor_data[0] = '\0';
     if (visitor_data[0]) {
@@ -1063,7 +1093,8 @@ int mr_youtube_resolve_media_pair(const char *url,
         if (n <= 0 || (size_t)n >= sizeof visitor_json)
             visitor_json[0] = '\0';
         else
-            printf("YouTube: reusing watch-page visitor identity\n");
+            printf("YouTube: reusing watch-page visitor identity (%lu bytes)\n",
+                   (unsigned long)strlen(visitor_data));
     }
 
     mr_free(html);
@@ -1112,7 +1143,8 @@ int mr_youtube_resolve_media_pair(const char *url,
             return 0;
         printf("YouTube: trying VISIONOS recorded HLS%s\n",
                signature_timestamp ? " with player STS" : "");
-        result = try_player_media(api_url, &visionos_options, json,
+        result = try_player_media(YOUTUBE_VISIONOS_API_URL,
+                                  &visionos_options, json,
                                   "VISIONOS", YOUTUBE_VISIONOS_UA,
                                   video_out, video_out_size,
                                   audio_out, audio_out_size,
