@@ -358,6 +358,7 @@ static size_t mr_yt_build_safari_api_headers(const char *request,
     if (!request || !out || out_size < 2 ||
         strncmp(request, player_post, sizeof player_post - 1) ||
         !strstr(request, "Safari/605.1.15") ||
+        !strstr(request, "\"clientName\":\"WEB\"") ||
         strstr(request, "\r\nX-YouTube-Client-Name:"))
         return 0;
 
