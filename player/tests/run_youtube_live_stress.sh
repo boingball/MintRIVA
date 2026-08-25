@@ -40,8 +40,10 @@ $CC -O2 -Wall -Wextra -std=c99 -g \
     tests/mr_youtube_live_check.c \
     core/mr_youtube.c core/mr_youtube_nsig.c \
     core/mr_http.c core/mr_source.c core/mr_hls.c \
-    "$QUICKJS_ROOT/quickjs.c" "$QUICKJS_ROOT/dtoa.c \
-    "$QUICKJS_ROOT/libregexp.c" "$QUICKJS_ROOT/libunicode.c \
+    "$QUICKJS_ROOT/quickjs.c" \
+    "$QUICKJS_ROOT/dtoa.c" \
+    "$QUICKJS_ROOT/libregexp.c" \
+    "$QUICKJS_ROOT/libunicode.c" \
     "$QUICKJS_ROOT/cutils.c" \
     vendor/yt-dlp-ejs/yt_solver_lib_le.c \
     vendor/yt-dlp-ejs/yt_solver_core_le.c \
