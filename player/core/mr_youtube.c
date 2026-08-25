@@ -151,9 +151,6 @@ int mr_youtube_http_options_init(mr_http_options *out,
         ua = base->user_agent;
     if (base && base->referer[0]) referer = base->referer;
     if (!mr_http_options_init(out, ua, referer)) return 0;
-    /* Resolving YouTube costs several HTTPS round trips. Its six-segment live
-     * window can advance while that happens, so starting with its oldest item
-     * commonly produces a Google Video 403 before playback even begins. */
     out->hls_live_start_segments = YOUTUBE_LIVE_START_SEGMENTS;
     out->hls_buffer_segments = 1;
     if (base) {
@@ -173,8 +170,6 @@ static int hex_value(int c)
     return -1;
 }
 
-/* Decode one JSON string. YouTube manifest URLs are ASCII; accepting only
- * ASCII \u escapes avoids needing a Unicode implementation in this tiny path. */
 static int decode_json_string(const char *p, char *out, size_t out_size)
 {
     size_t used = 0;
@@ -218,10 +213,6 @@ static int is_google_hls(const char *url)
     return !strncmp(url, prefix, sizeof prefix - 1) && strstr(url, ".m3u8");
 }
 
-/* YouTube's /n/<value> path component is a throttling challenge, unrelated to
- * a PO token. The value must be transformed by code extracted from the current
- * player JavaScript before GVS will serve the media. mrplay may install the
- * isolated QuickJS callback below; never hand an unsolved URL to HLS. */
 static int manifest_needs_n_transform(const char *url)
 {
     return url && strstr(url, "/n/") != NULL;
@@ -448,11 +439,6 @@ static int text_contains_nocase(const char *text, const char *needle)
     return 0;
 }
 
-/* WEB_SAFARI recorded HLS duplicates every video resolution for each dubbed
- * audio track. The master playlist labels those variants with
- * YT-EXT-AUDIO-CONTENT-ID, while the authoritative "original"/default flag
- * lives in streamingData's audioTrack objects. Preserve that language code so
- * mr_hls can choose quality within the original-language variants. */
 static int extract_hls_audio_language(const char *json,
                                       char *out, size_t out_size)
 {
@@ -822,8 +808,6 @@ static int try_native_n_transform(youtube_nsig_attempt *attempt,
     return 1;
 }
 
-/* Returns 1 for immediately usable media, -1 when media was present but
- * carried an unsolved n challenge, and 0 for a failed/no-media reply. */
 static int try_player_media(const char *api_url,
                             const mr_http_options *options,
                             const char *json, const char *client,
@@ -857,9 +841,6 @@ static int try_player_media(const char *api_url,
             printf("YouTube: native QuickJS n challenge solved\n");
         }
     }
-    /* A successfully transformed path still contains /n/<new-value>; the
-     * callback result, not the continued presence of the component, tells us
-     * it is solved. */
     if (ok && (nsig_solved || !manifest_needs_n_transform(video_out))) {
         g_last_client = client;
         g_last_media_ua = media_ua;
@@ -1034,10 +1015,6 @@ int mr_youtube_resolve_media_pair(const char *url,
         return 1;
     }
 
-    /* Modern watch pages often omit streamingData even for a public live
-     * stream. The same page still publishes its Innertube API key and current
-     * WEB client version; use those to ask the lightweight player endpoint for
-     * the authoritative streamingData object. */
     if (!mr_youtube_extract_video_id(url, video_id) ||
         !extract_config_string(html, "INNERTUBE_API_KEY",
                                api_key, sizeof api_key) ||
@@ -1067,10 +1044,6 @@ int mr_youtube_resolve_media_pair(const char *url,
         return 0;
     }
 
-    /* Web player requests normally carry the current player's signature
-     * timestamp. It is not itself a PO token, and the Safari HLS manifest may
-     * still be returned without it, but preserve it when the watch page makes
-     * the value available. */
     if (!extract_config_uint(html, "STS", &signature_timestamp))
         (void)extract_config_uint(html, "signatureTimestamp",
                                   &signature_timestamp);
@@ -1098,20 +1071,38 @@ int mr_youtube_resolve_media_pair(const char *url,
     nsig_attempt.player_url = player_js_url;
     nsig_attempt.options = &fetch_options;
 
-    /* Current yt-dlp uses the anonymous VISIONOS client as its JS-less default.
-     * It provides a full recorded-video HLS ladder without the WEB_SAFARI
-     * trusted-session lottery. Keep this first experiment Low-only so the
-     * established Turbo/TurboGT/Turbo+ paths remain unchanged. */
     if (want_low_adaptive) {
-        n = snprintf(json, sizeof json,
-                     "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
-                     "\"racyCheckOk\":true,\"context\":{\"client\":{"
-                     "\"clientName\":\"VISIONOS\",\"clientVersion\":\"%s\","
-                     "\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\","
-                     "\"userAgent\":\"%s\",\"osName\":\"visionOS\","
-                     "\"osVersion\":\"26.5.23O471\",\"hl\":\"en\","
-                     "\"gl\":\"GB\"}}}",
-                     video_id, YOUTUBE_VISIONOS_VERSION, YOUTUBE_VISIONOS_UA);
+        if (signature_timestamp)
+            n = snprintf(json, sizeof json,
+                         "{\"context\":{\"client\":{"
+                         "%s"
+                         "\"clientName\":\"VISIONOS\",\"clientVersion\":\"%s\","
+                         "\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\","
+                         "\"userAgent\":\"%s\",\"osName\":\"visionOS\","
+                         "\"osVersion\":\"26.5.23O471\",\"hl\":\"en\","
+                         "\"timeZone\":\"UTC\",\"utcOffsetMinutes\":0}},"
+                         "\"videoId\":\"%s\",\"playbackContext\":{"
+                         "\"contentPlaybackContext\":{"
+                         "\"html5Preference\":\"HTML5_PREF_WANTS\","
+                         "\"signatureTimestamp\":%u}},"
+                         "\"contentCheckOk\":true,\"racyCheckOk\":true}",
+                         visitor_json, YOUTUBE_VISIONOS_VERSION,
+                         YOUTUBE_VISIONOS_UA, video_id, signature_timestamp);
+        else
+            n = snprintf(json, sizeof json,
+                         "{\"context\":{\"client\":{"
+                         "%s"
+                         "\"clientName\":\"VISIONOS\",\"clientVersion\":\"%s\","
+                         "\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\","
+                         "\"userAgent\":\"%s\",\"osName\":\"visionOS\","
+                         "\"osVersion\":\"26.5.23O471\",\"hl\":\"en\","
+                         "\"timeZone\":\"UTC\",\"utcOffsetMinutes\":0}},"
+                         "\"videoId\":\"%s\",\"playbackContext\":{"
+                         "\"contentPlaybackContext\":{"
+                         "\"html5Preference\":\"HTML5_PREF_WANTS\"}},"
+                         "\"contentCheckOk\":true,\"racyCheckOk\":true}",
+                         visitor_json, YOUTUBE_VISIONOS_VERSION,
+                         YOUTUBE_VISIONOS_UA, video_id);
         if (n <= 0 || (size_t)n >= sizeof json) {
             mr_source_set_error("YouTube VisionOS request is too large");
             return 0;
@@ -1119,7 +1110,8 @@ int mr_youtube_resolve_media_pair(const char *url,
         if (!mr_http_options_init(&visionos_options, YOUTUBE_VISIONOS_UA,
                                   YOUTUBE_REFERER))
             return 0;
-        printf("YouTube: trying VISIONOS recorded HLS\n");
+        printf("YouTube: trying VISIONOS recorded HLS%s\n",
+               signature_timestamp ? " with player STS" : "");
         result = try_player_media(api_url, &visionos_options, json,
                                   "VISIONOS", YOUTUBE_VISIONOS_UA,
                                   video_out, video_out_size,
@@ -1129,9 +1121,6 @@ int mr_youtube_resolve_media_pair(const char *url,
         if (result < 0) saw_n_challenge = 1;
     }
 
-    /* Safari remains a best-effort recorded-video fallback. YouTube may return
-     * a pre-muxed HLS ladder, but availability is selective/trusted-session
-     * dependent, so Low now prefers VisionOS before reaching this path. */
     if (want_adaptive) {
         if (signature_timestamp)
             n = snprintf(json, sizeof json,
@@ -1180,9 +1169,6 @@ int mr_youtube_resolve_media_pair(const char *url,
         if (result < 0) saw_n_challenge = 1;
     }
 
-    /* Streamlink's current live-only YouTube implementation uses this Android
-     * profile without a JavaScript challenge solver. Prefer it because its HLS
-     * response can avoid the WEB client's /n/ path challenge entirely. */
     n = snprintf(json, sizeof json,
                  "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
                  "\"racyCheckOk\":true,\"context\":{\"client\":{"
@@ -1206,11 +1192,6 @@ int mr_youtube_resolve_media_pair(const char *url,
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
-    /* The live-oriented Android request above deliberately asks for an
-     * embedded desktop playback context. That is useful for HLS but can omit
-     * the adaptiveFormats used by recorded videos. For Low and 720p requests,
-     * retry with YouTube's normal current Android VOD identity before moving
-     * on to the remaining compatibility clients. */
     if (want_adaptive) {
         n = snprintf(json, sizeof json,
                      "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
@@ -1236,8 +1217,6 @@ int mr_youtube_resolve_media_pair(const char *url,
         if (result < 0) saw_n_challenge = 1;
     }
 
-    /* Android VR still exposes the classic muxed 360p MP4 on many public
-     * recorded videos and may also expose the selected adaptive tracks. */
     n = snprintf(json, sizeof json,
                  "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
                  "\"racyCheckOk\":true,\"context\":{\"client\":{"
@@ -1263,10 +1242,6 @@ int mr_youtube_resolve_media_pair(const char *url,
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
-    /* Prefer the embedded WEB client next for embeddable public streams; its
-     * thirdParty context identifies a genuine external embed origin. Live HLS
-     * currently does not require a GVS Proof-of-Origin token, so a later media
-     * 403 must not automatically be diagnosed as a missing token. */
     n = snprintf(json, sizeof json,
                  "{\"context\":{\"client\":{"
                  "\"clientName\":\"WEB_EMBEDDED_PLAYER\","
@@ -1287,9 +1262,6 @@ int mr_youtube_resolve_media_pair(const char *url,
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
 
-    /* Non-embeddable streams may reject WEB_EMBEDDED_PLAYER. Keep the normal
-     * WEB request as a compatibility fallback, although deployments enforcing
-     * a GVS PO token can still reject its eventual media segments. */
     n = snprintf(json, sizeof json,
                  "{\"context\":{\"client\":{\"clientName\":\"WEB\","
                  "\"clientVersion\":\"%s\",\"hl\":\"en\",\"gl\":\"GB\"}},"
