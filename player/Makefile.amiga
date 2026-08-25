@@ -109,20 +109,37 @@ YTGUI_GT = amiga/youtube_gadtools.c youtube/mr_youtube_search.c \
            core/mr_play_options.c $(GUI_MENU)
 MINTAMP_ROOT ?= vendor/MintAMP
 QUICKJS_ROOT = vendor/quickjs
-# QuickJS is the first MintVID component to exercise JavaScript number
-# arithmetic heavily.  Keep the whole mrplay link soft-float: the release
-# profiles must remain usable on EC/no-FPU CPUs, and a Line-F instruction in
-# the separately created HLS process cannot be recovered by the main task.
+# QuickJS is the first MintVID component to exercise JavaScript Number
+# arithmetic heavily.  Bebbo's 68040/68060 libgcc/libm multilibs use the
+# hardware-FPU ABI even when the C translation units are built with
+# -msoft-float (the linked helpers contain real F2xx Line-F instructions).
+# Build the complete JavaScript island for the 68030 software-float ABI and
+# satisfy its math references from the matching 68030 archives.  68030 code is
+# valid on every supported CPU, while the rest of mrplay retains its selected
+# 68030/68040/68060 optimisation profile.
 QUICKJS_FLAGS = -I$(QUICKJS_ROOT) -D_GNU_SOURCE -DMR_QUICKJS_NO_THREADS \
                 -DMR_QUICKJS_BYTECODE_BE \
                 -DMR_QUICKJS_PORTABLE_TIME \
                 -DMR_QUICKJS_PORTABLE_LIBC \
-                -DCONFIG_VERSION=\"2026-06-04\" -fwrapv -msoft-float
+                -DCONFIG_VERSION=\"2026-06-04\" -fwrapv \
+                -m68030 -msoft-float
 QUICKJS_SRC = $(QUICKJS_ROOT)/quickjs.c $(QUICKJS_ROOT)/dtoa.c \
               $(QUICKJS_ROOT)/libregexp.c $(QUICKJS_ROOT)/libunicode.c \
               $(QUICKJS_ROOT)/cutils.c
 EJS_BYTECODE = vendor/yt-dlp-ejs/yt_solver_lib_be.c \
                vendor/yt-dlp-ejs/yt_solver_core_be.c
+QUICKJS_BRIDGE_SRC = core/mr_youtube_nsig.c
+QUICKJS_BUILD_DIR = build/quickjs-nofpu-$(CPU)
+QUICKJS_OBJ = $(patsubst %.c,$(QUICKJS_BUILD_DIR)/%.o,\
+              $(QUICKJS_SRC) $(QUICKJS_BRIDGE_SRC) $(EJS_BYTECODE))
+# Ask the selected compiler where its 68030 software-float multilibs live.
+# These archives must precede the ordinary CPU-profile libraries on the final
+# link so every QuickJS double helper is resolved without touching the
+# 68040/68060 hardware-FPU variants.
+QUICKJS_SOFT_LIBM = $(shell $(CC) -m68030 -msoft-float -noixemul \
+                     -print-file-name=libm.a)
+QUICKJS_SOFT_LIBGCC = $(shell $(CC) -m68030 -msoft-float -noixemul \
+                       -print-file-name=libgcc.a)
 
 # MintAMP's own hand-asm (real/amiga_m68k_polyphase.S,
 # amiga_m68k_planars8.S, and the AMIGA_M68K_ASM_* inline asm throughout
@@ -324,13 +341,22 @@ check-cc:
 	@echo "using CC = $(CC)"
 
 mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) \
-        core/mr_youtube_nsig.c core/mr_youtube_nsig.h \
-        $(QUICKJS_SRC) $(EJS_BYTECODE) $(KALMS_OBJ) | check-libavc
-	$(CC) $(CFLAGS) $(QUICKJS_FLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) \
-	    -o $@ $(PLAY) $(CORE) core/mr_youtube_nsig.c $(QUICKJS_SRC) \
-	    $(EJS_BYTECODE) \
+        core/mr_youtube_nsig.h $(QUICKJS_OBJ) $(KALMS_OBJ) | check-libavc
+	@test -f "$(QUICKJS_SOFT_LIBM)" || { \
+	  echo "ERROR: 68030 software-float libm not found: $(QUICKJS_SOFT_LIBM)"; \
+	  exit 1; }
+	@test -f "$(QUICKJS_SOFT_LIBGCC)" || { \
+	  echo "ERROR: 68030 software-float libgcc not found: $(QUICKJS_SOFT_LIBGCC)"; \
+	  exit 1; }
+	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) \
+	    -o $@ $(PLAY) $(CORE) $(QUICKJS_OBJ) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(KALMS_OBJ) \
-	    $(LDFLAGS) -lm
+	    $(QUICKJS_SOFT_LIBM) $(QUICKJS_SOFT_LIBGCC) $(LDFLAGS)
+
+$(QUICKJS_BUILD_DIR)/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(filter-out -m68030 -m68040 -m68060,$(CFLAGS)) \
+	    $(QUICKJS_FLAGS) -c -o $@ $<
 
 # QuickJS uses JavaScript Number heavily, but all classic MintVID profiles are
 # deliberately no-FPU. Compile every QuickJS translation unit to assembly with
@@ -338,15 +364,18 @@ mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) \
 # cannot be checked reliably because Bebbo stores const data/embedded bytecode
 # in code hunks and objdump consequently interprets some data as instructions.
 QUICKJS_ASM_CHECK_DIR = build/quickjs-asm-$(CPU)
-quickjs-no-fpu-check: check-cc $(QUICKJS_SRC) tests/check_amiga_no_fpu.sh
+quickjs-no-fpu-check: check-cc mrplay $(QUICKJS_SRC) \
+        tests/check_amiga_no_fpu.sh tests/check_amiga_runtime_no_fpu.py
 	@mkdir -p $(QUICKJS_ASM_CHECK_DIR)
 	@set -e; for source in $(QUICKJS_SRC); do \
 	    name=$$(basename "$$source" .c); \
 	    echo "Checking no-FPU codegen: $$source"; \
-	    $(CC) $(CFLAGS) $(QUICKJS_FLAGS) -S \
+	    $(CC) $(filter-out -m68030 -m68040 -m68060,$(CFLAGS)) \
+	        $(QUICKJS_FLAGS) -S \
 	        -o "$(QUICKJS_ASM_CHECK_DIR)/$$name.s" "$$source"; \
 	done
 	@sh tests/check_amiga_no_fpu.sh $(QUICKJS_ASM_CHECK_DIR)/*.s
+	@python3 tests/check_amiga_runtime_no_fpu.py mrplay
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
@@ -417,6 +446,7 @@ clean:
 	rm -f mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT \
 	      mr_decode kalms_c2p_check $(KALMS_OBJ)
 	rm -f audio_task_stress
+	rm -rf $(QUICKJS_BUILD_DIR) $(QUICKJS_ASM_CHECK_DIR)
 
 # Build every supported CPU profile into its own ready-to-run directory.
 # The final recursive build is 68030, leaving the ordinary working binaries on
