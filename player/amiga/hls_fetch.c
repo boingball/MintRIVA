@@ -80,7 +80,7 @@
 #include <time.h>
 
 #define HLS_FETCH_STACK       300000UL  /* HTTPS/AmiSSL needs a deep stack   */
-#define HLS_FETCH_JSON_MAX    1024      /* matches mr_youtube.c's json[]     */
+#define HLS_FETCH_JSON_MAX    2048      /* matches mr_youtube.c's json[]     */
 #define HLS_FETCH_ERROR_MAX   192       /* matches mr_source.c's error cap   */
 #define HLS_FETCH_HINT_MAX    (24UL * 1024 * 1024) /* matches mr_hls.c's own
                                                      * HLS_SEGMENT_MAX - hints
@@ -385,6 +385,10 @@ static int hls_fetch_override(const char *url, const mr_http_options *options,
     g_misses++;
     if (strlen(url) >= sizeof g_req.url) {
         mr_source_set_error("HLS URL too long for the fetch worker");
+        return 0;
+    }
+    if (post_json && strlen(post_json) >= sizeof g_req.post_json) {
+        mr_source_set_error("HTTP JSON too long for the fetch worker");
         return 0;
     }
     if (!max_size || max_size == (size_t)-1) max_size = HLS_FETCH_HINT_MAX;
