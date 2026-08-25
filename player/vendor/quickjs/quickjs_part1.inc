@@ -48,6 +48,10 @@
 #include "libunicode.h"
 #include "dtoa.h"
 
+#ifndef CONFIG_VERSION
+#define CONFIG_VERSION "2026-06-04"
+#endif
+
 #ifdef MR_QUICKJS_PORTABLE_LIBC
 #ifndef alloca
 #define alloca(size) __builtin_alloca(size)
