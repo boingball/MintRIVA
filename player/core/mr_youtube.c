@@ -1074,6 +1074,8 @@ int mr_youtube_resolve_media_pair(const char *url,
                                 visitor_data, sizeof visitor_data) &&
          !extract_config_string(html,
                                 "INNERTUBE_CONTEXT_CLIENT_VISITOR_DATA",
+                                visitor_data, sizeof visitor_data) &&
+         !extract_config_string(html, "visitorData",
                                 visitor_data, sizeof visitor_data)) ||
         strpbrk(visitor_data, "\"\\"))
         visitor_data[0] = '\0';

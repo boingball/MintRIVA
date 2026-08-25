@@ -39,7 +39,7 @@ static int nsig_fetch_override(const char *url,
     static const char watch[] =
         "{\"INNERTUBE_API_KEY\":\"test-key\","
         "\"INNERTUBE_CLIENT_VERSION\":\"1.2.3\",\"STS\":12345,"
-        "\"VISITOR_DATA\":\"visitor-test\","
+        "\"visitorData\":\"visitor-test\","
         "\"jsUrl\":\"\\/s\\/player\\/test\\/base.js\"}";
     static const char safari[] =
         "{\"streamingData\":{\"hlsManifestUrl\":\""
