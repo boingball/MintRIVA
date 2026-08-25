@@ -17,6 +17,9 @@
 #ifndef MR_YOUTUBE_HTTP_RETRY_H
 #define MR_YOUTUBE_HTTP_RETRY_H
 
+#include <stdio.h>
+#include <string.h>
+
 #define MR_YOUTUBE_SAFARI_POST_ATTEMPTS 4
 #define MR_YOUTUBE_SAFARI_VISITOR_MAX 256
 
