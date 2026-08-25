@@ -1410,7 +1410,10 @@ static int begin_json_post_response(http_source *h, const char *json)
 {
     int redirects;
     size_t json_len = strlen(json);
-    if (json_len > 1024) {
+    /* Matches mr_youtube.c's json[2048] and hls_fetch.c's HLS_FETCH_JSON_MAX -
+     * a VisionOS body carries extra device fields plus a real (~500+ byte)
+     * visitor ID and no longer fits the old 1024-byte cap this once matched. */
+    if (json_len > 2048) {
         mr_source_set_error("HTTP JSON request body is too large");
         return 0;
     }
