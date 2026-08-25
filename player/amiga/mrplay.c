@@ -1650,6 +1650,14 @@ int main(int argc, char **argv)
                    hls_max_width, hls_max_height, hls_max_fps);
     }
     if (mr_youtube_is_url(media_path)) {
+        if (hls_low)
+            printf("YouTube quality request: Low (muxed HLS, 360p fallback)\n");
+        else if ((hls_max_height && hls_max_height >= 720) ||
+                 (!hls_max_height && hls_max_width >= 1280) ||
+                 (!hls_max_height && !hls_max_width))
+            printf("YouTube quality request: 720p muxed (360p fallback)\n");
+        else
+            printf("YouTube quality request: 360p muxed\n");
         printf("YouTube: resolving...\n");
         player_status(MR_PLAYER_STATE_OPENING, "",
                       "Resolving YouTube media...");
