@@ -496,8 +496,10 @@ static int try_player_media(const char *api_url,
     size_t reply_len = 0;
     int ok;
     if (!mr_http_post_json(api_url, options, json, &reply, &reply_len,
-                           YOUTUBE_PAGE_MAX))
+                           YOUTUBE_PAGE_MAX)) {
+        printf("YouTube: %s player request failed\n", client);
         return 0;
+    }
     (void)reply_len;
     ok = mr_youtube_extract_live_manifest(reply, out, out_size);
     if (ok && !manifest_needs_n_transform(out)) {
@@ -509,22 +511,32 @@ static int try_player_media(const char *api_url,
         return 1;
     }
     if (ok) {
+        printf("YouTube: %s HLS URL requires an unresolved n transform\n",
+               client);
         mr_free(reply);
         return -1;
     }
     if (!allow_progressive) {
+        printf("YouTube: %s supplied no usable muxed HLS\n", client);
         mr_free(reply);
         return 0;
     }
     ok = mr_youtube_extract_progressive(reply, prefer_720p, out, out_size,
                                         kind);
     mr_free(reply);
-    if (!ok) return 0;
+    if (!ok) {
+        if (prefer_720p)
+            printf("YouTube: %s supplied no muxed 720p MP4\n", client);
+        return 0;
+    }
     /* A client that only supplied itag 18 has not satisfied a 720p request.
      * Keep searching the remaining clients before starting the explicit
      * second-pass 360p fallback. */
-    if (prefer_720p && *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P)
+    if (prefer_720p && *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P) {
+        printf("YouTube: %s supplied only muxed 360p; continuing 720p search\n",
+               client);
         return 0;
+    }
     g_last_client = client;
     g_last_media_ua = media_ua;
     g_last_kind = *kind;
@@ -750,6 +762,7 @@ fallback_360p:
      * second pass using the established 360p policy. This prevents an early
      * Android itag 18 result from short-circuiting later 720p-capable clients. */
     if (prefer_720p) {
+        printf("YouTube: no muxed 720p found; retrying with 360p\n");
         fallback_options = *options;
         fallback_options.hls_low = 0;
         fallback_options.hls_max_width = 640;
