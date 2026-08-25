@@ -4,10 +4,9 @@
  * The HTTP engine itself lives unchanged in mr_http_impl.c.  This small layer
  * observes only final HTTP request strings and decrypted response bytes.  It
  * keeps anonymous youtube.com Set-Cookie values in RAM and adds them to later
- * youtube.com requests, giving WEB_SAFARI the same session continuity a browser
- * has.  WEB_SAFARI player POSTs also receive the browser Innertube headers used
- * by YouTube's web client, including the watch-page visitor identity when one
- * was present in the request JSON. Cookies/identity are never sent to
+ * youtube.com requests, giving browser-like session continuity. WEB_SAFARI
+ * and VISIONOS player POSTs also receive the Innertube client headers used by
+ * yt-dlp for those identities. Cookies/identity are never sent to
  * googlevideo.com (or any non-youtube host), never written to disk and never
  * logged.
  */
@@ -65,8 +64,9 @@
 #define MR_YT_COOKIE_HEADER_MAX  2048
 #define MR_YT_RESPONSE_HEADER_MAX 16384
 #define MR_YT_VISITOR_MAX        256
-#define MR_YT_SAFARI_HEADERS_MAX 768
+#define MR_YT_API_HEADERS_MAX    768
 #define MR_YT_WEB_CLIENT_VERSION "2.20260708.00.00"
+#define MR_YT_VISIONOS_CLIENT_VERSION "1.02"
 
 typedef struct mr_yt_cookie {
     char name[MR_YT_COOKIE_NAME_MAX];
@@ -82,6 +82,7 @@ static int g_mr_yt_response_header_done;
 static int g_mr_yt_logged_capture;
 static int g_mr_yt_logged_reuse;
 static int g_mr_yt_logged_safari_headers;
+static int g_mr_yt_logged_visionos_headers;
 static int g_mr_yt_logged_visitor_header;
 
 static int mr_yt_ascii_tolower(int c)
@@ -345,28 +346,44 @@ static int mr_yt_extract_request_visitor(const char *request,
     return 1;
 }
 
-static size_t mr_yt_build_safari_api_headers(const char *request,
-                                              char *out, size_t out_size,
-                                              int *have_visitor)
+/* yt-dlp's Innertube calls carry a numeric client ID/version in headers as
+ * well as the JSON client identity. Some clients, notably VISIONOS, do not
+ * return the same streamingData when these headers are omitted. */
+static size_t mr_yt_build_api_headers(const char *request,
+                                      char *out, size_t out_size,
+                                      int *is_visionos, int *have_visitor)
 {
     static const char player_post[] = "POST /youtubei/v1/player";
     char visitor[MR_YT_VISITOR_MAX];
+    const char *client_name = NULL;
+    const char *client_version = NULL;
     int n;
     size_t used;
 
+    if (is_visionos) *is_visionos = 0;
     if (have_visitor) *have_visitor = 0;
     if (!request || !out || out_size < 2 ||
         strncmp(request, player_post, sizeof player_post - 1) ||
-        !strstr(request, "Safari/605.1.15") ||
-        !strstr(request, "\"clientName\":\"WEB\"") ||
         strstr(request, "\r\nX-YouTube-Client-Name:"))
         return 0;
 
+    if (strstr(request, "\"clientName\":\"VISIONOS\"")) {
+        client_name = "101";
+        client_version = MR_YT_VISIONOS_CLIENT_VERSION;
+        if (is_visionos) *is_visionos = 1;
+    } else if (strstr(request, "Safari/605.1.15") &&
+               strstr(request, "\"clientName\":\"WEB\"")) {
+        client_name = "1";
+        client_version = MR_YT_WEB_CLIENT_VERSION;
+    } else {
+        return 0;
+    }
+
     n = snprintf(out, out_size,
                  "Origin: https://www.youtube.com\r\n"
-                 "X-YouTube-Client-Name: 1\r\n"
+                 "X-YouTube-Client-Name: %s\r\n"
                  "X-YouTube-Client-Version: %s\r\n",
-                 MR_YT_WEB_CLIENT_VERSION);
+                 client_name, client_version);
     if (n <= 0 || (size_t)n >= out_size) return 0;
     used = (size_t)n;
 
@@ -396,19 +413,26 @@ static int mr_yt_prepare_request(char *request, size_t cap, int length)
     g_mr_yt_response_header_done = youtube ? 0 : 1;
 
     if (youtube) {
-        char safari_headers[MR_YT_SAFARI_HEADERS_MAX];
+        char api_headers[MR_YT_API_HEADERS_MAX];
+        int is_visionos = 0;
         int have_visitor = 0;
-        size_t add = mr_yt_build_safari_api_headers(
-            request, safari_headers, sizeof safari_headers, &have_visitor);
+        size_t add = mr_yt_build_api_headers(
+            request, api_headers, sizeof api_headers,
+            &is_visionos, &have_visitor);
         if (add) {
             char *header_end = strstr(request, "\r\n\r\n");
             if (header_end && (size_t)length + add < cap) {
                 size_t insert = (size_t)(header_end - request) + 2;
                 memmove(request + insert + add, request + insert,
                         (size_t)length - insert + 1);
-                memcpy(request + insert, safari_headers, add);
+                memcpy(request + insert, api_headers, add);
                 length += (int)add;
-                if (!g_mr_yt_logged_safari_headers) {
+                if (is_visionos) {
+                    if (!g_mr_yt_logged_visionos_headers) {
+                        g_mr_yt_logged_visionos_headers = 1;
+                        printf("YouTube HTTP session: adding VISIONOS API headers\n");
+                    }
+                } else if (!g_mr_yt_logged_safari_headers) {
                     g_mr_yt_logged_safari_headers = 1;
                     printf("YouTube HTTP session: adding WEB_SAFARI API headers\n");
                 }
