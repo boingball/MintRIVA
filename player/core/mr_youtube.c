@@ -21,9 +21,12 @@
 #define YOUTUBE_REFERER "https://www.youtube.com/"
 #define MINT_VID_DEFAULT_UA "MintVID/0.1 AmigaOS"
 #define YOUTUBE_LIVE_START_SEGMENTS 2
-#define YOUTUBE_ANDROID_VERSION "21.08.266"
-#define YOUTUBE_ANDROID_UA \
+#define YOUTUBE_ANDROID_LIVE_VERSION "21.08.266"
+#define YOUTUBE_ANDROID_LIVE_UA \
     "com.google.android.youtube/21.08.266 (Linux; U; Android 11) gzip"
+#define YOUTUBE_ANDROID_VERSION "21.26.364"
+#define YOUTUBE_ANDROID_UA \
+    "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip"
 #define YOUTUBE_ANDROID_VR_VERSION "1.65.10"
 #define YOUTUBE_ANDROID_VR_UA \
     "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
@@ -480,14 +483,24 @@ static int json_itag_equals(const char *value, unsigned wanted)
             *p == '\r' || *p == '\n');
 }
 
-static int extract_adaptive_itag(const char *json, unsigned wanted_itag,
-                                 const char *media_type,
-                                 const char *codec_name,
-                                 char *out, size_t out_size)
+typedef enum adaptive_itag_state {
+    ADAPTIVE_ITAG_MISSING = 0,
+    ADAPTIVE_ITAG_CODEC_MISMATCH,
+    ADAPTIVE_ITAG_NO_DIRECT_URL,
+    ADAPTIVE_ITAG_INVALID_URL,
+    ADAPTIVE_ITAG_N_CHALLENGE,
+    ADAPTIVE_ITAG_DIRECT
+} adaptive_itag_state;
+
+static adaptive_itag_state extract_adaptive_itag(
+    const char *json, unsigned wanted_itag,
+    const char *media_type, const char *codec_name,
+    char *out, size_t out_size)
 {
     static const char adaptive_key[] = "\"adaptiveFormats\"";
     const char *p, *end;
-    if (!json || !out || out_size < 2) return 0;
+    adaptive_itag_state best = ADAPTIVE_ITAG_MISSING;
+    if (!json || !out || out_size < 2) return ADAPTIVE_ITAG_INVALID_URL;
     out[0] = '\0';
     end = json + strlen(json);
     p = json;
@@ -499,7 +512,7 @@ static int extract_adaptive_itag(const char *json, unsigned wanted_itag,
         array = skip_json_space(array, end);
         if (array >= end || *array != '[') continue;
         array_end = json_compound_end(array, end, '[', ']');
-        if (!array_end) return 0;
+        if (!array_end) return ADAPTIVE_ITAG_INVALID_URL;
         p = array + 1;
         while (p < array_end - 1) {
             const char *object_end, *itag, *mime, *media_url;
@@ -508,29 +521,77 @@ static int extract_adaptive_itag(const char *json, unsigned wanted_itag,
             if (p >= array_end - 1) break;
             if (*p != '{') {
                 const char *next = json_value_end(p, array_end - 1);
-                if (!next) return 0;
+                if (!next) return ADAPTIVE_ITAG_INVALID_URL;
                 p = next;
                 if (p < array_end - 1 && *p == ',') p++;
                 continue;
             }
             object_end = json_compound_end(p, array_end, '{', '}');
-            if (!object_end) return 0;
+            if (!object_end) return ADAPTIVE_ITAG_INVALID_URL;
             itag = json_object_field(p, object_end, "itag");
             mime = json_object_field(p, object_end, "mimeType");
             media_url = json_object_field(p, object_end, "url");
-            if (json_itag_equals(itag, wanted_itag) && mime &&
-                decode_json_string(mime, mime_text, sizeof mime_text) &&
-                strstr(mime_text, media_type) && strstr(mime_text, codec_name) &&
-                media_url && decode_json_string(media_url, out, out_size) &&
-                googlevideo_url(out) && !url_has_n_parameter(out))
-                return 1;
+            if (json_itag_equals(itag, wanted_itag)) {
+                adaptive_itag_state state = ADAPTIVE_ITAG_CODEC_MISMATCH;
+                if (mime &&
+                    decode_json_string(mime, mime_text, sizeof mime_text) &&
+                    strstr(mime_text, media_type) &&
+                    strstr(mime_text, codec_name)) {
+                    if (!media_url)
+                        state = ADAPTIVE_ITAG_NO_DIRECT_URL;
+                    else if (!decode_json_string(media_url, out, out_size) ||
+                             !googlevideo_url(out))
+                        state = ADAPTIVE_ITAG_INVALID_URL;
+                    else if (url_has_n_parameter(out))
+                        state = ADAPTIVE_ITAG_N_CHALLENGE;
+                    else
+                        state = ADAPTIVE_ITAG_DIRECT;
+                }
+                if (state == ADAPTIVE_ITAG_DIRECT) return state;
+                if (state > best) best = state;
+            }
             p = object_end;
             if (p < array_end - 1 && *p == ',') p++;
         }
         p = array_end;
     }
     out[0] = '\0';
-    return 0;
+    return best;
+}
+
+static const char *adaptive_itag_state_name(adaptive_itag_state state)
+{
+    switch (state) {
+    case ADAPTIVE_ITAG_DIRECT: return "direct";
+    case ADAPTIVE_ITAG_N_CHALLENGE: return "n-challenge";
+    case ADAPTIVE_ITAG_INVALID_URL: return "invalid-url";
+    case ADAPTIVE_ITAG_NO_DIRECT_URL: return "no-direct-url";
+    case ADAPTIVE_ITAG_CODEC_MISMATCH: return "codec-mismatch";
+    default: return "missing";
+    }
+}
+
+static void log_adaptive_itags(const char *json, const char *client,
+                               int prefer_720p,
+                               char *video_out, size_t video_out_size,
+                               char *audio_out, size_t audio_out_size)
+{
+    unsigned video_itag = prefer_720p ? 136U : 160U;
+    unsigned first_audio = prefer_720p ? 140U : 139U;
+    unsigned second_audio = prefer_720p ? 139U : 140U;
+    adaptive_itag_state video_state = extract_adaptive_itag(
+        json, video_itag, "video/mp4", "avc1", video_out, video_out_size);
+    adaptive_itag_state first_audio_state = extract_adaptive_itag(
+        json, first_audio, "audio/mp4", "mp4a", audio_out, audio_out_size);
+    adaptive_itag_state second_audio_state = extract_adaptive_itag(
+        json, second_audio, "audio/mp4", "mp4a", audio_out, audio_out_size);
+    video_out[0] = '\0';
+    audio_out[0] = '\0';
+    printf("YouTube: %s adaptive status: video itag %u=%s; "
+           "audio itag %u=%s, %u=%s\n",
+           client, video_itag, adaptive_itag_state_name(video_state),
+           first_audio, adaptive_itag_state_name(first_audio_state),
+           second_audio, adaptive_itag_state_name(second_audio_state));
 }
 
 int mr_youtube_extract_adaptive(const char *json, int prefer_720p,
@@ -545,13 +606,16 @@ int mr_youtube_extract_adaptive(const char *json, int prefer_720p,
     *kind = MR_YOUTUBE_MEDIA_NONE;
     video_out[0] = '\0';
     audio_out[0] = '\0';
-    if (!extract_adaptive_itag(json, video_itag, "video/mp4", "avc1",
-                               video_out, video_out_size))
+    if (extract_adaptive_itag(json, video_itag, "video/mp4", "avc1",
+                              video_out, video_out_size) !=
+        ADAPTIVE_ITAG_DIRECT)
         return 0;
-    if (!extract_adaptive_itag(json, first_audio, "audio/mp4", "mp4a",
-                               audio_out, audio_out_size) &&
-        !extract_adaptive_itag(json, second_audio, "audio/mp4", "mp4a",
-                               audio_out, audio_out_size)) {
+    if (extract_adaptive_itag(json, first_audio, "audio/mp4", "mp4a",
+                              audio_out, audio_out_size) !=
+            ADAPTIVE_ITAG_DIRECT &&
+        extract_adaptive_itag(json, second_audio, "audio/mp4", "mp4a",
+                              audio_out, audio_out_size) !=
+            ADAPTIVE_ITAG_DIRECT) {
         video_out[0] = '\0';
         return 0;
     }
@@ -627,6 +691,10 @@ static int try_player_media(const char *api_url,
             mr_free(reply);
             return 1;
         }
+        if (want_adaptive)
+            log_adaptive_itags(reply, client, 1,
+                               video_out, video_out_size,
+                               audio_out, audio_out_size);
         if (progressive_ok)
             printf("YouTube: %s supplied only muxed 360p; continuing 720p search\n",
                    client);
@@ -647,8 +715,9 @@ static int try_player_media(const char *api_url,
             mr_free(reply);
             return 1;
         }
-        printf("YouTube: %s supplied no compatible 144p H.264/AAC pair\n",
-               client);
+        log_adaptive_itags(reply, client, 0,
+                           video_out, video_out_size,
+                           audio_out, audio_out_size);
         mr_free(reply);
         return 0;
     }
@@ -670,7 +739,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                                   char *audio_out, size_t audio_out_size,
                                   mr_youtube_media_kind *kind)
 {
-    mr_http_options fetch_options, vr_options;
+    mr_http_options fetch_options, android_options, vr_options;
     mr_http_options fallback_options;
     char *html = NULL;
     size_t html_len = 0;
@@ -788,18 +857,48 @@ int mr_youtube_resolve_media_pair(const char *url,
                  "\"browserName\":\"Chrome\"},\"user\":{"
                  "\"lockedSafetyMode\":\"false\"},\"request\":{"
                  "\"useSsl\":\"true\"}}}",
-                 video_id, YOUTUBE_ANDROID_VERSION);
+                 video_id, YOUTUBE_ANDROID_LIVE_VERSION);
     if (n <= 0 || (size_t)n >= sizeof json) {
         mr_source_set_error("YouTube Android player request is too large");
         return 0;
     }
     result = try_player_media(api_url, &fetch_options, json, "ANDROID",
-                              YOUTUBE_ANDROID_UA,
+                              YOUTUBE_ANDROID_LIVE_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
                               prefer_720p, want_adaptive, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
+
+    /* The live-oriented Android request above deliberately asks for an
+     * embedded desktop playback context. That is useful for HLS but can omit
+     * the adaptiveFormats used by recorded videos. For Low and 720p requests,
+     * retry with YouTube's normal current Android VOD identity before moving
+     * on to the remaining compatibility clients. */
+    if (want_adaptive) {
+        n = snprintf(json, sizeof json,
+                     "{\"videoId\":\"%s\",\"contentCheckOk\":true,"
+                     "\"racyCheckOk\":true,\"context\":{\"client\":{"
+                     "\"clientName\":\"ANDROID\",\"clientVersion\":\"%s\","
+                     "\"androidSdkVersion\":30,\"userAgent\":\"%s\","
+                     "\"osName\":\"Android\",\"osVersion\":\"11\","
+                     "\"hl\":\"en\",\"gl\":\"GB\"}}}",
+                     video_id, YOUTUBE_ANDROID_VERSION, YOUTUBE_ANDROID_UA);
+        if (n <= 0 || (size_t)n >= sizeof json) {
+            mr_source_set_error("YouTube Android VOD request is too large");
+            return 0;
+        }
+        if (!mr_http_options_init(&android_options, YOUTUBE_ANDROID_UA,
+                                  YOUTUBE_REFERER))
+            return 0;
+        result = try_player_media(api_url, &android_options, json,
+                                  "ANDROID_VOD", YOUTUBE_ANDROID_UA,
+                                  video_out, video_out_size,
+                                  audio_out, audio_out_size,
+                                  prefer_720p, 1, kind);
+        if (result > 0) return 1;
+        if (result < 0) saw_n_challenge = 1;
+    }
 
     /* Android VR still exposes the classic muxed 360p MP4 on many public
      * recorded videos and may also expose the selected adaptive tracks. */
