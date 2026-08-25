@@ -349,13 +349,14 @@ static size_t mr_yt_build_safari_api_headers(const char *request,
                                               char *out, size_t out_size,
                                               int *have_visitor)
 {
+    static const char player_post[] = "POST /youtubei/v1/player";
     char visitor[MR_YT_VISITOR_MAX];
     int n;
     size_t used;
 
     if (have_visitor) *have_visitor = 0;
     if (!request || !out || out_size < 2 ||
-        strncmp(request, "POST /youtubei/v1/player", 26) ||
+        strncmp(request, player_post, sizeof player_post - 1) ||
         !strstr(request, "Safari/605.1.15") ||
         strstr(request, "\r\nX-YouTube-Client-Name:"))
         return 0;
