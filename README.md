@@ -225,16 +225,21 @@ remote service. `--hls-low` and the HLS quality ceilings still apply.
 The HTTP/HLS path accepts signed URLs up to 4095 bytes, since current YouTube
 manifest URLs can exceed the older 1 KiB media-URL limit.
 
-For ordinary uploads, Low now tries YouTube's separate 144p H.264 video
-(`itag 160`) and AAC audio (`itag 139`, then `140`) tracks. Selecting 720p,
+For ordinary uploads, Low first asks YouTube's Web Safari client for a muxed
+HLS ladder, whose media requests currently avoid the GVS PO-token requirement,
+then tries separate 144p H.264 video (`itag 160`) and AAC audio (`itag 139`,
+then `140`) tracks. Selecting 720p,
 1080p, or Best still prefers the muxed 720p MP4 (`itag 22`) when YouTube
 supplies it, then tries separate 720p H.264 video (`itag 136`) and AAC audio
 (`itag 140`, then `139`). The player opens the two adaptive MP4s independently,
 keeps the audio buffer fed ahead of video, and retains audio as the master
 playback clock. Seeking is disabled during dual-stream playback for now.
 
-If a compatible adaptive pair is absent, or either signed track cannot be
-opened, playback automatically retries YouTube's established muxed 360p MP4
+For 720p and higher selections the same Safari HLS probe runs before the muxed
+and adaptive MP4 choices. Safari HLS availability is selective and is treated
+as best effort. If no compatible HLS or adaptive pair is present, or either
+signed adaptive track cannot be opened, playback automatically retries
+YouTube's established muxed 360p MP4
 (`itag 18`). The 360p and 480p settings select that muxed format directly.
 Only direct signed HTTPS Google Video URLs are accepted; ciphered URLs and
 unresolved player `n` challenges are rejected.
@@ -254,9 +259,10 @@ The ReAction controller's **YouTube...** button opens the separate `ytgui`
 search window. It searches YouTube's public results page without an API key,
 shows the title and channel, and starts the selected result through the same
 native resolver. The **Quality** button cycles through Low, 360p, 480p, 720p,
-1080p, and unrestricted Best. For recorded videos, Low tries adaptive 144p
-H.264 plus AAC with a muxed 360p fallback; 360p/480p use muxed 360p; and
-720p/1080p/Best try muxed or adaptive 720p before falling back to 360p.
+1080p, and unrestricted Best. For recorded videos, Low tries Safari HLS then
+adaptive 144p H.264 plus AAC with a muxed 360p fallback; 360p/480p use muxed
+360p; and 720p/1080p/Best try Safari HLS, muxed or adaptive 720p before
+falling back to 360p.
 The search-type selector defaults to **Live** and also offers **All**,
 **Videos**, and **Shorts**. Build with `SSL=1` and keep `ytgui` beside `MintVID`
 and `mrplay`. As with watch-page

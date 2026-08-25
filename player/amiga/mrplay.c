@@ -1658,11 +1658,11 @@ int main(int argc, char **argv)
     }
     if (mr_youtube_is_url(media_path)) {
         if (hls_low)
-            printf("YouTube quality request: Low (adaptive 144p, muxed 360p fallback)\n");
+            printf("YouTube quality request: Low (Safari HLS/adaptive 144p, muxed 360p fallback)\n");
         else if ((hls_max_height && hls_max_height >= 720) ||
                  (!hls_max_height && hls_max_width >= 1280) ||
                  (!hls_max_height && !hls_max_width))
-            printf("YouTube quality request: 720p muxed (360p fallback)\n");
+            printf("YouTube quality request: 720p HLS/muxed/adaptive (360p fallback)\n");
         else
             printf("YouTube quality request: 360p muxed\n");
         printf("YouTube: resolving...\n");

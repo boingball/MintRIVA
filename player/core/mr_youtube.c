@@ -31,6 +31,11 @@
 #define YOUTUBE_ANDROID_VR_UA \
     "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
     "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+#define YOUTUBE_WEB_SAFARI_VERSION "2.20260708.00.00"
+#define YOUTUBE_WEB_SAFARI_UA \
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 " \
+    "Safari/605.1.15,gzip(gfe)"
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
 static mr_youtube_media_kind g_last_kind = MR_YOUTUBE_MEDIA_NONE;
@@ -255,6 +260,32 @@ static int extract_config_string(const char *html, const char *name,
     if (*p++ != ':') return 0;
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
     return decode_json_string(p, out, out_size);
+}
+
+static int extract_config_uint(const char *html, const char *name,
+                               unsigned *out)
+{
+    char key[80];
+    const char *p;
+    unsigned value = 0;
+    int n = snprintf(key, sizeof key, "\"%s\"", name);
+    if (!html || !name || !out || n <= 0 || (size_t)n >= sizeof key)
+        return 0;
+    p = strstr(html, key);
+    if (!p) return 0;
+    p += (size_t)n;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p++ != ':') return 0;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') {
+        unsigned digit = (unsigned)(*p++ - '0');
+        if (value > 100000000U) return 0;
+        value = value * 10U + digit;
+    }
+    if (!value) return 0;
+    *out = value;
+    return 1;
 }
 
 int mr_youtube_extract_live_manifest(const char *html, char *out,
@@ -739,13 +770,14 @@ int mr_youtube_resolve_media_pair(const char *url,
                                   char *audio_out, size_t audio_out_size,
                                   mr_youtube_media_kind *kind)
 {
-    mr_http_options fetch_options, android_options, vr_options;
+    mr_http_options fetch_options, safari_options, android_options, vr_options;
     mr_http_options fallback_options;
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
     char api_url[256], json[1024];
     int n, ok, result, saw_n_challenge = 0;
+    unsigned signature_timestamp = 0;
     int prefer_720p = options_prefer_720p(options);
     int adaptive_outputs = audio_out && audio_out_size >= 2;
     int want_low_adaptive = adaptive_outputs && options && options->hls_low;
@@ -842,8 +874,64 @@ int mr_youtube_resolve_media_pair(const char *url,
         return 0;
     }
 
+    /* Web player requests normally carry the current player's signature
+     * timestamp. It is not itself a PO token, and the Safari HLS manifest may
+     * still be returned without it, but preserve it when the watch page makes
+     * the value available. */
+    if (!extract_config_uint(html, "STS", &signature_timestamp))
+        (void)extract_config_uint(html, "signatureTimestamp",
+                                  &signature_timestamp);
+
     mr_free(html);
     html = NULL;
+
+    /* Safari is the remaining anonymous recorded-video escape hatch worth
+     * trying: YouTube may return a pre-muxed HLS ladder, and HLS GVS requests
+     * currently do not require a PO token. Availability is selective, so this
+     * is strictly best effort and retains the adaptive/itag-18 fallbacks. */
+    if (want_adaptive) {
+        if (signature_timestamp)
+            n = snprintf(json, sizeof json,
+                         "{\"context\":{\"client\":{"
+                         "\"clientName\":\"WEB\",\"clientVersion\":\"%s\","
+                         "\"userAgent\":\"%s\",\"hl\":\"en\",\"gl\":\"GB\","
+                         "\"timeZone\":\"UTC\",\"utcOffsetMinutes\":0}},"
+                         "\"videoId\":\"%s\",\"playbackContext\":{"
+                         "\"contentPlaybackContext\":{"
+                         "\"html5Preference\":\"HTML5_PREF_WANTS\","
+                         "\"signatureTimestamp\":%u}},"
+                         "\"contentCheckOk\":true,\"racyCheckOk\":true}",
+                         YOUTUBE_WEB_SAFARI_VERSION, YOUTUBE_WEB_SAFARI_UA,
+                         video_id, signature_timestamp);
+        else
+            n = snprintf(json, sizeof json,
+                         "{\"context\":{\"client\":{"
+                         "\"clientName\":\"WEB\",\"clientVersion\":\"%s\","
+                         "\"userAgent\":\"%s\",\"hl\":\"en\",\"gl\":\"GB\","
+                         "\"timeZone\":\"UTC\",\"utcOffsetMinutes\":0}},"
+                         "\"videoId\":\"%s\",\"playbackContext\":{"
+                         "\"contentPlaybackContext\":{"
+                         "\"html5Preference\":\"HTML5_PREF_WANTS\"}},"
+                         "\"contentCheckOk\":true,\"racyCheckOk\":true}",
+                         YOUTUBE_WEB_SAFARI_VERSION, YOUTUBE_WEB_SAFARI_UA,
+                         video_id);
+        if (n <= 0 || (size_t)n >= sizeof json) {
+            mr_source_set_error("YouTube Web Safari request is too large");
+            return 0;
+        }
+        if (!mr_http_options_init(&safari_options, YOUTUBE_WEB_SAFARI_UA,
+                                  YOUTUBE_REFERER))
+            return 0;
+        printf("YouTube: trying WEB_SAFARI recorded HLS%s\n",
+               signature_timestamp ? " with player STS" : "");
+        result = try_player_media(api_url, &safari_options, json,
+                                  "WEB_SAFARI", YOUTUBE_WEB_SAFARI_UA,
+                                  video_out, video_out_size,
+                                  audio_out, audio_out_size,
+                                  prefer_720p, 1, kind);
+        if (result > 0) return 1;
+        if (result < 0) saw_n_challenge = 1;
+    }
 
     /* Streamlink's current live-only YouTube implementation uses this Android
      * profile without a JavaScript challenge solver. Prefer it because its HLS

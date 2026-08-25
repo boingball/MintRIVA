@@ -245,9 +245,11 @@ HLS manifest URL, validates it, and hands it to the normal HLS
 variant/segment pipeline. Resolution happens on the Amiga itself, so
 IP-bound signed URLs are not borrowed from a remote service.
 
-For ordinary uploads, Low tries separate 144p H.264 video and AAC audio
-tracks. Selecting 720p, 1080p, or Best first tries muxed 720p where YouTube
-still supplies it, then separate 720p H.264 video and AAC audio. MintVID
+For ordinary uploads, Low first asks YouTube's Web Safari client for a muxed
+HLS ladder, then tries separate 144p H.264 video and AAC audio tracks.
+Selecting 720p, 1080p, or Best uses the same best-effort Safari HLS probe,
+then tries muxed 720p where YouTube still supplies it, followed by separate
+720p H.264 video and AAC audio. MintVID
 opens adaptive video and audio as two MP4 streams, feeds audio ahead of
 video, and keeps audio as the playback clock. Seeking is disabled during
 dual-stream playback for now.
