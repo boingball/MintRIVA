@@ -313,6 +313,17 @@ int mr_youtube_resolve_media_pair(const char *url,
                 strcpy(audio_out, split_audio);
                 g_last_kind = MR_YOUTUBE_MEDIA_ADAPTIVE_144P;
                 *kind = g_last_kind;
+                /* The Amiga HLS worker has one speculative lookahead slot for
+                 * the whole session. With two independent HLS media sources,
+                 * a video lookahead can occupy that slot while mrplay is
+                 * synchronously opening the audio playlist, which is exactly
+                 * the startup stall seen on hardware. Keep the single network
+                 * worker/owner, but turn off speculative hints for this paired
+                 * session so video and audio issue only demanded requests and
+                 * are naturally serialized by the existing worker. */
+                mr_http_set_prefetch_hint(NULL);
+                printf("YouTube: dual HLS: prefetch disabled for paired "
+                       "VisionOS streams\n");
                 printf("YouTube: VISIONOS HLS split: 144p AVC + %s audio\n",
                        g_last_hls_audio_language[0]
                            ? g_last_hls_audio_language
