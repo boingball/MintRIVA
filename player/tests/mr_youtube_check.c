@@ -10,12 +10,6 @@ static int nsig_fetches;
 static int nsig_calls;
 static int nsig_saw_visitor;
 static int nsig_visionos_posts;
-static int nsig_websafari_posts;
-static int nsig_android_posts;
-/* 0 = VisionOS POST returns a direct adaptive itag 160/139/140 pair (plus an
- * hlsManifestUrl that must be ignored); nonzero = VisionOS POST returns
- * nothing usable, forcing the muxed-360p fallback. */
-static int fixture_visionos_miss;
 
 static void expect(int condition, const char *name)
 {
@@ -56,34 +50,6 @@ static int nsig_fetch_override(const char *url,
         "\"audioTrack\":{\"id\":\"en.4\","
         "\"displayName\":\"English (original)\","
         "\"audioIsDefault\":true}}]}}";
-    /* Also carries an hlsManifestUrl, deliberately, to prove the resolver
-     * never touches it for VisionOS (skip_manifest=1) - if it did, this
-     * fixture's manifest would win instead of the adaptive pair below. Two
-     * itag 140 candidates (a dub listed first, the original second) exercise
-     * the original/default audioTrack ranking rather than array order. */
-    static const char visionos_adaptive[] =
-        "{\"streamingData\":{\"hlsManifestUrl\":\""
-        "https://manifest.googlevideo.com/api/manifest/"
-        "hls_variant/should-be-ignored/file/index.m3u8\","
-        "\"adaptiveFormats\":["
-        "{\"itag\":160,\"mimeType\":\"video/mp4; "
-        "codecs=\\\"avc1.4d400c\\\"\","
-        "\"url\":\"https://r1.googlevideo.com/visionos-144-video\"},"
-        "{\"itag\":140,\"mimeType\":\"audio/mp4; "
-        "codecs=\\\"mp4a.40.2\\\"\","
-        "\"audioTrack\":{\"id\":\"es.1\",\"displayName\":\"Spanish\","
-        "\"audioIsDefault\":false},"
-        "\"url\":\"https://r1.googlevideo.com/visionos-140-dub\"},"
-        "{\"itag\":140,\"mimeType\":\"audio/mp4; "
-        "codecs=\\\"mp4a.40.2\\\"\","
-        "\"audioTrack\":{\"id\":\"en.1\",\"displayName\":\"English "
-        "(original)\",\"audioIsDefault\":true},"
-        "\"url\":\"https://r1.googlevideo.com/visionos-140-original\"}]}}";
-    static const char android_muxed[] =
-        "{\"streamingData\":{\"formats\":["
-        "{\"itag\":18,\"mimeType\":\"video/mp4; codecs=\\\"avc1.42001E, "
-        "mp4a.40.2\\\"\",\"width\":640,\"height\":360,"
-        "\"url\":\"https://r1.googlevideo.com/android-muxed-360\"}]}}";
     (void)options;
     nsig_fetches++;
     if (!post_json && strstr(url, "/watch?v=EvsLqQS_80E"))
@@ -96,19 +62,12 @@ static int nsig_fetch_override(const char *url,
         (strstr(url, "/youtubei/v1/player?key=test-key") ||
          (strstr(url, "/youtubei/v1/player?prettyPrint=false") &&
           strstr(post_json, "\"clientName\":\"VISIONOS\"")))) {
+        /* Low now tries anonymous VisionOS before Safari. Keep this fixture
+         * focused on Safari n solving by making the VisionOS attempt empty. */
         if (strstr(post_json, "\"clientName\":\"VISIONOS\"")) {
             nsig_visionos_posts++;
-            if (fixture_visionos_miss)
-                return return_fixture("{}", out, out_len, max_size);
-            return return_fixture(visionos_adaptive, out, out_len, max_size);
+            return return_fixture("{}", out, out_len, max_size);
         }
-        if (strstr(post_json, "\"clientName\":\"ANDROID\"") &&
-            strstr(post_json, "\"clientScreen\":\"EMBED\"")) {
-            nsig_android_posts++;
-            return return_fixture(android_muxed, out, out_len, max_size);
-        }
-        if (strstr(post_json, "\"clientName\":\"WEB\","))
-            nsig_websafari_posts++;
         if (strstr(post_json, "\"visitorData\":\"visitor-test\""))
             nsig_saw_visitor = 1;
         return return_fixture(safari, out, out_len, max_size);
@@ -298,8 +257,8 @@ int main(int argc, char **argv)
                                        &media_kind) &&
            media_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P &&
            !strcmp(out, "https://r1.googlevideo.com/144-video") &&
-           !strcmp(audio_out, "https://r1.googlevideo.com/audio"),
-           "adaptive 144p H.264 plus preferred AAC-LC pair extracted");
+           !strcmp(audio_out, "https://r1.googlevideo.com/low-audio"),
+           "adaptive 144p H.264 plus low AAC pair extracted");
     expect(mr_youtube_extract_adaptive(adaptive, 1,
                                        out, sizeof out,
                                        audio_out, sizeof audio_out,
@@ -308,26 +267,6 @@ int main(int argc, char **argv)
            !strcmp(out, "https://r1.googlevideo.com/720-video") &&
            !strcmp(audio_out, "https://r1.googlevideo.com/audio"),
            "adaptive 720p H.264 plus AAC pair extracted");
-    expect(mr_youtube_extract_adaptive(
-               "{\"adaptiveFormats\":[{\"itag\":160,"
-               "\"mimeType\":\"video/mp4; codecs=\\\"avc1.4d400c\\\"\","
-               "\"url\":\"https://r1.googlevideo.com/144-video\"},"
-               "{\"itag\":139,\"mimeType\":\"audio/mp4; "
-               "codecs=\\\"mp4a.40.5\\\"\","
-               "\"audioTrack\":{\"id\":\"es.1\",\"displayName\":\"Spanish\","
-               "\"audioIsDefault\":false},"
-               "\"url\":\"https://r1.googlevideo.com/139-dub\"},"
-               "{\"itag\":139,\"mimeType\":\"audio/mp4; "
-               "codecs=\\\"mp4a.40.5\\\"\","
-               "\"audioTrack\":{\"id\":\"en.1\",\"displayName\":\"English "
-               "(original)\",\"audioIsDefault\":true},"
-               "\"url\":\"https://r1.googlevideo.com/139-original\"}]}", 0,
-               out, sizeof out, audio_out, sizeof audio_out, &media_kind) &&
-           media_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P &&
-           !strcmp(out, "https://r1.googlevideo.com/144-video") &&
-           !strcmp(audio_out, "https://r1.googlevideo.com/139-original"),
-           "adaptive audio track selection prefers the original/default "
-           "track over a dub listed first");
     expect(!mr_youtube_extract_adaptive(
                "{\"adaptiveFormats\":[{\"itag\":160,"
                "\"mimeType\":\"video/mp4; codecs=\\\"avc1.4d400c\\\"\","
@@ -344,53 +283,10 @@ int main(int argc, char **argv)
 
     expect(mr_http_options_init(&base_options, NULL, NULL),
            "native n integration options initialised");
-    mr_http_set_fetch_override(nsig_fetch_override);
-    mr_youtube_set_nsig_solver(nsig_solver, NULL);
-
-    /* Low: VisionOS's own adaptiveFormats (itag 160 + the original/default
-     * 140) is used directly - its hlsManifestUrl (present in the fixture,
-     * see visionos_adaptive above) must never be touched. */
     base_options.hls_low = 1;
     nsig_fetches = nsig_calls = nsig_saw_visitor = nsig_visionos_posts = 0;
-    nsig_websafari_posts = nsig_android_posts = 0;
-    fixture_visionos_miss = 0;
-    expect(mr_youtube_resolve_media_pair(
-               "https://www.youtube.com/watch?v=EvsLqQS_80E",
-               &base_options, out, sizeof out,
-               audio_out, sizeof audio_out, &media_kind) &&
-           media_kind == MR_YOUTUBE_MEDIA_ADAPTIVE_144P &&
-           !strcmp(out, "https://r1.googlevideo.com/visionos-144-video") &&
-           !strcmp(audio_out,
-                   "https://r1.googlevideo.com/visionos-140-original") &&
-           nsig_visionos_posts == 1 && nsig_websafari_posts == 0 &&
-           nsig_android_posts == 0 &&
-           !strcmp(mr_youtube_last_client(), "VISIONOS"),
-           "VisionOS direct adaptive skips its own hlsManifestUrl and "
-           "picks the original audio track");
-
-    /* Low: when VisionOS has no usable adaptive pair, go straight to the
-     * proven Android muxed 360p fallback - never Safari's demuxed/trusted-
-     * session-dependent HLS. */
-    nsig_visionos_posts = nsig_websafari_posts = nsig_android_posts = 0;
-    fixture_visionos_miss = 1;
-    expect(mr_youtube_resolve_media_pair(
-               "https://www.youtube.com/watch?v=EvsLqQS_80E",
-               &base_options, out, sizeof out,
-               audio_out, sizeof audio_out, &media_kind) &&
-           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
-           !strcmp(out, "https://r1.googlevideo.com/android-muxed-360") &&
-           !audio_out[0] &&
-           nsig_visionos_posts == 1 && nsig_websafari_posts == 0 &&
-           nsig_android_posts == 1 &&
-           !strcmp(mr_youtube_last_client(), "ANDROID"),
-           "VisionOS adaptive miss falls straight through to Android "
-           "muxed 360p, skipping Safari HLS entirely");
-    fixture_visionos_miss = 0;
-
-    /* 720p/Turbo path is untouched by any of the above: VisionOS is never
-     * tried (Low-only), and Safari's native QuickJS n solve still runs. */
-    base_options.hls_low = 0;
-    nsig_fetches = nsig_calls = nsig_saw_visitor = nsig_visionos_posts = 0;
+    mr_http_set_fetch_override(nsig_fetch_override);
+    mr_youtube_set_nsig_solver(nsig_solver, NULL);
     expect(mr_youtube_resolve_media_pair(
                "https://www.youtube.com/watch?v=EvsLqQS_80E",
                &base_options, out, sizeof out,
@@ -399,11 +295,10 @@ int main(int argc, char **argv)
            !strcmp(out,
                    "https://manifest.googlevideo.com/api/manifest/"
                    "hls_variant/n/solved/file/index.m3u8") &&
-           !audio_out[0] && nsig_calls == 1 &&
-           nsig_visionos_posts == 0 && nsig_saw_visitor &&
+           !audio_out[0] && nsig_fetches == 4 && nsig_calls == 1 &&
+           nsig_visionos_posts == 1 && nsig_saw_visitor &&
            !strcmp(mr_youtube_last_client(), "WEB_SAFARI"),
-           "720p/Turbo path unchanged: Safari native n solver still runs, "
-           "VisionOS never tried");
+           "VisionOS miss falls through to Safari native n solver");
     expect(mr_youtube_media_http_options_init(&youtube_options,
                                                &base_options) &&
            !strcmp(youtube_options.hls_audio_language, "en"),

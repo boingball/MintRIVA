@@ -655,33 +655,6 @@ typedef enum adaptive_itag_state {
     ADAPTIVE_ITAG_DIRECT
 } adaptive_itag_state;
 
-/* A dubbed video duplicates each adaptiveFormats itag once per audio track,
- * same as the HLS ladder (see extract_hls_audio_language() above). Rank the
- * object at [object, object_end) exactly the same way mr_hls.c's
- * variant_language_rank() ranks an HLS variant: explicitly the original/
- * default track outranks an unlabeled one, which in turn outranks a track
- * known to be some other dub. A video object never carries audioTrack, so it
- * always ranks 1 and the first (existing) match wins - this only changes
- * behaviour when there is more than one direct candidate for the same itag. */
-static int adaptive_track_rank(const char *object, const char *object_end)
-{
-    const char *audio_track, *track_end, *display_name, *is_default;
-    char display_text[128];
-    audio_track = json_object_field(object, object_end, "audioTrack");
-    if (!audio_track || *audio_track != '{') return 1;
-    track_end = json_compound_end(audio_track, object_end, '{', '}');
-    if (!track_end) return 1;
-    display_name = json_object_field(audio_track, track_end, "displayName");
-    is_default = json_object_field(audio_track, track_end, "audioIsDefault");
-    display_text[0] = '\0';
-    if (display_name)
-        (void)decode_json_string(display_name, display_text,
-                                 sizeof display_text);
-    if (text_contains_nocase(display_text, "original")) return 2;
-    if (is_default && !strncmp(is_default, "true", 4)) return 2;
-    return 0;
-}
-
 static adaptive_itag_state extract_adaptive_itag(
     const char *json, unsigned wanted_itag,
     const char *media_type, const char *codec_name,
@@ -690,7 +663,6 @@ static adaptive_itag_state extract_adaptive_itag(
     static const char adaptive_key[] = "\"adaptiveFormats\"";
     const char *p, *end;
     adaptive_itag_state best = ADAPTIVE_ITAG_MISSING;
-    int best_rank = -1;
     if (!json || !out || out_size < 2) return ADAPTIVE_ITAG_INVALID_URL;
     out[0] = '\0';
     end = json + strlen(json);
@@ -724,43 +696,29 @@ static adaptive_itag_state extract_adaptive_itag(
             media_url = json_object_field(p, object_end, "url");
             if (json_itag_equals(itag, wanted_itag)) {
                 adaptive_itag_state state = ADAPTIVE_ITAG_CODEC_MISMATCH;
-                char candidate[MR_HTTP_URL_MAX];
-                candidate[0] = '\0';
                 if (mime &&
                     decode_json_string(mime, mime_text, sizeof mime_text) &&
                     strstr(mime_text, media_type) &&
                     strstr(mime_text, codec_name)) {
                     if (!media_url)
                         state = ADAPTIVE_ITAG_NO_DIRECT_URL;
-                    else if (!decode_json_string(media_url, candidate,
-                                                 sizeof candidate) ||
-                             !googlevideo_url(candidate))
+                    else if (!decode_json_string(media_url, out, out_size) ||
+                             !googlevideo_url(out))
                         state = ADAPTIVE_ITAG_INVALID_URL;
-                    else if (url_has_n_parameter(candidate))
+                    else if (url_has_n_parameter(out))
                         state = ADAPTIVE_ITAG_N_CHALLENGE;
                     else
                         state = ADAPTIVE_ITAG_DIRECT;
                 }
-                if (state == ADAPTIVE_ITAG_DIRECT) {
-                    int rank = adaptive_track_rank(p, object_end);
-                    if (rank > best_rank) {
-                        size_t n = strlen(candidate);
-                        if (n + 1 <= out_size) {
-                            memcpy(out, candidate, n + 1);
-                            best_rank = rank;
-                            best = ADAPTIVE_ITAG_DIRECT;
-                        }
-                    }
-                } else if (state > best) {
-                    best = state;
-                }
+                if (state == ADAPTIVE_ITAG_DIRECT) return state;
+                if (state > best) best = state;
             }
             p = object_end;
             if (p < array_end - 1 && *p == ',') p++;
         }
         p = array_end;
     }
-    if (best != ADAPTIVE_ITAG_DIRECT) out[0] = '\0';
+    out[0] = '\0';
     return best;
 }
 
@@ -782,10 +740,8 @@ static void log_adaptive_itags(const char *json, const char *client,
                                char *audio_out, size_t audio_out_size)
 {
     unsigned video_itag = prefer_720p ? 136U : 160U;
-    /* AAC-LC (140) is preferred over HE-AAC/AAC+ (139) at every quality -
-     * MintAMP handles both, but 140 is the safer known-good decode path. */
-    unsigned first_audio = 140U;
-    unsigned second_audio = 139U;
+    unsigned first_audio = prefer_720p ? 140U : 139U;
+    unsigned second_audio = prefer_720p ? 139U : 140U;
     adaptive_itag_state video_state = extract_adaptive_itag(
         json, video_itag, "video/mp4", "avc1", video_out, video_out_size);
     adaptive_itag_state first_audio_state = extract_adaptive_itag(
@@ -807,8 +763,8 @@ int mr_youtube_extract_adaptive(const char *json, int prefer_720p,
                                 mr_youtube_media_kind *kind)
 {
     unsigned video_itag = prefer_720p ? 136U : 160U;
-    unsigned first_audio = 140U;
-    unsigned second_audio = 139U;
+    unsigned first_audio = prefer_720p ? 140U : 139U;
+    unsigned second_audio = prefer_720p ? 139U : 140U;
     if (!kind || !video_out || !audio_out) return 0;
     *kind = MR_YOUTUBE_MEDIA_NONE;
     video_out[0] = '\0';
@@ -888,7 +844,6 @@ static int try_player_media(const char *api_url,
                             char *video_out, size_t video_out_size,
                             char *audio_out, size_t audio_out_size,
                             int prefer_720p, int want_adaptive,
-                            int skip_manifest,
                             youtube_nsig_attempt *nsig_attempt,
                             mr_youtube_media_kind *kind)
 {
@@ -904,14 +859,7 @@ static int try_player_media(const char *api_url,
         return 0;
     }
     (void)reply_len;
-    /* VisionOS's recorded ladder is demuxed (video-only renditions, audio
-     * served as separate renditions the HLS source never fetches) - skip its
-     * hlsManifestUrl entirely rather than commit to a silent stream, and go
-     * straight to this same adaptiveFormats extraction WEB_SAFARI/ANDROID
-     * already use for a direct, already-muxed-by-the-player video+audio
-     * pair. */
-    ok = !skip_manifest &&
-        mr_youtube_extract_live_manifest(reply, video_out, video_out_size);
+    ok = mr_youtube_extract_live_manifest(reply, video_out, video_out_size);
     if (ok && manifest_needs_n_transform(video_out) &&
         try_native_n_transform(nsig_attempt, video_out,
                                solved_url, sizeof solved_url) &&
@@ -1195,25 +1143,16 @@ int mr_youtube_resolve_media_pair(const char *url,
         if (!mr_http_options_init(&visionos_options, YOUTUBE_VISIONOS_UA,
                                   YOUTUBE_REFERER))
             return 0;
-        printf("YouTube: trying VISIONOS direct adaptive%s\n",
+        printf("YouTube: trying VISIONOS recorded HLS%s\n",
                signature_timestamp ? " with player STS" : "");
-        /* VisionOS's own hlsManifestUrl is demuxed (video-only renditions -
-         * see mr_hls.c/mrplay.c's fallback comment), so skip it entirely
-         * (skip_manifest=1) and go straight for the itag 160 + 139/140
-         * adaptiveFormats pair the player response already carries
-         * (want_adaptive=1) - the same already-muxed-by-the-player direct
-         * URLs WEB_SAFARI/ANDROID use below. VisionOS is keyless/anonymous
-         * and reliable where those are trusted-session dependent, so a miss
-         * here goes straight to the proven Android muxed 360p fallback
-         * rather than working through the rest of this chain. */
         result = try_player_media(YOUTUBE_VISIONOS_API_URL,
                                   &visionos_options, json,
                                   "VISIONOS", YOUTUBE_VISIONOS_UA,
                                   video_out, video_out_size,
                                   audio_out, audio_out_size,
-                                  0, 1, 1, &nsig_attempt, kind);
+                                  0, 0, &nsig_attempt, kind);
         if (result > 0) return 1;
-        goto fallback_360p;
+        if (result < 0) saw_n_challenge = 1;
     }
 
     if (want_adaptive) {
@@ -1259,7 +1198,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                                   "WEB_SAFARI", YOUTUBE_WEB_SAFARI_UA,
                                   video_out, video_out_size,
                                   audio_out, audio_out_size,
-                                  prefer_720p, 1, 0, &nsig_attempt, kind);
+                                  prefer_720p, 1, &nsig_attempt, kind);
         if (result > 0) return 1;
         if (result < 0) saw_n_challenge = 1;
     }
@@ -1282,7 +1221,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                               YOUTUBE_ANDROID_LIVE_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, 0,
+                              prefer_720p, want_adaptive,
                               &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
@@ -1307,7 +1246,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                                   "ANDROID_VOD", YOUTUBE_ANDROID_UA,
                                   video_out, video_out_size,
                                   audio_out, audio_out_size,
-                                  prefer_720p, 1, 0, &nsig_attempt, kind);
+                                  prefer_720p, 1, &nsig_attempt, kind);
         if (result > 0) return 1;
         if (result < 0) saw_n_challenge = 1;
     }
@@ -1332,7 +1271,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                               YOUTUBE_ANDROID_VR_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, 0,
+                              prefer_720p, want_adaptive,
                               &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
@@ -1352,7 +1291,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                               "WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, 0,
+                              prefer_720p, want_adaptive,
                               &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
@@ -1368,7 +1307,7 @@ int mr_youtube_resolve_media_pair(const char *url,
                               YOUTUBE_BROWSER_UA,
                               video_out, video_out_size,
                               audio_out, audio_out_size,
-                              prefer_720p, want_adaptive, 0,
+                              prefer_720p, want_adaptive,
                               &nsig_attempt, kind);
     if (result > 0) return 1;
     if (result < 0) saw_n_challenge = 1;
