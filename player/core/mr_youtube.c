@@ -474,7 +474,10 @@ static int options_prefer_720p(const mr_http_options *options)
 }
 
 /* Returns 1 for immediately usable media, -1 when media was present but
- * carried an unsolved n challenge, and 0 for a failed/no-media reply. */
+ * carried an unsolved n challenge, -2 when the only usable format was a
+ * muxed 360p fallback while a 720p+ stream was requested (kept by the
+ * caller in case no client offers the requested quality), and 0 for a
+ * failed/no-media reply. */
 static int try_player_media(const char *api_url,
                             const mr_http_options *options,
                             const char *json, const char *client,
@@ -505,10 +508,39 @@ static int try_player_media(const char *api_url,
                                         kind);
     mr_free(reply);
     if (!ok) return 0;
+    if (prefer_720p && *kind != MR_YOUTUBE_MEDIA_PROGRESSIVE_720P)
+        return -2;
     g_last_client = client;
     g_last_media_ua = media_ua;
     g_last_kind = *kind;
     return 1;
+}
+
+/* Remembers the first muxed 360p fallback seen while still searching for a
+ * requested 720p+ stream, so a later client offering real 720p is not
+ * short-circuited by an earlier client's 360p-only response. */
+static void keep_progressive_fallback(const char *client, const char *media_ua,
+                                      const char *media_url,
+                                      mr_youtube_media_kind kind,
+                                      int *have_fallback,
+                                      const char **fallback_client,
+                                      const char **fallback_media_ua,
+                                      mr_youtube_media_kind *fallback_kind,
+                                      char *fallback_media,
+                                      size_t fallback_media_size)
+{
+    size_t len;
+    if (*have_fallback || fallback_media_size < 1) return;
+    len = strlen(media_url);
+    if (len >= fallback_media_size) len = fallback_media_size - 1;
+    memcpy(fallback_media, media_url, len);
+    fallback_media[len] = '\0';
+    *fallback_client = client;
+    *fallback_media_ua = media_ua;
+    *fallback_kind = kind;
+    *have_fallback = 1;
+    printf("YouTube: %s supplied only muxed 360p; continuing 720p search\n",
+           client);
 }
 
 int mr_youtube_resolve_media(const char *url,
@@ -521,6 +553,11 @@ int mr_youtube_resolve_media(const char *url,
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
     char api_url[256], json[1024];
+    char fallback_media[MR_HTTP_URL_MAX];
+    int have_fallback = 0;
+    const char *fallback_client = "";
+    const char *fallback_media_ua = YOUTUBE_BROWSER_UA;
+    mr_youtube_media_kind fallback_kind = MR_YOUTUBE_MEDIA_NONE;
     int n, ok, result, saw_n_challenge = 0;
     int prefer_720p = options_prefer_720p(options);
     g_last_client = "";
@@ -548,10 +585,16 @@ int mr_youtube_resolve_media(const char *url,
     if (ok) saw_n_challenge = 1;
     if (mr_youtube_extract_progressive(html, prefer_720p, out, out_size,
                                        kind)) {
-        g_last_client = "watch page";
-        g_last_kind = *kind;
-        mr_free(html);
-        return 1;
+        if (!prefer_720p || *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+            g_last_client = "watch page";
+            g_last_kind = *kind;
+            mr_free(html);
+            return 1;
+        }
+        keep_progressive_fallback("watch page", YOUTUBE_BROWSER_UA, out,
+                                  *kind, &have_fallback, &fallback_client,
+                                  &fallback_media_ua, &fallback_kind,
+                                  fallback_media, sizeof fallback_media);
     }
 
     /* Modern watch pages often omit streamingData even for a public live
@@ -599,7 +642,12 @@ int mr_youtube_resolve_media(const char *url,
                               YOUTUBE_ANDROID_UA, out, out_size, prefer_720p,
                               kind);
     if (result > 0) return 1;
-    if (result < 0) saw_n_challenge = 1;
+    if (result == -2)
+        keep_progressive_fallback("ANDROID", YOUTUBE_ANDROID_UA, out, *kind,
+                                  &have_fallback, &fallback_client,
+                                  &fallback_media_ua, &fallback_kind,
+                                  fallback_media, sizeof fallback_media);
+    else if (result < 0) saw_n_challenge = 1;
 
     /* Android VR still exposes the classic muxed 360p MP4 on many public
      * recorded videos. This is MintVID's deliberately narrow VOD target:
@@ -624,7 +672,12 @@ int mr_youtube_resolve_media(const char *url,
                               YOUTUBE_ANDROID_VR_UA, out, out_size,
                               prefer_720p, kind);
     if (result > 0) return 1;
-    if (result < 0) saw_n_challenge = 1;
+    if (result == -2)
+        keep_progressive_fallback("ANDROID_VR", YOUTUBE_ANDROID_VR_UA, out,
+                                  *kind, &have_fallback, &fallback_client,
+                                  &fallback_media_ua, &fallback_kind,
+                                  fallback_media, sizeof fallback_media);
+    else if (result < 0) saw_n_challenge = 1;
 
     /* Prefer the embedded WEB client next for embeddable public streams; its
      * thirdParty context identifies a genuine external embed origin. Live HLS
@@ -645,7 +698,12 @@ int mr_youtube_resolve_media(const char *url,
                               "WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
                               out, out_size, prefer_720p, kind);
     if (result > 0) return 1;
-    if (result < 0) saw_n_challenge = 1;
+    if (result == -2)
+        keep_progressive_fallback("WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
+                                  out, *kind, &have_fallback, &fallback_client,
+                                  &fallback_media_ua, &fallback_kind,
+                                  fallback_media, sizeof fallback_media);
+    else if (result < 0) saw_n_challenge = 1;
 
     /* Non-embeddable streams may reject WEB_EMBEDDED_PLAYER. Keep the normal
      * WEB request as a compatibility fallback, although deployments enforcing
@@ -661,7 +719,29 @@ int mr_youtube_resolve_media(const char *url,
                               YOUTUBE_BROWSER_UA, out, out_size, prefer_720p,
                               kind);
     if (result > 0) return 1;
-    if (result < 0) saw_n_challenge = 1;
+    if (result == -2)
+        keep_progressive_fallback("WEB", YOUTUBE_BROWSER_UA, out, *kind,
+                                  &have_fallback, &fallback_client,
+                                  &fallback_media_ua, &fallback_kind,
+                                  fallback_media, sizeof fallback_media);
+    else if (result < 0) saw_n_challenge = 1;
+
+    /* No client offered the requested 720p+ stream. Use the muxed 360p
+     * fallback an earlier client already supplied rather than failing or
+     * re-fetching everything from scratch. */
+    if (have_fallback) {
+        size_t len = strlen(fallback_media);
+        if (len >= out_size) len = out_size - 1;
+        memcpy(out, fallback_media, len);
+        out[len] = '\0';
+        g_last_client = fallback_client;
+        g_last_media_ua = fallback_media_ua;
+        g_last_kind = fallback_kind;
+        *kind = fallback_kind;
+        printf("YouTube: no client offered 720p; using muxed 360p from %s\n",
+               fallback_client);
+        return 1;
+    }
     mr_source_set_error(saw_n_challenge
         ? "YouTube media URL requires a player n challenge"
         : "YouTube returned no compatible live HLS or muxed MP4");
