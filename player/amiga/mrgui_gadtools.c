@@ -215,14 +215,17 @@ static void update_mode_controls(gt_app *app)
                       app->modes[selected] == MR_DISPLAY_P96);
     ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
 
-    /* Kalms' c2p only handles a genuine 8-plane, non-HAM AGA screen (see
-     * display_aga.c's "compatible" check in aga_open) - on anything else
-     * it silently falls back to WritePixelArray8. Snap the cycle gadget
-     * back to Standard whenever the mode isn't plain "AGA (256 colours)"
-     * and Kalms is currently picked, so the label never lies about what
-     * c2p is actually in use. */
+    /* HAM8 uses the normal eight-plane Kalms converter. CPU-specific 040/060
+     * GUI builds also keep Kalms selected for the linked HAM6 bitmap kernel.
+     * Lower-depth indexed and RTG modes still snap back to Standard. */
     if (selected_c2p == 2 &&
-        !(selected < app->mode_count && app->modes[selected] == MR_DISPLAY_AGA)) {
+        !(selected < app->mode_count &&
+          (app->modes[selected] == MR_DISPLAY_AGA ||
+           app->modes[selected] == MR_DISPLAY_HAM8
+#ifdef MR_KALMS_040
+           || app->modes[selected] == MR_DISPLAY_HAM6
+#endif
+          ))) {
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                          GTCY_Active, 0, TAG_DONE);
     }

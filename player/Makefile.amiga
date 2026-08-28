@@ -298,7 +298,8 @@ CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra 
           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
           -Wno-unused-but-set-variable -Wno-sign-compare \
           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
-GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra
+GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
+             $(KALMS_CPPFLAGS)
 # LIBAVC_M68K_LDFLAGS (libavc.mk): redirects ih264d_decode_bin to the m68k
 # asm via vendor/libavc_port/ih264d_cabac_wrap.c, without editing the
 # vendored ih264d_cabac.c inside the libavc submodule. Harmless on targets

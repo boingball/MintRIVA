@@ -463,16 +463,20 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                                mode_values[selected] == MR_DISPLAY_P96)
                             ? TRUE : FALSE;
 
-    /* Kalms' c2p only handles a genuine 8-plane, non-HAM AGA screen (see
-     * display_aga.c's "compatible" check in aga_open) - on anything else
-     * (ECS/HAM/RTG) it silently falls back to WritePixelArray8, which from
-     * this GUI would look like Kalms was selected but is quietly doing
-     * nothing. Snap the c2p choice back to Standard whenever the mode
-     * isn't plain "AGA (256 colours)" and Kalms is currently picked. */
+    /* Keep Kalms selected for every mode with an implemented kernel. HAM8 is
+     * still an eight-plane command buffer and uses the normal 1x1 converter;
+     * 040/060 builds additionally link the direct six-plane HAM6 converter.
+     * Lower-depth indexed and RTG modes still snap back to Standard. */
     selected_c2p = 0;
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
     if (selected_c2p == 2 &&
-        !(selected < mode_count && mode_values[selected] == MR_DISPLAY_AGA)) {
+        !(selected < mode_count &&
+          (mode_values[selected] == MR_DISPLAY_AGA ||
+           mode_values[selected] == MR_DISPLAY_HAM8
+#ifdef MR_KALMS_040
+           || mode_values[selected] == MR_DISPLAY_HAM6
+#endif
+          ))) {
         SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                        CHOOSER_Selected, 0, TAG_DONE);
     }
