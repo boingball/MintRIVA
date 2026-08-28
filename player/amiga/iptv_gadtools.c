@@ -7,6 +7,8 @@
 #include "mr_master_options.h"
 #include "mr_player_status.h"
 
+MINTVID_DECLARE_VERSION(iptvgui_gt_version_tag, "iptvgui-GT");
+
 #include <devices/timer.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>

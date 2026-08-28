@@ -1,18 +1,19 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.0 (23.8.2026)
+@$VER: MintVID.guide 1.1 (28.8.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @wordwrap
 @smartwrap
 
 @node MAIN "MintVID Guide"
-@{b}MintVID@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
+@{b}MintVID 1.1.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
 hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG machines.
 
 This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
+  @{" What's new in 1.1.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -33,6 +34,7 @@ page below also links back here.
 @{b}MintVID Guide@{ub} - Contents
 
   @{" Overview "            LINK Overview}
+  @{" What's new in 1.1.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -42,6 +44,26 @@ page below also links back here.
   @{" Troubleshooting "     LINK Troubleshooting}
   @{" Licensing "           LINK Licensing}
   @{" Support MintVID "     LINK Support}
+@endnode
+
+@node WhatsNew "What's new in 1.1.0"
+@toc MintVID.guide/MAIN
+@{b}MintVID 1.1.0@{ub}
+
+  - Adds the separate TurboGT H.264 performance mode.
+  - Uses CPU-matched Kalms C2P kernels in the 030 and 040/060 releases.
+  - Converts only dirty row bands and aligns Kalms input buffers to 16 bytes.
+  - Fuses exact 2x enlargement with C2P where supported.
+  - Adds direct Kalms HAM6 output to the 040/060 releases.
+  - Exposes the supported paths through both ReAction and GadTools GUIs.
+  - Keeps searching for requested YouTube 720p after an early 360p-only reply,
+    while preserving 360p as a final fallback.
+  - Adds AmigaOS $VER identities to every shipped executable.
+
+See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
+for the detailed list.
+
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Overview "Overview"

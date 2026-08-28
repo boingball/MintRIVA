@@ -260,6 +260,7 @@ KALMS_2X2_SRC = vendor/kalms-c2p/bitmap/c2p2x2_8_c5_bm.s
 KALMS_2X2_OBJ = build/c2p2x2_8_c5_bm.o
 KALMS_HAM6_SRC = vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.s
 KALMS_OBJ = $(KALMS_1X1_OBJ) $(KALMS_2X2_OBJ) $(KALMS_HAM6_OBJ)
+VERSION_HEADER = amiga/mintvid_version.h
 KALMS_VASM ?= $(firstword \
     $(wildcard $(dir $(AMIGA_GCC))vasmm68k_mot) \
     $(shell command -v vasmm68k_mot 2>/dev/null))
@@ -328,7 +329,7 @@ check-cc:
 	  exit 1; }
 	@echo "using CC = $(CC)"
 
-mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) | check-libavc
+mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(KALMS_OBJ) $(LDFLAGS)
 
@@ -360,22 +361,22 @@ endif
 # Aminet release; iptvgui/ytgui/the GadTools -GT set/mrplay/mr_decode are
 # support binaries it launches on demand and stay hidden in the release
 # tree (see the `release` target below).
-MintVID: check-cc $(GUI) amiga/mr_master_options.h
+MintVID: check-cc $(GUI) amiga/mr_master_options.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
-iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h amiga/mr_master_options.h
+iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h amiga/mr_master_options.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(IPTVGUI) $(LDFLAGS)
 
-ytgui: check-cc $(YTGUI) youtube/mr_youtube_search.h amiga/mr_master_options.h
+ytgui: check-cc $(YTGUI) youtube/mr_youtube_search.h amiga/mr_master_options.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(YTGUI) $(LDFLAGS)
 
-MintVID-GT: check-cc $(GUI_GT) amiga/mr_master_options.h
+MintVID-GT: check-cc $(GUI_GT) amiga/mr_master_options.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI_GT) $(LDFLAGS)
 
-iptvgui-GT: check-cc $(IPTVGUI_GT) iptv/mr_iptv.h amiga/mr_master_options.h
+iptvgui-GT: check-cc $(IPTVGUI_GT) iptv/mr_iptv.h amiga/mr_master_options.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(IPTVGUI_GT) $(LDFLAGS)
 
-ytgui-GT: check-cc $(YTGUI_GT) youtube/mr_youtube_search.h amiga/mr_master_options.h
+ytgui-GT: check-cc $(YTGUI_GT) youtube/mr_youtube_search.h amiga/mr_master_options.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(YTGUI_GT) $(LDFLAGS)
 
 check-mintamp:
@@ -389,7 +390,7 @@ check-libavc:
 	  echo "ERROR: initialise the libavc submodule first:"; \
 	  echo "  git submodule update --init --recursive"; exit 1; }
 
-mr_decode: check-cc $(HARN) $(CORE) | check-libavc
+mr_decode: check-cc $(HARN) $(CORE) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE) $(LDFLAGS)
 endif
 
@@ -403,7 +404,7 @@ CFLAGS  = +aos68k -c99 -O2 -cpu=68030 -DAMIGA_M68K \
           $(HTTP_SSL_FLAGS) $(LIBMPEG2_FLAGS)
 
 all: mr_decode
-mr_decode: $(HARN) $(CORE)
+mr_decode: $(HARN) $(CORE) $(VERSION_HEADER)
 	$(CC) $(CFLAGS) -o $@ $(HARN) $(CORE)
 endif
 
@@ -466,6 +467,11 @@ release:
 		cp ../MintVID.readme "$(RELEASE_DIR)/MintVID.readme"; \
 	else \
 		echo "ERROR: MintVID.readme not found - release metadata is required"; exit 1; \
+	fi
+	@if [ -f ../CHANGELOG.md ]; then \
+		cp ../CHANGELOG.md "$(RELEASE_DIR)/CHANGELOG.txt"; \
+	else \
+		echo "ERROR: CHANGELOG.md not found - release notes are required"; exit 1; \
 	fi
 	@mkdir -p $(RELEASE_LICENSE_DIR)
 	@test -f ../LICENSE || { echo "ERROR: ../LICENSE is required for release packaging"; exit 1; }

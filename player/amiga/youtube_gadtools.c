@@ -8,6 +8,8 @@
 #include "mr_master_options.h"
 #include "mr_player_status.h"
 
+MINTVID_DECLARE_VERSION(ytgui_gt_version_tag, "ytgui-GT");
+
 #include <devices/timer.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>

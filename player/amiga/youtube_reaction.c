@@ -13,6 +13,8 @@
 #include "mr_gui_menu.h"
 #include "../youtube/mr_youtube_search.h"
 
+MINTVID_DECLARE_VERSION(ytgui_version_tag, "ytgui");
+
 #include <classes/window.h>
 #include <devices/timer.h>
 #include <dos/dos.h>

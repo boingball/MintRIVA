@@ -2,8 +2,7 @@
 #define MR_GUI_MENU_H
 
 #include <exec/types.h>
-
-#define MINTVID_VERSION "1.0"
+#include "mintvid_version.h"
 
 struct Menu;
 struct Window;

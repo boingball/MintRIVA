@@ -4,6 +4,8 @@
 #include "mr_master_options.h"
 #include "mr_player_status.h"
 
+MINTVID_DECLARE_VERSION(mintvid_gt_version_tag, "MintVID-GT");
+
 #include <cybergraphx/cybergraphics.h>
 #include <devices/timer.h>
 #include <dos/dos.h>

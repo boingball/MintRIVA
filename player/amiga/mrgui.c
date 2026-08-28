@@ -46,6 +46,8 @@
 #include "mr_gui_menu.h"
 #include "mr_player_status.h"
 
+MINTVID_DECLARE_VERSION(mintvid_version_tag, "MintVID");
+
 #ifndef MRGUI_CLASS_VERSION
 #define MRGUI_CLASS_VERSION 44
 #endif
