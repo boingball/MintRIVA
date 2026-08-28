@@ -42,13 +42,14 @@ typedef struct {
                           int h, int idx_stride, int dy0, int dy1,
                           mr_display_service_fn service, void *service_opaque);
     /* Optional: report whether this handle can accept direct YUV420P ->
-     * indexed conversion, filling the fitted geometry, fast-path vscale
+     * indexed conversion, filling the indexed-buffer geometry, fast-path vscale
      * (1 or an exact vertical divisor; 0 selects general resize), and active
      * 4/5/8-plane palette depth. A caller should prefer this over the RGB
      * supports_indexed() route when both apply.
      * Produced buffers are consumed the same way as supports_indexed()'s -
      * via show_indexed(), called with *dst_w and *dst_h instead of the source
-     * dimensions. */
+     * dimensions. A backend may subsequently scale those indices while
+     * presenting them (the AGA Kalms 2x2 path does this). */
     int   (*supports_yuv_indexed)(void *handle, int src_w, int src_h,
                                   int *dst_w, int *dst_h, int *vscale,
                                   int *indexed_depth);

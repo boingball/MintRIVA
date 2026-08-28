@@ -54,6 +54,7 @@ page below also links back here.
   - Uses CPU-matched Kalms C2P kernels in the 030 and 040/060 releases.
   - Converts only dirty row bands and aligns Kalms input buffers to 16 bytes.
   - Fuses exact 2x enlargement with C2P where supported.
+  - Feeds H.264 YUV directly into that fused 2x path without an RGB buffer.
   - Adds direct Kalms HAM6 output to the 040/060 releases.
   - Exposes the supported paths through both ReAction and GadTools GUIs.
   - Keeps searching for requested YouTube 720p after an early 360p-only reply,

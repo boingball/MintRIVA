@@ -29,7 +29,8 @@ format support is not a promise of real-time playback on every 68k.
 
 - Separate **TurboGT** H.264 performance mode.
 - CPU-matched Kalms C2P for 030 and 040/060, dirty-row conversion, explicitly
-  aligned input, fused exact-2x output, and direct HAM6 output on 040/060.
+  aligned input, fused exact-2x output with direct H.264 YUV input, and direct
+  HAM6 output on 040/060.
 - Matching Kalms choices in both ReAction and GadTools.
 - Better YouTube 720p selection: an early 360p-only response no longer stops
   the multi-client search, but remains available as the final fallback.

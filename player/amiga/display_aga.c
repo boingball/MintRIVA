@@ -610,10 +610,20 @@ static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
                                     int *indexed_depth)
 {
     aga_state *s = (aga_state *)handle;
-    if (!s || s->ham || s->scale != 1 ||
+    if (!s || s->ham ||
         (s->depth != 4 && s->depth != 5 && s->depth != 8)) return 0;
     if (src_w <= 0 || src_h <= 0) return 0;
     if (indexed_depth) *indexed_depth = s->depth;
+    /* Kalms' fused 2x2 converter consumes the source-sized indexed image and
+     * performs the enlargement while producing the bitplanes. Let H.264 use
+     * the existing direct YUV420P -> indexed path here too: this removes the
+     * RGB24 queue/intermediate and the later RGB -> indexed pass, in addition
+     * to the scale pass that the Kalms kernel already removed. */
+    if (s->kalms_kind == KALMS_2X2_8 && src_w == s->w && src_h == s->h) {
+        *dst_w = src_w; *dst_h = src_h; *vscale = 1;
+        return 1;
+    }
+    if (s->scale != 1) return 0;
     if (!s->resize) {
         *dst_w = s->w; *dst_h = s->h; *vscale = 1;
         return 1;
@@ -641,6 +651,15 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     if (dy1 > h)  dy1 = h;
     if (dy1 <= dy0) return;
     ddy0 = dy0; ddh = dy1 - dy0;
+
+    /* The fused converter wants the undoubled indexed source. Unlike the 1x1
+     * paths there is deliberately no screen-sized chunky buffer to copy into. */
+    if (s->kalms_kind == KALMS_2X2_8) {
+        if (w != s->w || h != s->h || idx_stride != w) return;
+        s_frame_enc = 0;
+        aga_blit_kalms2x2(s, idx + (size_t)dy0 * idx_stride, ddh, ddy0);
+        return;
+    }
 
     /* For the common aligned case (idx already laid out at exactly pw
      * bytes/row - true whenever dw needs no C2P/WPA padding, e.g. the

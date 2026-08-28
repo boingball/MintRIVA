@@ -11,7 +11,9 @@ The release profiles now select a kernel that matches their CPU:
 - `.040` and `.060` use `c2p1x1_8_c5_040`, which Kalms designed for both CPUs.
 - Exact 2x output at 8 planes uses `c2p2x2_8_c5_bm` on every profile. This
   fuses encoded-pixel enlargement and C2P, removing `mr_scale2x_u8()` and the
-  doubled chunky framebuffer traversal.
+  doubled chunky framebuffer traversal. H.264 additionally feeds this path
+  through MintVID's direct YUV420P-to-indexed converter, avoiding the RGB24
+  queue/intermediate and a separate RGB-to-indexed pass.
 - HAM6 on `.040` and `.060` uses `c2p1x1_6_c5_bm_040`, writing directly to the
   screen's real `BitMap`. The `.030` HAM6 path continues to fall back safely.
 

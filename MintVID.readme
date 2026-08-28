@@ -18,7 +18,8 @@ WHAT'S NEW IN 1.1.0
   - New TurboGT H.264 performance mode for PiStorm/Emu68-class systems.
   - CPU-matched Kalms C2P for 030 versus 040/060 builds.
   - Dirty-row-only Kalms conversion, 16-byte aligned buffers, fused 2x2
-    scaling/C2P where geometry permits, and direct HAM6 C2P on 040/060.
+    scaling/C2P where geometry permits, direct H.264 YUV-to-indexed input for
+    that fused path, and direct HAM6 C2P on 040/060.
   - ReAction and GadTools expose the supported Kalms paths consistently.
   - YouTube 720p/1080p/Best searches no longer stop at an early 360p-only
     client response; 360p is retained as the final fallback.

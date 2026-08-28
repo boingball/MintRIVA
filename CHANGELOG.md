@@ -9,6 +9,8 @@
 - CPU-aware Kalms C2P selection: the 68030 release keeps the 030 kernel, while
   the 68040 and 68060 releases use Kalms' kernel designed for those CPUs.
 - Fused Kalms 2x2 scaling and C2P for eligible eight-plane display geometry.
+- Direct H.264 YUV420P-to-indexed input for the fused Kalms 2x2 path, avoiding
+  both the RGB24 intermediate and a separate RGB-to-indexed pass.
 - Direct six-plane Kalms HAM6 output in the 68040 and 68060 releases.
 - AmigaOS `$VER:` identities for every shipped executable.
 

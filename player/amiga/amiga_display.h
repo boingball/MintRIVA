@@ -138,10 +138,10 @@ void display_show_indexed(amiga_display *d, const unsigned char *idx,
                           int w, int h, int idx_stride, int dy0, int dy1);
 
 /* Non-zero when `d` can accept a direct YUV420P -> indexed frame. Fills the
- * fitted geometry, fast-path vscale (0 means general two-axis resize), and
+ * indexed-buffer geometry, fast-path vscale (0 means general two-axis resize), and
  * active 4/5/8-plane palette depth. Dither with the matching generic function
  * in core/mr_yuv_dither.h and pass the resulting one-byte indices to
- * display_show_indexed(). */
+ * display_show_indexed(); the backend may perform final presentation scaling. */
 int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
                                  int *dst_w, int *dst_h, int *vscale,
                                  int *indexed_depth);
