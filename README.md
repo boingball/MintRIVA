@@ -34,6 +34,7 @@ format support is not a promise of real-time playback on every 68k.
 - Matching Kalms choices in both ReAction and GadTools.
 - Better YouTube 720p selection: an early 360p-only response no longer stops
   the multi-client search, but remains available as the final fallback.
+- Faster direct YUV-to-indexed fitting for horizontally upscaled H.264 video.
 - AmigaOS `$VER:` identities across every shipped executable.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.

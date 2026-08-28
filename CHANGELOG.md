@@ -26,6 +26,9 @@
   `kalms-2x2`, or `kalms-ham6`.
 - YouTube requests for 720p/1080p/Best continue searching other clients after
   an early 360p-only response, retaining 360p as a final fallback.
+- General AGA H.264 upscaling reuses each repeated source pixel's YUV-to-RGB
+  result while retaining destination-specific dithering; 256-to-640 fitting
+  now performs 256 colour conversions per row instead of 640.
 
 ### Compatibility
 

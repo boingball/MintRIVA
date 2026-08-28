@@ -23,6 +23,7 @@ WHAT'S NEW IN 1.1.0
   - ReAction and GadTools expose the supported Kalms paths consistently.
   - YouTube 720p/1080p/Best searches no longer stop at an early 360p-only
     client response; 360p is retained as the final fallback.
+  - Faster direct YUV-to-indexed upscaling for low-resolution H.264 video.
   - Every shipped executable now carries an AmigaOS $VER identity.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,

@@ -59,6 +59,7 @@ page below also links back here.
   - Exposes the supported paths through both ReAction and GadTools GUIs.
   - Keeps searching for requested YouTube 720p after an early 360p-only reply,
     while preserving 360p as a final fallback.
+  - Reuses repeated YUV source pixels when fitting low-resolution H.264 video.
   - Adds AmigaOS $VER identities to every shipped executable.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
