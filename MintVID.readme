@@ -25,6 +25,10 @@ WHAT'S NEW IN 1.1.0
     client response; 360p is retained as the final fallback.
   - Faster direct YUV-to-indexed upscaling for low-resolution H.264 video.
   - Every shipped executable now carries an AmigaOS $VER identity.
+  - RTG (P96) direct-write playback now covers 16-bit RGB565 and 32-bit ARGB
+    screens, not just 24-bit BGR - so it engages on more real boards/modes.
+  - RTG (CGX) playback gains its own private-screen direct-write fast path,
+    including on genuine CyberGraphX-only boards without Picasso96API.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
 for the detailed list.
