@@ -113,28 +113,6 @@ typedef struct {
     char            error[HLS_FETCH_ERROR_MAX];
 } hls_fetch_request;
 
-/* --- crash-site diagnostic logging ----------------------------------------
- * TEMPORARY: tracking down a "Software Failure ... error #80000004" (68k
- * vector 4, illegal instruction) reported inside this task, specifically at
- * live-stream-end teardown. Each mark is its own independent Open()/Write()/
- * Close() via dos.library - not the libc heap/stdio, which this task is not
- * safe to use (see the design note at the top of this file) - and every
- * call flushes to disk immediately (Close() on every mark) so a mark
- * survives even if the very next instruction is the one that traps. Only
- * called from the one-time-per-session teardown path below, never from the
- * per-request fetch hot path, so it cannot affect live playback timing.
- * Remove this whole block (and its call sites) once the fault is found. */
-static void hls_debug_mark(const char *tag)
-{
-    BPTR fh = Open((CONST_STRPTR)"hls_debug.log", MODE_READWRITE);
-    if (!fh) fh = Open((CONST_STRPTR)"hls_debug.log", MODE_NEWFILE);
-    if (!fh) return;
-    Seek(fh, 0, OFFSET_END);
-    Write(fh, (APTR)tag, (LONG)strlen(tag));
-    Write(fh, (APTR)"\n", 1);
-    Close(fh);
-}
-
 static struct Process *g_proc;
 static struct MsgPort *g_worker_port;    /* worker's port (worker-owned)      */
 static struct MsgPort *g_reply_port;     /* main's port (main-owned)          */
@@ -195,7 +173,6 @@ static void hls_fetch_worker(void)
     g_worker_port = CreateMsgPort();
     PutMsg(g_reply_port, &g_ready_msg);
     if (!g_worker_port) return;            /* main sees NULL and gives up    */
-    hls_debug_mark("worker: started");
 
     for (;;) {
         WaitPort(g_worker_port);
@@ -207,21 +184,12 @@ static void hls_fetch_worker(void)
         }
     }
 done:
-    hls_debug_mark("worker: got quit request, entering done:");
     /* Release the socket/TLS state this task opened, from this task, before
      * acknowledging the quit - main proceeds to its own mr_http_net_shutdown()
      * as soon as it sees the reply, so ours must be fully done first. */
     mr_http_net_shutdown();
-    hls_debug_mark("worker: mr_http_net_shutdown() returned");
     DeleteMsgPort(g_worker_port);
     g_worker_port = NULL;
-    hls_debug_mark("worker: DeleteMsgPort() done, about to Forbid+ReplyMsg");
-    /* No mark after this point: dos.library's Open()/Write()/Close() route
-     * through a message-port handshake with a filesystem handler process,
-     * which - per the RKM - is fine to do even while Forbid()'d (blocking
-     * calls implicitly permit just long enough to be serviced) but would
-     * still give main a real window to run in, defeating the reason Forbid()
-     * is held here in the first place. See the comment below. */
     /* Forbid() before the reply so main - woken by it - cannot start tearing
      * down further (freeing state this task's final RemTask still touches)
      * until dos has actually removed this task; only its last Permit-equivalent
@@ -511,14 +479,6 @@ int hls_fetch_start(int verbose)
         NP_Name, (ULONG)"MintVID HLS fetch",
         NP_StackSize, HLS_FETCH_STACK,
         NP_Priority, 0,
-        /* Without this the worker starts with no current directory of its
-         * own, so a relative path (see hls_debug_mark() below) would not
-         * reliably resolve next to the running program. Duplicate this
-         * task's own lock rather than sharing it - CreateNewProcTags()
-         * hands ownership of whatever lock is passed here to the new
-         * process, which UnLock()s it itself as part of normal process
-         * exit. */
-        NP_CurrentDir, (ULONG)DupLock(((struct Process *)FindTask(NULL))->pr_CurrentDir),
         TAG_END);
     if (!g_proc) {
         DeleteMsgPort(g_reply_port);
