@@ -5,6 +5,31 @@
  * SAGA/P96/CGX) and blits RGB24 frames with WritePixelArray, letting
  * cybergraphics do the RGB->screen-depth conversion. Library bases are opened
  * by display.c; this backend just needs CyberGfxBase to be present.
+ *
+ * On our own private fullscreen screen (cgx_open_private_screen() - never on
+ * a shared Workbench screen, windowed or otherwise) this also tries a direct
+ * cybergraphics.library LockBitMapTagList()/UnLockBitMap() write, the same
+ * technique display_p96.c uses via Picasso96API.library's p96LockBitMap()
+ * but through the base cybergraphics.library API instead - no Picasso96API
+ * dependency, so it also covers genuine CyberGraphX-only boards that have
+ * cybergraphics.library but never had Picasso96API.library at all (display_
+ * p96.c's backend_p96 refuses to even open on those - see its file header).
+ * Supports the three PIXFMT_* layouts cybergraphics.library's own autodoc
+ * lists as "recommended" (PIXFMT_RGB16, PIXFMT_RGB24, PIXFMT_ARGB32 -
+ * PIXFMT_LUT8 aside, irrelevant here since this backend is truecolour-only);
+ * anything else falls back to WritePixelArray exactly as before, so
+ * selecting an unsupported format never loses playback, only the chance at
+ * the faster path. See detect_cgx_format()/write_cgx_pixel_strip() below and
+ * display_p96.c's file header for the shared background on why this is
+ * fullscreen (well, private-screen) only: a direct lock has none of
+ * WritePixelArray's automatic Layer-based window clipping. Restricting it to
+ * cgx_open_private_screen()'s own screen (never the "fullscreen requested
+ * but a private screen could not be opened, fall back to a fullscreen window
+ * on the shared Workbench screen" path a few lines below) sidesteps needing
+ * display_p96.c's win->LeftEdge/TopEdge absolute-position tracking entirely:
+ * a private screen's borderless, undraggable window is opened once at (0,0)
+ * and never moves for the screen's whole lifetime (cgx_toggle_fullscreen()
+ * tears the whole thing down and rebuilds rather than repositioning it).
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -33,6 +58,29 @@
  * RAM - only this many rows of it at once. */
 #define MR_CGX_STRIP_ROWS 32
 
+/* Native bitmap pixel layouts the private-screen direct-lock path can write
+ * directly - see the file header comment. Only ever considered for our own
+ * private screen (cgx_open_private_screen()); everything else (windowed, or
+ * the fullscreen-on-shared-Workbench-screen fallback) stays on
+ * WritePixelArray, which needs no format detection since cybergraphics does
+ * the RGB->native conversion for us there. */
+typedef enum {
+    CGX_FMT_NONE = 0,
+    CGX_FMT_RGB16,   /* PIXFMT_RGB16,  2 bytes/pixel */
+    CGX_FMT_RGB24,   /* PIXFMT_RGB24,  3 bytes/pixel */
+    CGX_FMT_ARGB32   /* PIXFMT_ARGB32, 4 bytes/pixel, alpha unused */
+} cgx_fmt;
+
+static int cgx_fmt_bytes(cgx_fmt fmt)
+{
+    switch (fmt) {
+    case CGX_FMT_RGB16:  return 2;
+    case CGX_FMT_RGB24:  return 3;
+    case CGX_FMT_ARGB32: return 4;
+    default:              return 0;
+    }
+}
+
 typedef struct {
     struct Window *win;
     struct Screen *screen;   /* owned private RTG screen, NULL on Workbench */
@@ -58,6 +106,8 @@ typedef struct {
     int            cached_dst_h;    /* -1 sentinel  = rebuild required       */
     struct BitMap *cached_bitmap;   /* NULL sentinel = rebuild required      */
     int            geometry_valid;  /* 0 = rebuild required                  */
+    cgx_fmt        fmt;             /* private-screen direct-lock format,
+                                     * NONE = use WritePixelArray instead    */
     mr_display_timing timing;
     int            quit;
     int            fullscreen;
@@ -82,6 +132,12 @@ typedef struct {
 static void cgx_rebuild_geometry(cgx_state *s, const char *reason);
 static int  ensure_scaled(cgx_state *s, int w);
 static int  cgx_toggle_fullscreen(void *h);
+static cgx_fmt detect_cgx_format(struct BitMap *bm);
+static void clear_cgx_pixel_rect(struct BitMap *bm, cgx_fmt fmt, int x, int y,
+                                 int w, int h);
+static int write_cgx_pixel_strip(struct BitMap *bm, int dst_x, int dst_y,
+                                 const unsigned char *src, int src_stride,
+                                 int w, int rows, cgx_fmt fmt);
 
 /* CloseScreen() may temporarily refuse while Intuition still sees a window or
  * screen lock.  Real PiStorm/Workbench testing has shown that a few VBlanks are
@@ -192,6 +248,124 @@ static struct Screen *cgx_open_private_screen(cgx_state *s, const char *title)
                                                CYBRMATTR_DEPTH),
                target_w, target_h, s->source_w, s->source_h);
     return scr;
+}
+
+/* Three native layouts are supported for the private-screen direct-lock
+ * path - see the file header comment. bm may be any live BitMap, but this
+ * is only ever actually called (from cgx_rebuild_geometry()) when s->screen
+ * is set, i.e. our own private screen. Cross-checks CYBRMATTR_BPPIX against
+ * the format as an extra sanity check, not just trust in the PIXFMT enum
+ * value alone (mirrors display_p96.c's detect_bitmap_format()). */
+static cgx_fmt detect_cgx_format(struct BitMap *bm)
+{
+    ULONG pixfmt, bpp;
+    if (!bm || !CyberGfxBase) return CGX_FMT_NONE;
+    pixfmt = GetCyberMapAttr(bm, CYBRMATTR_PIXFMT);
+    bpp = GetCyberMapAttr(bm, CYBRMATTR_BPPIX);
+    switch (pixfmt) {
+    case PIXFMT_RGB16:  return bpp == 2 ? CGX_FMT_RGB16  : CGX_FMT_NONE;
+    case PIXFMT_RGB24:  return bpp == 3 ? CGX_FMT_RGB24  : CGX_FMT_NONE;
+    case PIXFMT_ARGB32: return bpp == 4 ? CGX_FMT_ARGB32 : CGX_FMT_NONE;
+    default:              return CGX_FMT_NONE;
+    }
+}
+
+/* Black out a rect directly (same lock/unlock discipline as
+ * write_cgx_pixel_strip). Used by cgx_rebuild_geometry() to clear the
+ * letterbox/pillarbox area on our own private screen instead of
+ * FillPixelArray, same reasoning as display_p96.c's clear_pixel_rect(): a
+ * zero byte is black in all three supported layouts (PIXFMT_ARGB32's alpha
+ * byte is unused, so a zeroed alpha there is harmless too). */
+static void clear_cgx_pixel_rect(struct BitMap *bm, cgx_fmt fmt, int x, int y,
+                                 int w, int h)
+{
+    APTR lock;
+    ULONG base = 0, bpr = 0;
+    int row, bpp = cgx_fmt_bytes(fmt);
+    unsigned char *drow_base;
+
+    if (w <= 0 || h <= 0 || !bpp) return;
+    lock = LockBitMapTags(bm,
+        LBMI_BASEADDRESS, (ULONG)&base,
+        LBMI_BYTESPERROW, (ULONG)&bpr,
+        TAG_END);
+    if (!lock) return;
+    drow_base = (unsigned char *)base + (size_t)y * (size_t)bpr +
+               (size_t)x * (size_t)bpp;
+    for (row = 0; row < h; row++)
+        memset(drow_base + (size_t)row * (size_t)bpr, 0, (size_t)w * (size_t)bpp);
+    UnLockBitMap(lock);
+}
+
+/* Lock our own private screen's bitmap directly (cybergraphics.library's
+ * LockBitMapTagList()/UnLockBitMap() - see the file header comment) and
+ * write `rows` of already-RGB24 source (cgx_show() never carries a BGR24
+ * source the way display_p96.c's H.264 direct-YUV path can, so there is no
+ * src_is_bgr parameter here) into native screen memory, in whichever of the
+ * three supported layouts `fmt` names.
+ *
+ * Per cybergraphics.library/LockBitMapTagList's own autodoc: "DON'T use any
+ * library calls while the bitmap is locked!" - so, same as display_p96.c,
+ * the lock is taken and released per strip, with service() (in cgx_show())
+ * called only between strips, never while locked.
+ *
+ * The 16/32-bit stores below are plain UWORD/ULONG writes at pixel-aligned
+ * (even/4-byte) offsets - on this big-endian target that alone produces the
+ * byte order PIXFMT_RGB16/PIXFMT_ARGB32 name (same reasoning as display_
+ * p96.c's write_pixel_strip() for RGBFB_R5G6B5/RGBFB_A8R8G8B8 - cyber-
+ * graphics.library's own WritePixelArray autodoc documents RECTFMT_RGB as
+ * red-byte-first and RECTFMT_ARGB as alpha-byte-first, the same letter-order-
+ * is-byte-order convention PIXFMT_* follows), with no separate byte-swap
+ * step needed. */
+static int write_cgx_pixel_strip(struct BitMap *bm, int dst_x, int dst_y,
+                                 const unsigned char *src, int src_stride,
+                                 int w, int rows, cgx_fmt fmt)
+{
+    APTR lock;
+    ULONG base = 0, bpr = 0;
+    int y, bpp = cgx_fmt_bytes(fmt);
+    unsigned char *drow_base;
+
+    if (!bpp) return 0;
+    lock = LockBitMapTags(bm,
+        LBMI_BASEADDRESS, (ULONG)&base,
+        LBMI_BYTESPERROW, (ULONG)&bpr,
+        TAG_END);
+    if (!lock) return 0;
+
+    drow_base = (unsigned char *)base + (size_t)dst_y * (size_t)bpr +
+               (size_t)dst_x * (size_t)bpp;
+    for (y = 0; y < rows; y++) {
+        const unsigned char *srow = src + (size_t)y * (size_t)src_stride;
+        unsigned char *drow = drow_base + (size_t)y * (size_t)bpr;
+        if (fmt == CGX_FMT_RGB24) {
+            memcpy(drow, srow, (size_t)w * 3u);
+            continue;
+        }
+        {
+            int x;
+            for (x = 0; x < w; x++) {
+                unsigned char r = srow[x * 3 + 0];
+                unsigned char g = srow[x * 3 + 1];
+                unsigned char b = srow[x * 3 + 2];
+                switch (fmt) {
+                case CGX_FMT_RGB16:
+                    *(UWORD *)(drow + x * 2) = (UWORD)
+                        (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+                    break;
+                case CGX_FMT_ARGB32:
+                    *(ULONG *)(drow + x * 4) =
+                        ((ULONG)r << 16) | ((ULONG)g << 8) | (ULONG)b;
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+    }
+
+    UnLockBitMap(lock);
+    return 1;
 }
 
 static struct Window *cgx_open_window(cgx_state *s, const char *title,
@@ -419,6 +593,12 @@ static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
     bm_changed = (bm != s->cached_bitmap);
     if (bm && CyberGfxBase)
         bm_depth = GetCyberMapAttr(bm, CYBRMATTR_DEPTH);
+    /* Direct-lock format is only ever detected (and so only ever used) for
+     * our own private screen - see the file header comment. Re-detected
+     * whenever the live bitmap changes, same trigger display_p96.c's
+     * detect_bitmap_format() call uses. */
+    if (bm_changed)
+        s->fmt = s->screen ? detect_cgx_format(bm) : CGX_FMT_NONE;
 
     /* Cache the new geometry. */
     s->dx = fit.x; s->dy = fit.y;
@@ -430,20 +610,26 @@ static void cgx_rebuild_geometry(cgx_state *s, const char *reason)
     if (scale_map_changed || bm_changed) {
         /* Clear the whole client area once so resized/toggled windows acquire
          * clean black letterbox or pillarbox bars. Later frames touch only the
-         * fitted video rectangle. FillPixelArray is clipped by the window layer. */
-        FillPixelArray(s->win->RPort, (UWORD)s->bl, (UWORD)s->bt,
-                       (UWORD)s->iw, (UWORD)s->ih, 0x00000000UL);
+         * fitted video rectangle. FillPixelArray is clipped by the window
+         * layer; the direct-lock clear isn't, but s->bl/s->bt are always 0 on
+         * our own borderless private screen and s->iw/s->ih are the whole
+         * screen, so there is no window layer to clip against there anyway. */
+        if (s->fmt != CGX_FMT_NONE)
+            clear_cgx_pixel_rect(bm, s->fmt, s->bl, s->bt, s->iw, s->ih);
+        else
+            FillPixelArray(s->win->RPort, (UWORD)s->bl, (UWORD)s->bt,
+                           (UWORD)s->iw, (UWORD)s->ih, 0x00000000UL);
         s->force_full_redraw = 1;
     }
 
     if (g_display_want_time)
         printf("rtg-geometry reason=%s iw=%d ih=%d video=%d,%d %dx%d "
                "bm-changed=%d scale-map-rebuild=%d "
-               "depth=%lu\n",
+               "depth=%lu fmt=%d\n",
                reason ? reason : "?",
                s->iw, s->ih, s->dx, s->dy, s->dw, s->dh,
                bm_changed, scale_map_changed,
-               (unsigned long)bm_depth);
+               (unsigned long)bm_depth, (int)s->fmt);
 }
 
 static void report_slow(const char *operation, unsigned long usec,
@@ -544,7 +730,9 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     if (timing) {
         s->timing.src_w = w; s->timing.src_h = hh;
         s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
-        s->timing.src_format = s->timing.dst_format = "RGB24";
+        s->timing.src_format = "RGB24";
+        s->timing.dst_format = s->fmt == CGX_FMT_RGB16 ? "RGB16" :
+                               s->fmt == CGX_FMT_ARGB32 ? "ARGB32" : "RGB24";
     }
     native = s->dw == w && s->dh == hh;
     if (timing) {
@@ -599,10 +787,16 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
             if (timing) s->timing.scale_us += elapsed_us(step);
 
             if (timing) step = clock();
-            WritePixelArray((APTR)s->scaled, 0, 0, (UWORD)s->scaled_stride,
-                            s->win->RPort, (UWORD)(s->bl + s->dx),
-                            (UWORD)(s->bt + s->dy + y),
-                            (UWORD)s->dw, (UWORD)rows, RECTFMT_RGB);
+            if (s->fmt != CGX_FMT_NONE)
+                write_cgx_pixel_strip(s->win->RPort->BitMap,
+                                      s->bl + s->dx, s->bt + s->dy + y,
+                                      s->scaled, s->scaled_stride, s->dw,
+                                      rows, s->fmt);
+            else
+                WritePixelArray((APTR)s->scaled, 0, 0, (UWORD)s->scaled_stride,
+                                s->win->RPort, (UWORD)(s->bl + s->dx),
+                                (UWORD)(s->bt + s->dy + y),
+                                (UWORD)s->dw, (UWORD)rows, RECTFMT_RGB);
             if (timing) s->timing.blit_us += elapsed_us(step);
 
             if (service) service(service_opaque);
@@ -641,11 +835,17 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         for (y = dy0; y < dy1; y += MR_CGX_STRIP_ROWS) {
             int rows = dy1 - y < MR_CGX_STRIP_ROWS ? dy1 - y
                                                     : MR_CGX_STRIP_ROWS;
-            WritePixelArray((APTR)(rgb + (size_t)y * stride), 0, 0,
-                            (UWORD)stride, s->win->RPort,
-                            (UWORD)(s->bl + s->dx),
-                            (UWORD)(s->bt + s->dy + y), (UWORD)w,
-                            (UWORD)rows, RECTFMT_RGB);
+            if (s->fmt != CGX_FMT_NONE)
+                write_cgx_pixel_strip(s->win->RPort->BitMap,
+                                      s->bl + s->dx, s->bt + s->dy + y,
+                                      rgb + (size_t)y * stride, stride, w,
+                                      rows, s->fmt);
+            else
+                WritePixelArray((APTR)(rgb + (size_t)y * stride), 0, 0,
+                                (UWORD)stride, s->win->RPort,
+                                (UWORD)(s->bl + s->dx),
+                                (UWORD)(s->bt + s->dy + y), (UWORD)w,
+                                (UWORD)rows, RECTFMT_RGB);
             if (timing) s->timing.copies++;
             if (service) service(service_opaque);
         }
