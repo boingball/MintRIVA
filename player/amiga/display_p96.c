@@ -9,14 +9,22 @@
  * bitmap and writes pixels itself - no WritePixelArray copy/convert step.
  *
  * That means the backend must already know the bitmap's native pixel layout;
- * there is no free conversion here. p96GetBitMapAttr(bm, P96BMA_RGBFORMAT)
- * is queried at open time (and rechecked whenever the underlying bitmap
- * changes) and only RGBFB_B8G8R8 (24-bit BGR - the common real Picasso96
- * truecolour mode) is supported. Anything else fails open() cleanly, and
- * display_open()'s fallback chain lands on backend_cgx instead - so
- * selecting P96 on an unsupported screen format never loses playback, only
- * the chance at the faster path. Widening to more RGBFTYPEs is a matter of
- * adding another swizzle case in write_bgr_rows()-equivalent code, not a
+ * there is no free conversion here. p96GetBitMapAttr(bm, P96BMA_RGBFORMAT) is
+ * queried at open time (and rechecked whenever the underlying bitmap changes)
+ * and only three native layouts are supported: RGBFB_B8G8R8 (24-bit BGR, the
+ * common real Picasso96 truecolour mode), RGBFB_R5G6B5 (16-bit, the common
+ * "reduce RTG memory traffic" mode - see display_cgx.c's own private-screen
+ * comment for why that depth is worth preferring) and RGBFB_A8R8G8B8 (32-bit,
+ * alpha unused). Only the plain big-endian layouts are handled, not the "PC"
+ * byte-swapped RGBFB_*PC variants (rare on real 68k RTG boards). Any of
+ * those, or anything else p96GetBitMapAttr() reports, fail open() cleanly and
+ * display_open()'s fallback chain lands on backend_cgx instead - so selecting
+ * P96 on an unsupported screen format never loses playback, only the chance
+ * at the faster path. p96_open_private_screen() tries depths in that same
+ * 16/24/32 preference order (p96_depth_preference[]), so the fastest
+ * (lowest-bandwidth) supported mode is picked first, not merely the first
+ * one that happens to work. Widening to more RGBFTYPEs is a matter of
+ * adding another p96_fmt case + swizzle in write_pixel_strip(), not a
  * structural change.
  *
  * Per Picasso96API.library/p96LockBitMap: never hold the lock across a call
@@ -75,6 +83,27 @@
  * also bounds how long any single p96LockBitMap hold lasts. */
 #define MR_P96_STRIP_ROWS 32
 
+/* Native bitmap pixel layouts this backend can write directly - see the file
+ * header comment. Ordered fastest (fewest bytes/pixel, least RTG memory
+ * traffic) first; p96_open_private_screen() tries to open a screen in this
+ * same order (p96_depth_preference[]). */
+typedef enum {
+    P96_FMT_NONE = 0,
+    P96_FMT_RGB565,   /* RGBFB_R5G6B5,   2 bytes/pixel */
+    P96_FMT_BGR24,    /* RGBFB_B8G8R8,   3 bytes/pixel */
+    P96_FMT_ARGB32    /* RGBFB_A8R8G8B8, 4 bytes/pixel, alpha unused */
+} p96_fmt;
+
+static int p96_fmt_bytes(p96_fmt fmt)
+{
+    switch (fmt) {
+    case P96_FMT_RGB565: return 2;
+    case P96_FMT_BGR24:  return 3;
+    case P96_FMT_ARGB32: return 4;
+    default:              return 0;
+    }
+}
+
 typedef struct {
     struct Window *win;
     struct Screen *screen;
@@ -107,7 +136,7 @@ typedef struct {
     int            cached_dst_h;
     struct BitMap *cached_bitmap;
     int            geometry_valid;
-    int            format_ok;   /* live bitmap is still RGBFB_B8G8R8/24bpp   */
+    p96_fmt        fmt;         /* live bitmap's native layout, NONE = unsupported */
     mr_display_timing timing;
     int            quit;
     int            fullscreen;
@@ -125,8 +154,9 @@ typedef struct {
 static void p96_rebuild_geometry(p96_state *s, const char *reason);
 static int  ensure_scaled(p96_state *s, int w);
 static int  p96_toggle_fullscreen(void *h);
-static int  bitmap_format_ok(struct BitMap *bm);
-static void clear_bgr24_rect(struct BitMap *bm, int x, int y, int w, int h);
+static p96_fmt detect_bitmap_format(struct BitMap *bm);
+static void clear_pixel_rect(struct BitMap *bm, p96_fmt fmt, int x, int y,
+                             int w, int h);
 
 static int p96_close_private_screen(struct Screen **screen, const char *reason)
 {
@@ -152,17 +182,22 @@ static int p96_close_private_screen(struct Screen **screen, const char *reason)
 }
 
 /*
- * Pick the smallest available 24-bit CyberGraphX mode which can contain the
- * source at 1:1.  P96's direct-write path is most valuable when it does not
- * also spend 30-50 ms scaling every frame just because Workbench happens to
- * be 1024x768.
+ * Pick the smallest available CyberGraphX mode at the given depth which can
+ * contain the source at 1:1.  P96's direct-write path is most valuable when
+ * it does not also spend 30-50 ms scaling every frame just because Workbench
+ * happens to be 1024x768.
  *
  * The first request is the exact source size.  The common-mode probes make
  * the choice deterministic on boards/drivers whose BestCModeIDTags() rounds
  * an unusual video size (for example 854x480) down to 800x600: a containing
  * 1024x768 mode is preferred to shrinking the video.
+ *
+ * Only ever asks for `depth` exactly - p96_open_private_screen() (below) is
+ * what tries 16/24/32 in preference order (p96_depth_preference[]) and
+ * verifies the resulting bitmap's real RGBFB format.
  */
-static ULONG p96_mode_for_source(int source_w, int source_h, ULONG *depth_out)
+static ULONG p96_mode_for_source_at_depth(int source_w, int source_h,
+                                          ULONG depth, ULONG *depth_out)
 {
     static const UWORD common_modes[][2] = {
         { 320, 240 }, { 640, 400 }, { 640, 480 }, { 720, 480 },
@@ -187,7 +222,7 @@ static ULONG p96_mode_for_source(int source_w, int source_h, ULONG *depth_out)
         modeid = BestCModeIDTags(
             CYBRBIDTG_NominalWidth, (ULONG)request_w,
             CYBRBIDTG_NominalHeight, (ULONG)request_h,
-            CYBRBIDTG_Depth, 24,
+            CYBRBIDTG_Depth, depth,
             TAG_END);
         if (modeid == (ULONG)INVALID_ID || !IsCyberModeID(modeid))
             continue;
@@ -196,7 +231,7 @@ static ULONG p96_mode_for_source(int source_w, int source_h, ULONG *depth_out)
         mode_h = GetCyberIDAttr(CYBRIDATTR_HEIGHT, modeid);
         mode_depth = GetCyberIDAttr(CYBRIDATTR_DEPTH, modeid);
         if (!mode_w || !mode_h || mode_w == ~0UL || mode_h == ~0UL ||
-            mode_depth != 24)
+            mode_depth != depth)
             continue;
 
         delta = (ULONG)((int)mode_w >= source_w ? (int)mode_w - source_w
@@ -232,34 +267,58 @@ static ULONG p96_mode_for_source(int source_w, int source_h, ULONG *depth_out)
     return best_any;
 }
 
+/* Depths this backend can write directly, fastest (least RTG memory
+ * traffic) first - matches display_cgx.c's own "prefer 16-bit" reasoning
+ * for its private screen, and p96_fmt's ordering above. A mode existing at
+ * one of these depths does not by itself guarantee a supported RGBFB
+ * layout (a "16-bit" mode could be RGBFB_R5G5B5, a "32-bit" one
+ * RGBFB_A8B8G8R8, etc.) - p96_open_private_screen() verifies the real
+ * format via detect_bitmap_format() before accepting a mode, and falls
+ * through to the next depth if it does not match. */
+static const ULONG p96_depth_preference[] = { 16, 24, 32 };
+
 static struct Screen *p96_open_private_screen(p96_state *s, const char *title)
 {
-    /* P96 direct writes currently support only packed 24-bit BGR. */
     struct Screen *scr = NULL;
-    ULONG best_depth = 0;
-    ULONG best_modeid;
+    unsigned i;
 
-    best_modeid = p96_mode_for_source(s->source_w, s->source_h, &best_depth);
+    /* Try each depth in p96_depth_preference[] order (fastest/lowest-
+     * bandwidth first): a mode existing at a given depth does not by itself
+     * guarantee an RGBFB layout this backend knows how to write (a "16-bit"
+     * mode could be RGBFB_R5G5B5, a "32-bit" one RGBFB_A8B8G8R8, etc, all
+     * unsupported - see detect_bitmap_format()) - so a rejected depth falls
+     * through to the next one down the same list, rather than giving up on
+     * a private screen entirely and losing the fast path to backend_cgx's
+     * WritePixelArray. */
+    for (i = 0; i < sizeof p96_depth_preference / sizeof p96_depth_preference[0];
+        i++) {
+        ULONG depth = 0;
+        ULONG modeid = p96_mode_for_source_at_depth(s->source_w, s->source_h,
+                                                     p96_depth_preference[i],
+                                                     &depth);
+        if (modeid == (ULONG)INVALID_ID) continue;
 
-    if (best_modeid != (ULONG)INVALID_ID)
         scr = OpenScreenTags(NULL,
-            SA_DisplayID, best_modeid,
-            SA_Depth, best_depth,
+            SA_DisplayID, modeid,
+            SA_Depth, depth,
             SA_Type, CUSTOMSCREEN,
             SA_Title, (ULONG)(title ? title : "MintVID"),
             SA_Quiet, TRUE,
             SA_ShowTitle, FALSE,
             SA_Draggable, FALSE,
             TAG_END);
-    /* Depth alone (checked below via CYBRMATTR_DEPTH) doesn't guarantee the
-     * exact RGBFB_B8G8R8 layout this backend writes - verify the real
-     * format on the screen we actually got, the same check open()/
-     * p96_rebuild_geometry() rely on, rather than trusting "24-bit implies
-     * BGR". */
-    if (scr && (GetCyberMapAttr(scr->RastPort.BitMap, CYBRMATTR_DEPTH) <= 8 ||
-                !bitmap_format_ok(scr->RastPort.BitMap))) {
-        CloseScreen(scr);
-        scr = NULL;
+        if (!scr) continue;
+
+        /* Depth alone doesn't guarantee a layout this backend knows how to
+         * write - verify the real format on the screen we actually got,
+         * the same check open()/p96_rebuild_geometry() rely on. */
+        if (GetCyberMapAttr(scr->RastPort.BitMap, CYBRMATTR_DEPTH) <= 8 ||
+            detect_bitmap_format(scr->RastPort.BitMap) == P96_FMT_NONE) {
+            CloseScreen(scr);
+            scr = NULL;
+            continue;
+        }
+        break;
     }
     if (scr && g_display_want_time)
         printf("p96-fullscreen private=%dx%d depth=%lu source=%dx%d "
@@ -330,16 +389,22 @@ static struct Window *p96_open_window(p96_state *s, const char *title,
     return win;
 }
 
-/* Only RGBFB_B8G8R8 (packed 24-bit BGR, 3 bytes/pixel) is supported today -
- * see the file header comment. bm may be any live BitMap (public screen or a
- * private one this backend just opened). */
-static int bitmap_format_ok(struct BitMap *bm)
+/* Three native layouts are supported today - see the file header comment.
+ * bm may be any live BitMap (public screen or a private one this backend
+ * just opened). Cross-checks P96BMA_BYTESPERPIXEL against the format as an
+ * extra sanity check, not just trust in the RGBFORMAT enum value alone. */
+static p96_fmt detect_bitmap_format(struct BitMap *bm)
 {
     ULONG format, bpp;
-    if (!bm || !P96Base) return 0;
+    if (!bm || !P96Base) return P96_FMT_NONE;
     format = p96GetBitMapAttr(bm, P96BMA_RGBFORMAT);
     bpp = p96GetBitMapAttr(bm, P96BMA_BYTESPERPIXEL);
-    return format == (ULONG)RGBFB_B8G8R8 && bpp == 3;
+    switch (format) {
+    case RGBFB_R5G6B5:   return bpp == 2 ? P96_FMT_RGB565 : P96_FMT_NONE;
+    case RGBFB_B8G8R8:   return bpp == 3 ? P96_FMT_BGR24  : P96_FMT_NONE;
+    case RGBFB_A8R8G8B8: return bpp == 4 ? P96_FMT_ARGB32 : P96_FMT_NONE;
+    default:              return P96_FMT_NONE;
+    }
 }
 
 static void fit_within(int w, int h, int max_w, int max_h, int *out_w,
@@ -414,10 +479,12 @@ static void *p96_open(int w, int h, const char *title)
     s->win = p96_open_window(s, title, win_w, win_h, &s->screen);
     if (!s->win) { FreeVec(s); return NULL; }
 
-    if (!bitmap_format_ok(s->win->RPort->BitMap)) {
+    s->fmt = detect_bitmap_format(s->win->RPort->BitMap);
+    if (s->fmt == P96_FMT_NONE) {
         if (g_display_want_time)
-            printf("p96: screen bitmap format is not 24-bit BGR "
-                   "(RGBFB_B8G8R8) - falling back to WritePixelArray\n");
+            printf("p96: screen bitmap format is not one of the supported "
+                   "native layouts (16-bit RGB565, 24-bit BGR, 32-bit "
+                   "ARGB) - falling back to WritePixelArray\n");
         CloseWindow(s->win);
         p96_close_private_screen(&s->screen, "unsupported format");
         FreeVec(s);
@@ -444,7 +511,9 @@ static void *p96_open(int w, int h, const char *title)
     s->cached_dst_h  = -1;
     s->cached_bitmap = NULL;
     s->geometry_valid = 0;
-    s->format_ok = 1;
+    /* s->fmt is already set above (detect_bitmap_format() on the bitmap
+     * this same window/screen just opened with) - p96_rebuild_geometry()
+     * only needs to re-detect it later, when the live bitmap changes. */
 
     p96_rebuild_geometry(s, "init");
 
@@ -511,7 +580,7 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
     if (bm && CyberGfxBase)
         bm_depth = GetCyberMapAttr(bm, CYBRMATTR_DEPTH);
     if (bm_changed)
-        s->format_ok = bitmap_format_ok(bm);
+        s->fmt = detect_bitmap_format(bm);
 
     win_x = s->screen ? 0 : s->win->LeftEdge;
     win_y = s->screen ? 0 : s->win->TopEdge;
@@ -519,12 +588,12 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
                        (win_x != s->win_x || win_y != s->win_y);
     /* Erase the old absolute rect before anything draws at the new one -
      * same bitmap, same format (bm_changed is false here), so the lock this
-     * needs is exactly the one write_bgr24_strip already relies on. A
+     * needs is exactly the one write_pixel_strip already relies on. A
      * genuine screen/bitmap change (bm_changed) needs no such cleanup: it's
      * either a different physical bitmap the old rect doesn't apply to, or
      * the FillPixelArray below already clears the new window's own area. */
-    if (position_changed && s->format_ok && s->have_last_rect)
-        clear_bgr24_rect(bm, s->win_x + s->bl + s->last_dx,
+    if (position_changed && s->fmt != P96_FMT_NONE && s->have_last_rect)
+        clear_pixel_rect(bm, s->fmt, s->win_x + s->bl + s->last_dx,
                          s->win_y + s->bt + s->last_dy,
                          s->last_dw, s->last_dh);
     s->win_x = win_x;
@@ -537,8 +606,8 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
     s->cached_bitmap = bm;
     s->geometry_valid = 1;
     if (scale_map_changed || bm_changed) {
-        if (s->screen && s->format_ok)
-            clear_bgr24_rect(bm, 0, 0, s->iw, s->ih);
+        if (s->screen && s->fmt != P96_FMT_NONE)
+            clear_pixel_rect(bm, s->fmt, 0, 0, s->iw, s->ih);
         else
             FillPixelArray(s->win->RPort, (UWORD)s->bl, (UWORD)s->bt,
                            (UWORD)s->iw, (UWORD)s->ih, 0x00000000UL);
@@ -557,11 +626,11 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
     if (g_display_want_time)
         printf("p96-geometry reason=%s iw=%d ih=%d video=%d,%d %dx%d "
                "bm-changed=%d scale-map-rebuild=%d position-changed=%d "
-               "depth=%lu format-ok=%d\n",
+               "depth=%lu fmt=%d\n",
                reason ? reason : "?",
                s->iw, s->ih, s->dx, s->dy, s->dw, s->dh,
                bm_changed, scale_map_changed, position_changed,
-               (unsigned long)bm_depth, s->format_ok);
+               (unsigned long)bm_depth, (int)s->fmt);
 }
 
 static void report_slow(const char *operation, unsigned long usec,
@@ -599,58 +668,94 @@ static void scale_rgb24_strip(p96_state *s, const unsigned char *src, int sw,
 }
 
 /* Black out a rect directly (same lock/unlock discipline as
- * write_bgr24_strip). Used to erase the last-drawn video rect at its OLD
+ * write_pixel_strip). Used to erase the last-drawn video rect at its OLD
  * absolute screen position when the window has moved - see the p96_state
- * comment on win_x/win_y for why that cleanup is this backend's own job. */
-static void clear_bgr24_rect(struct BitMap *bm, int x, int y, int w, int h)
+ * comment on win_x/win_y for why that cleanup is this backend's own job.
+ * A zero byte is black in all three supported layouts (RGBFB_A8R8G8B8's
+ * alpha byte is unused, so a zeroed alpha there is harmless too), so this
+ * needs no per-format case, just the right byte count via p96_fmt_bytes(). */
+static void clear_pixel_rect(struct BitMap *bm, p96_fmt fmt, int x, int y,
+                             int w, int h)
 {
     struct RenderInfo ri;
     LONG lock;
-    int row, bpr;
+    int row, bpr, bpp = p96_fmt_bytes(fmt);
     unsigned char *base;
 
-    if (w <= 0 || h <= 0) return;
+    if (w <= 0 || h <= 0 || !bpp) return;
     lock = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
     if (!lock) return;
     bpr = (int)ri.BytesPerRow;
-    base = (unsigned char *)ri.Memory + (size_t)y * (size_t)bpr + (size_t)x * 3;
+    base = (unsigned char *)ri.Memory + (size_t)y * (size_t)bpr +
+           (size_t)x * (size_t)bpp;
     for (row = 0; row < h; row++)
-        memset(base + (size_t)row * (size_t)bpr, 0, (size_t)w * 3);
+        memset(base + (size_t)row * (size_t)bpr, 0, (size_t)w * (size_t)bpp);
     p96UnlockBitMap(bm, lock);
 }
 
-/* Lock the live bitmap and write `rows` into native BGR24 screen memory.
- * RGB callers retain the old per-pixel R/B shuffle. A caller that already
- * supplies BGR24 (the H.264 direct-YUV queue path) takes the row memcpy route,
- * eliminating that complete channel-shuffle pass. Never holds the bitmap lock
- * across a service() call - see the file header comment. */
-static int write_bgr24_strip(struct BitMap *bm, int dst_x, int dst_y,
+/* Lock the live bitmap and write `rows` into native screen memory, in
+ * whichever of the three supported layouts `fmt` names (see the file header
+ * comment). RGB callers retain the old per-pixel shuffle/pack; a caller that
+ * already supplies BGR24 (the H.264 direct-YUV queue path) takes the row
+ * memcpy route in the P96_FMT_BGR24 case, eliminating that complete
+ * channel-shuffle pass - the other two formats always need a per-pixel pack
+ * regardless of source order, since neither is a byte-for-byte reshuffle of
+ * 24-bit RGB or BGR. Never holds the bitmap lock across a service() call -
+ * see the file header comment.
+ *
+ * The 16/32-bit stores below are plain UWORD/ULONG writes at pixel-aligned
+ * (even/4-byte) offsets - on this big-endian target that alone produces the
+ * exact big-endian byte order RGBFB_R5G6B5 ("rrrrrggggggbbbbb" as one
+ * 16-bit word) and RGBFB_A8R8G8B8 ("00000000rrrrrrrrggggggggbbbbbbbb" as
+ * one 32-bit word) document, with no separate byte-swap step needed. */
+static int write_pixel_strip(struct BitMap *bm, int dst_x, int dst_y,
                              const unsigned char *src, int src_stride,
-                             int w, int rows, int src_is_bgr)
+                             int w, int rows, int src_is_bgr, p96_fmt fmt)
 {
     struct RenderInfo ri;
     LONG lock;
-    int y;
+    int y, bpp = p96_fmt_bytes(fmt);
     unsigned char *base;
     int bpr;
 
+    if (!bpp) return 0;
     lock = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
     if (!lock) return 0;
 
     bpr = (int)ri.BytesPerRow;
     base = (unsigned char *)ri.Memory + (size_t)dst_y * (size_t)bpr +
-           (size_t)dst_x * 3;
+           (size_t)dst_x * (size_t)bpp;
     for (y = 0; y < rows; y++) {
         const unsigned char *srow = src + (size_t)y * (size_t)src_stride;
         unsigned char *drow = base + (size_t)y * (size_t)bpr;
-        if (src_is_bgr) {
+        if (fmt == P96_FMT_BGR24 && src_is_bgr) {
             memcpy(drow, srow, (size_t)w * 3u);
-        } else {
+            continue;
+        }
+        {
             int x;
             for (x = 0; x < w; x++) {
-                drow[x * 3 + 0] = srow[x * 3 + 2]; /* B */
-                drow[x * 3 + 1] = srow[x * 3 + 1]; /* G */
-                drow[x * 3 + 2] = srow[x * 3 + 0]; /* R */
+                unsigned char r, g, b;
+                if (src_is_bgr) {
+                    b = srow[x * 3 + 0]; g = srow[x * 3 + 1]; r = srow[x * 3 + 2];
+                } else {
+                    r = srow[x * 3 + 0]; g = srow[x * 3 + 1]; b = srow[x * 3 + 2];
+                }
+                switch (fmt) {
+                case P96_FMT_BGR24:
+                    drow[x * 3 + 0] = b; drow[x * 3 + 1] = g; drow[x * 3 + 2] = r;
+                    break;
+                case P96_FMT_RGB565:
+                    *(UWORD *)(drow + x * 2) = (UWORD)
+                        (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+                    break;
+                case P96_FMT_ARGB32:
+                    *(ULONG *)(drow + x * 4) =
+                        ((ULONG)r << 16) | ((ULONG)g << 8) | (ULONG)b;
+                    break;
+                default:
+                    break;
+                }
             }
         }
     }
@@ -693,15 +798,15 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
                     service, service_opaque);
     }
 
-    if (!s->format_ok) {
-        /* The live bitmap stopped being 24-bit BGR (e.g. a screen-mode
-         * change moved us to a different depth/format). There is no way to
-         * draw correctly here; rather than write garbage, drop frames and
-         * say so once per report_slow-style throttle. The caller (mrplay)
-         * still owns falling back to a different --display mode; this
-         * backend cannot switch itself mid-playback. */
-        printf("p96-error: live bitmap is no longer 24-bit BGR - dropping "
-               "frame (relaunch with --display cgx)\n");
+    if (s->fmt == P96_FMT_NONE) {
+        /* The live bitmap stopped being a supported native layout (e.g. a
+         * screen-mode change moved us to a different depth/format). There is
+         * no way to draw correctly here; rather than write garbage, drop
+         * frames and say so once per report_slow-style throttle. The caller
+         * (mrplay) still owns falling back to a different --display mode;
+         * this backend cannot switch itself mid-playback. */
+        printf("p96-error: live bitmap is no longer a supported native "
+               "layout - dropping frame (relaunch with --display cgx)\n");
         return;
     }
 
@@ -724,7 +829,8 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
         s->timing.src_w = w; s->timing.src_h = hh;
         s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
         s->timing.src_format = src_is_bgr ? "BGR24" : "RGB24";
-        s->timing.dst_format = "BGR24";
+        s->timing.dst_format = s->fmt == P96_FMT_RGB565 ? "RGB565" :
+                               s->fmt == P96_FMT_ARGB32 ? "ARGB32" : "BGR24";
     }
     native = s->dw == w && s->dh == hh;
     if (timing) {
@@ -772,10 +878,10 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
             if (timing) s->timing.scale_us += elapsed_us(step);
 
             if (timing) step = clock();
-            if (!write_bgr24_strip(bm, s->win_x + s->bl + s->dx,
+            if (!write_pixel_strip(bm, s->win_x + s->bl + s->dx,
                                    s->win_y + s->bt + s->dy + y,
                                    s->scaled, s->scaled_stride, s->dw, rows,
-                                   src_is_bgr))
+                                   src_is_bgr, s->fmt))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
             if (timing) s->timing.blit_us += elapsed_us(step);
 
@@ -809,10 +915,10 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
         for (y = dy0; y < dy1; y += MR_P96_STRIP_ROWS) {
             int rows = dy1 - y < MR_P96_STRIP_ROWS ? dy1 - y
                                                     : MR_P96_STRIP_ROWS;
-            if (!write_bgr24_strip(bm, s->win_x + s->bl + s->dx,
+            if (!write_pixel_strip(bm, s->win_x + s->bl + s->dx,
                                    s->win_y + s->bt + s->dy + y,
                                    rgb + (size_t)y * stride, stride, w, rows,
-                                   src_is_bgr))
+                                   src_is_bgr, s->fmt))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
             if (timing) s->timing.copies++;
             if (service) service(service_opaque);
