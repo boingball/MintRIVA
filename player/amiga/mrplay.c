@@ -31,6 +31,9 @@
 #include "amiga_display.h"
 #include "mr_audio.h"
 #include "mr_player_status.h"
+#include "mintvid_version.h"
+
+MINTVID_DECLARE_VERSION(mrplay_version_tag, "mrplay");
 
 #include <proto/dos.h>
 #include <proto/exec.h>

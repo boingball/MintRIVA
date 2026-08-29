@@ -51,7 +51,8 @@ void display_set_c2p(int on);
  * deliberately opt-in until it has been benchmarked on each 68k generation. */
 void display_set_riva_c2p(int on);
 
-/* Select Kalms' public-domain c2p1x1_8_c5_030 AGA converter. */
+/* Select CPU-matched Kalms converters (030 or 040/060 1x1, fused 2x2 where
+ * possible, plus six-plane bitmap output on 040/060). */
 void display_set_kalms_c2p(int on);
 
 /* Allow interlaced AGA screens (up to ~640x512). The AGA fitter compensates
@@ -94,7 +95,7 @@ int display_aga_kalms_timing(unsigned long *conversion_ms);
 
 /* The most recently opened AGA screen's effective (post-negotiation) mode -
  * depth (bits/pixel), ham (0/6/8), scale (1 or 2), resize (0/1) and the c2p
- * backend name ("wpa"/"c2p"/"riva"/"kalms"/"akiko") - for mrplay --time's
+ * backend name ("wpa"/"c2p"/"riva"/"kalms-*"/"akiko") - for mrplay --time's
  * "AGA path:" diagnostic. depth is -1 if no AGA screen has been opened yet.
  * Every out-parameter is optional (pass NULL to skip it). */
 void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
@@ -137,10 +138,10 @@ void display_show_indexed(amiga_display *d, const unsigned char *idx,
                           int w, int h, int idx_stride, int dy0, int dy1);
 
 /* Non-zero when `d` can accept a direct YUV420P -> indexed frame. Fills the
- * fitted geometry, fast-path vscale (0 means general two-axis resize), and
+ * indexed-buffer geometry, fast-path vscale (0 means general two-axis resize), and
  * active 4/5/8-plane palette depth. Dither with the matching generic function
  * in core/mr_yuv_dither.h and pass the resulting one-byte indices to
- * display_show_indexed(). */
+ * display_show_indexed(); the backend may perform final presentation scaling. */
 int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
                                  int *dst_w, int *dst_h, int *vscale,
                                  int *indexed_depth);

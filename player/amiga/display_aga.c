@@ -5,8 +5,8 @@
  * (16/32/256-colour dither / HAM8 / HAM6) plus a chunky->planar step. The default
  * WritePixelArray8 remains the default; --c2p selects the portable mr_c2p8 and
  * --riva-c2p selects an opt-in 32-pixel, direct-to-plane variant for hardware
- * measurement. --kalms-c2p selects Kalms' public-domain 68030 converter.
- * Optional 2x pixel doubling.
+ * measurement. --kalms-c2p selects CPU-matched Kalms converters, including
+ * fused 2x2 output and a 040/060 HAM6 path where the geometry permits it.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -14,7 +14,13 @@
 #include "../core/mr_ham.h"
 #include "../core/mr_scale.h"
 #include "../core/mr_c2p.h"
+#ifdef MR_KALMS_040
+#include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_040.h"
+#include "../vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.h"
+#else
 #include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_030.h"
+#endif
+#include "../vendor/kalms-c2p/bitmap/c2p2x2_8_c5_bm.h"
 
 #include <exec/types.h>
 #include <intuition/intuition.h>
@@ -34,6 +40,13 @@
 #include <time.h>
 
 #define ESC_RAWKEY 0x45
+
+enum {
+    KALMS_NONE = 0,
+    KALMS_1X1_8,
+    KALMS_2X2_8,
+    KALMS_1X1_6
+};
 
 /* Encode vs blit time, for mrplay --time. */
 static clock_t s_enc = 0, s_blit = 0, s_frame_enc = 0, s_frame_blit = 0;
@@ -82,16 +95,31 @@ typedef struct {
     struct RastPort temprp;      /* only used on the WritePixelArray8 path  */
     struct BitMap  *tempbm;
     unsigned char  *enc;         /* 1x encode buffer (scale==2 only)        */
+    unsigned char  *enc_alloc;   /* allocation base for aligned enc         */
     unsigned char  *chunky;      /* pw*dh pixels to blit                     */
+    unsigned char  *chunky_alloc;/* allocation base for aligned chunky      */
     unsigned char  *scaled;      /* resized RGB (resize only)                */
     int             w, h;
     int             dw, dh;      /* displayed size                          */
     int             pw;          /* chunky row stride (>= dw)               */
     int             depth;
     int             x0, y0, x0byte;
-    int             ham, scale, resize, use_c2p, use_riva_c2p, use_kalms_c2p, use_akiko;
+    int             ham, scale, resize, use_c2p, use_riva_c2p, use_akiko;
+    int             kalms_kind;
+    long            kalms_plane_spacing;
     int             quit;
 } aga_state;
+
+/* Kalms recommends a 16-byte chunky-buffer alignment on the 040/060 and
+ * bitmap kernels. Keep the original allocation pointer so ordinary free()
+ * remains valid on every supported Amiga C library. */
+static unsigned char *alloc_aligned16(size_t bytes, unsigned char **allocation)
+{
+    unsigned char *raw = (unsigned char *)calloc(bytes + 15, 1);
+    if (!raw) { *allocation = NULL; return NULL; }
+    *allocation = raw;
+    return (unsigned char *)(((ULONG)(raw + 15)) & ~15UL);
+}
 
 /*
  * CD32 Akiko hardware chunky->planar. The Akiko chip exposes a C2P port at
@@ -237,16 +265,30 @@ static void *aga_open(int w, int h, const char *title)
     s->w = w; s->h = h; s->dw = dw; s->dh = dh;
     s->ham = ham; s->scale = scale; s->resize = resize;
     s->depth = depth; s->use_c2p = c2p; s->use_riva_c2p = riva_c2p_mode;
-    s->use_kalms_c2p = kalms_c2p_mode;
     s->use_akiko = akiko;
+    s->kalms_kind = KALMS_NONE;
+
+    if (kalms_c2p_mode && depth == 8 && scale == 2 && !resize &&
+        (w & 15) == 0)
+        s->kalms_kind = KALMS_2X2_8;
+    else if (kalms_c2p_mode && depth == 8)
+        s->kalms_kind = KALMS_1X1_8;
+#ifdef MR_KALMS_040
+    else if (kalms_c2p_mode && depth == 6)
+        s->kalms_kind = KALMS_1X1_6;
+#endif
     /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
      * a 32-multiple row stride; the built-in C2P only needs 8-pixel alignment.
      * graphics.library WritePixelArray8 requires each source row rounded up to
      * 16 pixels even though xstop names the unpadded visible width.  Packing an
      * odd width tightly makes every following row start early (854 / 2 = 427
      * exposed this as five-pixel diagonal wraps). */
-    if (kalms_c2p_mode)
+    if (s->kalms_kind == KALMS_1X1_8)
                    { s->pw = sw; s->x0 = ((sw - dw) / 2) & ~31; }
+    else if (s->kalms_kind == KALMS_1X1_6)
+                   { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
+    else if (s->kalms_kind == KALMS_2X2_8)
+                   { s->pw = dw; s->x0 = ((sw - dw) / 2) & ~7; }
     else if (akiko || riva_c2p_mode)
                    { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
     else if (c2p)  { s->pw = (dw + 7)  & ~7;  s->x0 = ((sw - dw) / 2) & ~7;  }
@@ -270,26 +312,48 @@ static void *aga_open(int w, int h, const char *title)
         WA_IDCMP, IDCMP_RAWKEY, TAG_END);
     if (!s->win) { CloseScreen(s->scr); free(s); return NULL; }
 
-    if (kalms_c2p_mode) {
+    if (s->kalms_kind != KALMS_NONE) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         long spacing = 0;
-        int p, compatible = depth == 8 && bm && bm->Planes[0] && bm->Planes[1] &&
-                            bm->BytesPerRow == s->pw / 8;
-        if (compatible) {
-            spacing = (long)((ULONG)bm->Planes[1] - (ULONG)bm->Planes[0]);
-            compatible = spacing > 0 && spacing <= 16384;
+        int p, planes = s->kalms_kind == KALMS_1X1_6 ? 6 : 8;
+        int compatible = bm && bm->Depth >= planes &&
+                         s->x0 + s->dw <= bm->BytesPerRow * 8;
+        for (p = 0; compatible && p < planes; p++)
+            compatible = bm->Planes[p] != NULL;
+
+        if (compatible && s->kalms_kind == KALMS_1X1_8) {
+            compatible = bm->BytesPerRow == s->pw / 8;
+            if (compatible) {
+                spacing = (long)((ULONG)bm->Planes[1] - (ULONG)bm->Planes[0]);
+                compatible = spacing > 0;
+#ifndef MR_KALMS_040
+                /* The 030 kernel patches a 16-bit plane displacement. */
+                compatible = compatible && spacing <= 16384;
+#endif
+            }
+            for (p = 1; compatible && p < 8; p++)
+                compatible = (UBYTE *)bm->Planes[p] ==
+                             (UBYTE *)bm->Planes[0] + (size_t)p * spacing;
         }
-        for (p = 1; compatible && p < depth; p++)
-            compatible = bm->Planes[p] && (UBYTE *)bm->Planes[p] ==
-                         (UBYTE *)bm->Planes[0] + (size_t)p * spacing;
+        if (compatible && s->kalms_kind == KALMS_1X1_6)
+            compatible = (s->pw & 31) == 0 && (s->x0 & 7) == 0;
+        if (compatible && s->kalms_kind == KALMS_2X2_8)
+            compatible = (w & 15) == 0 && (s->x0 & 7) == 0;
+
         if (compatible) {
-            /* The upstream register ABI puts width/height/y-offset/bplsize in
-             * d0/d1/d3/d5. Geometry is immutable for this screen, so the
-             * self-modifying initialiser is called exactly once here. */
+            s->kalms_plane_spacing = spacing;
+            /* Set the 1x1 plane displacement once. The cheap non-SMC init is
+             * repeated for each dirty row range immediately before conversion. */
+            if (s->kalms_kind == KALMS_1X1_8) {
+#ifdef MR_KALMS_040
+                c2p1x1_8_c5_040_init(s->pw, s->dh, s->y0, spacing);
+#else
             c2p1x1_8_c5_030_smcinit(s->pw, s->dh, s->y0, spacing);
+#endif
+            }
             s_kalms_active = 1;
         } else {
-            s->use_kalms_c2p = 0;
+            s->kalms_kind = KALMS_NONE;
             /* An incompatible planar allocation must never reach Kalms: use
              * the established graphics.library path instead. WPA derives its
              * source-row modulo from the visible width, so restore the normal
@@ -300,25 +364,24 @@ static void *aga_open(int w, int h, const char *title)
             s->x0 = (sw - dw) / 2;
             if (s->x0 < 0) s->x0 = 0;
             s->x0byte = s->x0 >> 3;
-            s->tempbm = AllocBitMap((ULONG)s->pw, 1, (ULONG)depth, 0, bm);
-            if (!s->tempbm) goto fail;
-            InitRastPort(&s->temprp);
-            s->temprp.BitMap = s->tempbm;
         }
     }
 
     /* padded + cleared so C2P's pad columns are black */
-    s->chunky = (unsigned char *)calloc((size_t)s->pw * dh, 1);
-    if (!s->chunky) goto fail;
+    if (s->kalms_kind != KALMS_2X2_8) {
+        s->chunky = alloc_aligned16((size_t)s->pw * dh, &s->chunky_alloc);
+        if (!s->chunky) goto fail;
+    }
     if (scale == 2) {
-        s->enc = (unsigned char *)malloc((size_t)w * h);
+        s->enc = alloc_aligned16((size_t)w * h, &s->enc_alloc);
         if (!s->enc) goto fail;
     }
     if (resize) {
         s->scaled = (unsigned char *)malloc((size_t)dw * dh * 3);
         if (!s->scaled) goto fail;
     }
-    if (!c2p && !riva_c2p_mode && !kalms_c2p_mode && !akiko) { /* WPA path */
+    if (!c2p && !riva_c2p_mode && s->kalms_kind == KALMS_NONE && !akiko) {
+        /* WPA path, including any unsupported/incompatible Kalms request. */
         s->tempbm = AllocBitMap((ULONG)s->pw, 1, (ULONG)depth, 0,
                                 s->scr->RastPort.BitMap);
         if (!s->tempbm) goto fail;
@@ -327,7 +390,14 @@ static void *aga_open(int w, int h, const char *title)
     }
     s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_scale = s->scale;
     s_diag_resize = s->resize;
-    s_diag_c2p = s->use_kalms_c2p ? "kalms" :
+    s_diag_c2p = s->kalms_kind == KALMS_2X2_8 ? "kalms-2x2" :
+                s->kalms_kind == KALMS_1X1_6 ? "kalms-ham6" :
+                s->kalms_kind == KALMS_1X1_8 ?
+#ifdef MR_KALMS_040
+                                               "kalms-040" :
+#else
+                                               "kalms-030" :
+#endif
                 s->use_akiko      ? "akiko" :
                 s->use_riva_c2p   ? "riva"  :
                 s->use_c2p        ? "c2p"   : "wpa";
@@ -335,9 +405,9 @@ static void *aga_open(int w, int h, const char *title)
 
 fail:
     s_kalms_active = 0;
-    if (s->enc) free(s->enc);
+    if (s->enc_alloc) free(s->enc_alloc);
     if (s->scaled) free(s->scaled);
-    if (s->chunky) free(s->chunky);
+    if (s->chunky_alloc) free(s->chunky_alloc);
     if (s->tempbm) FreeBitMap(s->tempbm);
     CloseWindow(s->win);
     CloseScreen(s->scr);
@@ -366,13 +436,25 @@ static void aga_blit(aga_state *s, const uint8_t *src, int src_stride,
         akiko_c2p(crow, pw, ddh, src_stride, s->depth,
                   (uint8_t *const *)bm->Planes, bm->BytesPerRow,
                   s->x0byte, s->y0 + ddy0);
-    } else if (s->use_kalms_c2p) {
+    } else if (s->kalms_kind == KALMS_1X1_8) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        /* This routine has no row-modulo ABI and converts the complete
-         * persistent screen-width chunky frame, so it always needs the
-         * caller to have kept s->chunky itself up to date (never called with
-         * src != s->chunky - see aga_show_indexed()'s direct-buffer check). */
-        c2p1x1_8_c5_030(s->chunky, bm->Planes[0]);
+        /* Both normal kernels consume a tightly packed rectangle. Since the
+         * Kalms 1x1 layout uses a screen-width chunky stride, a dirty row band
+         * is itself tightly packed and can be converted without untouched rows. */
+#ifdef MR_KALMS_040
+        c2p1x1_8_c5_040_init(pw, ddh, s->y0 + ddy0,
+                             s->kalms_plane_spacing);
+        c2p1x1_8_c5_040((void *)crow, bm->Planes[0]);
+#else
+        c2p1x1_8_c5_030_init(pw, ddh, s->y0 + ddy0);
+        c2p1x1_8_c5_030((void *)crow, bm->Planes[0]);
+#endif
+#ifdef MR_KALMS_040
+    } else if (s->kalms_kind == KALMS_1X1_6) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        c2p1x1_6_c5_bm_040(pw, ddh, s->x0, s->y0 + ddy0,
+                           (void *)crow, bm);
+#endif
     } else if (s->use_riva_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         mr_c2p8_riva32(crow, pw, ddh, src_stride, s->depth,
@@ -393,6 +475,22 @@ static void aga_blit(aga_state *s, const uint8_t *src, int src_stride,
     /* Kalms is timed and accumulated by the same counters as every other AGA
      * blit backend. Keep diagnostics out of this frame-rendering hot path. */
     if (g_display_want_time) { s_frame_blit = clock() - a; s_blit += s_frame_blit; }
+}
+
+/* Fused encoded-pixel 2x2 enlargement + C2P. The source contains only the
+ * dirty rows, so the output offset advances by twice the source row number. */
+static void aga_blit_kalms2x2(aga_state *s, const uint8_t *src,
+                              int src_rows, int src_y)
+{
+    clock_t a = 0;
+    struct BitMap *bm = s->scr->RastPort.BitMap;
+    if (g_display_want_time) a = clock();
+    c2p2x2_8_c5_bm(s->w, src_rows, s->x0, s->y0 + src_y * 2,
+                   (void *)src, bm);
+    if (g_display_want_time) {
+        s_frame_blit = clock() - a;
+        s_blit += s_frame_blit;
+    }
 }
 
 static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
@@ -418,7 +516,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
          * cleanly through arbitrary scaling, and the fitted image is small. */
         mr_scale_resize_rgb24(rgb, w, h, stride, s->scaled,
                               dw, s->dh, dw * 3);
-        uint8_t *encoded = s->chunky + (s->use_kalms_c2p ? s->x0 : 0);
+        uint8_t *encoded = s->chunky +
+                           (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0);
         if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, encoded, pw, s->ham);
         else mr_dither_rgb_indexed(s->scaled, dw, s->dh, dw * 3,
                                    encoded, pw, 0, s->depth);
@@ -440,13 +539,14 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             if (s->ham) mr_ham_encode(src, w, rows, stride, s->enc, w, s->ham);
             else mr_dither_rgb_indexed(src, w, rows, stride, s->enc, w,
                                        dy0, s->depth);
-            mr_scale2x_u8(s->enc, w, rows, w,
-                          s->chunky + (size_t)(dy0*2) * pw +
-                          (s->use_kalms_c2p ? s->x0 : 0), pw);
+            if (s->kalms_kind != KALMS_2X2_8)
+                mr_scale2x_u8(s->enc, w, rows, w,
+                              s->chunky + (size_t)(dy0*2) * pw +
+                              (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0), pw);
             ddy0 = dy0 * 2; ddh = rows * 2;
         } else {
             uint8_t *dst = s->chunky + (size_t)dy0 * pw +
-                           (s->use_kalms_c2p ? s->x0 : 0);
+                           (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0);
             if (s->ham) mr_ham_encode(src, w, rows, stride, dst, pw, s->ham);
             else mr_dither_rgb_indexed(src, w, rows, stride, dst, pw,
                                        dy0, s->depth);
@@ -455,7 +555,10 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     }
     if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }
 
-    aga_blit(s, s->chunky, pw, ddy0, ddh);
+    if (s->kalms_kind == KALMS_2X2_8)
+        aga_blit_kalms2x2(s, s->enc, ddh / 2, ddy0 / 2);
+    else
+        aga_blit(s, s->chunky, pw, ddy0, ddh);
 }
 
 /*
@@ -507,10 +610,20 @@ static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
                                     int *indexed_depth)
 {
     aga_state *s = (aga_state *)handle;
-    if (!s || s->ham || s->scale != 1 ||
+    if (!s || s->ham ||
         (s->depth != 4 && s->depth != 5 && s->depth != 8)) return 0;
     if (src_w <= 0 || src_h <= 0) return 0;
     if (indexed_depth) *indexed_depth = s->depth;
+    /* Kalms' fused 2x2 converter consumes the source-sized indexed image and
+     * performs the enlargement while producing the bitplanes. Let H.264 use
+     * the existing direct YUV420P -> indexed path here too: this removes the
+     * RGB24 queue/intermediate and the later RGB -> indexed pass, in addition
+     * to the scale pass that the Kalms kernel already removed. */
+    if (s->kalms_kind == KALMS_2X2_8 && src_w == s->w && src_h == s->h) {
+        *dst_w = src_w; *dst_h = src_h; *vscale = 1;
+        return 1;
+    }
+    if (s->scale != 1) return 0;
     if (!s->resize) {
         *dst_w = s->w; *dst_h = s->h; *vscale = 1;
         return 1;
@@ -539,18 +652,26 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     if (dy1 <= dy0) return;
     ddy0 = dy0; ddh = dy1 - dy0;
 
+    /* The fused converter wants the undoubled indexed source. Unlike the 1x1
+     * paths there is deliberately no screen-sized chunky buffer to copy into. */
+    if (s->kalms_kind == KALMS_2X2_8) {
+        if (w != s->w || h != s->h || idx_stride != w) return;
+        s_frame_enc = 0;
+        aga_blit_kalms2x2(s, idx + (size_t)dy0 * idx_stride, ddh, ddy0);
+        return;
+    }
+
     /* For the common aligned case (idx already laid out at exactly pw
      * bytes/row - true whenever dw needs no C2P/WPA padding, e.g. the
      * ordinary 640-wide HIRES geometry) every blit backend can consume the
      * queue buffer directly, skipping this frame's copy into s->chunky
-     * entirely. Kalms always needs the copy: its C2P routine has no
-     * row-modulo ABI and converts the complete persistent screen-width
-     * s->chunky array regardless of ddy0/ddh (see aga_blit()). A padded or
-     * off-pw-stride geometry (idx_stride != pw) also keeps the copy - the
+     * entirely. The Kalms 1x1 routine can now consume the same direct dirty
+     * row band because its per-call init is updated to that band. A padded or
+     * off-pw-stride geometry (idx_stride != pw) keeps the copy - the
      * pad columns beyond the visible width must read as s->chunky's cleared
      * black, not whatever the queue buffer happens to hold past its own
      * (narrower) row. */
-    if (!s->use_kalms_c2p && idx_stride == pw) {
+    if (idx_stride == pw) {
         s_frame_enc = 0;
         aga_blit(s, idx, idx_stride, ddy0, ddh);
         return;
@@ -564,7 +685,7 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     for (y = dy0; y < dy1; y++) {
         const uint8_t *sr = idx + (size_t)y * idx_stride;
         uint8_t *dr = s->chunky + (size_t)y * pw +
-                     (s->use_kalms_c2p ? s->x0 : 0);
+                     (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0);
         memcpy(dr, sr, (size_t)w);
     }
     if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }
@@ -647,9 +768,9 @@ static void aga_close(void *handle)
     }
 
     /* Keep all frame/blit storage alive until graphics has quiesced above. */
-    if (s->enc) free(s->enc);
+    if (s->enc_alloc) free(s->enc_alloc);
     if (s->scaled) free(s->scaled);
-    if (s->chunky) free(s->chunky);
+    if (s->chunky_alloc) free(s->chunky_alloc);
     if (s->tempbm) FreeBitMap(s->tempbm);
     s_kalms_active = 0;
     free(s);

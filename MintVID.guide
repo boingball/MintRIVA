@@ -1,18 +1,19 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.0 (23.8.2026)
+@$VER: MintVID.guide 1.1 (28.8.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @wordwrap
 @smartwrap
 
 @node MAIN "MintVID Guide"
-@{b}MintVID@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
+@{b}MintVID 1.1.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
 hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG machines.
 
 This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
+  @{" What's new in 1.1.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -20,6 +21,7 @@ topic below (click, or press Return on a highlighted link):
   @{" YouTube "             LINK YouTube}
   @{" Supported formats "   LINK Formats}
   @{" Troubleshooting "     LINK Troubleshooting}
+  @{" Reporting a problem " LINK ReportingProblems}
   @{" Licensing "           LINK Licensing}
   @{" Support MintVID "     LINK Support}
 
@@ -33,6 +35,7 @@ page below also links back here.
 @{b}MintVID Guide@{ub} - Contents
 
   @{" Overview "            LINK Overview}
+  @{" What's new in 1.1.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -40,8 +43,39 @@ page below also links back here.
   @{" YouTube "             LINK YouTube}
   @{" Supported formats "   LINK Formats}
   @{" Troubleshooting "     LINK Troubleshooting}
+  @{" Reporting a problem " LINK ReportingProblems}
   @{" Licensing "           LINK Licensing}
   @{" Support MintVID "     LINK Support}
+@endnode
+
+@node WhatsNew "What's new in 1.1.0"
+@toc MintVID.guide/MAIN
+@{b}MintVID 1.1.0@{ub}
+
+  - Adds the separate TurboGT H.264 performance mode.
+  - Uses CPU-matched Kalms C2P kernels in the 030 and 040/060 releases.
+  - Converts only dirty row bands and aligns Kalms input buffers to 16 bytes.
+  - Fuses exact 2x enlargement with C2P where supported.
+  - Feeds H.264 YUV directly into that fused 2x path without an RGB buffer.
+  - Adds direct Kalms HAM6 output to the 040/060 releases.
+  - Exposes the supported paths through both ReAction and GadTools GUIs.
+  - Keeps searching for requested YouTube 720p after an early 360p-only reply,
+    while preserving 360p as a final fallback.
+  - Reuses repeated YUV source pixels when fitting low-resolution H.264 video.
+  - Adds AmigaOS $VER identities to every shipped executable.
+  - Widens the P96 direct-lock RTG fast path from 24-bit BGR only to also
+    cover 16-bit RGB565 and 32-bit ARGB screens, so it engages on more real
+    boards/modes - including the 16-bit depth this project already prefers
+    for lower RTG memory traffic.
+  - Adds an equivalent direct-lock fast path to the CGX display backend, for
+    its own private fullscreen screen, using cybergraphics.library directly
+    (no Picasso96API.library dependency) - this also benefits genuine
+    CyberGraphX-only boards that never had Picasso96API.library at all.
+
+See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
+for the detailed list.
+
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
 
 @node Overview "Overview"
@@ -344,6 +378,45 @@ streams playable - that is a property of the source, not a bug to
 report. Direct AVI/MOV/MP4 URLs also need a finite, byte-addressable
 resource: the server must supply Content-Length or Content-Range and
 honour byte ranges when the container seeks.
+
+If none of the above explains what you're seeing, see
+@{" Reporting a problem " LINK ReportingProblems}.
+
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@endnode
+
+@node ReportingProblems "Reporting a problem"
+@toc MintVID.guide/MAIN
+@{b}Reporting a problem@{ub}
+
+Please open an issue on the project's GitHub page and include:
+
+  1. The exact command line or GUI steps used to reproduce it (media
+     path/URL, display mode, C2P chooser setting, laced/2x, H.264 speed
+     mode), and which release drawer (MintVID030/040/060) and CPU/board
+     you ran it on - PiStorm/Emu68, Vampire/Apollo, or real 68k silicon.
+
+  2. mrplay's own console output from that run. On launch it already
+     reports the container type, video codec/FourCC, dimensions, frame
+     rate and audio format - re-run with @{i}--time@{ui} added if the
+     problem looks performance-related; that also prints which display/
+     C2P implementation actually ran (for example @{i}kalms-040@{ui},
+     @{i}kalms-2x2@{ui}, @{i}wpa@{ui}) and a per-stage timing breakdown.
+
+  3. For a crash: the exact AmigaOS "Software Failure" text (task name
+     and error number), and whether it happened on real hardware,
+     PiStorm/Emu68, or an emulator such as WinUAE.
+
+  4. For a YouTube/IPTV problem: the public video/channel URL or IPTV
+     directory entry, since MintVID's YouTube/HLS resolution behaviour is
+     often specific to one video, channel, or region.
+
+MintVID's codecs are regression-tested against ffmpeg on the host and
+cross-built for real big-endian m68k under QEMU (see CLAUDE.md in the
+source tree) before anything ships, but the Amiga-specific display,
+audio and GUI layers can only be verified on real hardware or PiStorm -
+so a clear, reproducible report from actual hardware is genuinely the
+fastest path to a fix.
 
 @{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode

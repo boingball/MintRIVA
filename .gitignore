@@ -23,6 +23,8 @@ player/mr_iptv_check
 player/mr_youtube_check
 player/mr_youtube_search_check
 player/mr_hls_override_check
+player/mr_media_clock_check
+player/mr_mov_seek_check
 *.o
 
 # Decoder PPM dumps and regenerated ffmpeg reference frames.

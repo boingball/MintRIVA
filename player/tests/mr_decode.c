@@ -15,12 +15,15 @@
 #include "../core/mr_dither.h"
 #include "../core/mr_ham.h"
 #include "../core/mr_h264.h"
+#include "../amiga/mintvid_version.h"
 #ifdef MR_HAVE_MPEG1               /* host only - pl_mpeg pulls in soft-float */
 #include "../core/mr_mpeg1.h"
 #endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+MINTVID_DECLARE_VERSION(mr_decode_version_tag, "mr_decode");
 
 static uint8_t *slurp(const char *path, size_t *len)
 {

@@ -2,7 +2,7 @@ Short:            Multi-codec video player and streamer
 Uploader:         Darren Banfi <boingball@gmail.com>
 Author:           Darren "boingball" Banfi
 Type:             gfx/show
-Version:          1.0
+Version:          1.1.0
 Requires:         68030+; util/libs/AmiSSL-v5-OS3.lha for online features
 Architecture:     m68k-amigaos >= 3.0.0
 
@@ -12,6 +12,26 @@ MintVID is a multi-codec video player for accelerated 68k Amigas, from
 68030-class ECS/AGA systems through 68040/060 machines to PiStorm/Emu68.
 It supports native chipset and RTG output, local files, HTTP/HTTPS, HLS,
 IPTV and public YouTube playback.
+
+WHAT'S NEW IN 1.1.0
+
+  - New TurboGT H.264 performance mode for PiStorm/Emu68-class systems.
+  - CPU-matched Kalms C2P for 030 versus 040/060 builds.
+  - Dirty-row-only Kalms conversion, 16-byte aligned buffers, fused 2x2
+    scaling/C2P where geometry permits, direct H.264 YUV-to-indexed input for
+    that fused path, and direct HAM6 C2P on 040/060.
+  - ReAction and GadTools expose the supported Kalms paths consistently.
+  - YouTube 720p/1080p/Best searches no longer stop at an early 360p-only
+    client response; 360p is retained as the final fallback.
+  - Faster direct YUV-to-indexed upscaling for low-resolution H.264 video.
+  - Every shipped executable now carries an AmigaOS $VER identity.
+  - RTG (P96) direct-write playback now covers 16-bit RGB565 and 32-bit ARGB
+    screens, not just 24-bit BGR - so it engages on more real boards/modes.
+  - RTG (CGX) playback gains its own private-screen direct-write fast path,
+    including on genuine CyberGraphX-only boards without Picasso96API.
+
+See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
+for the detailed list.
 
 Codec support does not imply real-time playback on every CPU. Practical
 performance depends on processor speed, codec complexity, resolution,

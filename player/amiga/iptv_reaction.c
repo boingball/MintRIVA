@@ -11,6 +11,8 @@
 #include "mr_master_options.h"
 #include "mr_gui_menu.h"
 
+MINTVID_DECLARE_VERSION(iptvgui_version_tag, "iptvgui");
+
 #include <classes/window.h>
 #include <devices/timer.h>
 #include <dos/dos.h>

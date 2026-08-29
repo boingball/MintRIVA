@@ -62,6 +62,7 @@ HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
            core/mr_msmpeg4v2.h core/mr_h263.h core/mr_h264.h core/mr_types.h
 HEADERS  += core/mr_msvideo1.h core/mr_rle.h
 HEADERS  += core/mr_rawvideo.h core/mr_yuv.h
+HEADERS  += amiga/mintvid_version.h
 
 all: mr_decode
 

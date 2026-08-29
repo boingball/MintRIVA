@@ -189,30 +189,6 @@ void mr_yuv420_dither8(const uint8_t *y_plane, int y_stride,
                              out_stride, y_base);
 }
 
-static uint8_t yuv420_pixel_index(const uint8_t *y_plane, int y_stride,
-                                  const uint8_t *u_plane, int u_stride,
-                                  const uint8_t *v_plane, int v_stride,
-                                  int sx, int sy, uint8_t threshold)
-{
-    const uint8_t *src_y = y_plane + (size_t)sy * y_stride;
-    const uint8_t *src_u = u_plane + (size_t)(sy >> 1) * u_stride;
-    const uint8_t *src_v = v_plane + (size_t)(sy >> 1) * v_stride;
-    unsigned uu = src_u[sx >> 1], vv = src_v[sx >> 1];
-    int red_add = g_e_x409[vv] + 128;
-    int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
-    int blue_add = g_d_x516[uu] + 128;
-    int luma = (int)src_y[sx] - 16;
-    int scaled_y, r, g, b;
-
-    if (luma < 0) luma = 0;
-    scaled_y = g_luma_x298[luma];
-    r = clip8((scaled_y + red_add) >> 8);
-    g = clip8((scaled_y + green_add) >> 8);
-    b = clip8((scaled_y + blue_add) >> 8);
-    return (uint8_t)(lut_r[threshold][r] + lut_g[threshold][g] +
-                     lut_b[threshold][b]);
-}
-
 void mr_yuv420_dither_indexed_resize(const uint8_t *y_plane, int y_stride,
                                      const uint8_t *u_plane, int u_stride,
                                      const uint8_t *v_plane, int v_stride,
@@ -234,14 +210,36 @@ void mr_yuv420_dither_indexed_resize(const uint8_t *y_plane, int y_stride,
     sy = (height / 2) / dst_h; yerr = (height / 2) % dst_h;
 
     for (oy = 0; oy < dst_h; oy++) {
+        const uint8_t *src_y = y_plane + (size_t)sy * y_stride;
+        const uint8_t *src_u = u_plane + (size_t)(sy >> 1) * u_stride;
+        const uint8_t *src_v = v_plane + (size_t)(sy >> 1) * v_stride;
         uint8_t *dr = out + (size_t)oy * out_stride;
         const uint8_t *threshold = bayer4[(y_base + oy) & 3];
-        int ox, sx = sx0, xerr = xerr0;
+        int ox, sx = sx0, xerr = xerr0, cached_sx = -1;
+        int r = 0, g = 0, b = 0;
 
         for (ox = 0; ox < dst_w; ox++) {
-            dr[ox] = yuv420_pixel_index(y_plane, y_stride, u_plane, u_stride,
-                                        v_plane, v_stride, sx, sy,
-                                        threshold[ox & 3]);
+            int t = threshold[ox & 3];
+            /* Nearest-neighbour upscales repeat each source pixel. Convert a
+             * repeated pixel only once, but retain the destination-specific
+             * Bayer threshold so output stays bit-exact. The common 256->640
+             * AGA fit therefore performs 256 YUV->RGB conversions per row,
+             * not 640. Row bases are also hoisted out of the pixel loop. */
+            if (sx != cached_sx) {
+                unsigned uu = src_u[sx >> 1], vv = src_v[sx >> 1];
+                int red_add = g_e_x409[vv] + 128;
+                int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
+                int blue_add = g_d_x516[uu] + 128;
+                int luma = (int)src_y[sx] - 16;
+                int scaled_y;
+                if (luma < 0) luma = 0;
+                scaled_y = g_luma_x298[luma];
+                r = clip8((scaled_y + red_add) >> 8);
+                g = clip8((scaled_y + green_add) >> 8);
+                b = clip8((scaled_y + blue_add) >> 8);
+                cached_sx = sx;
+            }
+            dr[ox] = (uint8_t)(lut_r[t][r] + lut_g[t][g] + lut_b[t][b]);
             sx += xq;
             xerr += xr;
             if (xerr >= dst_w) { xerr -= dst_w; sx++; }

@@ -197,6 +197,8 @@ int main(void)
 
     {
         static const struct { int w, h, dw, dh; } resize_geoms[] = {
+            /* YouTube 144p fitted to non-laced HIRES AGA. */
+            { 256, 144, 640, 180 },
             /* the motivating case: BBC's 192x108 HLS mobile variant fitted
              * to a 320x180 AGA screen - upscale on both axes. */
             { 192, 108, 320, 180 },

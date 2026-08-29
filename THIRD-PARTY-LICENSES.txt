@@ -1,5 +1,5 @@
-MintVID 1.0 - third-party licence index
-=======================================
+MintVID 1.1.0 - third-party licence index
+=========================================
 
 MintVID's own source code is MIT-licensed. See LICENSE in the project root.
 The mrplay binary also contains or links code from third-party projects with
@@ -60,7 +60,11 @@ PL_MPEG - Dominic Szablewski / phoboslab.org
   THE SOFTWARE.
 
 Mikael Kalms' C2P collection
-  Source used by MintVID: player/vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
+  Sources used by MintVID:
+    player/vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
+    player/vendor/kalms-c2p/normal/c2p1x1_8_c5_040.s
+    player/vendor/kalms-c2p/bitmap/c2p2x2_8_c5_bm.s
+    player/vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.s
   The bundled kalms-c2p readme states that all files outside its "others"
   directory are Public Domain and may be used, modified and redistributed for
   commercial or non-commercial purposes. MintVID uses a routine from the
