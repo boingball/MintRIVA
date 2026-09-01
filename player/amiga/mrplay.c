@@ -2929,12 +2929,43 @@ int main(int argc, char **argv)
                 } else if (pkt.len) {
                     mr_status decode_status;
                     uint64_t decode_end;
+                    int skip_stale_output;
                     trace_phase(&trace, "h264-decode");
                     /* A frame decoded into a full queue is dropped (newest-out),
                      * so decode it reference-only: keep the reference chain
                      * intact without spending time producing RGB we discard.
-                     * This is what makes the audio-cushion top-up above cheap. */
-                    mr_h264_set_skip_output(&dec, qcount >= video_cap);
+                     * This is what makes the audio-cushion top-up above cheap.
+                     *
+                     * A network source's queue is deliberately kept shallow
+                     * (target_depth as low as 1 - see its declaration above),
+                     * so "queue full" alone rarely fires even when the whole
+                     * decode+convert+display pipeline is costing more than one
+                     * frame period and audio is being starved of CPU time for
+                     * it (observed: 854x480 TurboGT averaging ~36-39ms of
+                     * decode+yuv-rgb+display against a 33.3ms/30fps budget,
+                     * with audio-rescue firing almost continuously as a
+                     * result). Falling behind wall-clock by more than one
+                     * frame period on this packet's own PTS is a second,
+                     * independent signal of the same problem that doesn't
+                     * need the queue to be full first. mono_media_clock_us is
+                     * wall-clock elapsed since the mono_base_us anchor
+                     * established when playback_started first went true (see
+                     * below) - cheap, always up to date this iteration, and
+                     * safe to read again here, unlike current_media_clock_us()
+                     * (already called above when have_deadline was set: a
+                     * second call this iteration would spuriously re-enter/
+                     * exit clock-holdover). Gated on playback_started because
+                     * mono_base_us is meaningless before that anchor exists.
+                     * Must stay exactly the condition the queue-full check
+                     * below uses too - skip_output with no matching drop
+                     * would let a stale, un-converted RGB buffer (emit_rgb()
+                     * never ran) get copied into the queue as if it were this
+                     * frame's real picture. */
+                    skip_stale_output = qcount >= video_cap ||
+                        (playback_started && pkt.has_pts &&
+                         (int64_t)mono_media_clock_us - (int64_t)pkt.pts_us >
+                             (int64_t)period_us);
+                    mr_h264_set_skip_output(&dec, skip_stale_output);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_h264_set_input_annexb(&dec, pkt.is_annexb);
                     a = monotonic_us();
@@ -3064,17 +3095,28 @@ int main(int argc, char **argv)
                                 decoded_index++;
                                 continue;
                             }
-                            if (qcount >= video_cap) {
-                                /* Queue full. Every queued frame is closer to
-                                 * its deadline than this freshly decoded one,
-                                 * which sits furthest in the future, so keep
-                                 * them and drop the newcomer. Evicting the
-                                 * oldest instead (the previous behaviour) left
-                                 * the queue front permanently ahead of the
-                                 * audio clock, so presentation stalled and
-                                 * never recovered after a long stall. The
-                                 * packet was still consumed, so audio rescue
-                                 * makes progress regardless. */
+                            if (skip_stale_output) {
+                                /* Queue full, or this frame already fell more
+                                 * than a period behind wall-clock before it
+                                 * was even decoded (see skip_stale_output's
+                                 * declaration above) - either way emit_rgb()
+                                 * never ran for it, so dec.frame still holds
+                                 * whatever a previous frame last wrote there.
+                                 * Must match mr_h264_set_skip_output()'s
+                                 * condition exactly: copying that stale buffer
+                                 * into the queue under this frame's own pts
+                                 * would show a duplicated/frozen picture. When
+                                 * it's specifically the full-queue case, every
+                                 * queued frame is also closer to its deadline
+                                 * than this freshly decoded one, which sits
+                                 * furthest in the future, so keep them and
+                                 * drop the newcomer - evicting the oldest
+                                 * instead (the previous behaviour) left the
+                                 * queue front permanently ahead of the audio
+                                 * clock, so presentation stalled and never
+                                 * recovered after a long stall. The packet was
+                                 * still consumed, so audio rescue makes
+                                 * progress regardless. */
                                 if (rescue_active) {
                                     rescue_episode_skipped++;
                                     stats.rescue_video_skipped++;
