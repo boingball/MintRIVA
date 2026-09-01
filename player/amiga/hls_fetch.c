@@ -29,7 +29,7 @@
  *   A miss (nothing hinted for this URL - e.g. the playlist, which is
  *   never hinted, only ever fetched on demand, or a segment the lookahead
  *   window hadn't reached yet) falls back to a blocking round trip through
- *   the same worker via the original single-slot g_ready_*/g_busy path
+ *   the same worker via the original single-slot g_ready_ / g_busy path
  *   below - never worse than today's fully-synchronous behaviour, and
  *   unlike it, the main task stays responsive throughout (audio/video/UI
  *   keep moving, ESC/quit is honoured promptly) because every wait here is
