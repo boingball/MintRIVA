@@ -196,6 +196,9 @@ run "$BUILD/mr_media_clock_check.m68k"
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \
     --check tests/assets/ref_h264_high
+echo "[H.264 borrowed YUV display-buffer lifecycle, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 --h264-yuv \
+    | grep -F "decoded 24 frames"
 echo "[MPEG-TS: H.264 Annex-B direct decode, real m68k/big-endian]"
 # The TS demuxer hands H.264 packets straight through as Annex-B
 # (mr_ts.c's emit_pes()/pkt.is_annexb - see mr_h264_set_input_annexb()),

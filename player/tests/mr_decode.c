@@ -123,7 +123,7 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
 int main(int argc, char **argv)
 {
     int argi = 2, force_memory = 0, hls_buffer_segments = 0;
-    int h264_speed = -1;
+    int h264_speed = -1, h264_yuv = 0;
     const char *user_agent = NULL, *referer = NULL;
     mr_http_options http_options;
     const char *mode;
@@ -160,6 +160,9 @@ int main(int argc, char **argv)
                 fprintf(stderr, "invalid H.264 speed mode\n");
                 return 2;
             }
+            argi++;
+        } else if (!strcmp(argv[argi], "--h264-yuv")) {
+            h264_yuv = 1;
             argi++;
         } else {
             break;
@@ -251,6 +254,8 @@ int main(int argc, char **argv)
         mr_demux_close(dx); free(buf); return 1;
     }
 #ifdef MR_HAVE_H264
+    if (h264_yuv && codec == &mr_codec_h264)
+        mr_h264_set_yuv_output(&dec, 1);
     if (h264_speed >= 0 && codec == &mr_codec_h264 &&
         !mr_h264_set_speed_mode(&dec, (mr_h264_speed_mode)h264_speed)) {
         fprintf(stderr, "H.264 speed mode rejected\n");
