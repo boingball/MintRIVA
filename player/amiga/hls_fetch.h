@@ -8,7 +8,9 @@
  * Amiga - the socket/TLS globals there are process-wide, not per-task).
  * The main player task never opens a connection itself once this is
  * active: every playlist and segment fetch mr_hls.c makes routes through
- * the worker, and one segment of background lookahead rides alongside it.
+ * the worker, and several segments of background lookahead (compressed
+ * bytes, not decoded frames - see HLS_FETCH_LOOKAHEAD_DEPTH in hls_fetch.c)
+ * ride alongside it, fetched one at a time in order as the worker frees up.
  *
  * hls_fetch_start() returns 1 if the worker came up (async fetch active
  * for this session) or 0 if it could not be created, in which case
