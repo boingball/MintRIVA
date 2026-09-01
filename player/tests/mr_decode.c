@@ -123,7 +123,7 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
 int main(int argc, char **argv)
 {
     int argi = 2, force_memory = 0, hls_buffer_segments = 0;
-    int h264_speed = -1, h264_yuv = 0;
+    int h264_speed = -1, h264_yuv = 0, stage_profile = 0;
     const char *user_agent = NULL, *referer = NULL;
     mr_http_options http_options;
     const char *mode;
@@ -163,6 +163,9 @@ int main(int argc, char **argv)
             argi++;
         } else if (!strcmp(argv[argi], "--h264-yuv")) {
             h264_yuv = 1;
+            argi++;
+        } else if (!strcmp(argv[argi], "--stage-profile")) {
+            stage_profile = 1;
             argi++;
         } else {
             break;
@@ -256,6 +259,8 @@ int main(int argc, char **argv)
 #ifdef MR_HAVE_H264
     if (h264_yuv && codec == &mr_codec_h264)
         mr_h264_set_yuv_output(&dec, 1);
+    if (stage_profile && codec == &mr_codec_h264)
+        mr_h264_set_timing_enabled(&dec, 1);
     if (h264_speed >= 0 && codec == &mr_codec_h264 &&
         !mr_h264_set_speed_mode(&dec, (mr_h264_speed_mode)h264_speed)) {
         fprintf(stderr, "H.264 speed mode rejected\n");
@@ -266,6 +271,16 @@ int main(int argc, char **argv)
     int frame = 0, bad = 0;
     long worst_mae = 0;   /* MAE * 1000 */
     unsigned long audio_bytes = 0, audio_pkts = 0;
+#ifdef MR_HAVE_H264
+    /* Per-stage libavc decode cost, accumulated across every frame when
+     * --stage-profile is passed. Only non-zero when this binary was itself
+     * built with -DMR_H264_STAGE_PROFILE=1 (see Makefile.amiga's
+     * STAGE_PROFILE variable / tests/run_m68k_check.sh) - the flag just
+     * decides whether this harness reads and prints the numbers, not
+     * whether libavc collects them. */
+    unsigned long sp_core_us = 0, sp_mc_us = 0, sp_deblock_us = 0,
+                  sp_recon_us = 0, sp_intra_us = 0, sp_frames = 0;
+#endif
 
     /* --dirty: verify the decoder's reported changed-row span actually covers
      * every row that differs from the previous frame (safety of dirty-row
@@ -307,6 +322,18 @@ int main(int argc, char **argv)
             if (ds != MR_OK) {
                 fprintf(stderr, "decode error at frame %d\n", frame); break;
             }
+#ifdef MR_HAVE_H264
+            if (stage_profile && codec == &mr_codec_h264) {
+                mr_h264_timing ht;
+                mr_h264_frame_timing(&dec, &ht);
+                sp_core_us += ht.core_us;
+                sp_mc_us += ht.mc_us;
+                sp_deblock_us += ht.deblock_us;
+                sp_recon_us += ht.recon_us;
+                sp_intra_us += ht.intra_us;
+                sp_frames++;
+            }
+#endif
         }
         frame++;
         if (mode && !strcmp(mode, "--first-ppm") && dir) {
@@ -407,6 +434,28 @@ int main(int argc, char **argv)
         }
     }
     printf("decoded %d frames\n", frame);
+#ifdef MR_HAVE_H264
+    if (stage_profile && sp_frames) {
+        unsigned long remainder = sp_core_us -
+            (sp_mc_us + sp_deblock_us + sp_recon_us + sp_intra_us);
+        printf("h264 stage profile over %lu frames: core=%lu us/frame "
+               "(mc=%lu deblock=%lu recon=%lu intra=%lu remainder=%lu "
+               "us/frame; mc=%lu%% deblock=%lu%% recon=%lu%% intra=%lu%% "
+               "remainder=%lu%%)\n",
+               sp_frames, sp_core_us / sp_frames,
+               sp_mc_us / sp_frames, sp_deblock_us / sp_frames,
+               sp_recon_us / sp_frames, sp_intra_us / sp_frames,
+               remainder / sp_frames,
+               sp_core_us ? 100UL * sp_mc_us / sp_core_us : 0UL,
+               sp_core_us ? 100UL * sp_deblock_us / sp_core_us : 0UL,
+               sp_core_us ? 100UL * sp_recon_us / sp_core_us : 0UL,
+               sp_core_us ? 100UL * sp_intra_us / sp_core_us : 0UL,
+               sp_core_us ? 100UL * remainder / sp_core_us : 0UL);
+        if (!sp_mc_us && !sp_deblock_us && !sp_recon_us && !sp_intra_us)
+            fprintf(stderr, "note: all-zero stage breakdown - rebuild with "
+                            "-DMR_H264_STAGE_PROFILE=1 to populate it\n");
+    }
+#endif
     if (do_dirty) {
         printf("dirty rows: %lu / %lu total (%lu%%), coverage violations=%ld\n",
                dirty_rows, tot_rows,
