@@ -2117,6 +2117,18 @@ int main(int argc, char **argv)
         int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
         int video_cap = network_source ? VIDEO_QUEUE_NET_DEPTH
                                         : VIDEO_QUEUE_DISK_DEPTH;
+        /* VIDEO_QUEUE_NET_DEPTH above is only a floor for when AvailMem() is
+         * stingy. A live HLS segment fetch can stall for hundreds of ms up to
+         * well over a second (observed on YouTube live - one segment of
+         * lookahead is all the single-TLS-connection design in hls_fetch.c
+         * allows), so 16 frames (~466 ms of cushion at 30fps) is nowhere near
+         * enough headroom and every stall shows up as audio-clock drift that
+         * compounds until a hard live-resync jump. Let a healthy RAM budget
+         * grow the network queue on its own instead of requiring an explicit
+         * --net-queue for every live stream; the budget_frames/VIDEO_QUEUE_CAP
+         * clamps below still apply, so a tight machine keeps the old depth. */
+        if (network_source && budget_frames > video_cap)
+            video_cap = budget_frames;
         if (net_queue > 0 && video_cap < net_target) video_cap = net_target;
         if (video_cap < target_depth) video_cap = target_depth;
         if (budget_frames > 0 && video_cap > budget_frames)
