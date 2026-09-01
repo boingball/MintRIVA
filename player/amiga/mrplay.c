@@ -120,7 +120,15 @@ void __chkabort(void) { }
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
  * The trigger is far above any jitter normal playback produces. */
 #define LIVE_RESYNC_BEHIND_US 4000000ULL  /* >4 s behind wall clock: catch up  */
-#define LIVE_RESYNC_TARGET_US 1000000ULL  /* aim to land ~1 s behind the edge   */
+#define LIVE_RESYNC_TARGET_US 2500000ULL  /* aim to land ~2.5 s behind the edge:
+                                           * a deliberate latency penalty (vs.
+                                           * the old ~1 s) buys real margin
+                                           * against the next HLS segment-fetch
+                                           * stall instead of landing right back
+                                           * at the edge with none - a judder-
+                                           * free 2-3 s behind live beats a
+                                           * tight chase that resyncs again a
+                                           * few segments later               */
 #define LIVE_RESYNC_MAX_US    3000000ULL  /* hard cap on one catch-up burst     */
 #define LIVE_RESYNC_EDGE_US   2000000ULL  /* a read slower than any normal fetch
                                            * means we have caught the frontier   */

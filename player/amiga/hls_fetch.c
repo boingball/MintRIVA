@@ -13,18 +13,30 @@
  *   a second task adopting state another task already opened.
  *
  * - Exactly one request is ever in flight (one reusable struct Message,
- *   reused for every fetch and finally for the quit handshake). One
- *   segment of background lookahead rides alongside it: mr_http.c's
- *   prefetch hint fires for the next HLS segment while the current one
- *   plays, and is usually ready by the time it is needed. A miss (or the
- *   playlist, which is never hinted, only ever fetched on demand) falls
- *   back to a blocking round trip through the same worker - never worse
- *   than today's fully-synchronous behaviour, and unlike it, the main task
- *   stays responsive throughout (audio/video/UI keep moving, ESC/quit is
- *   honoured promptly) because every wait here is a serviced poll, never a
- *   raw blocking Wait()/WaitPort() (the one exception is the one-time
- *   worker-startup handshake in hls_fetch_start(), before any playback
- *   state exists to stay responsive for).
+ *   reused for every fetch and finally for the quit handshake), but up to
+ *   HLS_FETCH_LOOKAHEAD_DEPTH segments of compressed background lookahead
+ *   can be queued and ready at once: mr_hls.c's open_seg() hints several
+ *   segments ahead of the one currently playing while the worker fetches
+ *   them one at a time, in order, into g_slots[] below. A live HLS segment
+ *   fetch can stall for hundreds of ms up to well over a second (observed
+ *   on YouTube live), so a single segment of lookahead left almost no
+ *   margin against jitter - see mrplay.c's video_cap comment for how that
+ *   showed up downstream as audio-clock drift. Buffering compressed bytes
+ *   this way is far cheaper than the decoded-RGB queue that otherwise has
+ *   to absorb the same jitter (a typical live segment is under a MB; a
+ *   decoded 720p RGB24 frame alone is ~2.6 MiB), so a few segments of
+ *   compressed lookahead buys much more real cushion per byte of RAM.
+ *   A miss (nothing hinted for this URL - e.g. the playlist, which is
+ *   never hinted, only ever fetched on demand, or a segment the lookahead
+ *   window hadn't reached yet) falls back to a blocking round trip through
+ *   the same worker via the original single-slot g_ready_*/g_busy path
+ *   below - never worse than today's fully-synchronous behaviour, and
+ *   unlike it, the main task stays responsive throughout (audio/video/UI
+ *   keep moving, ESC/quit is honoured promptly) because every wait here is
+ *   a serviced poll, never a raw blocking Wait()/WaitPort() (the one
+ *   exception is the one-time worker-startup handshake in
+ *   hls_fetch_start(), before any playback state exists to stay responsive
+ *   for).
  *
  * - A caller-visible generation counter (hls_fetch_cancel(), bumped on
  *   stream switch/live-reconnect/stop) invalidates whatever the worker is
@@ -94,6 +106,14 @@
                                           * Worker()/radio_net_worker_stop()
                                           * bound (~60s @ ~40ms/poll) - see
                                           * hls_fetch_wait_busy_bounded()     */
+/* How many segments of compressed lookahead mr_hls.c's open_seg() is worth
+ * hinting for - matched by HLS_LOOKAHEAD_HINT_SEGMENTS there (a hint past
+ * this many outstanding is simply dropped, best-effort, by hls_fetch_hint()
+ * below, so the two constants drifting apart is harmless, just wasteful in
+ * one direction or the other). Kept small deliberately: RAM for a typical
+ * live segment (tens to a few hundred KB) is cheap, but this is still a
+ * fixed array below (g_slots[]), not a dynamic queue. */
+#define HLS_FETCH_LOOKAHEAD_DEPTH 3
 
 /* main <-> worker request (reused; one in flight at a time) */
 typedef struct {
@@ -113,13 +133,39 @@ typedef struct {
     char            error[HLS_FETCH_ERROR_MAX];
 } hls_fetch_request;
 
+/* One queued/in-flight/completed lookahead fetch. Exactly one slot may be
+ * INFLIGHT at a time (the single g_req/g_busy request below is shared by
+ * both this queue and the anonymous direct-fetch path); the rest sit PENDING
+ * until the worker frees up, in the order they were hinted (seq). */
+typedef enum {
+    HLS_SLOT_EMPTY = 0, HLS_SLOT_PENDING, HLS_SLOT_INFLIGHT, HLS_SLOT_READY
+} hls_fetch_slot_state;
+
+typedef struct {
+    hls_fetch_slot_state state;
+    char            url[MR_HTTP_URL_MAX];
+    mr_http_options opts;
+    int             has_opts;
+    unsigned        seq;             /* hint order, for FIFO promotion        */
+    unsigned char  *buf;             /* valid once state == READY             */
+    size_t          len;
+    int             ok;
+    char            error[HLS_FETCH_ERROR_MAX];
+} hls_fetch_slot;
+
 static struct Process *g_proc;
 static struct MsgPort *g_worker_port;    /* worker's port (worker-owned)      */
 static struct MsgPort *g_reply_port;     /* main's port (main-owned)          */
 static struct Message  g_ready_msg;      /* worker -> main "I'm up"           */
 static hls_fetch_request g_req;
 static int              g_busy;          /* g_req sent, reply not reclaimed   */
-static int              g_have_ready;    /* a completed reply is cached       */
+static hls_fetch_slot   g_slots[HLS_FETCH_LOOKAHEAD_DEPTH]; /* hinted lookahead */
+static int              g_inflight_slot; /* index into g_slots, or -1 if the
+                                          * in-flight g_req (if any) is the
+                                          * anonymous direct-fetch path below  */
+static unsigned         g_next_seq;
+static int              g_have_ready;    /* anonymous (un-hinted) direct fetch:
+                                          * a completed reply is cached        */
 static char             g_ready_url[MR_HTTP_URL_MAX];
 static unsigned         g_ready_generation;
 static unsigned char   *g_ready_buf;
@@ -200,6 +246,13 @@ done:
 
 /* ---- main-task helpers --------------------------------------------------- */
 
+/* Forward declaration: hls_fetch_pump() below needs to start a queued
+ * lookahead fetch, but hls_fetch_send() (used by every fetch path in this
+ * file) is defined further down, alongside the rest of the send/wait
+ * helpers it belongs with. */
+static void hls_fetch_send(const char *url, const mr_http_options *opts,
+                           const char *post_json, size_t max_size);
+
 static void hls_fetch_free_ready(void)
 {
     if (g_ready_buf) mr_free(g_ready_buf);
@@ -207,33 +260,82 @@ static void hls_fetch_free_ready(void)
     g_have_ready = 0;
 }
 
-/* Non-blocking: pull a completed reply into the ready cache if one exists.
- * The one place a reply is ever interpreted - both the quit-ack skip and the
- * stale-generation discard live here, so every caller below (and
- * hls_fetch_stop()'s drain) shares exactly this logic. */
+/* Free any buffered lookahead result and reset the whole queue. Called on
+ * teardown (hls_fetch_stop()) and on startup (hls_fetch_start(), in case a
+ * previous run's state somehow survived). */
+static void hls_fetch_free_slots(void)
+{
+    int i;
+    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++) {
+        if (g_slots[i].state == HLS_SLOT_READY && g_slots[i].buf)
+            mr_free(g_slots[i].buf);
+        memset(&g_slots[i], 0, sizeof g_slots[i]);
+    }
+    g_inflight_slot = -1;
+}
+
+/* If the worker is free and a lookahead segment is queued, start the
+ * earliest-hinted (lowest seq) one. Called after every reclaim so a slot
+ * fetch that just completed immediately makes room for the next. */
+static void hls_fetch_pump(void)
+{
+    int i, best = -1;
+    if (g_busy) return;                    /* one fetch in flight, always     */
+    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++)
+        if (g_slots[i].state == HLS_SLOT_PENDING &&
+            (best < 0 || g_slots[i].seq < g_slots[best].seq))
+            best = i;
+    if (best < 0) return;
+    g_slots[best].state = HLS_SLOT_INFLIGHT;
+    g_inflight_slot = best;
+    hls_fetch_send(g_slots[best].url,
+                  g_slots[best].has_opts ? &g_slots[best].opts : NULL,
+                  NULL, HLS_FETCH_HINT_MAX);
+}
+
+/* Non-blocking: pull a completed reply into the matching lookahead slot (if
+ * the in-flight fetch was one of mr_hls.c's hints) or the anonymous ready
+ * cache (a direct, un-hinted fetch), then try to start the next queued
+ * lookahead fetch. The one place a reply is ever interpreted - both the
+ * quit-ack skip and the stale-generation discard live here, so every caller
+ * below (and hls_fetch_stop()'s drain) shares exactly this logic. */
 static void hls_fetch_reclaim(void)
 {
     struct Message *m;
     if (!g_reply_port) return;
     while ((m = GetMsg(g_reply_port)) != NULL) {
+        int slot = g_inflight_slot;
         if (m != &g_req.msg) continue;     /* not our request (can't happen) */
         g_busy = 0;
+        g_inflight_slot = -1;
         if (g_req.quit) continue;          /* quit ack: no payload           */
         if (g_req.generation != g_generation) {
             if (g_req.buf) mr_free(g_req.buf);
+            if (slot >= 0) g_slots[slot].state = HLS_SLOT_EMPTY;
             continue;
         }
-        hls_fetch_free_ready();
-        g_have_ready = 1;
-        strncpy(g_ready_url, g_req.url, sizeof g_ready_url - 1);
-        g_ready_url[sizeof g_ready_url - 1] = 0;
-        g_ready_generation = g_req.generation;
-        g_ready_buf = g_req.buf;
-        g_ready_len = g_req.len;
-        g_ready_ok = g_req.ok;
-        strncpy(g_ready_error, g_req.error, sizeof g_ready_error - 1);
-        g_ready_error[sizeof g_ready_error - 1] = 0;
+        if (slot >= 0) {
+            hls_fetch_slot *s = &g_slots[slot];
+            s->state = HLS_SLOT_READY;
+            s->buf = g_req.buf;
+            s->len = g_req.len;
+            s->ok = g_req.ok;
+            strncpy(s->error, g_req.error, sizeof s->error - 1);
+            s->error[sizeof s->error - 1] = 0;
+        } else {
+            hls_fetch_free_ready();
+            g_have_ready = 1;
+            strncpy(g_ready_url, g_req.url, sizeof g_ready_url - 1);
+            g_ready_url[sizeof g_ready_url - 1] = 0;
+            g_ready_generation = g_req.generation;
+            g_ready_buf = g_req.buf;
+            g_ready_len = g_req.len;
+            g_ready_ok = g_req.ok;
+            strncpy(g_ready_error, g_req.error, sizeof g_ready_error - 1);
+            g_ready_error[sizeof g_ready_error - 1] = 0;
+        }
     }
+    hls_fetch_pump();
 }
 
 /* If the ready cache holds `url` at the current generation, consume it
@@ -334,9 +436,10 @@ static int hls_fetch_wait_busy_bounded(unsigned long bound_ms)
     }
 }
 
-/* Send `url` to the worker (non-blocking). Assumes the slot is already free
- * (g_busy and g_have_ready both false) - every caller below reclaims and
- * consumes-or-discards first. post_json NULL sends a GET-shaped fetch. */
+/* Send `url` to the worker (non-blocking). Assumes g_busy is already false -
+ * every caller (hls_fetch_pump() and hls_fetch_override()'s direct-fetch
+ * fallback) reclaims first, which is what makes that true. post_json NULL
+ * sends a GET-shaped fetch. */
 static void hls_fetch_send(const char *url, const mr_http_options *opts,
                            const char *post_json, size_t max_size)
 {
@@ -360,16 +463,57 @@ static void hls_fetch_send(const char *url, const mr_http_options *opts,
 
 /* ---- mr_http backend callbacks (main task) ------------------------------- */
 
+/* Find `url` among the lookahead slots (any state); NULL if untracked. */
+static hls_fetch_slot *hls_fetch_find_slot(const char *url)
+{
+    int i;
+    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++)
+        if (g_slots[i].state != HLS_SLOT_EMPTY &&
+            strcmp(g_slots[i].url, url) == 0)
+            return &g_slots[i];
+    return NULL;
+}
+
 static int hls_fetch_override(const char *url, const mr_http_options *options,
                               const char *post_json, unsigned char **out,
                               size_t *out_len, size_t max_size)
 {
     int r;
+    hls_fetch_slot *s;
     if (out) *out = NULL;
     if (out_len) *out_len = 0;
     if (!g_active || !url) return 0;
 
     hls_fetch_reclaim();
+
+    /* Prefer an already-hinted lookahead slot: READY is an immediate hit.
+     * PENDING or INFLIGHT means this exact segment is already queued or
+     * being fetched - worth waiting for (pump(), called from every reclaim()
+     * below, promotes PENDING to INFLIGHT as soon as the worker frees up)
+     * rather than starting a second, competing fetch for the same URL. A
+     * sustained backlog (fetches taking longer than segments play out - the
+     * jitter this lookahead exists for) is exactly when a slot is still
+     * PENDING here, so this has to wait it out rather than skip past it. */
+    s = hls_fetch_find_slot(url);
+    while (s && (s->state == HLS_SLOT_PENDING || s->state == HLS_SLOT_INFLIGHT)) {
+        if (!hls_fetch_wait_busy()) return 0;      /* abort requested        */
+        s = hls_fetch_find_slot(url);              /* reclaim() may have
+                                                     * moved/freed it above   */
+    }
+    if (s && s->state == HLS_SLOT_READY) {
+        g_hits++;
+        r = s->ok;
+        if (r) { *out = s->buf; *out_len = s->len; }
+        else mr_source_set_error(s->error);
+        s->state = HLS_SLOT_EMPTY;
+        s->buf = NULL;
+        return r;
+    }
+
+    /* Untracked (never hinted - e.g. the playlist, which is always fetched
+     * on demand, or a segment the lookahead window hadn't reached yet), or
+     * its slot fell through above (a stale-generation flush raced it): fall
+     * back to the original direct, blocking single-fetch path. */
     r = hls_fetch_take_ready(url, out, out_len);
     if (r >= 0) { g_hits++; return r; }
     hls_fetch_free_ready();                /* stale or mismatched: drop it  */
@@ -398,11 +542,21 @@ static int hls_fetch_override(const char *url, const mr_http_options *options,
 
 static void hls_fetch_hint(const char *url, const mr_http_options *options)
 {
+    int i, slot = -1;
     if (!g_active || !url) return;
     hls_fetch_reclaim();
-    if (g_busy || g_have_ready) return;    /* one segment of lookahead only */
-    if (strlen(url) >= sizeof g_req.url) return;
-    hls_fetch_send(url, options, NULL, HLS_FETCH_HINT_MAX);
+    if (hls_fetch_find_slot(url)) return;  /* already queued/fetching/ready */
+    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++)
+        if (g_slots[i].state == HLS_SLOT_EMPTY) { slot = i; break; }
+    if (slot < 0) return;                  /* lookahead window full: best-
+                                            * effort, drop this hint         */
+    if (strlen(url) >= sizeof g_slots[slot].url) return;
+    strcpy(g_slots[slot].url, url);
+    if (options) { g_slots[slot].opts = *options; g_slots[slot].has_opts = 1; }
+    else g_slots[slot].has_opts = 0;
+    g_slots[slot].seq = g_next_seq++;
+    g_slots[slot].state = HLS_SLOT_PENDING;
+    hls_fetch_pump();
 }
 
 /* ---- lifecycle (main task) ------------------------------------------------ */
@@ -462,6 +616,8 @@ int hls_fetch_start(int verbose)
     g_verbose = verbose;
     g_generation = 0;
     g_busy = 0; g_have_ready = 0; g_ready_buf = NULL;
+    hls_fetch_free_slots();
+    g_next_seq = 0;
     g_hits = g_misses = g_worst_wait_ms = 0;
     g_worker_port = NULL;
 
@@ -539,6 +695,7 @@ void hls_fetch_stop(void)
         return;
     }
     hls_fetch_free_ready();
+    hls_fetch_free_slots();
 
     g_req.quit = 1;
     g_busy = 1;
@@ -556,6 +713,7 @@ void hls_fetch_stop(void)
     g_active = 0;
     g_proc = NULL;
     hls_fetch_free_ready();
+    hls_fetch_free_slots();
     DeleteMsgPort(g_reply_port);
     g_reply_port = NULL;
 }
