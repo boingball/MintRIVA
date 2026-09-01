@@ -101,10 +101,14 @@ void __chkabort(void) { }
 #define PRESENTATION_GUARD_US 4000ULL
 #define MR_SEEK_STEP_US 10000000LL  /* cursor-left/right: jump 10 s          */
 #define AUDIO_REFILL_WARNING_MS 120UL
-#define AUDIO_RESCUE_ENTRY_MS 100UL
-#define AUDIO_RESCUE_TARGET_MS 200UL
+/* ENTRY/TARGET/ONE_REQUEST are "one request's worth" / "both hardware
+ * requests' worth" of buffered audio - defined in terms of Paula's
+ * PAULA_REQUEST_MS (audio_paula.c), currently 200ms per request, NBUF=2.
+ * Keep these at 1x/2x/1x that value if it ever changes again. */
+#define AUDIO_RESCUE_ENTRY_MS 200UL
+#define AUDIO_RESCUE_TARGET_MS 400UL
 #define AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS 20UL
-#define AUDIO_RESCUE_ONE_REQUEST_MS 100UL
+#define AUDIO_RESCUE_ONE_REQUEST_MS 200UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
 #define AUDIO_CUSHION_MIN_MS 400UL
 /* 2.5 s is the legacy/direct-path ceiling: enough to ride the ~1.7 s stalls
