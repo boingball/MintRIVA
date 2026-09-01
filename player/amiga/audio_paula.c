@@ -34,7 +34,28 @@
 #define PAL_CLOCK  3546895UL   /* Paula colour clock (PAL)                  */
 #define MIN_PERIOD 124         /* Paula hardware minimum period             */
 #define NBUF       2           /* double buffer                            */
-#define PAULA_REQUEST_MS 100    /* measured validation value; tune here     */
+#define PAULA_REQUEST_MS 200    /* was 100 (measured validation value) - a
+                                 * WinUAE 854x480 TurboGT run still showed
+                                 * hw-starvations (both NBUF chip buffers
+                                 * empty at once) climbing continuously, ~1
+                                 * every 100-150ms for the whole session even
+                                 * after mrplay.c's skip_stale_output fix
+                                 * reclaimed CPU for late frames - audible as
+                                 * a persistent echo/stutter (Paula briefly
+                                 * repeating the outgoing buffer's tail on a
+                                 * genuine double-buffer underrun is a known
+                                 * hardware behaviour, not a software double-
+                                 * feed bug). Doubling the buffer gives twice
+                                 * the slack against feed-rate jitter per
+                                 * refill, at the cost of ~100ms more audio
+                                 * latency and 2x chip RAM for these buffers
+                                 * (rate * 0.1s more, e.g. ~2.2 KB at 22050 Hz
+                                 * mono 8-bit) - re-tune here if a real Amiga/
+                                 * WinUAE pass says otherwise. mrplay.c's
+                                 * AUDIO_RESCUE_ENTRY_MS/TARGET_MS/
+                                 * ONE_REQUEST_MS are defined in terms of one/
+                                 * two of these requests and were doubled to
+                                 * match - keep them in step with this. */
 
 /* See mr_audio.h's audio_set_timing_mode() comment. */
 static int g_audio_want_time = 0;

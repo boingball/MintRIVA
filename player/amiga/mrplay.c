@@ -101,10 +101,14 @@ void __chkabort(void) { }
 #define PRESENTATION_GUARD_US 4000ULL
 #define MR_SEEK_STEP_US 10000000LL  /* cursor-left/right: jump 10 s          */
 #define AUDIO_REFILL_WARNING_MS 120UL
-#define AUDIO_RESCUE_ENTRY_MS 100UL
-#define AUDIO_RESCUE_TARGET_MS 200UL
+/* ENTRY/TARGET/ONE_REQUEST are "one request's worth" / "both hardware
+ * requests' worth" of buffered audio - defined in terms of Paula's
+ * PAULA_REQUEST_MS (audio_paula.c), currently 200ms per request, NBUF=2.
+ * Keep these at 1x/2x/1x that value if it ever changes again. */
+#define AUDIO_RESCUE_ENTRY_MS 200UL
+#define AUDIO_RESCUE_TARGET_MS 400UL
 #define AUDIO_RESCUE_FIFO_NEAR_EMPTY_MS 20UL
-#define AUDIO_RESCUE_ONE_REQUEST_MS 100UL
+#define AUDIO_RESCUE_ONE_REQUEST_MS 200UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
 #define AUDIO_CUSHION_MIN_MS 400UL
 /* 2.5 s is the legacy/direct-path ceiling: enough to ride the ~1.7 s stalls
@@ -138,7 +142,21 @@ void __chkabort(void) { }
 #define LIVE_RECONNECT_STALL_LIMIT 3      /* consecutive reopens with no playback
                                            * before giving up (avoids a spin)     */
 #define AUDIO_RESCUE_MAX_PACKETS 16U
-#define AUDIO_RESCUE_MAX_US 100000ULL
+/* Was 100000 (100ms) - left unscaled when AUDIO_RESCUE_ENTRY_MS/TARGET_MS
+ * doubled to match audio_paula.c's PAULA_REQUEST_MS going to 200ms, which
+ * was a mistake: a WinUAE log with that mismatch still showed every rescue
+ * episode exiting via "limit" (exit(target/limit/eof)=0/26/0, same as
+ * before) and hw-starvations climbing just as fast as pre-doubling (~15/s)
+ * - widening AUDIO_RESCUE_TARGET_MS to 400ms without widening the time
+ * allowed to reach it left rescue no better able to actually fill the
+ * bigger buffers; the real buffered-audio level in that log never moved
+ * off the old ~100-150ms range. Doubled to match, so one episode has the
+ * same proportional chance of reaching the new target it had of reaching
+ * the old one. Trade-off: a rescue episode can now hold the CPU for up to
+ * 200ms instead of 100ms, competing more with video decode/demux during
+ * that window - re-tune here if a real Amiga/WinUAE pass shows that
+ * costing more than the starvations it fixes. */
+#define AUDIO_RESCUE_MAX_US 200000ULL
 
 static struct MsgPort *timer_port;
 static struct timerequest *timer_request;
@@ -2325,7 +2343,7 @@ int main(int argc, char **argv)
                     stats.rescue_post_lateness_us = post_late;
                 }
                 front = qcount ? &vq[qhead] : NULL;
-                /* One rescue episode is ~100ms by design (AUDIO_RESCUE_MAX_US),
+                /* One rescue episode is ~200ms by design (AUDIO_RESCUE_MAX_US),
                  * so a machine where rescue keeps failing back-to-back can
                  * produce one of these lines roughly every scheduler pass -
                  * 910 of them in one ~67 s constrained-hardware run. Rate-limit
