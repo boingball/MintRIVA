@@ -16,6 +16,8 @@
 
 ### Improved
 
+- H.264 decoding now uses libavc shared display buffers, decoding luma directly
+  into the display picture and avoiding one full-frame luma copy per output.
 - Kalms conversion now processes only dirty row bands instead of converting
   the entire persistent chunky frame for every update.
 - Kalms input buffers are explicitly 16-byte aligned.

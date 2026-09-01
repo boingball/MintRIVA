@@ -50,6 +50,10 @@ typedef struct {
     uint8_t  *out[3];
     uint32_t  out_size[3];
     uint32_t  out_count;
+    uint8_t  *disp[IVD_VIDDEC_MAX_IO_BUFFERS];
+    uint32_t  disp_count;
+    uint32_t  held_disp_id;
+    int       held_disp_valid;
     uint8_t  *rgb;
     uint8_t   nal_length_size;
     uint32_t  timestamp;
@@ -397,6 +401,94 @@ static void fill_output_desc(const h264_state *s, ivd_out_bufdesc_t *out)
     }
 }
 
+static IV_API_CALL_STATUS_T release_display_buffer(h264_state *s,
+                                                    uint32_t id);
+
+/* In shared-display mode libavc decodes luma straight into these buffers.
+ * Planar output still requires its UV split, but no longer copies the full
+ * luma plane from the decoder's internal semi-planar picture. */
+static mr_status setup_display_buffers(h264_state *s,
+                                       const ivd_ctl_getbufinfo_op_t *info)
+{
+    ivd_set_display_frame_ip_t *in;
+    ivd_set_display_frame_op_t out;
+    size_t total = 0;
+    uint32_t i, j;
+    IV_API_CALL_STATUS_T ret;
+
+    if (!info->u4_num_disp_bufs ||
+        info->u4_num_disp_bufs > IVD_VIDDEC_MAX_IO_BUFFERS)
+        return MR_EFORMAT;
+    for (j = 0; j < s->out_count; j++) {
+        if (total > (size_t)INT32_MAX - s->out_size[j])
+            return MR_EFORMAT;
+        total += s->out_size[j];
+    }
+
+    in = (ivd_set_display_frame_ip_t *)calloc(1, sizeof *in);
+    if (!in) return MR_ENOMEM;
+    memset(&out, 0, sizeof out);
+    in->u4_size = sizeof *in;
+    in->e_cmd = IVD_CMD_SET_DISPLAY_FRAME;
+    in->num_disp_bufs = info->u4_num_disp_bufs;
+    out.u4_size = sizeof out;
+
+    for (i = 0; i < info->u4_num_disp_bufs; i++) {
+        ivd_out_bufdesc_t *desc = &in->s_disp_buffer[i];
+        uint8_t *p;
+
+        s->disp[i] = (uint8_t *)h264_aligned_alloc(s, 128, (WORD32)total);
+        if (!s->disp[i]) {
+            free(in);
+            return MR_ENOMEM;
+        }
+        s->disp_count++;
+        p = s->disp[i];
+        desc->u4_num_bufs = s->out_count;
+        for (j = 0; j < s->out_count; j++) {
+            desc->pu1_bufs[j] = p;
+            desc->u4_min_out_buf_size[j] = s->out_size[j];
+            p += s->out_size[j];
+        }
+    }
+
+    ret = ih264d_api_function(s->handle, in, &out);
+    free(in);
+    if (ret != IV_SUCCESS) return MR_EFORMAT;
+
+    /* SET_DISPLAY_FRAME initially hands every slot to the application.  Mark
+     * all of them available before the first picture; prior to DPB creation
+     * libavc records these releases and applies them during initialization. */
+    for (i = 0; i < s->disp_count; i++) {
+        if (release_display_buffer(s, i) != IV_SUCCESS)
+            return MR_EFORMAT;
+    }
+    return MR_OK;
+}
+
+static IV_API_CALL_STATUS_T release_display_buffer(h264_state *s,
+                                                    uint32_t id)
+{
+    ivd_rel_display_frame_ip_t in;
+    ivd_rel_display_frame_op_t out;
+    memset(&in, 0, sizeof in);
+    memset(&out, 0, sizeof out);
+    in.u4_size = sizeof in;
+    in.e_cmd = IVD_CMD_REL_DISPLAY_FRAME;
+    in.u4_disp_buf_id = id;
+    out.u4_size = sizeof out;
+    return ih264d_api_function(s->handle, &in, &out);
+}
+
+static IV_API_CALL_STATUS_T release_held_display_buffer(h264_state *s)
+{
+    IV_API_CALL_STATUS_T ret;
+    if (!s->held_disp_valid) return IV_SUCCESS;
+    ret = release_display_buffer(s, s->held_disp_id);
+    if (ret == IV_SUCCESS) s->held_disp_valid = 0;
+    return ret;
+}
+
 static IV_API_CALL_STATUS_T decode_annexb(h264_state *s, uint32_t ts,
                                           const uint8_t *data, uint32_t len,
                                           ih264d_video_decode_op_t *out)
@@ -539,7 +631,7 @@ static mr_status h264_open(mr_decoder *dec)
     create_in.s_ivd_create_ip_t.u4_size = sizeof create_in;
     create_in.s_ivd_create_ip_t.e_cmd = IVD_CMD_CREATE;
     create_in.s_ivd_create_ip_t.e_output_format = IV_YUV_420P;
-    create_in.s_ivd_create_ip_t.u4_share_disp_buf = 0;
+    create_in.s_ivd_create_ip_t.u4_share_disp_buf = 1;
     create_in.s_ivd_create_ip_t.pf_aligned_alloc = h264_aligned_alloc;
     create_in.s_ivd_create_ip_t.pf_aligned_free = h264_aligned_free;
     create_in.s_ivd_create_ip_t.pv_mem_ctxt = s;
@@ -598,6 +690,11 @@ static mr_status h264_open(mr_decoder *dec)
         s->out[i] = (uint8_t *)malloc(s->out_size[i]);
         if (!s->out[i]) goto no_memory;
     }
+    {
+        mr_status display_status = setup_display_buffers(s, &info_out);
+        if (display_status == MR_ENOMEM) goto no_memory;
+        if (display_status != MR_OK) goto bad_format;
+    }
     if (set_decode_mode(s, IVD_DECODE_FRAME, IVD_SKIP_NONE) != IV_SUCCESS)
         goto bad_format;
 
@@ -635,6 +732,9 @@ static mr_status h264_decode(mr_decoder *dec,
     clock_t au_mark;
 
     if (!s || !data || !len) return MR_EFORMAT;
+    /* A directly exposed YUV frame is borrowed until this call.  Return its
+     * display slot before libavc needs another decode target. */
+    if (release_held_display_buffer(s) != IV_SUCCESS) return MR_ERR;
     s->flushing = 0;
     s->flush_done = 0;
     s->output_pts_valid = 0;
@@ -735,24 +835,41 @@ static mr_status h264_decode(mr_decoder *dec,
 #endif
 
             /* libavc owns the YUV pointers in sub_out.  Preserve the first
-             * output immediately, before another decode_annexb() call can reuse
-             * those buffers.  The persistent MintVID RGB frame then survives
-             * while we drain the rest of this AU. */
-            if (sub_out.s_ivd_video_decode_op_t.u4_output_present &&
-                !output_captured) {
-                output_captured = 1;
-                h264_remember_output_pts(
-                    s, sub_out.s_ivd_video_decode_op_t.u4_ts);
-                if (s->skip_output) {
-                    dec->frame.dirty_y0 = dec->frame.dirty_y1 = 0;
-                    captured_status = MR_OK;
+             * output immediately.  RGB and skipped frames can release their
+             * shared display slot at once; direct YUV keeps it until the next
+             * decode call, matching mr_frame's documented borrowed lifetime. */
+            if (sub_out.s_ivd_video_decode_op_t.u4_output_present) {
+                uint32_t disp_id =
+                    sub_out.s_ivd_video_decode_op_t.u4_disp_buf_id;
+                if (!output_captured) {
+                    output_captured = 1;
+                    s->held_disp_id = disp_id;
+                    s->held_disp_valid = 1;
+                    h264_remember_output_pts(
+                        s, sub_out.s_ivd_video_decode_op_t.u4_ts);
+                    if (s->skip_output) {
+                        dec->frame.dirty_y0 = dec->frame.dirty_y1 = 0;
+                        captured_status = MR_OK;
+                    } else {
+                        clock_t rgb_mark = 0;
+                        if (s->timing_enabled) rgb_mark = clock();
+                        captured_status = emit_rgb(
+                            dec, &sub_out.s_ivd_video_decode_op_t);
+                        if (s->timing_enabled)
+                            s->timing.output_us += h264_elapsed_us(rgb_mark);
+                    }
+                    if (s->skip_output || !s->yuv_output ||
+                        captured_status != MR_OK) {
+                        if (release_held_display_buffer(s) != IV_SUCCESS &&
+                            captured_status == MR_OK)
+                            captured_status = MR_ERR;
+                    }
                 } else {
-                    clock_t rgb_mark = 0;
-                    if (s->timing_enabled) rgb_mark = clock();
-                    captured_status = emit_rgb(dec,
-                                               &sub_out.s_ivd_video_decode_op_t);
-                    if (s->timing_enabled)
-                        s->timing.output_us += h264_elapsed_us(rgb_mark);
+                    /* One access unit should not normally emit twice, but do
+                     * not strand a shared buffer if a damaged stream does. */
+                    if (release_display_buffer(s, disp_id) != IV_SUCCESS &&
+                        decode_failure == MR_OK)
+                        decode_failure = MR_ERR;
                 }
             }
 
@@ -795,8 +912,10 @@ static mr_status h264_decode(mr_decoder *dec,
     }
 
     if (s->service) s->service(s->service_opaque);
-    if (decode_failure != MR_OK)
+    if (decode_failure != MR_OK) {
+        release_held_display_buffer(s);
         return decode_failure;
+    }
     if (output_captured)
         return captured_status;
     if (intentional_skip)
@@ -992,7 +1111,10 @@ static mr_status h264_flush(mr_decoder *dec)
     ivd_ctl_flush_op_t flush_out;
     ih264d_video_decode_op_t out;
     IV_API_CALL_STATUS_T ret;
-    if (!s || s->flush_done) return MR_EAGAIN;
+    mr_status emit_status;
+    if (!s) return MR_EAGAIN;
+    if (release_held_display_buffer(s) != IV_SUCCESS) return MR_ERR;
+    if (s->flush_done) return MR_EAGAIN;
     s->output_pts_valid = 0;
     if (!s->flushing) {
         memset(&flush_in, 0, sizeof flush_in);
@@ -1019,7 +1141,15 @@ static mr_status h264_flush(mr_decoder *dec)
                         0, &out);
     if (out.s_ivd_video_decode_op_t.u4_output_present) {
         h264_remember_output_pts(s, out.s_ivd_video_decode_op_t.u4_ts);
-        return emit_rgb(dec, &out.s_ivd_video_decode_op_t);
+        s->held_disp_id = out.s_ivd_video_decode_op_t.u4_disp_buf_id;
+        s->held_disp_valid = 1;
+        emit_status = emit_rgb(dec, &out.s_ivd_video_decode_op_t);
+        if (!s->yuv_output || emit_status != MR_OK) {
+            if (release_held_display_buffer(s) != IV_SUCCESS &&
+                emit_status == MR_OK)
+                emit_status = MR_ERR;
+        }
+        return emit_status;
     }
     s->flush_done = 1;
     return MR_EAGAIN;
@@ -1033,6 +1163,7 @@ static void h264_close(mr_decoder *dec)
     if (s->handle) {
         ih264d_delete_ip_t in;
         ih264d_delete_op_t out;
+        release_held_display_buffer(s);
         memset(&in, 0, sizeof in);
         memset(&out, 0, sizeof out);
         in.s_ivd_delete_ip_t.u4_size = sizeof in;
@@ -1041,6 +1172,8 @@ static void h264_close(mr_decoder *dec)
         ih264d_api_function(s->handle, &in, &out);
     }
     for (i = 0; i < 3; i++) free(s->out[i]);
+    for (i = 0; i < s->disp_count; i++)
+        h264_aligned_free(s, s->disp[i]);
     free(s->packet);
     free(s->rgb);
     free(s);

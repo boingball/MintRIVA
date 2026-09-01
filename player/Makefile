@@ -286,6 +286,9 @@ check: mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_chec
 	./mr_decode tests/assets/test_div2.avi --check tests/assets/ref_mp42
 	@echo "[H.264 High Profile avc1 + B-frames]"
 	./mr_decode tests/assets/test_h264_high.mp4 --check tests/assets/ref_h264_high
+	@echo "[H.264 borrowed YUV display-buffer lifecycle]"
+	./mr_decode tests/assets/test_h264_high.mp4 --h264-yuv \
+	    | grep -F "decoded 24 frames"
 	@echo "[H.264 speed-mode separation]"
 	./mr_decode tests/assets/test_h264_high.mp4 --h264-speed=turbo \
 	    | grep -F "decoded 17 frames"
