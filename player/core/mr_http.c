@@ -105,6 +105,24 @@ struct Library *AmiSSLExtBase = NULL;
 #endif
 #endif
 
+#if MR_HTTP_HAVE_TLS && MR_HTTP_AMIGA
+/* OpenAmiSSLTags() below uses AmiSSL_InitAmiSSL=TRUE.  Per AmiSSL's
+ * CleanupAmiSSLA contract, CloseAmiSSL() therefore performs the matching
+ * cleanup itself; calling CleanupAmiSSL() first would clean the same opener
+ * twice.  Keep both normal and failed-initialisation teardown on this one
+ * path so that lifecycle rule cannot drift between them again. */
+static void http_close_amissl(void)
+{
+    if (AmiSSLBase) CloseAmiSSL();
+    AmiSSLBase = NULL;
+    AmiSSLExtBase = NULL;
+    if (AmiSSLMasterBase) {
+        CloseLibrary(AmiSSLMasterBase);
+        AmiSSLMasterBase = NULL;
+    }
+}
+#endif
+
 #if MR_HTTP_HAVE_TLS
 /* The TLS library and client context are initialised once and then reused for
  * every connection this process makes. AmiSSL in particular is costly to open,
@@ -386,12 +404,7 @@ static void http_platform_shutdown(void)
     if (g_tls_inited) {
         if (g_ssl_ctx) { SSL_CTX_free(g_ssl_ctx); g_ssl_ctx = NULL; }
 #if MR_HTTP_AMIGA
-        CleanupAmiSSL(TAG_DONE);
-        if (AmiSSLBase) { CloseAmiSSL(); AmiSSLBase = NULL; AmiSSLExtBase = NULL; }
-        if (AmiSSLMasterBase) {
-            CloseLibrary(AmiSSLMasterBase);
-            AmiSSLMasterBase = NULL;
-        }
+        http_close_amissl();
 #endif
         g_tls_inited = 0;
     }
@@ -542,12 +555,7 @@ fail:
      * later attempt starts clean rather than reusing a half-built context. */
     if (g_ssl_ctx) { SSL_CTX_free(g_ssl_ctx); g_ssl_ctx = NULL; }
 #if MR_HTTP_AMIGA
-    CleanupAmiSSL(TAG_DONE);
-    if (AmiSSLBase) { CloseAmiSSL(); AmiSSLBase = NULL; AmiSSLExtBase = NULL; }
-    if (AmiSSLMasterBase) {
-        CloseLibrary(AmiSSLMasterBase);
-        AmiSSLMasterBase = NULL;
-    }
+    http_close_amissl();
 #endif
     return 0;
 }
