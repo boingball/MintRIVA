@@ -468,10 +468,11 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     /* Keep Kalms selected for every mode with an implemented kernel. HAM8 is
      * still an eight-plane command buffer and uses the normal 1x1 converter;
      * 040/060 builds additionally link the direct six-plane HAM6 converter.
-     * Lower-depth indexed and RTG modes still snap back to Standard. */
+     * Lower-depth indexed modes snap back to Standard; disabled RTG mode keeps
+     * the selection so returning to AGA restores the faster default. */
     selected_c2p = 0;
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
-    if (selected_c2p == 2 &&
+    if (selected_c2p == 2 && !disable_chipset_options &&
         !(selected < mode_count &&
           (mode_values[selected] == MR_DISPLAY_AGA ||
            mode_values[selected] == MR_DISPLAY_HAM8
@@ -814,13 +815,13 @@ int main(void)
                               GA_ID, G_C2P,
                               GA_RelVerify, TRUE,
                               CHOOSER_Labels, (ULONG)&c2p_modes,
-                              CHOOSER_Selected, 0,
+                              CHOOSER_Selected, 2,
                               TAG_DONE);
     h264 = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                GA_ID, G_H264,
                                GA_RelVerify, TRUE,
                                CHOOSER_Labels, (ULONG)&h264_modes,
-                               CHOOSER_Selected, MR_H264_PERF_AUTO,
+                               CHOOSER_Selected, MR_H264_PERF_TURBO_GT,
                                TAG_DONE);
     lace = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_LACE,
