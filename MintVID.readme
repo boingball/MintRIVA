@@ -1,10 +1,10 @@
-Short:            Multi-codec video player and streamer
-Uploader:         Darren Banfi <boingball@gmail.com>
-Author:           Darren "boingball" Banfi
-Type:             gfx/show
-Version:          1.1.0
-Requires:         68030+; util/libs/AmiSSL-v5-OS3.lha for online features
-Architecture:     m68k-amigaos >= 3.0.0
+Short:        Multi-codec video player and streamer
+Author:       Darren Banfi (boingball)
+Uploader:     boingball@gmail.com
+Type:         gfx/show
+Version:      1.1.0
+Requires:     68030+; util/libs/AmiSSL-v5-OS3.lha for online features
+Architecture: m68k-amigaos >= 3.0.0
 
 Description:
 
