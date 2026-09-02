@@ -41,7 +41,10 @@ void mr_play_options_default(mr_play_options *o)
     if (!o) return;
     memset(o, 0, sizeof(*o));
     o->display = MR_DISPLAY_AGA;
-    o->c2p = MR_C2P_STANDARD;
+    /* Release builds always include the CPU-matched Kalms converters. Their
+     * runtime geometry/layout checks fail closed onto graphics.library, so
+     * use the faster path by default without sacrificing compatibility. */
+    o->c2p = MR_C2P_KALMS;
     /* Default to the smallest HLS rendition: it is the one most likely to play
      * on any machine, and picking a bigger one automatically can break a channel
      * that worked (a 720p variant may be a codec we can't decode, or just too
@@ -54,7 +57,9 @@ void mr_play_options_default(mr_play_options *o)
      * a direct "mrplay <url>" invocation keeps its own conservative default of
      * off. Disable with --no-live-resync. */
     o->live_resync = 1;
-    o->h264_performance = MR_H264_PERF_AUTO;
+    /* TurboGT keeps the P-frame reference chain while applying the strongest
+     * practical libavc degradation policy and skipping B pictures. */
+    o->h264_performance = MR_H264_PERF_TURBO_GT;
     o->audio_rate = MR_AUDIO_RATE_NORMAL;
 }
 
