@@ -1105,22 +1105,12 @@ static mr_h264_speed_mode effective_h264_speed(int requested)
         requested == MR_H264_SPEED_TURBO_PLUS ||
         requested == MR_H264_SPEED_TURBO_GT)
         return (mr_h264_speed_mode)requested;
-    /* Auto used to scale the degrade level with resolution, on the
-     * assumption that a small picture is proportionally cheap enough to
-     * decode losslessly. A WinUAE pass deliberately throttled to Pistorm
-     * speed disproved that for a 256x144 live HLS stream: Quality mode (no
-     * degrade at all) measured ~180 ms/frame of libavc-core alone, over
-     * budget even at that stream's own 15 fps. Balanced doesn't reliably
-     * help either - its deblocking-disable and MC-degrade bits both only
-     * apply to non-reference pictures (see ih264d_parse_slice.c), and a
-     * typical encode with no B-frames marks nearly every picture as a
-     * reference, so on most real streams Balanced silently behaves like
-     * Quality. Only Fast's "all non-key frames" degrade_pics policy is
-     * unconditional on reference status and reliably buys something. A
-     * classic 68k/PiStorm has no SIMD and no resolution is definitively
-     * cheap enough to gamble on, so auto is Fast everywhere now; Quality
-     * and Balanced remain available as explicit, deliberate choices. */
-    return MR_H264_SPEED_FAST;
+    /* Auto follows the release's throughput-first default. TurboGT preserves
+     * the P-frame reference chain, unlike Turbo+, while skipping B pictures
+     * and applying libavc's strongest practical degradation policy to every
+     * decoded picture. Explicit Fast remains available for users who prefer
+     * to keep every frame, and Quality/Balanced remain deliberate opt-ins. */
+    return MR_H264_SPEED_TURBO_GT;
 }
 
 static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
@@ -1472,7 +1462,7 @@ int main(int argc, char **argv)
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
-    int h264_speed = -1; /* automatic: always Fast - see effective_h264_speed() */
+    int h264_speed = -1; /* automatic: TurboGT - see effective_h264_speed() */
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     const char *media_path = NULL;
