@@ -69,7 +69,8 @@ Mikael Kalms' C2P collection
   directory are Public Domain and may be used, modified and redistributed for
   commercial or non-commercial purposes. MintVID uses a routine from the
   "normal" directory. See player/vendor/kalms-c2p/readme.txt for the original
-  notice.
+  notice. MintVID uses routines from both the "normal" and "bitmap"
+directories.
 
 This file supplements, rather than replaces, the upstream licence texts. The
 release packaging target copies the available GPL, Apache and MintAMP/Helix
