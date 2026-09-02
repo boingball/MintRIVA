@@ -62,6 +62,10 @@
 
 ### Fixed
 
+- ESC/Stop now joins the in-process HLS fetch worker before `mrplay` exits,
+  preventing the worker from continuing in an unloaded code segment and
+  raising an `#80000004` illegal-instruction alert. Pending lookahead is no
+  longer promoted during shutdown.
 - AmiSSL shutdown no longer calls both `CleanupAmiSSL()` and `CloseAmiSSL()`
   for a session opened with `AmiSSL_InitAmiSSL=TRUE`, avoiding duplicate TLS
   cleanup when the HLS worker exits.

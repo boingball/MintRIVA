@@ -145,6 +145,18 @@ check-amissl-lifecycle:
 	  echo "ERROR: mr_http must not call CleanupAmiSSL directly;"; \
 	  echo "       CloseAmiSSL performs it for AmiSSL_InitAmiSSL=TRUE"; exit 1; }
 
+# The HLS worker executes inside mrplay's own code segment. A bounded
+# "leak and continue" path lets main() unload that segment beneath the live
+# task and turns a slow stop into an #80000004 illegal-instruction alert.
+check-hls-worker-lifecycle:
+	@! grep -Eq 'HLS_FETCH_STOP_BOUND_MS|hls_fetch_wait_busy_bounded|g_poisoned|hls_fetch_leaked' \
+	    amiga/hls_fetch.c amiga/hls_fetch.h amiga/mrplay.c || { \
+	  echo "ERROR: HLS worker teardown must not retain an abandon path"; exit 1; }
+	@grep -q 'static void hls_fetch_wait_busy_forever' amiga/hls_fetch.c || { \
+	  echo "ERROR: HLS worker teardown must join the in-process worker"; exit 1; }
+	@grep -q 'if (g_stopping || g_busy) return;' amiga/hls_fetch.c || { \
+	  echo "ERROR: HLS shutdown must suppress queued lookahead promotion"; exit 1; }
+
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for
 # both the AVI and MOV containers. Regenerates reference PPMs if not present.
 mr_legacy_video_check: tests/mr_legacy_video_check.c \
@@ -231,7 +243,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
