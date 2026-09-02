@@ -219,8 +219,9 @@ static void update_mode_controls(gt_app *app)
 
     /* HAM8 uses the normal eight-plane Kalms converter. CPU-specific 040/060
      * GUI builds also keep Kalms selected for the linked HAM6 bitmap kernel.
-     * Lower-depth indexed and RTG modes still snap back to Standard. */
-    if (selected_c2p == 2 &&
+     * Lower-depth indexed modes snap back to Standard; disabled RTG mode keeps
+     * the selection so returning to AGA restores the faster default. */
+    if (selected_c2p == 2 && !disabled &&
         !(selected < app->mode_count &&
           (app->modes[selected] == MR_DISPLAY_AGA ||
            app->modes[selected] == MR_DISPLAY_HAM8
@@ -473,9 +474,14 @@ static int build_window(gt_app *app)
     nw.Screen = app->screen;
     nw.Type = CUSTOMSCREEN;
     app->window = OpenWindow(&nw);
-    if (app->window)
+    if (app->window) {
         GT_SetGadgetAttrs(app->mode, app->window, NULL,
                          GTCY_Active, default_mode, TAG_DONE);
+        GT_SetGadgetAttrs(app->c2p, app->window, NULL,
+                         GTCY_Active, 2, TAG_DONE);
+        GT_SetGadgetAttrs(app->h264, app->window, NULL,
+                         GTCY_Active, MR_H264_PERF_TURBO_GT, TAG_DONE);
+    }
     return app->window != NULL;
 }
 
