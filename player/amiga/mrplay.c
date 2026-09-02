@@ -414,19 +414,12 @@ static void playback_timer_close(void)
 static int mrplay_exit(int code)
 {
     playback_timer_close();
-    /* Stop the fetch worker (idempotent, safe even if never started) before
-     * releasing this task's own bsdsocket/AmiSSL state below - it must
-     * release its own first, from its own task. If it had to be abandoned
-     * instead (hls_fetch_stop()'s bounded-wait timeout - see hls_fetch_
-     * leaked()), it may still be executing inside those exact libraries;
-     * closing them here regardless would be a delayed version of the same
-     * use-after-free hls_fetch_stop()'s leak-not-free path exists to avoid,
-     * not a safe cleanup. Skip this task's own shutdown in that case - the
-     * (leaked) worker keeps the libraries open for as long as it needs
-     * them, and the process's own exit still reclaims everything else. */
+    /* Stop and join the fetch worker before releasing this task's own
+     * bsdsocket/AmiSSL state. hls_fetch_stop() cannot abandon the worker:
+     * its entry point lives in this executable's segment, so main() must not
+     * return until that task has acknowledged a complete owner-task cleanup. */
     hls_fetch_stop();
-    if (!hls_fetch_leaked())
-        mr_http_net_shutdown();
+    mr_http_net_shutdown();
     control_port_close();
     return code;
 }

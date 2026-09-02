@@ -62,6 +62,16 @@
 
 ### Fixed
 
+- P96 fullscreen mode selection now prefers a screen with the video's aspect
+  ratio before the smallest spare area, so 854x480 no longer selects a 4:3
+  1024x768 scanout when a 16:9 1280x720 mode is available.
+- P96 presentation now rebuilds its fitted rectangle from live decoded-frame
+  dimensions when an HLS segment changes size, preventing stale metadata from
+  stretching a 16:9 frame to 4:3.
+- ESC/Stop now joins the in-process HLS fetch worker before `mrplay` exits,
+  preventing the worker from continuing in an unloaded code segment and
+  raising an `#80000004` illegal-instruction alert. Pending lookahead is no
+  longer promoted during shutdown.
 - AmiSSL shutdown no longer calls both `CleanupAmiSSL()` and `CloseAmiSSL()`
   for a session opened with `AmiSSL_InitAmiSSL=TRUE`, avoiding duplicate TLS
   cleanup when the HLS worker exits.

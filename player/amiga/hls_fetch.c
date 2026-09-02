@@ -47,19 +47,16 @@
  *   generation-checked or not) - cancel() only changes what a *future*
  *   reclaim does with whatever comes back.
  *
- * - hls_fetch_stop() is the one place that waits with a bound but ignores
- *   the service callback's own abort request (see
- *   hls_fetch_wait_busy_bounded()): re-sending into g_req or freeing
- *   g_reply_port while the worker might still own the previous message is
- *   genuinely unsafe, so teardown cannot take "the caller wants to abort"
- *   as licence to skip the wait the way a normal fetch can. The bound
- *   itself, and what happens if it is ever hit (leak, never free - and a
- *   Signal() kick to try to avoid needing that at all), mirror
- *   vendor/MintAMP/radio_stream.c's Radio_RunOnNetWorker()/
- *   radio_net_worker_stop()/Radio_RequestStop() exactly - the same
- *   worker-task shape (CreateNewProcTags() straight at a function in this
- *   process's own code, not a separately LoadSeg'd program, same as
- *   audio_paula.c's worker) hit the identical problem there first.
+ * - hls_fetch_stop() never abandons a live worker. Unlike MintAMP's
+ *   per-dispatch jobs, this long-lived worker executes a function in
+ *   mrplay's own loaded code segment. Letting main() return after a bounded
+ *   timeout unloads that code while the worker may still be executing it,
+ *   producing an illegal-instruction alert. Teardown therefore stops
+ *   promotion of queued lookahead, cancels the one in-flight operation,
+ *   and waits for both its reply and the worker's quit acknowledgement.
+ *   Underlying network calls are timed out/kicked; if a stack is genuinely
+ *   wedged, keeping mrplay alive is still safer than unloading code beneath
+ *   an active task.
  *
  * - All allocation on the worker's fetch path already goes through
  *   core/mr_alloc.h (AllocVec/FreeVec on Amiga - task-safe, unlike libnix
@@ -101,11 +98,6 @@
                                                      * not a working-set cap */
 #define HLS_FETCH_STOP_NOTICE_MS 5000UL /* re-print the "still waiting" note
                                          * at this cadence during teardown   */
-#define HLS_FETCH_STOP_BOUND_MS  60000UL /* matches vendor/MintAMP/radio_
-                                          * stream.c's proven Radio_RunOnNet
-                                          * Worker()/radio_net_worker_stop()
-                                          * bound (~60s @ ~40ms/poll) - see
-                                          * hls_fetch_wait_busy_bounded()     */
 /* How many segments of compressed lookahead mr_hls.c's open_seg() is worth
  * hinting for - matched by HLS_LOOKAHEAD_HINT_SEGMENTS there (a hint past
  * this many outstanding is simply dropped, best-effort, by hls_fetch_hint()
@@ -173,8 +165,8 @@ static size_t           g_ready_len;
 static int              g_ready_ok;
 static char             g_ready_error[HLS_FETCH_ERROR_MAX];
 static int              g_active;
-static int              g_poisoned;         /* a worker was ever abandoned -
-                                             * see hls_fetch_stop()'s comment */
+static int              g_stopping;         /* suppress lookahead promotion
+                                             * while joining the worker      */
 static int              g_verbose;
 static unsigned         g_generation;
 static hls_fetch_service_fn g_service;
@@ -230,6 +222,9 @@ static void hls_fetch_worker(void)
         }
     }
 done:
+    /* Consume the cancellation kick before returning through DOS. It is only
+     * meaningful while a blocking DNS call has SBTC_BREAKMASK installed. */
+    SetSignal(0, SIGBREAKF_CTRL_C);
     /* Release the socket/TLS state this task opened, from this task, before
      * acknowledging the quit - main proceeds to its own mr_http_net_shutdown()
      * as soon as it sees the reply, so ours must be fully done first. */
@@ -280,7 +275,7 @@ static void hls_fetch_free_slots(void)
 static void hls_fetch_pump(void)
 {
     int i, best = -1;
-    if (g_busy) return;                    /* one fetch in flight, always     */
+    if (g_stopping || g_busy) return;      /* no promotion while stopping     */
     for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++)
         if (g_slots[i].state == HLS_SLOT_PENDING &&
             (best < 0 || g_slots[i].seq < g_slots[best].seq))
@@ -396,42 +391,26 @@ static void hls_fetch_kick(void)
 }
 
 /* Poll until the outstanding request completes, servicing playback but
- * IGNORING the service callback's abort request, bounded by bound_ms.
- * Used only by hls_fetch_stop(): re-sending into g_req while the worker
- * might still own the previous message (between its GetMsg and ReplyMsg)
- * is genuinely unsafe, so teardown cannot take "the caller wants to abort"
- * as licence to skip the wait.
- *
- * Bounded, not unconditional - matching vendor/MintAMP/radio_stream.c's
- * Radio_RunOnNetWorker()/radio_net_worker_stop(), which explicitly reject
- * an unconditional wait here: "a caller must never Wait() forever on a
- * worker that might be wedged inside a blocking bsdsocket/AmiSSL call"
- * (that file's own history has seen internals hang forever on corruption).
- * The bound is generous (60s, matching that file's own proven value -
- * DNS + connect() + recv()/send() worst case) and paired with
- * hls_fetch_kick() at the call sites below to actively unstick a wedged
- * DNS lookup rather than just hope the bound is never hit.
- *
- * On a timeout, the caller MUST NOT free or reuse g_reply_port/g_req/the
- * worker task itself - the worker may still be about to touch them. This
- * mirrors Radio_RunOnNetWorker()'s own "job/replyPort are deliberately
- * leaked rather than freed" trade-off exactly: returning 0 here means the
- * caller gives up on THIS wait, not that it is safe to tear anything down.
- */
-static int hls_fetch_wait_busy_bounded(unsigned long bound_ms)
+ * IGNORING the service callback's abort request and never abandoning the
+ * worker. Used only by hls_fetch_stop(): this worker executes mrplay's own
+ * loaded code, so allowing main() to return while it remains live would unload
+ * the instructions beneath it. Network operations have their own bounds and
+ * hls_fetch_cancel() kicks a masked DNS lookup; the periodic notice keeps a
+ * genuinely wedged stack diagnosable without turning it into a delayed crash. */
+static void hls_fetch_wait_busy_forever(void)
 {
     unsigned long waited = 0, last_notice = 0;
     for (;;) {
         hls_fetch_reclaim();
-        if (!g_busy) return 1;
-        if (waited >= bound_ms) return 0;
+        if (!g_busy) return;
         if (g_service) g_service(g_service_opaque);
         Delay(1);
         waited += 20;
         if (waited - last_notice >= HLS_FETCH_STOP_NOTICE_MS) {
             last_notice = waited;
             printf("hls-fetch: still waiting for the worker to finish a "
-                   "network operation (%lu ms)\n", waited);
+                   "network operation (%lu ms); it will not be abandoned\n",
+                   waited);
         }
     }
 }
@@ -566,11 +545,6 @@ int hls_fetch_active(void)
     return g_active;
 }
 
-int hls_fetch_leaked(void)
-{
-    return g_poisoned;
-}
-
 void hls_fetch_set_service(hls_fetch_service_fn fn, void *opaque)
 {
     g_service = fn;
@@ -600,19 +574,7 @@ void hls_fetch_stats(unsigned long *hits, unsigned long *misses,
 int hls_fetch_start(int verbose)
 {
     if (g_active) return 1;
-    /* Once a worker has ever been abandoned (see hls_fetch_stop()'s leak
-     * path), g_req/g_reply_port/g_ready_msg may still be touched by it at
-     * any time - reusing them for a fresh worker would let two tasks race
-     * the exact same shared structs (this module has one reusable request,
-     * not one per call the way vendor/MintAMP/radio_stream.c's
-     * Radio_RunOnNetWorker() allocates fresh each time, which is what makes
-     * leaking safe for it but not for a reused struct here). Refuse to
-     * start again for the rest of this process's life; every fetch falls
-     * back to the ordinary synchronous mr_http.c path instead - matches
-     * this project's existing "no partial/mixed mode" contract (see
-     * hls_fetch.h) and mirrors MintAMP's own poisoned/quarantine pattern
-     * for a subsystem that failed in a way it cannot safely recover from. */
-    if (g_poisoned) return 0;
+    g_stopping = 0;
     g_verbose = verbose;
     g_generation = 0;
     g_busy = 0; g_have_ready = 0; g_ready_buf = NULL;
@@ -662,53 +624,29 @@ int hls_fetch_start(int verbose)
 
 void hls_fetch_stop(void)
 {
-    hls_fetch_cancel();                    /* bumps generation, kicks a wedged
-                                            * DNS lookup - see hls_fetch_kick() */
     if (!g_active) {
         if (g_reply_port) { DeleteMsgPort(g_reply_port); g_reply_port = NULL; }
         return;
     }
+
+    /* Freeze the lookahead queue before reclaiming the in-flight request.
+     * hls_fetch_reclaim() normally promotes the next pending slot; doing that
+     * during ESC teardown needlessly starts more HTTPS work and delays the
+     * join. */
+    g_stopping = 1;
+    hls_fetch_cancel();
     mr_http_set_fetch_override(NULL);
     mr_http_set_prefetch_hint(NULL);
 
     hls_fetch_reclaim();
-    if (g_busy && !hls_fetch_wait_busy_bounded(HLS_FETCH_STOP_BOUND_MS)) {
-        /* Still stuck after a generous bound and a kick (hls_fetch_cancel()
-         * above). Leaking rather than freeing is the only safe option now:
-         * g_reply_port/g_req/the worker task itself may still be touched by
-         * the worker at any moment, so DeleteMsgPort()/reuse here would be a
-         * guaranteed future use-after-free the instant it does. Mirrors
-         * vendor/MintAMP/radio_stream.c's Radio_RunOnNetWorker(), which
-         * makes the identical trade-off ("job/replyPort are deliberately
-         * leaked rather than freed -- the worker may still be about to
-         * write its reply into them"). Unconditional print, not --time
-         * gated: exactly the signal that would make this diagnosable
-         * instead of a silent leak. */
-        printf("hls-fetch: worker still busy after %lums, leaking it "
-               "(socket/TLS state and the reply port stay allocated until "
-               "reboot - not safe to free while the worker may still touch "
-               "them; background HLS fetch is now disabled for the rest of "
-               "this run)\n", HLS_FETCH_STOP_BOUND_MS);
-        g_active = 0;
-        g_proc = NULL;
-        g_poisoned = 1;
-        return;
-    }
+    if (g_busy) hls_fetch_wait_busy_forever();
     hls_fetch_free_ready();
     hls_fetch_free_slots();
 
     g_req.quit = 1;
     g_busy = 1;
     PutMsg(g_worker_port, &g_req.msg);
-    if (!hls_fetch_wait_busy_bounded(HLS_FETCH_STOP_BOUND_MS)) {
-        printf("hls-fetch: worker did not acknowledge quit within %lums, "
-               "leaking it (see above; background HLS fetch is now disabled "
-               "for the rest of this run)\n", HLS_FETCH_STOP_BOUND_MS);
-        g_active = 0;
-        g_proc = NULL;
-        g_poisoned = 1;
-        return;
-    }
+    hls_fetch_wait_busy_forever();
 
     g_active = 0;
     g_proc = NULL;
@@ -716,4 +654,5 @@ void hls_fetch_stop(void)
     hls_fetch_free_slots();
     DeleteMsgPort(g_reply_port);
     g_reply_port = NULL;
+    g_stopping = 0;
 }
