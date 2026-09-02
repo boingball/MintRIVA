@@ -23,8 +23,9 @@ static int g_force_aga = 0;
 static int g_force_p96 = 0;
 int g_aga_ham   = 0;   /* shared with the AGA backend */
 int g_aga_scale = 1;
-int g_aga_c2p   = 0;   /* WritePixelArray8 by default (measured faster);
-                        * --c2p opts into the built-in transpose C2P */
+int g_aga_c2p   = 3;   /* CPU-matched Kalms by default; its runtime checks
+                        * fall back safely to WritePixelArray8. --wpa selects
+                        * that graphics.library path explicitly. */
 int g_aga_lace  = 0;
 int g_aga_akiko = 0;
 int g_aga_ecs_fast = 0;
@@ -86,7 +87,7 @@ amiga_display *display_open(int w, int h, const char *title)
         P96Base = OpenLibrary((CONST_STRPTR)"Picasso96API.library", 0);
 
     /* P96 is tried first (only when selected and available); backend_p96's
-     * own open() fails cleanly for anything but the BGR24 format it supports,
+     * own open() fails cleanly for unsupported screen formats or geometry,
      * in which case this still falls through to CGX, then AGA - so choosing
      * P96 never loses working playback, only the chance at the faster path. */
     if (!g_force_aga && g_force_p96 && CyberGfxBase && P96Base)
