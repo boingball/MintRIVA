@@ -15,8 +15,11 @@ IPTV and public YouTube playback.
 
 WHAT'S NEW IN 1.1.0
 
-  - New TurboGT H.264 performance mode for PiStorm/Emu68-class systems.
-  - CPU-matched Kalms C2P for 030 versus 040/060 builds.
+  - TurboGT is now the default H.264 mode; it keeps the P-frame reference
+    chain while skipping B-frames and using libavc's strongest practical
+    degradation policy.
+  - CPU-matched Kalms C2P is now the default chipset path for the 030 versus
+    040/060 builds, with safe graphics.library fallback.
   - Dirty-row-only Kalms conversion, 16-byte aligned buffers, fused 2x2
     scaling/C2P where geometry permits, direct H.264 YUV-to-indexed input for
     that fused path, and direct HAM6 C2P on 040/060.
@@ -29,6 +32,10 @@ WHAT'S NEW IN 1.1.0
     screens, not just 24-bit BGR - so it engages on more real boards/modes.
   - RTG (CGX) playback gains its own private-screen direct-write fast path,
     including on genuine CyberGraphX-only boards without Picasso96API.
+  - Live HLS gains multi-segment compressed lookahead, RAM-aware decoded
+    queues, late-frame output dropping, and wider live-resync margin.
+  - Paula buffers and audio rescue are retuned to reduce underruns under CPU
+    pressure, and AmiSSL shutdown no longer performs duplicate cleanup.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
 for the detailed list.
@@ -94,6 +101,25 @@ project's test fixtures where applicable. The portable core is also
 cross-built and exercised on a big-endian m68k target under QEMU to catch
 endianness and alignment problems that a little-endian x86 host build can
 miss - see the project page for details.
+
+DEFAULTS AND H.264 SPEED MODES
+
+Kalms is the default C2P choice for AGA/HAM playback. If the selected geometry
+or BitMap layout cannot use its CPU-matched converter, MintVID automatically
+falls back to the established graphics.library path. RTG ignores C2P choices.
+
+TurboGT is the default H.264 mode. Auto currently selects the same policy.
+
+  - Quality: full filtering, no deliberate frame skipping.
+  - Balanced: reduces work only on non-reference pictures; often close to
+    Quality on streams with few B-frames.
+  - Fast: cheaper filtering on non-key pictures, but keeps every frame.
+  - Turbo: Fast policy plus B-frame skipping; preserves the P-frame chain.
+  - Turbo+: skips both P- and B-frames. This is a last-resort keyframe/
+    slideshow mode, not the normal fastest setting.
+  - TurboGT: skips B-frames, retains P-frames, and applies maximum degradation
+    to every decoded picture. It is the recommended aggressive PiStorm/Emu68
+    setting and the 1.1.0 default.
 
 WHAT IT IS NOT
 
