@@ -321,6 +321,7 @@ frames for throughput:
 | **Turbo** | Fast policy plus B-frame skipping. | Extra speed while preserving the P-frame reference chain. |
 | **Turbo+** | Skips both P- and B-frames. | Last-resort keyframe/slideshow mode; not recommended for normal viewing. |
 | **TurboGT** | Skips B-frames and applies maximum degradation to every decoded picture while retaining P-frames. | Best aggressive mode for PiStorm/Emu68 and the normal default. |
+
 In RTG/CGX mode, `F` switches the live player between its resizeable window and
 a borderless public-screen-sized view without restarting decoding; `--fullscreen`
 starts in that view. Press `F` again—or use ytgui's **Fullscreen** button—to
