@@ -27,15 +27,21 @@ format support is not a promise of real-time playback on every 68k.
 
 ## What's new in 1.1.0
 
-- Separate **TurboGT** H.264 performance mode.
-- CPU-matched Kalms C2P for 030 and 040/060, dirty-row conversion, explicitly
-  aligned input, fused exact-2x output with direct H.264 YUV input, and direct
-  HAM6 output on 040/060.
-- Matching Kalms choices in both ReAction and GadTools.
+- **TurboGT is now the default H.264 mode**, retaining the P-frame reference
+  chain while skipping B-frames and applying the strongest practical libavc
+  degradation policy.
+- **Kalms is now the default chipset C2P path**, with CPU-matched 030 and
+  040/060 kernels and safe graphics.library fallback for incompatible layouts.
+- Dirty-row conversion, aligned input, fused exact-2x output with direct H.264
+  YUV input, and direct HAM6 output on 040/060.
 - Better YouTube 720p selection: an early 360p-only response no longer stops
   the multi-client search, but remains available as the final fallback.
-- Faster direct YUV-to-indexed fitting for horizontally upscaled H.264 video.
-- AmigaOS `$VER:` identities across every shipped executable.
+- More resilient live HLS playback through compressed-segment lookahead,
+  RAM-aware decoded queues, late-frame output dropping, and retuned Paula
+  buffering/audio rescue.
+- Fixed AmiSSL shutdown cleanup and added AmigaOS `$VER:` identities across
+  every shipped executable.
+- Wider P96 and CGX direct-lock RTG fast paths for common 16/24/32-bit modes.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
@@ -295,10 +301,27 @@ Keep one complete GUI set beside `mrplay` (or put `mrplay` on the command
 path), run the controller, choose a
 movie and select **AGA**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
 apply to the three chipset modes; CGX playback opens a size-gadget window and
-scales the video as that window is resized. The **C2P** chooser selects the
-standard graphics.library path, CD32 Akiko hardware, or the Kalms converter for
-chipset playback, and is disabled for CGX. Play starts the selected movie,
-Pause toggles playback, Stop exits it, and Fast forward toggles unpaced decode.
+scales the video as that window is resized. The **C2P** chooser selects the standard graphics.library path, CD32 Akiko
+hardware, or the Kalms converter for chipset playback. Kalms is the default;
+unsupported geometry or bitmap layouts fall back safely to graphics.library.
+The chooser is disabled for CGX. Play starts the selected movie, Pause toggles
+playback, Stop exits it, and Fast forward toggles unpaced decode.
+
+**H.264 performance modes**
+
+TurboGT is the 1.1.0 default. The choices trade picture quality and/or decoded
+frames for throughput:
+
+| Mode | Decoder policy | When to use it |
+|------|----------------|----------------|
+| **Auto** | Currently resolves to TurboGT. | Keep the release default. |
+| **Quality** | Full filtering; no deliberate frame skipping. | Quality comparisons or very fast systems. |
+| **Balanced** | Reduces work only on non-reference pictures. | Mild quality/performance trade-off; often close to Quality on streams with few B-frames. |
+| **Fast** | Cheaper filtering on non-key pictures; keeps every frame. | Prefer this when avoiding deliberate frame skips matters more than maximum speed. |
+| **Turbo** | Fast policy plus B-frame skipping. | Extra speed while preserving the P-frame reference chain. |
+| **Turbo+** | Skips both P- and B-frames. | Last-resort keyframe/slideshow mode; not recommended for normal viewing. |
+| **TurboGT** | Skips B-frames and applies maximum degradation to every decoded picture while retaining P-frames. | Best aggressive mode for PiStorm/Emu68 and the normal default. |
+
 In RTG/CGX mode, `F` switches the live player between its resizeable window and
 a borderless public-screen-sized view without restarting decoding; `--fullscreen`
 starts in that view. Press `F` again—or use ytgui's **Fullscreen** button—to

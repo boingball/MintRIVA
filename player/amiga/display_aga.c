@@ -3,10 +3,11 @@
  *
  * Opens a custom screen and blits each frame through a portable pixel encoder
  * (16/32/256-colour dither / HAM8 / HAM6) plus a chunky->planar step. The default
- * WritePixelArray8 remains the default; --c2p selects the portable mr_c2p8 and
- * --riva-c2p selects an opt-in 32-pixel, direct-to-plane variant for hardware
- * measurement. --kalms-c2p selects CPU-matched Kalms converters, including
- * fused 2x2 output and a 040/060 HAM6 path where the geometry permits it.
+ * CPU-matched Kalms conversion is the default. --wpa selects WritePixelArray8,
+ * --c2p selects the portable mr_c2p8, and --riva-c2p selects an opt-in
+ * 32-pixel, direct-to-plane variant for hardware measurement. Kalms includes
+ * fused 2x2 output and a 040/060 HAM6 path where the geometry permits it; an
+ * incompatible bitmap or geometry falls back safely to WritePixelArray8.
  */
 #include "amiga_display.h"
 #include "display_backend.h"

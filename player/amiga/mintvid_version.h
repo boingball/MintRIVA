@@ -6,7 +6,7 @@
  * semantic versions, so 1.1.0 is represented there as 1.1. */
 #define MINTVID_VERSION       "1.1.0"
 #define MINTVID_AMIGA_VERSION "1.1"
-#define MINTVID_VERSION_DATE  "28.8.2026"
+#define MINTVID_VERSION_DATE  "2.9.2026"
 
 #if defined(__GNUC__)
 #define MINTVID_VERSION_USED __attribute__((used))

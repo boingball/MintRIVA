@@ -291,15 +291,18 @@ int main(void) {
     memset(&launch, 0, sizeof(launch));
     strcpy(launch.url, "https://example.test/live.m3u8?a=1&b=2");
     mr_play_options_default(&options);
+    assert(options.c2p == MR_C2P_KALMS);
+    assert(options.h264_performance == MR_H264_PERF_TURBO_GT);
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(strstr(args, "--aga --wpa --hls-low --hls-max-width=640"));
-    assert(!strstr(args, "--h264-speed=")); /* Auto is mrplay's default. */
+    assert(strstr(args, "--aga --kalms-c2p --hls-low --hls-max-width=640"));
+    assert(strstr(args, "--h264-speed=turbogt"));
     assert(strstr(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
-    options.c2p = MR_C2P_KALMS;
+    options.c2p = MR_C2P_STANDARD;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(strstr(args, "--aga --kalms-c2p"));
+    assert(strstr(args, "--aga --wpa"));
+    options.c2p = MR_C2P_KALMS;
     options.laced = 1;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
@@ -331,6 +334,11 @@ int main(void) {
                    "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
+    assert(!strcmp(args, "--h264-speed=turbogt "
+                         "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    options.h264_performance = MR_H264_PERF_AUTO;
+    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
+                                     NULL, NULL));
     assert(!strcmp(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     mr_play_options_default(&options);
     strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");
@@ -351,8 +359,9 @@ int main(void) {
     assert(!mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                       launch.user_agent, NULL));
     assert(mr_build_iptv_arguments(args, sizeof(args), &options));
-    assert(strstr(args, "--display aga --c2p standard --no-laced "
+    assert(strstr(args, "--display aga --c2p kalms --no-laced "
                         "--no-scale-2x --hls-low"));
+    assert(strstr(args, "--h264-speed=turbogt"));
     {
       char *inherited[] = {"iptvgui", "--display", "aga", "--c2p",
                            "kalms", "--laced", "--scale-2x", "--hls-low",

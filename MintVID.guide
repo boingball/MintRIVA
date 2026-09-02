@@ -1,5 +1,5 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.1 (28.8.2026)
+@$VER: MintVID.guide 1.1 (2.9.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @wordwrap
@@ -52,8 +52,9 @@ page below also links back here.
 @toc MintVID.guide/MAIN
 @{b}MintVID 1.1.0@{ub}
 
-  - Adds the separate TurboGT H.264 performance mode.
-  - Uses CPU-matched Kalms C2P kernels in the 030 and 040/060 releases.
+  - Adds TurboGT and makes it the default H.264 performance mode.
+  - Makes CPU-matched Kalms C2P the default chipset path in the 030, 040,
+    and 060 releases, with safe graphics.library fallback.
   - Converts only dirty row bands and aligns Kalms input buffers to 16 bytes.
   - Fuses exact 2x enlargement with C2P where supported.
   - Feeds H.264 YUV directly into that fused 2x path without an RGB buffer.
@@ -71,6 +72,13 @@ page below also links back here.
     its own private fullscreen screen, using cybergraphics.library directly
     (no Picasso96API.library dependency) - this also benefits genuine
     CyberGraphX-only boards that never had Picasso96API.library at all.
+  - Buffers several compressed HLS segments ahead and sizes the decoded
+    network queue from available RAM.
+  - Drops already-late H.264 display output while preserving decoder reference
+    state, giving audio and demux work time to catch up.
+  - Retunes Paula buffering, audio rescue, and live-resync margin for smoother
+    playback through CPU pressure and network stalls.
+  - Fixes AmiSSL being cleaned up twice when the HLS worker shuts down.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
 for the detailed list.
@@ -162,12 +170,29 @@ HAM6, HAM8, or CGX. Laced and 2x apply to the three chipset modes; CGX
 playback opens a size-gadget window and scales the video as that window
 is resized. The C2P chooser selects the standard graphics.library path,
 CD32 Akiko hardware, or the Kalms converter for chipset playback (it is
-disabled for CGX).
+disabled for CGX). Kalms is the default; incompatible geometry or bitmap
+layouts fall back safely to graphics.library.
 
   Play          starts the selected movie
   Pause         toggles playback
   Stop          exits the player
   Fast forward  toggles unpaced decode
+
+@{b}H.264 performance modes@{ub}
+
+TurboGT is the 1.1.0 default. Auto currently resolves to the same policy.
+
+  Quality   full filtering and no deliberate frame skipping
+  Balanced  reduces work only on non-reference pictures; often little
+            faster than Quality on streams with few B-frames
+  Fast      cheaper filtering on non-key pictures; keeps every frame
+  Turbo     Fast policy plus B-frame skipping; keeps the P-frame chain
+  Turbo+    skips both P- and B-frames; last-resort keyframe/slideshow mode
+  TurboGT   skips B-frames, keeps P-frames, and applies maximum degradation
+            to every decoded picture; best aggressive PiStorm/Emu68 mode
+
+Use Fast when keeping every frame matters more than maximum speed. TurboGT is
+normally preferable to Turbo+ because it retains useful P-frames.
 
 @{b}Fullscreen (RTG/CGX only)@{ub}
 

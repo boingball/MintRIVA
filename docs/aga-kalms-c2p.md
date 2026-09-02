@@ -1,9 +1,10 @@
 # CPU-aware Kalms C2P backend
 
-`--kalms-c2p` opts into Mikael Kalms' public-domain converters. `--wpa`
-remains the default, `--c2p` remains the portable C fallback, and
-`--riva-c2p` remains available for comparisons. CD32/Akiko has precedence over
-every CPU converter.
+Mikael Kalms' public-domain converters are the default chipset C2P path.
+`--wpa` explicitly selects the graphics.library path, `--c2p` selects the
+portable C fallback, and `--riva-c2p` remains available for comparisons.
+CD32/Akiko has precedence over every CPU converter. Unsupported Kalms geometry
+or bitmap layouts fall back safely to `WritePixelArray8`.
 
 The release profiles now select a kernel that matches their CPU:
 
