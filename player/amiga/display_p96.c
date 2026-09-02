@@ -182,15 +182,16 @@ static int p96_close_private_screen(struct Screen **screen, const char *reason)
 }
 
 /*
- * Pick the smallest available CyberGraphX mode at the given depth which can
- * contain the source at 1:1.  P96's direct-write path is most valuable when
- * it does not also spend 30-50 ms scaling every frame just because Workbench
+ * Pick an available CyberGraphX mode at the given depth which can contain
+ * the source at 1:1, preferring a scanout with the same aspect ratio and then
+ * the least spare area.  P96's direct-write path is most valuable when it
+ * does not also spend 30-50 ms scaling every frame just because Workbench
  * happens to be 1024x768.
  *
  * The first request is the exact source size.  The common-mode probes make
  * the choice deterministic on boards/drivers whose BestCModeIDTags() rounds
- * an unusual video size (for example 854x480) down to 800x600: a containing
- * 1024x768 mode is preferred to shrinking the video.
+ * an unusual video size (for example 854x480) to a 4:3 mode: a containing
+ * 1280x720 mode is preferred when available.
  *
  * Only ever asks for `depth` exactly - p96_open_private_screen() (below) is
  * what tries 16/24/32 in preference order (p96_depth_preference[]) and
@@ -209,7 +210,9 @@ static ULONG p96_mode_for_source_at_depth(int source_w, int source_h,
     ULONG best_any = (ULONG)INVALID_ID;
     ULONG best_fit_area = ~0UL;
     ULONG best_fit_delta = ~0UL;
+    ULONG best_fit_aspect = ~0UL;
     ULONG best_any_delta = ~0UL;
+    ULONG best_any_aspect = ~0UL;
     ULONG best_fit_depth = 0;
     ULONG best_any_depth = 0;
     unsigned i;
@@ -217,7 +220,8 @@ static ULONG p96_mode_for_source_at_depth(int source_w, int source_h,
     for (i = 0; i <= sizeof common_modes / sizeof common_modes[0]; i++) {
         int request_w = i ? (int)common_modes[i - 1][0] : source_w;
         int request_h = i ? (int)common_modes[i - 1][1] : source_h;
-        ULONG modeid, mode_w, mode_h, mode_depth, delta;
+        ULONG modeid, mode_w, mode_h, mode_depth, delta, aspect_error;
+        ULONG aspect_w, aspect_h;
 
         modeid = BestCModeIDTags(
             CYBRBIDTG_NominalWidth, (ULONG)request_w,
@@ -238,6 +242,17 @@ static ULONG p96_mode_for_source_at_depth(int source_w, int source_h,
                                                 : source_w - (int)mode_w) +
                 (ULONG)((int)mode_h >= source_h ? (int)mode_h - source_h
                                                 : source_h - (int)mode_h);
+        /*
+         * Prefer a screen whose shape matches the video before considering
+         * spare area.  The old area-first score chose 1024x768 for 854x480
+         * even when 1280x720 existed, putting a 16:9 video on a 4:3 scanout.
+         * Some P96/monitor setups expand the whole private mode to the panel,
+         * so the scanout shape must agree with the video's display aspect.
+         */
+        aspect_w = mode_w * (ULONG)source_h;
+        aspect_h = mode_h * (ULONG)source_w;
+        aspect_error = aspect_w >= aspect_h ? aspect_w - aspect_h
+                                            : aspect_h - aspect_w;
 
         if ((int)mode_w >= source_w && (int)mode_h >= source_h) {
             ULONG source_area = (ULONG)source_w * (ULONG)source_h;
@@ -245,16 +260,23 @@ static ULONG p96_mode_for_source_at_depth(int source_w, int source_h,
             ULONG excess = mode_area >= source_area ? mode_area - source_area
                                                      : 0;
             if (best_fit == (ULONG)INVALID_ID ||
-                excess < best_fit_area ||
-                (excess == best_fit_area && delta < best_fit_delta)) {
+                aspect_error < best_fit_aspect ||
+                (aspect_error == best_fit_aspect &&
+                 (excess < best_fit_area ||
+                  (excess == best_fit_area && delta < best_fit_delta)))) {
                 best_fit = modeid;
                 best_fit_area = excess;
                 best_fit_delta = delta;
+                best_fit_aspect = aspect_error;
                 best_fit_depth = mode_depth;
             }
-        } else if (best_any == (ULONG)INVALID_ID || delta < best_any_delta) {
+        } else if (best_any == (ULONG)INVALID_ID ||
+                   aspect_error < best_any_aspect ||
+                   (aspect_error == best_any_aspect &&
+                    delta < best_any_delta)) {
             best_any = modeid;
             best_any_delta = delta;
+            best_any_aspect = aspect_error;
             best_any_depth = mode_depth;
         }
     }
@@ -772,7 +794,30 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
     clock_t total = 0, mark = 0;
     int native, timing;
     struct BitMap *bm;
+    int frame_size_changed;
     if (!s || !s->win) return;
+
+    /*
+     * The display is opened from container/SPS metadata, but a live HLS
+     * stream may replace its SPS (and therefore its decoded dimensions)
+     * between segments.  Geometry must follow the frame actually being
+     * presented: scaling an 854x480 frame into a stale 640x480 rectangle
+     * turns 16:9 into 4:3 and makes the vertically stretched rows look
+     * interlaced.  Keep the private screen, but rebuild its fitted video
+     * rectangle from the live frame dimensions and clear/redraw it once.
+     */
+    frame_size_changed = w > 0 && hh > 0 &&
+                         (w != s->source_w || hh != s->source_h);
+    if (frame_size_changed) {
+        if (g_display_want_time)
+            printf("p96-source-size metadata=%dx%d frame=%dx%d; "
+                   "rebuilding aspect geometry\n",
+                   s->source_w, s->source_h, w, hh);
+        s->source_w = w;
+        s->source_h = hh;
+        s->geometry_valid = 0;
+    }
+
     timing = g_display_want_time;
     if (timing) {
         memset(&s->timing, 0, sizeof s->timing);
@@ -788,7 +833,8 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
             clock() - s->resize_at >= CLOCKS_PER_SEC / 10)
             need_rebuild = 1;
         if (need_rebuild)
-            p96_rebuild_geometry(s, !s->geometry_valid ? "invalid" :
+            p96_rebuild_geometry(s, frame_size_changed ? "frame-size-change" :
+                                 !s->geometry_valid ? "invalid" :
                                  cur_bm != s->cached_bitmap ? "bitmap-change" :
                                  moved ? "moved" : "resize");
     }
