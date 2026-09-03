@@ -598,10 +598,108 @@ mr_status mr_mov_open_source(mr_mov *m, mr_source *source, size_t len)
     return MR_EFORMAT;
 }
 
+static uint32_t avc1_read_nal_size(const uint8_t *p, unsigned bytes)
+{
+    uint32_t n = 0;
+    unsigned i;
+    for (i = 0; i < bytes; i++) n = (n << 8) | p[i];
+    return n;
+}
+
+/*
+ * avc1 stores its authoritative SPS/PPS in the avcC sample-entry atom.  Some
+ * hardware encoders nevertheless repeat parameter sets in the first MP4
+ * sample; AMD AMF is one real-world example and can repeat an SPS with extra
+ * VUI colour/timing fields even though the coded geometry is unchanged.
+ *
+ * MintVID has already fed avcC to libavc and allocated its shared display
+ * buffers before the first sample arrives.  Feeding a second SPS at that point
+ * can make libavc treat the first access unit as a sequence reconfiguration,
+ * leaving playback stuck at "buffering first frame" on Amiga.  avc3 is the
+ * ISO BMFF sample-entry variant intended for in-band parameter-set changes;
+ * MintVID supports avc1 here, so discard type-7 SPS and type-8 PPS NALs from
+ * avc1 samples and keep avcC authoritative.
+ *
+ * The common path does not allocate or copy anything: first scan the sample,
+ * and only compact it when a stray SPS/PPS is actually present.  File-backed
+ * packets already live in m->packet_buf and are compacted there in place;
+ * memory-backed MOV input borrows that same scratch buffer only for affected
+ * samples.  MKV and MPEG-TS/HLS never pass through this MOV-specific helper.
+ */
+static mr_status filter_avc1_parameter_sets(mr_mov *m,
+                                            const uint8_t *src, uint32_t len,
+                                            const uint8_t **out_data,
+                                            uint32_t *out_len)
+{
+    const uint8_t *cfg;
+    unsigned nls;
+    uint32_t p = 0, kept = 0;
+    int found = 0;
+    uint8_t *dst;
+
+    *out_data = src;
+    *out_len = len;
+    if (m->video.fourcc != MR_FOURCC('a','v','c','1')) return MR_OK;
+    cfg = m->video.config;
+    if (!cfg || m->video.config_len < 7 || cfg[0] != 1) return MR_OK;
+    nls = (unsigned)(cfg[4] & 3u) + 1u;
+
+    while (p < len) {
+        uint32_t n;
+        unsigned type;
+        if (len - p < nls) return MR_OK; /* let the decoder report malformed AVCC */
+        n = avc1_read_nal_size(src + p, nls);
+        p += nls;
+        if (!n || n > len - p) return MR_OK;
+        type = src[p] & 0x1fu;
+        if (type == 7u || type == 8u)
+            found = 1;
+        else
+            kept += nls + n;
+        p += n;
+    }
+    if (!found || !kept) return MR_OK;
+
+    if (src == m->packet_buf) {
+        dst = m->packet_buf;
+    } else {
+        if (m->packet_cap < kept) {
+            uint8_t *nb = (uint8_t *)realloc(m->packet_buf, kept);
+            if (!nb) return MR_ENOMEM;
+            m->packet_buf = nb;
+            m->packet_cap = kept;
+        }
+        dst = m->packet_buf;
+    }
+
+    p = 0;
+    kept = 0;
+    while (p < len) {
+        uint32_t start = p;
+        uint32_t n = avc1_read_nal_size(src + p, nls);
+        unsigned type;
+        p += nls;
+        type = src[p] & 0x1fu;
+        p += n;
+        if (type != 7u && type != 8u) {
+            uint32_t bytes = nls + n;
+            if (dst == src)
+                memmove(dst + kept, src + start, bytes);
+            else
+                memcpy(dst + kept, src + start, bytes);
+            kept += bytes;
+        }
+    }
+    *out_data = dst;
+    *out_len = kept;
+    return MR_OK;
+}
+
 mr_status mr_mov_next_packet(mr_mov *m, mr_packet *pkt)
 {
     while (m->cursor < m->nsamples) {
         struct mov_sample *s = &m->samples[m->cursor++];
+        mr_status filter_status;
         if ((size_t)s->off > m->len ||
             (size_t)s->size > m->len - (size_t)s->off)
             continue;
@@ -620,7 +718,16 @@ mr_status mr_mov_next_packet(mr_mov *m, mr_packet *pkt)
         } else {
             pkt->data = m->buf + s->off;
         }
-        pkt->len      = s->size;
+        pkt->len = s->size;
+        if (s->is_video) {
+            const uint8_t *filtered_data;
+            uint32_t filtered_len;
+            filter_status = filter_avc1_parameter_sets(
+                m, pkt->data, pkt->len, &filtered_data, &filtered_len);
+            if (filter_status != MR_OK) return filter_status;
+            pkt->data = filtered_data;
+            pkt->len = filtered_len;
+        }
         return MR_OK;
     }
     return MR_EAGAIN;
