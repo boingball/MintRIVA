@@ -64,6 +64,7 @@ extern const mr_codec mr_codec_mpeg2;
 extern const mr_codec mr_codec_mpeg4;
 extern const mr_codec mr_codec_msmpeg4v2;
 extern const mr_codec mr_codec_wmv1;
+extern const mr_codec mr_codec_wmv2;
 extern const mr_codec mr_codec_h263;
 extern const mr_codec mr_codec_h263;
 extern const mr_codec mr_codec_msvideo1;

@@ -473,7 +473,10 @@ H.263+ is therefore **partial**: UMV, SAC, advanced prediction, PB/improved-PB,
 deblocking, slice structure, reference-picture selection, independent segments,
 alternative inter VLC, modified quantisation, data partitioning, custom clock
 frequency and scalability remain explicitly unsupported. H.261 is not yet
-supported. Indeo 3, Sorenson Video 1, WMV1/2 and VP3/Theora are planned.
+supported. WMV1 and WMV2 (Windows Media Video 7/8) are supported - see below;
+WMV2's IntraX8 ("J-frame") mode, a separate sub-codec shared with VC-1, is
+explicitly rejected rather than approximated. Indeo 3, Sorenson Video 1, and
+VP3/Theora are planned.
 
 The FourCC audit below is deliberately conservative. “Registry” means the alias
 is covered by the deterministic routing test; a named clip means its bitstream
@@ -490,3 +493,5 @@ was also decoded by the existing conformance suite.
 | `DIV4`, `DIV5`, `DIV6` | ambiguous DivX-era vendor tags | none | unsupported pending sample verification | registry rejection |
 | `H263`, `h263`, `I263`, `i263` | H.263 | `H.263 baseline` | accepted for baseline QCIF/CIF | registry; `h263.mov` conformance pending |
 | `U263`, `u263`, `T263`, `X263` | vendor H.263 / frequently H.263+ | `H.263 baseline` | registered, but annex flags are rejected | registry; upstream sample inspection pending |
+| `WMV1`, `wmv1` | Windows Media Video 7 | `wmv1` | accepted | `test_wmv1.avi`, `test_wmv1_q20.avi` |
+| `WMV2`, `wmv2` | Windows Media Video 8 | `wmv2` | accepted; IntraX8 ("J-frame") mode rejected | `test_wmv2.avi`, `test_wmv2_q20.avi` |

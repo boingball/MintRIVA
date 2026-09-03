@@ -166,6 +166,23 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       plugin with I/P pictures, slice/DC/AC prediction, skip macroblocks and
       half-pel motion compensation. Host-validated against ffmpeg on the full
       1,983-frame BFHL sample (worst per-frame RGB MAE 1.83/255).
+- [x] WMV1/WMV2 (Windows Media Video 7/8, `WMV1`/`WMV2`) in AVI: two more
+      H.263-derived decoder plugins built on the same macroblock skeleton as
+      MP42. WMV1 (`mr_wmv.c`) adds selectable RL/DC/MV VLC table sets,
+      coded-block-pattern prediction on intra blocks, an adaptive
+      "escape 3" coefficient coding mode and flipflop MC rounding. WMV2
+      (`mr_wmv2.c`) builds on WMV1's exact same coefficient/DC/MV grammar
+      and adds a container-level extension header, bitplane-coded
+      macroblock skip, three qscale-selected CBP VLC tables, adaptive
+      top-left motion-vector prediction, MSPEL motion compensation, the
+      Adaptive Block Transform (8x4/4x8 split residual blocks with their
+      own IDCTs), and an H.263 Annex-J-style in-loop deblocking filter.
+      Both reject (rather than approximate) the low-bitrate spatial
+      intra/inter-prediction variant, and WMV2 additionally rejects
+      IntraX8 ("J-frame") coding - a separate sub-codec shared with VC-1.
+      Host- and m68k/qemu-validated against ffmpeg (worst per-frame RGB
+      MAE under ~1.2/255 across several qscales and, for WMV2, both with
+      and without the loop filter enabled).
 - [x] H.264/AVC Baseline/Main/High (`avc1`) via pinned Apache-2.0 Ittiam
       libavc, using its generic integer C backend: avcC/AVCC conversion, CABAC,
       B-slices and DPB display reordering. Exact 640x360 High Profile/B-frame
@@ -203,7 +220,8 @@ plugin and consequently discards the reference frame.
 
 Compatibility roadmap: H.263 baseline is supported; H.263+ annexes are partial
 and explicitly rejected as documented in README.md; H.261 is not yet supported;
-Indeo 3, Sorenson Video 1, WMV1/2, and VP3/Theora are planned.
+WMV1/WMV2 are supported (see above; WMV2's IntraX8 mode is explicitly
+rejected); Indeo 3, Sorenson Video 1, and VP3/Theora are planned.
 # IPTV directory
 
 `player/iptv/` is deliberately independent of ReAction and of the media
