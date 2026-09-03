@@ -20,6 +20,14 @@
   segment scheduling introduced late in 1.1.0 while retaining the hard worker
   join/no-abandon shutdown protection, preventing the `MintVID HLS fetch`
   `#80000004` worker failure seen on real A1200/WinUAE testing.
+- H.264 Turbo+ now applies TurboGT's all-picture degradation (disabling
+  I-frame deblocking) to the keyframes it still fully decodes, instead of
+  keeping them at Fast's non-key-only degrade policy. Turbo+ skips every P-
+  and B-frame, so the keyframe decode is the one blocking call left between
+  displayed frames; on a slow CPU (reported on a stock 66 MHz 68060 A1200)
+  that call could run long enough to drain Paula's hardware buffer with no
+  audio service in between, heard as a laggy half-rate echo. Shortening the
+  keyframe decode keeps audio fed through it.
 
 ### Improved
 

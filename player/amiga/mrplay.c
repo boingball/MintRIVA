@@ -1113,7 +1113,7 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     if (!dec || dec->codec != &mr_codec_h264) return 1;
     mode = effective_h264_speed(requested);
     name = mode == MR_H264_SPEED_TURBO_GT ? "TurboGT (B-skip, all-frame degrade)" :
-           mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip)" :
+           mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip, all-frame degrade)" :
            mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip)" :
            mode == MR_H264_SPEED_FAST ? "Fast" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";

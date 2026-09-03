@@ -116,8 +116,11 @@ TurboGT is the default H.264 mode. Auto currently selects the same policy.
     Quality on streams with few B-frames.
   - Fast: cheaper filtering on non-key pictures, but keeps every frame.
   - Turbo: Fast policy plus B-frame skipping; preserves the P-frame chain.
-  - Turbo+: skips both P- and B-frames. This is a last-resort keyframe/
-    slideshow mode, not the normal fastest setting.
+  - Turbo+: skips both P- and B-frames and applies maximum degradation
+    (including disabling I-frame deblocking) to every displayed keyframe, so
+    the one remaining expensive decode stays short enough on a slow CPU to
+    keep audio from stuttering between frames. This is a last-resort
+    keyframe/slideshow mode, not the normal fastest setting.
   - TurboGT: skips B-frames, retains P-frames, and applies maximum degradation
     to every decoded picture. It is the recommended aggressive PiStorm/Emu68
     setting and the default from the 1.1.x line.
