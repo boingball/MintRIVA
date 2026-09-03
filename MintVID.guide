@@ -1,19 +1,19 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.1 (2.9.2026)
+@$VER: MintVID.guide 1.1 (3.9.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @wordwrap
 @smartwrap
 
 @node MAIN "MintVID Guide"
-@{b}MintVID 1.1.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
+@{b}MintVID 1.1.1@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
 hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG machines.
 
 This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.1.0 " LINK WhatsNew}
+  @{" What's new in 1.1.1 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -35,7 +35,7 @@ page below also links back here.
 @{b}MintVID Guide@{ub} - Contents
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.1.0 " LINK WhatsNew}
+  @{" What's new in 1.1.1 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -48,37 +48,28 @@ page below also links back here.
   @{" Support MintVID "     LINK Support}
 @endnode
 
-@node WhatsNew "What's new in 1.1.0"
+@node WhatsNew "What's new in 1.1.1"
 @toc MintVID.guide/MAIN
-@{b}MintVID 1.1.0@{ub}
+@{b}MintVID 1.1.1@{ub}
 
-  - Adds TurboGT and makes it the default H.264 performance mode.
-  - Makes CPU-matched Kalms C2P the default chipset path in the 030, 040,
-    and 060 releases, with safe graphics.library fallback.
-  - Converts only dirty row bands and aligns Kalms input buffers to 16 bytes.
-  - Fuses exact 2x enlargement with C2P where supported.
-  - Feeds H.264 YUV directly into that fused 2x path without an RGB buffer.
-  - Adds direct Kalms HAM6 output to the 040/060 releases.
-  - Exposes the supported paths through both ReAction and GadTools GUIs.
-  - Keeps searching for requested YouTube 720p after an early 360p-only reply,
-    while preserving 360p as a final fallback.
-  - Reuses repeated YUV source pixels when fitting low-resolution H.264 video.
-  - Adds AmigaOS $VER identities to every shipped executable.
-  - Widens the P96 direct-lock RTG fast path from 24-bit BGR only to also
-    cover 16-bit RGB565 and 32-bit ARGB screens, so it engages on more real
-    boards/modes - including the 16-bit depth this project already prefers
-    for lower RTG memory traffic.
-  - Adds an equivalent direct-lock fast path to the CGX display backend, for
-    its own private fullscreen screen, using cybergraphics.library directly
-    (no Picasso96API.library dependency) - this also benefits genuine
-    CyberGraphX-only boards that never had Picasso96API.library at all.
-  - Buffers several compressed HLS segments ahead and sizes the decoded
-    network queue from available RAM.
-  - Drops already-late H.264 display output while preserving decoder reference
-    state, giving audio and demux work time to catch up.
-  - Retunes Paula buffering, audio rescue, and live-resync margin for smoother
-    playback through CPU pressure and network stalls.
-  - Fixes AmiSSL being cleaned up twice when the HLS worker shuts down.
+This is a small stability and codec follow-up to 1.1.0. All of the TurboGT,
+Kalms C2P, RTG, YouTube, queueing and audio improvements from 1.1.0 remain.
+
+  - Adds native WMV1 / Windows Media Video 7 decoding for AVI files.
+  - Adds native WMV2 / Windows Media Video 8 decoding for AVI files, including
+    the normal MSPEL, adaptive block transform and loop-filter paths.
+  - Regression-tests both WMV decoders against ffmpeg on the host and on a
+    big-endian m68k target under QEMU.
+  - Fixes the remaining live-HLS ESC/Stop shutdown regression seen as a
+    "MintVID HLS fetch" #80000004 worker failure during A1200/WinUAE testing.
+  - Restores the proven 1.0.0 single-next-segment compressed HLS lookahead
+    policy while retaining the 1.1.0 hard worker join and AmiSSL cleanup fixes.
+  - Refreshes the shared GUI About requester to describe local/HLS/IPTV/
+    YouTube playback and the WMV7/WMV8 additions.
+
+WMV1's low-bitrate spatial intra/inter prediction mode is deliberately
+rejected rather than approximated. WMV2 IntraX8 (J-frame) coding is also not
+supported; normal tested WMV1/WMV2 AVI I/P streams use the native decoders.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
 for the detailed list.
@@ -104,12 +95,12 @@ on processor speed, codec complexity, resolution, bitrate and display mode:
   - 68030-class ECS/AGA systems - best suited to lightweight codecs and
     modest frame sizes. Cinepak is the natural starting point; heavier
     formats may decode correctly without being practical in real time.
-  - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2 and
-    MPEG-4 Part 2 become more practical at modest resolutions, especially
-    with RTG. H.264/AVC remains far too demanding for normal real-time
-    YouTube/IPTV viewing on classic CPUs. On a tested 68060 using AGA,
-    lowest-resolution YouTube/IPTV H.264 playback has been around 7 fps at
-    best. Treat H.264 streaming here as a compatibility or demonstration
+  - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2,
+    MPEG-4 Part 2 and WMV7/8 become more practical at modest resolutions,
+    especially with RTG. H.264/AVC remains far too demanding for normal
+    real-time YouTube/IPTV viewing on classic CPUs. On a tested 68060 using
+    AGA, lowest-resolution YouTube/IPTV H.264 playback has been around 7 fps
+    at best. Treat H.264 streaming here as a compatibility or demonstration
     path rather than smooth video playback.
   - PiStorm/Emu68 (ARM-hosted 68k) - use the MintVID040 build. H.264/AVC
     (Baseline through High Profile, CABAC and B-frames) becomes much more
@@ -180,7 +171,7 @@ layouts fall back safely to graphics.library.
 
 @{b}H.264 performance modes@{ub}
 
-TurboGT is the 1.1.0 default. Auto currently resolves to the same policy.
+TurboGT is the 1.1.x default. Auto currently resolves to the same policy.
 
   Quality   full filtering and no deliberate frame skipping
   Balanced  reduces work only on non-reference pictures; often little
@@ -354,8 +345,13 @@ HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
 
 @{b}Video codecs@{ub}: Cinepak, Microsoft Video 1, Microsoft RLE8,
 uncompressed UYVY422, H.263 baseline, Motion-JPEG, MPEG-1, MPEG-2 (with
-B-frames), MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), and H.264/AVC
-Baseline/Main/High Profile.
+B-frames), MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media
+Video 7 (WMV1), Windows Media Video 8 (WMV2), and H.264/AVC Baseline/Main/
+High Profile.
+
+WMV1's low-bitrate spatial intra/inter prediction mode is deliberately
+rejected rather than approximated. WMV2 IntraX8 (J-frame) coding is also not
+supported. Normal tested WMV1/WMV2 AVI I/P streams use the native decoders.
 
 @{b}Audio to Paula@{ub}: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and
 fixed-point AC-3 (stereo downmix). MP3/AAC decoding reuses the
