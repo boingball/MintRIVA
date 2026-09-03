@@ -5,7 +5,7 @@
 
 ![AmigaOS](https://img.shields.io/badge/AmigaOS-3.0%2B-orange)
 ![CPU](https://img.shields.io/badge/CPU-68030%20%7C%20040%20%7C%20060-blue)
-![Video](https://img.shields.io/badge/Video-H.264%20%7C%20MPEG%20%7C%20MJPEG-purple)
+![Video](https://img.shields.io/badge/Video-H.264%20%7C%20MPEG%20%7C%20WMV-purple)
 ![YouTube](https://img.shields.io/badge/YouTube-Native%20Playback-red)
 ![Streaming](https://img.shields.io/badge/Streaming-HLS%20%7C%20IPTV-green)
 ![Display](https://img.shields.io/badge/Display-AGA%20%7C%20HAM%20%7C%20RTG-blue)
@@ -25,23 +25,22 @@ format support is not a promise of real-time playback on every 68k.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
-## What's new in 1.1.0
+## What's new in 1.1.1
 
-- **TurboGT is now the default H.264 mode**, retaining the P-frame reference
-  chain while skipping B-frames and applying the strongest practical libavc
-  degradation policy.
-- **Kalms is now the default chipset C2P path**, with CPU-matched 030 and
-  040/060 kernels and safe graphics.library fallback for incompatible layouts.
-- Dirty-row conversion, aligned input, fused exact-2x output with direct H.264
-  YUV input, and direct HAM6 output on 040/060.
-- Better YouTube 720p selection: an early 360p-only response no longer stops
-  the multi-client search, but remains available as the final fallback.
-- More resilient live HLS playback through compressed-segment lookahead,
-  RAM-aware decoded queues, late-frame output dropping, and retuned Paula
-  buffering/audio rescue.
-- Fixed AmiSSL shutdown cleanup and added AmigaOS `$VER:` identities across
-  every shipped executable.
-- Wider P96 and CGX direct-lock RTG fast paths for common 16/24/32-bit modes.
+- **WMV1 / Windows Media Video 7** AVI decoding, validated against ffmpeg on
+  both the host and a big-endian m68k/QEMU build.
+- **WMV2 / Windows Media Video 8** AVI decoding, including the normal MSPEL,
+  adaptive-block-transform and loop-filter paths; IntraX8/J-frame coding is
+  cleanly rejected rather than approximated.
+- **HLS ESC/Stop stability fix:** live HLS returns to the proven 1.0.0
+  single-next-segment compressed lookahead policy while retaining the 1.1.0
+  hard worker join and AmiSSL lifecycle fixes. This targets the remaining
+  `MintVID HLS fetch` `#80000004` shutdown failure reproduced during A1200/
+  WinUAE testing.
+- The shared GUI About requester now describes local/HLS/IPTV/YouTube playback
+  and calls out WMV7/8 alongside the existing MPEG/H.264 codec family.
+- All TurboGT, Kalms C2P, RTG direct-write, YouTube, RAM-aware queueing and
+  audio-rescue improvements introduced in 1.1.0 remain present.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
@@ -64,10 +63,10 @@ See **[DESIGN.md](DESIGN.md)** for the full architecture and roadmap.
 - **68030-class ECS/AGA:** best suited to lightweight codecs and modest frame
   sizes. Cinepak is the natural starting point; heavier formats may decode
   correctly without being practical in real time.
-- **68040/060:** older codecs such as Cinepak, MJPEG, MPEG-1/2 and MPEG-4 Part 2
-  become more practical at modest resolutions, especially with RTG. H.264/AVC
-  remains far too demanding for normal real-time YouTube/IPTV viewing on
-  classic CPUs. On a tested 68060 using AGA, lowest-resolution YouTube/IPTV
+- **68040/060:** older codecs such as Cinepak, MJPEG, MPEG-1/2, MPEG-4 Part 2
+  and WMV7/8 become more practical at modest resolutions, especially with RTG.
+  H.264/AVC remains far too demanding for normal real-time YouTube/IPTV viewing
+  on classic CPUs. On a tested 68060 using AGA, lowest-resolution YouTube/IPTV
   H.264 playback has been around **7 fps at best**. Treat classic 040/060 H.264
   streaming as compatibility/demo functionality rather than smooth playback.
 - **PiStorm/Emu68:** use the **MintVID040** build. This is the release build
@@ -98,6 +97,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
 | Microsoft RLE8 — palettised AVI | ✅ native palette and delta-frame decoder (RLE4 deferred) |
+| Windows Media Video 7/8 — WMV1/WMV2 AVI | ✅ native decoders; ffmpeg + big-endian m68k/QEMU validated |
 | Raw UYVY422 (`2vuy`/`UYVY`) | ✅ uncompressed QuickTime/MOV video |
 | Runs on real 68k hardware | ✅ decode verified |
 | MJPEG / MPEG-1 / MPEG-4 Part 2 / Microsoft MP42/DIV2 decoders | ✅ ffmpeg-validated |
@@ -213,7 +213,10 @@ release builds.
 Live HLS (`.m3u8`) playback on constrained hardware has a few extra controls.
 The AmiSSL library, TLS context, and TLS session are initialised once and reused
 across segments, so each segment boundary reconnects with an abbreviated
-handshake instead of the full per-segment bring-up.
+handshake instead of the full per-segment bring-up. For 1.1.1, compressed
+lookahead intentionally hints only the next segment: this is the stable 1.0.0
+scheduling policy, combined with the newer no-abandon worker shutdown and
+AmiSSL lifecycle hardening.
 
 - `--net-queue=N` — request a decoded-frame read-ahead target for network
   playback. The default scheduling target is 1 frame and the hard ceiling is
@@ -309,7 +312,7 @@ playback, Stop exits it, and Fast forward toggles unpaced decode.
 
 **H.264 performance modes**
 
-TurboGT is the 1.1.0 default. The choices trade picture quality and/or decoded
+TurboGT is the 1.1.x default. The choices trade picture quality and/or decoded
 frames for throughput:
 
 | Mode | Decoder policy | When to use it |

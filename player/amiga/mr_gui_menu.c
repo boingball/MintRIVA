@@ -96,7 +96,9 @@ void mr_gui_show_about(struct Window *window, const char *edition)
     request.es_Title = (UBYTE *)"About MintVID";
     request.es_TextFormat = (UBYTE *)
         "MintVID " MINTVID_VERSION " - Video for classic AmigaOS\n"
-        "%s\n\n"
+        "%s\n"
+        "Local files, HLS, IPTV and YouTube playback\n"
+        "including WMV7/8, MPEG-1/2/4 and H.264.\n\n"
         "Made by Darren 'boingball' Banfi\n"
         "Copyright 2026\n\n"
         "Source and licence notices:\n"

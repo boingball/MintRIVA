@@ -1,5 +1,42 @@
 # MintVID changelog
 
+## 1.1.1 - 2026-09-03
+
+### Added
+
+- Native WMV1 / Windows Media Video 7 decoding for AVI files, including the
+  codec's selectable run/level, DC and motion-vector VLC tables, coded-block
+  prediction and adaptive escape coding.
+- Native WMV2 / Windows Media Video 8 decoding for AVI files, including its
+  extension header, bitplane skip coding, adaptive motion prediction, MSPEL,
+  adaptive block transforms and in-loop deblocking.
+- WMV1 and WMV2 decoder coverage in the portable and big-endian m68k/QEMU
+  conformance suites against ffmpeg-generated reference output.
+
+### Fixed
+
+- Live HLS ESC/Stop shutdown is stabilised by restoring the released 1.0.0
+  single-next-segment lookahead policy. This removes the aggressive three-
+  segment scheduling introduced late in 1.1.0 while retaining the hard worker
+  join/no-abandon shutdown protection, preventing the `MintVID HLS fetch`
+  `#80000004` worker failure seen on real A1200/WinUAE testing.
+
+### Improved
+
+- The shared GUI About requester now calls out local/HLS/IPTV/YouTube playback
+  and the WMV7/WMV8 additions alongside the existing MPEG/H.264 codec family.
+- Release metadata, Aminet text and licence index are refreshed for 1.1.1.
+
+### Compatibility notes
+
+- WMV1's low-bitrate spatial intra/inter prediction mode is deliberately
+  rejected rather than decoded approximately.
+- WMV2 IntraX8 (J-frame) coding is not supported and is likewise rejected
+  cleanly. Normal WMV2 I/P streams remain supported.
+- The HLS worker still contains the newer lifecycle hardening from 1.1.0; only
+  the number of future compressed segments actively hinted by HLS is returned
+  to one for release stability.
+
 ## 1.1.0 - 2026-09-02
 
 ### Added
