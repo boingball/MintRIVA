@@ -2,7 +2,7 @@ Short:        Multi-codec video player and streamer
 Author:       Darren Banfi (boingball)
 Uploader:     boingball@gmail.com
 Type:         gfx/show
-Version:      1.1.0
+Version:      1.1.1
 Requires:     68030+; util/libs/AmiSSL-v5-OS3.lha for online features
 Architecture: m68k-amigaos >= 3.0.0
 
@@ -13,29 +13,24 @@ MintVID is a multi-codec video player for accelerated 68k Amigas, from
 It supports native chipset and RTG output, local files, HTTP/HTTPS, HLS,
 IPTV and public YouTube playback.
 
-WHAT'S NEW IN 1.1.0
+WHAT'S NEW IN 1.1.1
 
-  - TurboGT is now the default H.264 mode; it keeps the P-frame reference
-    chain while skipping B-frames and using libavc's strongest practical
-    degradation policy.
-  - CPU-matched Kalms C2P is now the default chipset path for the 030 versus
-    040/060 builds, with safe graphics.library fallback.
-  - Dirty-row-only Kalms conversion, 16-byte aligned buffers, fused 2x2
-    scaling/C2P where geometry permits, direct H.264 YUV-to-indexed input for
-    that fused path, and direct HAM6 C2P on 040/060.
-  - ReAction and GadTools expose the supported Kalms paths consistently.
-  - YouTube 720p/1080p/Best searches no longer stop at an early 360p-only
-    client response; 360p is retained as the final fallback.
-  - Faster direct YUV-to-indexed upscaling for low-resolution H.264 video.
-  - Every shipped executable now carries an AmigaOS $VER identity.
-  - RTG (P96) direct-write playback now covers 16-bit RGB565 and 32-bit ARGB
-    screens, not just 24-bit BGR - so it engages on more real boards/modes.
-  - RTG (CGX) playback gains its own private-screen direct-write fast path,
-    including on genuine CyberGraphX-only boards without Picasso96API.
-  - Live HLS gains multi-segment compressed lookahead, RAM-aware decoded
-    queues, late-frame output dropping, and wider live-resync margin.
-  - Paula buffers and audio rescue are retuned to reduce underruns under CPU
-    pressure, and AmiSSL shutdown no longer performs duplicate cleanup.
+  - Adds native WMV1 / Windows Media Video 7 decoding for AVI files.
+  - Adds native WMV2 / Windows Media Video 8 decoding for AVI files, including
+    MSPEL, adaptive block transforms and in-loop deblocking used by normal
+    WMV2 I/P streams.
+  - WMV1 and WMV2 are regression-tested against ffmpeg on the host and on a
+    big-endian m68k target under QEMU.
+  - Fixes the remaining live-HLS ESC/Stop shutdown regression seen as a
+    "MintVID HLS fetch" #80000004 worker failure on A1200/WinUAE testing.
+    HLS now uses the proven 1.0.0 single-next-segment compressed lookahead
+    policy while keeping the 1.1.0 hard worker join and AmiSSL lifecycle fixes.
+  - The shared About requester now describes the wider local/streaming codec
+    support and calls out WMV7/WMV8 alongside MPEG and H.264 playback.
+
+MintVID 1.1.1 is a small stability/codec follow-up to 1.1.0. The TurboGT,
+Kalms C2P, RTG direct-write, YouTube, RAM-aware queueing and other 1.1.0
+improvements remain present.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
 for the detailed list.
@@ -62,13 +57,13 @@ practical playback performance depend on the hardware underneath it.
   - 68030-class ECS/AGA systems - best suited to lightweight codecs and
     modest frame sizes. Cinepak is the natural starting point; heavier
     formats may decode correctly without being practical in real time.
-  - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2 and
-    MPEG-4 Part 2 become more practical at modest resolutions, especially
-    with RTG. H.264/AVC remains far too demanding for normal real-time
-    YouTube/IPTV viewing on classic CPUs. On a tested 68060 using AGA,
-    lowest-resolution YouTube/IPTV H.264 playback has been around 7 fps at
-    best. Treat H.264 streaming on classic 040/060 hardware as a compatibility
-    or demonstration path rather than smooth video playback.
+  - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2,
+    MPEG-4 Part 2 and WMV7/8 become more practical at modest resolutions,
+    especially with RTG. H.264/AVC remains far too demanding for normal
+    real-time YouTube/IPTV viewing on classic CPUs. On a tested 68060 using
+    AGA, lowest-resolution YouTube/IPTV H.264 playback has been around 7 fps
+    at best. Treat H.264 streaming on classic 040/060 hardware as a
+    compatibility or demonstration path rather than smooth video playback.
   - PiStorm/Emu68 - use the MintVID040 build. This is the build targeted for
     the Emu68/PiStorm environment. H.264/AVC (Baseline through High Profile,
     CABAC and B-frames) becomes much more practical here. On the tested
@@ -87,14 +82,20 @@ WHAT IT PLAYS
     HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
   - Video codecs: Cinepak, Microsoft Video 1, Microsoft RLE8, uncompressed
     UYVY422, H.263 baseline, Motion-JPEG, MPEG-1, MPEG-2 (with B-frames),
-    MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), and H.264/AVC Baseline/
-    Main/High Profile.
+    MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media Video 7
+    (WMV1), Windows Media Video 8 (WMV2), and H.264/AVC Baseline/Main/High
+    Profile.
   - Audio to Paula: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and fixed-point
     AC-3 (stereo downmix). MP3/AAC decoding reuses the proven MintAMP/Helix
     code.
   - Two complete GUI sets over the same player: ReAction (V44) and plain
     GadTools/Intuition (V37) for a standard AmigaOS 3.0 install, each with
     matching file, IPTV-directory and YouTube-search browser windows.
+
+WMV compatibility notes: WMV1's low-bitrate spatial intra/inter prediction
+mode is not implemented and is rejected rather than approximated. WMV2's
+IntraX8 (J-frame) mode is likewise not supported. Normal tested WMV1/WMV2
+AVI I/P streams use the native decoders.
 
 MintVID's core decoders are regression-tested against ffmpeg using the
 project's test fixtures where applicable. The portable core is also
@@ -119,7 +120,7 @@ TurboGT is the default H.264 mode. Auto currently selects the same policy.
     slideshow mode, not the normal fastest setting.
   - TurboGT: skips B-frames, retains P-frames, and applies maximum degradation
     to every decoded picture. It is the recommended aggressive PiStorm/Emu68
-    setting and the 1.1.0 default.
+    setting and the default from the 1.1.x line.
 
 WHAT IT IS NOT
 
