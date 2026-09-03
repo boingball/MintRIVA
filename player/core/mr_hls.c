@@ -62,17 +62,6 @@ static mr_source *hls_open(const char *url, const mr_http_options *options,
 #define HLS_LIVE_REFETCH_MAX 40
 /* Fallback poll interval when the playlist declares no EXT-X-TARGETDURATION. */
 #define HLS_LIVE_REFETCH_WAIT_MS 1000
-/* How many segments ahead of the one just opened to hint for background
- * lookahead (see open_seg() below and mr_http_prefetch_hint()). Matched by
- * HLS_FETCH_LOOKAHEAD_DEPTH in amiga/hls_fetch.c, the only fetch override
- * this project ships that actually queues more than one - a mismatch is
- * harmless (hls_fetch_hint() drops a hint past its own capacity), but
- * keeping them equal gets full value from every hint issued here. A live
- * segment fetch can stall for hundreds of ms to over a second (observed on
- * YouTube live); one segment of lookahead left almost no margin against
- * that, so every stall showed up immediately as decoder/audio starvation
- * downstream. */
-#define HLS_LOOKAHEAD_HINT_SEGMENTS 3
 
 typedef struct {
     char   **segs;        /* resolved segment URLs                            */
@@ -467,20 +456,15 @@ static int open_seg(hls_source *h, size_t i)
     if (timing)
         mr_source_timing_add_hls_segment((unsigned long)
             ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
-    /* Best-effort background lookahead for the next few segments, for
-     * whichever of them are already known - a no-op unless a fetch override
-     * installed a hint (see mr_http_prefetch_hint()). Never fires for a
-     * not-yet-discovered segment (at/past h->nsegs, i.e. the live edge),
-     * which is also exactly the case hls_refetch_live()'s playlist poll
-     * needs the worker free for - see amiga/hls_fetch.c's design note on
-     * this. */
-    {
-        size_t j, last = i + 1 + HLS_LOOKAHEAD_HINT_SEGMENTS;
-        if (last > h->nsegs) last = h->nsegs;
-        for (j = i + 1; j < last; j++)
-            mr_http_prefetch_hint(h->segs[j],
-                                  h->have_options ? &h->options : NULL);
-    }
+    /* Best-effort background lookahead for the next segment, if its URL is
+     * already known - a no-op unless a fetch override installed a hint (see
+     * mr_http_prefetch_hint()). Never fires for a not-yet-discovered next
+     * segment (i+1 == h->nsegs at the live edge), which is also exactly the
+     * case hls_refetch_live()'s playlist poll needs the worker free for -
+     * see amiga/hls_fetch.c's design note on this. */
+    if (i + 1 < h->nsegs)
+        mr_http_prefetch_hint(h->segs[i + 1],
+                              h->have_options ? &h->options : NULL);
     return 1;
 }
 
