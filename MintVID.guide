@@ -178,7 +178,10 @@ TurboGT is the 1.1.x default. Auto currently resolves to the same policy.
             faster than Quality on streams with few B-frames
   Fast      cheaper filtering on non-key pictures; keeps every frame
   Turbo     Fast policy plus B-frame skipping; keeps the P-frame chain
-  Turbo+    skips both P- and B-frames; last-resort keyframe/slideshow mode
+  Turbo+    skips both P- and B-frames and applies maximum degradation (incl.
+            no I-frame deblocking) to the keyframes it still shows, keeping
+            that decode short enough to hold audio through it; last-resort
+            keyframe/slideshow mode
   TurboGT   skips B-frames, keeps P-frames, and applies maximum degradation
             to every decoded picture; best aggressive PiStorm/Emu68 mode
 

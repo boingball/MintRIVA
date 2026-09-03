@@ -1068,10 +1068,24 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
         in.i4_degrade_pics = 3;
         break;
     case MR_H264_SPEED_TURBO_PLUS:
-        /* Deliberately aggressive: ask libavc to skip both P and B pictures. */
+        /* Deliberately aggressive: ask libavc to skip both P and B pictures,
+         * so every displayed frame is a keyframe. That makes the keyframe
+         * decode - full intra prediction plus deblocking, with none of the
+         * time savings B/P-skip gives every other picture - the single
+         * blocking call between displayed frames, and on a slow CPU (e.g. a
+         * bare 68060) it can run long enough to drain Paula's whole hardware
+         * buffer with no audio_service() in between (h264_decode()'s service
+         * hook only fires between NAL sub-calls, never mid-call - see
+         * mr_h264_set_service()'s callers). Degrade every decoded picture,
+         * same as TurboGT's IH264D_CMD_CTL_DEGRADE level below, instead of
+         * only non-key ones: it disables I-frame deblocking here, which
+         * shortens exactly that blocking call and keeps Paula fed. Turbo+ is
+         * already documented as a last-resort keyframe/slideshow mode, so
+         * trading a little keyframe sharpness for smooth audio is the right
+         * side of that trade. */
         skip_mode = IVD_SKIP_PB;
         in.i4_degrade_type = (1 << 1) | (1 << 3);
-        in.i4_degrade_pics = 3;
+        in.i4_degrade_pics = 4;
         break;
     case MR_H264_SPEED_TURBO_GT:
         /* Preserve the reference P-frame chain like Turbo, but apply the
