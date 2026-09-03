@@ -34,6 +34,25 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
 # DIV2 is an alternate AVI FourCC for the same Microsoft v2 bitstream. Remux
 # the identical packets so both codec tags share one ffmpeg reference set.
 ffmpeg -v error -i test_mp42.avi -c copy -tag:v DIV2 test_div2.avi -y
+# WMV1 (Windows Media Video 7 / MSMPEG4 v3): same H.263-derived macroblock
+# skeleton as MP42 but with selectable RL/DC/MV VLC tables, coded-block-
+# pattern prediction on intra blocks, and flipflop MC rounding. Two qscales
+# exercise both the plain-table and higher-quantizer/escape-3 coding paths.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -c:v wmv1 -g 12 -qscale:v 4 -b:v 800k test_wmv1.avi -y
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -c:v wmv1 -g 12 -qscale:v 20 -b:v 800k test_wmv1_q20.avi -y
+# WMV2 (Windows Media Video 8): builds on WMV1's grammar with bitplane-coded
+# skip, three qscale-selected CBP tables, adaptive MV prediction, MSPEL
+# motion compensation, the Adaptive Block Transform, and an H.263-style
+# in-loop deblocking filter. -flags +loop turns the last of those on (off
+# by default); mspel/abt/per_mb_rl are already on by default at these
+# settings. Two qscales exercise both the plain-table and the qscale>10
+# CBP-table-selection threshold.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -c:v wmv2 -g 12 -qscale:v 4 -b:v 800k -flags +loop test_wmv2.avi -y
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -c:v wmv2 -g 12 -qscale:v 20 -b:v 800k -flags +loop test_wmv2_q20.avi -y
 # H.264 High Profile in MP4: CABAC, 8x8 transform-capable profile, B-frame
 # reordering and avcC/length-prefixed NAL handling. AAC-LC exercises the same
 # container's interleaved compressed-audio samples.
@@ -94,6 +113,14 @@ rm -rf ref_mp4v_sp && mkdir -p ref_mp4v_sp
 ffmpeg -v error -i test_mp4v_sp.avi ref_mp4v_sp/f%03d.ppm -y
 rm -rf ref_mp42 && mkdir -p ref_mp42
 ffmpeg -v error -i test_mp42.avi ref_mp42/f%03d.ppm -y
+rm -rf ref_wmv1 && mkdir -p ref_wmv1
+ffmpeg -v error -i test_wmv1.avi ref_wmv1/f%03d.ppm -y
+rm -rf ref_wmv1_q20 && mkdir -p ref_wmv1_q20
+ffmpeg -v error -i test_wmv1_q20.avi ref_wmv1_q20/f%03d.ppm -y
+rm -rf ref_wmv2 && mkdir -p ref_wmv2
+ffmpeg -v error -i test_wmv2.avi ref_wmv2/f%03d.ppm -y
+rm -rf ref_wmv2_q20 && mkdir -p ref_wmv2_q20
+ffmpeg -v error -i test_wmv2_q20.avi ref_wmv2_q20/f%03d.ppm -y
 rm -rf ref_h264_high && mkdir -p ref_h264_high
 ffmpeg -v error -i test_h264_high.mp4 ref_h264_high/f%03d.ppm -y
 rm -rf ref_mpeg2_ts && mkdir -p ref_mpeg2_ts

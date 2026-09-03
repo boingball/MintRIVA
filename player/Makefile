@@ -29,7 +29,7 @@ CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
            core/mr_mpeg2.c $(LIBMPEG2_SRC) \
-           core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h263.c core/mr_h264.c \
+           core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
            core/mr_msvideo1.c core/mr_rle.c \
            core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S \
            $(LIBAVC_SRC)
@@ -59,7 +59,9 @@ HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
            core/mr_dither.h core/mr_ham.h core/mr_scale.h core/mr_c2p.h \
            core/mr_mpeg1.h core/mr_mpeg2.h \
            core/mr_mpeg4.h core/mr_mpeg4_tables.inc \
-           core/mr_msmpeg4v2.h core/mr_h263.h core/mr_h264.h core/mr_types.h
+           core/mr_msmpeg4v2.h core/mr_wmv.h core/mr_wmv_tables.inc \
+           core/mr_wmv2.h core/mr_wmv2_tables.inc \
+           core/mr_h263.h core/mr_h264.h core/mr_types.h
 HEADERS  += core/mr_msvideo1.h core/mr_rle.h
 HEADERS  += core/mr_rawvideo.h core/mr_yuv.h
 HEADERS  += amiga/mintvid_version.h
@@ -271,6 +273,8 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
 	    && test -d tests/assets/ref_mp42 && test -f tests/assets/test_div2.avi \
+	    && test -d tests/assets/ref_wmv1 && test -d tests/assets/ref_wmv1_q20 \
+	    && test -d tests/assets/ref_wmv2 && test -d tests/assets/ref_wmv2_q20 \
 	    && test -d tests/assets/ref_h264_high \
 	    && test -f tests/assets/test_h264_aac.ts \
 	    && test -f tests/assets/test_h264_aac.m2ts \
@@ -304,6 +308,14 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_decode tests/assets/test_mp42.avi --check tests/assets/ref_mp42
 	@echo "[Microsoft MPEG-4 v2 / DIV2]"
 	./mr_decode tests/assets/test_div2.avi --check tests/assets/ref_mp42
+	@echo "[WMV1 / WMV7 qscale 4]"
+	./mr_decode tests/assets/test_wmv1.avi --check tests/assets/ref_wmv1
+	@echo "[WMV1 / WMV7 qscale 20]"
+	./mr_decode tests/assets/test_wmv1_q20.avi --check tests/assets/ref_wmv1_q20
+	@echo "[WMV2 / WMV8 qscale 4, loop filter on]"
+	./mr_decode tests/assets/test_wmv2.avi --check tests/assets/ref_wmv2
+	@echo "[WMV2 / WMV8 qscale 20, loop filter on]"
+	./mr_decode tests/assets/test_wmv2_q20.avi --check tests/assets/ref_wmv2_q20
 	@echo "[H.264 High Profile avc1 + B-frames]"
 	./mr_decode tests/assets/test_h264_high.mp4 --check tests/assets/ref_h264_high
 	@echo "[H.264 borrowed YUV display-buffer lifecycle]"

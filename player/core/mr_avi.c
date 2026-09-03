@@ -81,6 +81,18 @@ static void parse_strl(mr_avi *a, int idx, const uint8_t *p, const uint8_t *end)
                             }
                             a->video.config_len += colors * 3;
                         }
+                    } else if (size > 40) {
+                        /* No palette at this bit depth: pass through whatever
+                         * compressor-specific bytes trail the standard 40-byte
+                         * BITMAPINFOHEADER (e.g. WMV2's packed 4-byte
+                         * extension header - fps/bitrate/mspel/loop_filter/
+                         * abt_flag/... - read once at decoder-open time, the
+                         * AVI-container equivalent of ffmpeg's extradata). */
+                        uint32_t extra = size - 40;
+                        if (extra > sizeof(a->video_config) - 2)
+                            extra = sizeof(a->video_config) - 2;
+                        memcpy(a->video_config + 2, body + 40, extra);
+                        a->video.config_len += extra;
                     }
                     a->video.config = a->video_config;
                 }

@@ -66,7 +66,7 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
       vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
       vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c \
-      core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h263.c core/mr_h264.c \
+      core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
       core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c \
       core/mr_yuv_m68k.S"
 LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
@@ -215,6 +215,16 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
 echo "[Microsoft MPEG-4 v2 / MP42, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp42.avi \
     --check tests/assets/ref_mp42
+echo "[WMV1 / WMV7, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_wmv1.avi \
+    --check tests/assets/ref_wmv1
+run "$BUILD/mr_decode.m68k" tests/assets/test_wmv1_q20.avi \
+    --check tests/assets/ref_wmv1_q20
+echo "[WMV2 / WMV8, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_wmv2.avi \
+    --check tests/assets/ref_wmv2
+run "$BUILD/mr_decode.m68k" tests/assets/test_wmv2_q20.avi \
+    --check tests/assets/ref_wmv2_q20
 echo "[MPEG-1, real m68k/big-endian - exercises the new motion-comp asm]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg1.mpg \
     --check tests/assets/ref_mpeg1

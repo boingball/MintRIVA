@@ -9,6 +9,8 @@ static const mr_codec *const g_codecs[] = {
     &mr_codec_mpeg2,
     &mr_codec_mpeg4,
     &mr_codec_msmpeg4v2,
+    &mr_codec_wmv1,
+    &mr_codec_wmv2,
     &mr_codec_h263,
     &mr_codec_msvideo1,
     &mr_codec_rle,
