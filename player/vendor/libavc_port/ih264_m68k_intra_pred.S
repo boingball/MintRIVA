@@ -89,7 +89,7 @@ mr_ih264_intra_pred_luma_16x16_plane_m68k:
 	clr.l	%d2
 	move.b	22(%a2),%d2
 	sub.l	%d2,%d1
-	muls.l	#2,%d1
+	add.l	%d1,%d1
 	add.l	%d1,%d0
 
 	clr.l	%d1
@@ -137,7 +137,7 @@ mr_ih264_intra_pred_luma_16x16_plane_m68k:
 	clr.l	%d2
 	move.b	16(%a2),%d2		/* topleft */
 	sub.l	%d2,%d1
-	muls.l	#8,%d1
+	lsl.l	#3,%d1
 	add.l	%d1,%d0			/* d0 = H */
 
 	move.l	%d0,%d1
@@ -160,7 +160,7 @@ mr_ih264_intra_pred_luma_16x16_plane_m68k:
 	clr.l	%d2
 	move.b	10(%a2),%d2
 	sub.l	%d2,%d1
-	muls.l	#2,%d1
+	add.l	%d1,%d1
 	add.l	%d1,%d0
 
 	clr.l	%d1
@@ -208,7 +208,7 @@ mr_ih264_intra_pred_luma_16x16_plane_m68k:
 	clr.l	%d2
 	move.b	16(%a2),%d2		/* topleft */
 	sub.l	%d2,%d1
-	muls.l	#8,%d1
+	lsl.l	#3,%d1
 	add.l	%d1,%d0			/* d0 = V */
 
 	move.l	%d0,%d1
@@ -1320,7 +1320,7 @@ mr_ih264_intra_pred_chroma_8x8_plane_m68k:
 	clr.l	%d2
 	move.b	20(%a2),%d2
 	sub.l	%d2,%d1
-	muls.l	#2,%d1
+	add.l	%d1,%d1
 	add.l	%d1,%d0
 
 	clr.l	%d1
@@ -1357,7 +1357,7 @@ mr_ih264_intra_pred_chroma_8x8_plane_m68k:
 	clr.l	%d2
 	move.b	12(%a2),%d2
 	sub.l	%d2,%d1
-	muls.l	#2,%d1
+	add.l	%d1,%d1
 	add.l	%d1,%d0
 
 	clr.l	%d1
@@ -1443,7 +1443,7 @@ mr_ih264_intra_pred_chroma_8x8_plane_m68k:
 	clr.l	%d2
 	move.b	21(%a2),%d2
 	sub.l	%d2,%d1
-	muls.l	#2,%d1
+	add.l	%d1,%d1
 	add.l	%d1,%d0
 
 	clr.l	%d1
@@ -1480,7 +1480,7 @@ mr_ih264_intra_pred_chroma_8x8_plane_m68k:
 	clr.l	%d2
 	move.b	13(%a2),%d2
 	sub.l	%d2,%d1
-	muls.l	#2,%d1
+	add.l	%d1,%d1
 	add.l	%d1,%d0
 
 	clr.l	%d1
