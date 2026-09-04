@@ -83,8 +83,9 @@
 /* load in the generic algorithm.                                         */
 	.macro	MR_DEBLK_ABS reg, scratch, done
 #if defined(__mc68060__) || defined(__mc68060)
-	move.l	\reg,\scratch
-	asr.l	#31,\scratch
+	tst.l	\reg
+	smi	\scratch
+	extb.l	\scratch
 	eor.l	\scratch,\reg
 	sub.l	\scratch,\reg
 #else
