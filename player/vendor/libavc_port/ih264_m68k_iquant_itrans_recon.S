@@ -23,14 +23,15 @@
  *    pi2_dc_ld_addr; chroma: always take pi2_dc_src directly, skipping
  *    dequant for that one tap) and in the output/pred pointer step per
  *    column (luma: 1 byte; chroma: 2 bytes, interleaved UV). The dequant
- *    (`.Linv_quant`) and vertical-pass (`.Lvert_recon_tail`/`.Lrecon_row`)
+ *    (`MR_INV_QUANT`) and vertical-pass (`.Lvert_recon_tail`/
+ *    `MR_RECON_ROW`)
  *    logic is shared between them.
  *
  *  - ih264_iquant_itrans_recon_4x4_dc and its chroma counterpart both just
  *    broadcast one already-computed DC pixel value, clipped and added to
  *    each of the 16 prediction samples, with the same 1-byte-vs-2-byte
  *    column step distinction. Shared via `.Ldc_broadcast_tail`/
- *    `.Ldc_clip_store`.
+ *    `MR_DC_CLIP_STORE`.
  *
  * INV_QUANT (ih264_trans_macros.h): value = ((raw*iscal*weight + rnd) <<
  * qp_div_6) >> 4, all in WORD32 (matching -fwrapv's defined-overflow
@@ -95,33 +96,33 @@
 	rts
 
 /* ---------------------------------------------------------------------- */
-/* .Linv_quant: one INV_QUANT() dequant. Input: %d0 = raw coefficient     */
+/* MR_INV_QUANT: inline one INV_QUANT() dequant. Input: %d0 = raw         */
 /* (sign-extended WORD16 -> WORD32), %d1 = iscal (zero-extended UWORD16), */
 /* %d2 = weight (zero-extended UWORD16); %d6 = qp_div_6, %d7 = rnd_fact   */
 /* (both persistent, set once by the caller/.Lcompute_rnd, not consumed). */
 /* Output: %d0 = dequantised value (WORD32, untruncated). Clobbers %d0    */
 /* only - %d1/%d2/%d6/%d7 all survive unread-back, so a caller that still */
 /* needs its %d1/%d2 inputs after the call must have already used them.   */
-/* bsr-callable, leaf. qbits is fixed at 4 for every 4x4 call site here,  */
-/* so it is baked in as an immediate rather than passed.                  */
+/* qbits is fixed at 4 for every 4x4 call site here, so it is baked in as */
+/* an immediate rather than passed.                                       */
 /* ---------------------------------------------------------------------- */
-.Linv_quant:
+	.macro	MR_INV_QUANT
 	muls.l	%d1,%d0
 	muls.l	%d2,%d0
 	add.l	%d7,%d0
 	lsl.l	%d6,%d0
 	asr.l	#4,%d0
-	rts
+	.endm
 
 /* ---------------------------------------------------------------------- */
-/* .Lrecon_row: round+clip+store one reconstructed pixel, advance both    */
+/* MR_RECON_ROW: inline round+clip+store one reconstructed pixel, advance */
 /* cursors by one row. Input: %d6 = raw x_a+x_b sum (WORD16-untruncated), */
 /* %a4 = pred cursor, %a2 = out cursor, %a0 = pred_strd (value, not a     */
 /* pointer - added via ADDA), %a1 = out_strd (value). Output: writes      */
 /* *%a2, advances %a4 += pred_strd, %a2 += out_strd. Clobbers %d6/%d7.    */
-/* bsr-callable, leaf.                                                    */
+/* Inlining avoids four BSR/RTS pairs per column in this hot pixel loop.  */
 /* ---------------------------------------------------------------------- */
-.Lrecon_row:
+	.macro	MR_RECON_ROW
 	ext.l	%d6			/* truncate x_a+x_b to WORD16 (i_macro's
 					 * first C assignment), matching the
 					 * vendored `i_macro = x0 + x3;` step */
@@ -130,25 +131,25 @@
 	clr.l	%d7
 	move.b	(%a4),%d7
 	add.l	%d7,%d6
-	bmi.s	.Lrecon_row_lo
+	bmi.s	.Lrecon_row_lo_\@
 	cmp.l	#255,%d6
-	ble.s	.Lrecon_row_store
+	ble.s	.Lrecon_row_store_\@
 	move.l	#255,%d6
-	bra.s	.Lrecon_row_store
-.Lrecon_row_lo:
+	bra.s	.Lrecon_row_store_\@
+.Lrecon_row_lo_\@:
 	moveq	#0,%d6
-.Lrecon_row_store:
+.Lrecon_row_store_\@:
 	move.b	%d6,(%a2)
 	adda.l	%a0,%a4
 	adda.l	%a1,%a2
-	rts
+	.endm
 
 /* ---------------------------------------------------------------------- */
-/* .Ldc_clip_store: round(already done by caller)+clip+store one pixel,   */
+/* MR_DC_CLIP_STORE: inline round(already done)+clip+store one pixel,     */
 /* advance both cursors by one row. Input: %d0 = i_macro (already         */
 /* rounded/truncated WORD16 value, persistent - NOT clobbered), %a4 =     */
 /* pred cursor, %a2 = out cursor, %a0 = pred_strd (value), %a1 = out_strd */
-/* (value). Clobbers %d6. bsr-callable, leaf.                             */
+/* (value). Clobbers %d6.                                                  */
 /*                                                                          */
 /* The `ext.l %d6` below matters: the vendored C computes                  */
 /* `x = i_macro + *pu1_pred_ptr; *pu1_out = CLIP_U8(x);` where `x` is      */
@@ -163,23 +164,23 @@
 /* realistic dequantised magnitudes never approach the WORD16 truncation   */
 /* boundary this needs to matter) or exercised by a fuzz test until now.   */
 /* ---------------------------------------------------------------------- */
-.Ldc_clip_store:
+	.macro	MR_DC_CLIP_STORE
 	clr.l	%d6
 	move.b	(%a4),%d6
 	add.l	%d0,%d6
 	ext.l	%d6
-	bmi.s	.Ldc_clip_lo
+	bmi.s	.Ldc_clip_lo_\@
 	cmp.l	#255,%d6
-	ble.s	.Ldc_clip_store_st
+	ble.s	.Ldc_clip_store_st_\@
 	move.l	#255,%d6
-	bra.s	.Ldc_clip_store_st
-.Ldc_clip_lo:
+	bra.s	.Ldc_clip_store_st_\@
+.Ldc_clip_lo_\@:
 	moveq	#0,%d6
-.Ldc_clip_store_st:
+.Ldc_clip_store_st_\@:
 	move.b	%d6,(%a2)
 	adda.l	%a0,%a4
 	adda.l	%a1,%a2
-	rts
+	.endm
 
 /* ---------------------------------------------------------------------- */
 /* .Lvert_recon_tail: shared vertical-pass tail for the two full-4x4-     */
@@ -224,19 +225,19 @@
 
 	move.l	%d2,%d6
 	add.l	%d3,%d6
-	bsr	.Lrecon_row		/* row0: x0+x3 */
+	MR_RECON_ROW			/* row0: x0+x3 */
 
 	move.l	%d0,%d6
 	add.l	%d1,%d6
-	bsr	.Lrecon_row		/* row1: x1+x2 */
+	MR_RECON_ROW			/* row1: x1+x2 */
 
 	move.l	%d0,%d6
 	sub.l	%d1,%d6
-	bsr	.Lrecon_row		/* row2: x1-x2 */
+	MR_RECON_ROW			/* row2: x1-x2 */
 
 	move.l	%d2,%d6
 	sub.l	%d3,%d6
-	bsr	.Lrecon_row		/* row3: x0-x3 */
+	MR_RECON_ROW			/* row3: x0-x3 */
 
 	adda.l	#2,%a3			/* pi2_tmp_ptr++ (1 WORD16 element) */
 	adda.l	%d4,%a5
@@ -252,7 +253,7 @@
 /* ---------------------------------------------------------------------- */
 /* .Ldc_broadcast_tail: shared broadcast tail for the two DC-only entry   */
 /* points. Entry state: %d0 = i_macro (already rounded/truncated,         */
-/* persistent - .Ldc_clip_store never touches it), %a5 = pu1_pred column  */
+/* persistent - MR_DC_CLIP_STORE never touches it), %a5 = pred column,    */
 /* base, %a6 = pu1_out column base, %a0 = pred_strd (value), %a1 =        */
 /* out_strd (value), %d4 = column step in bytes (1 luma / 2 chroma), %d5  */
 /* = column counter (4). Reached via `bra`. Neither DC entry point        */
@@ -263,10 +264,10 @@
 .Ldc_broadcast_tail:
 	movea.l	%a5,%a4
 	movea.l	%a6,%a2
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
 	adda.l	%d4,%a5
 	adda.l	%d4,%a6
 	subq.l	#1,%d5
@@ -314,7 +315,7 @@ mr_ih264_iquant_itrans_recon_4x4_m68k:
 	move.w	(%a5),%d2
 	move.w	(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,(%sp)		/* q0 */
 	cmp.l	#4,%d5
 	bne.s	.Lq4_row0_done
@@ -334,7 +335,7 @@ mr_ih264_iquant_itrans_recon_4x4_m68k:
 	move.w	2(%a5),%d2
 	move.w	2(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,4(%sp)		/* q1 */
 
 	clr.l	%d1
@@ -343,7 +344,7 @@ mr_ih264_iquant_itrans_recon_4x4_m68k:
 	move.w	4(%a5),%d2
 	move.w	4(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,8(%sp)		/* q2 */
 
 	clr.l	%d1
@@ -352,7 +353,7 @@ mr_ih264_iquant_itrans_recon_4x4_m68k:
 	move.w	6(%a5),%d2
 	move.w	6(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,12(%sp)		/* q3 */
 
 	move.l	(%sp),%d0		/* q0 */
@@ -431,7 +432,7 @@ mr_ih264_iquant_itrans_recon_4x4_dc_m68k:
 	move.w	(%a3),%d2
 	move.w	(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	bra.s	.Ldcl_have_q0
 
 .Ldcl_use_addr:
@@ -494,7 +495,7 @@ mr_ih264_iquant_itrans_recon_chroma_4x4_m68k:
 	move.w	(%a5),%d2
 	move.w	(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,(%sp)		/* q0 */
 .Lqc_row_k1:
 	clr.l	%d1
@@ -503,7 +504,7 @@ mr_ih264_iquant_itrans_recon_chroma_4x4_m68k:
 	move.w	2(%a5),%d2
 	move.w	2(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,4(%sp)		/* q1 */
 
 	clr.l	%d1
@@ -512,7 +513,7 @@ mr_ih264_iquant_itrans_recon_chroma_4x4_m68k:
 	move.w	4(%a5),%d2
 	move.w	4(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,8(%sp)		/* q2 */
 
 	clr.l	%d1
@@ -521,7 +522,7 @@ mr_ih264_iquant_itrans_recon_chroma_4x4_m68k:
 	move.w	6(%a5),%d2
 	move.w	6(%a2),%d0
 	ext.l	%d0
-	bsr	.Linv_quant
+	MR_INV_QUANT
 	move.l	%d0,12(%sp)		/* q3 */
 
 	move.l	(%sp),%d0		/* q0 */
@@ -678,22 +679,22 @@ mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k:
 	rts
 
 /* ---------------------------------------------------------------------- */
-/* .Lc8r_invquant: one INV_QUANT() dequant, qbits=6 (vs. .Linv_quant's     */
-/* qbits=4). Same register contract as .Linv_quant otherwise - see that    */
+/* MR_C8R_INVQUANT: inline one INV_QUANT() dequant, qbits=6 (vs.           */
+/* MR_INV_QUANT's qbits=4). Same register contract as that macro - see its */
 /* routine's own header comment above.                                     */
 /* ---------------------------------------------------------------------- */
-.Lc8r_invquant:
+	.macro	MR_C8R_INVQUANT
 	muls.l	%d1,%d0
 	muls.l	%d2,%d0
 	add.l	%d7,%d0
 	lsl.l	%d6,%d0
 	asr.l	#6,%d0
-	rts
+	.endm
 
 /* ---------------------------------------------------------------------- */
-/* .Lc8r_recon_row: round+clip+store one reconstructed pixel, advance both */
-/* cursors by one row - same shape as .Lrecon_row above, deliberately NOT  */
-/* reused: .Lrecon_row's leading `ext.l %d6` truncates the raw z-pair sum  */
+/* MR_C8R_RECON_ROW: inline round+clip+store one reconstructed pixel and   */
+/* advance both cursors by one row. It deliberately does not use the 4x4  */
+/* macro: MR_RECON_ROW's leading `ext.l %d6` truncates the raw z-pair sum  */
 /* to WORD16 before rounding because the 4x4 C computes i_macro in two    */
 /* separate steps (`i_macro = x0 + x3;` - a WORD16-typed assignment, this  */
 /* is where the truncation genuinely happens in the 4x4 case - then        */
@@ -709,24 +710,24 @@ mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k:
 /* the WORD16 range, which real coefficient data does often enough to      */
 /* matter. Same register contract as .Lrecon_row otherwise.                */
 /* ---------------------------------------------------------------------- */
-.Lc8r_recon_row:
+	.macro	MR_C8R_RECON_ROW
 	add.l	#32,%d6
 	asr.l	#6,%d6
 	clr.l	%d7
 	move.b	(%a4),%d7
 	add.l	%d7,%d6
-	bmi.s	.Lc8r_recon_row_lo
+	bmi.s	.Lc8r_recon_row_lo_\@
 	cmp.l	#255,%d6
-	ble.s	.Lc8r_recon_row_store
+	ble.s	.Lc8r_recon_row_store_\@
 	move.l	#255,%d6
-	bra.s	.Lc8r_recon_row_store
-.Lc8r_recon_row_lo:
+	bra.s	.Lc8r_recon_row_store_\@
+.Lc8r_recon_row_lo_\@:
 	moveq	#0,%d6
-.Lc8r_recon_row_store:
+.Lc8r_recon_row_store_\@:
 	move.b	%d6,(%a2)
 	adda.l	%a0,%a4
 	adda.l	%a1,%a2
-	rts
+	.endm
 
 /* ---------------------------------------------------------------------- */
 /* .Lc8r_idct1d: shared 8-wide 2-stage butterfly used by both the          */
@@ -743,9 +744,8 @@ mr_ih264_iquant_itrans_recon_chroma_4x4_dc_m68k:
 	 * first instruction runs, so %sp here is 4 lower than what the caller
 	 * (and the W0..Z7 offset table in this file's header comment) uses -
 	 * every offset below is the caller's own W0..Z7 offset plus 4. None
-	 * of this file's other bsr-callable subroutines (.Lrecon_row,
-	 * .Ldc_clip_store, .Linv_quant, .Lcompute_rnd and this file's own
-	 * .Lc8r_invquant/.Lc8r_compute_rnd) touch %sp-relative memory at all
+	 * other helper and inline-macro code in this file does not touch
+	 * %sp-relative memory at all
 	 * (register-only contracts), so this +4 adjustment has no precedent
 	 * to copy from elsewhere in this file - it is specific to this being
 	 * the first subroutine here to read/write its caller's locals frame
@@ -897,7 +897,7 @@ mr_ih264_iquant_itrans_recon_8x8_m68k:
 	move.w	(%a4),%d1
 	clr.l	%d2
 	move.w	(%a5),%d2
-	bsr	.Lc8r_invquant
+	MR_C8R_INVQUANT
 	move.w	%d0,(%a3)
 	adda.l	#2,%a2
 	adda.l	#2,%a3
@@ -1006,28 +1006,28 @@ mr_ih264_iquant_itrans_recon_8x8_m68k:
 
 	move.l	64(%sp),%d6		/* Z0 */
 	add.l	92(%sp),%d6		/* Z7 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 	move.l	72(%sp),%d6		/* Z2 */
 	add.l	84(%sp),%d6		/* Z5 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 	move.l	80(%sp),%d6		/* Z4 */
 	add.l	76(%sp),%d6		/* Z3 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 	move.l	88(%sp),%d6		/* Z6 */
 	add.l	68(%sp),%d6		/* Z1 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 	move.l	88(%sp),%d6		/* Z6 */
 	sub.l	68(%sp),%d6		/* Z1 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 	move.l	80(%sp),%d6		/* Z4 */
 	sub.l	76(%sp),%d6		/* Z3 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 	move.l	72(%sp),%d6		/* Z2 */
 	sub.l	84(%sp),%d6		/* Z5 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 	move.l	64(%sp),%d6		/* Z0 */
 	sub.l	92(%sp),%d6		/* Z7 */
-	bsr	.Lc8r_recon_row
+	MR_C8R_RECON_ROW
 
 	adda.l	#2,%a3			/* next column: 1 WORD16 */
 	adda.l	#1,%a5			/* next column, pred (luma: 1 byte) */
@@ -1067,7 +1067,7 @@ mr_ih264_iquant_itrans_recon_8x8_dc_m68k:
 	move.w	(%a3),%d2
 	move.w	(%a2),%d0
 	ext.l	%d0
-	bsr	.Lc8r_invquant
+	MR_C8R_INVQUANT
 
 	add.l	#32,%d0
 	asr.l	#6,%d0
@@ -1095,14 +1095,14 @@ mr_ih264_iquant_itrans_recon_8x8_dc_m68k:
 .Lc8r_dc_broadcast_tail:
 	movea.l	%a5,%a4
 	movea.l	%a6,%a2
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
-	bsr	.Ldc_clip_store
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
+	MR_DC_CLIP_STORE
 	adda.l	#1,%a5			/* next column, pred (luma: 1 byte) */
 	adda.l	#1,%a6			/* next column, out (luma: 1 byte) */
 	subq.l	#1,%d5

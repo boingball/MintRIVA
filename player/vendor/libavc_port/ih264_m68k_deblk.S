@@ -74,6 +74,27 @@
 	.globl	mr_ih264_deblk_luma_vert_bslt4_m68k
 	.globl	mr_ih264_deblk_luma_horz_bslt4_m68k
 
+/* The 68060 has a deep pipeline and pays heavily for a mispredicted       */
+/* conditional branch. Pixel differences have no useful sign bias, so the */
+/* traditional BPL/NEG absolute-value idiom is close to unpredictable.     */
+/* Use the branch-free two's-complement form only for the 060 build; the   */
+/* shorter branch remains preferable on 030/040. The scratch register is  */
+/* dead at every call site and is overwritten by the following threshold  */
+/* load in the generic algorithm.                                         */
+	.macro	MR_DEBLK_ABS reg, scratch, done
+#if defined(__mc68060__) || defined(__mc68060)
+	tst.l	\reg
+	smi	\scratch
+	extb.l	\scratch
+	eor.l	\scratch,\reg
+	sub.l	\scratch,\reg
+#else
+	bpl.s	\done
+	neg.l	\reg
+\done:
+#endif
+	.endm
+
 /* ---------------------------------------------------------------------- */
 /* Vertical edge: taps sit at constant -4/-3/-2/-1/0/1/2/3 byte            */
 /* displacements from the column cursor; only the +src_strd step to the   */
@@ -98,35 +119,27 @@ mr_ih264_deblk_luma_vert_bs4_m68k:
 
 	move.l	%d2,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lv_abs1
-	neg.l	%d0
-.Lv_abs1:
+	MR_DEBLK_ABS %d0,%d1,.Lv_abs1
 	move.l	44(%sp),%d1		/* alpha    (12+32) */
 	cmp.l	%d1,%d0
 	bge	.Lv_skip
 
 	move.l	%d5,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lv_abs2
-	neg.l	%d0
-.Lv_abs2:
+	MR_DEBLK_ABS %d0,%d1,.Lv_abs2
 	move.l	48(%sp),%d1		/* beta     (16+32) */
 	cmp.l	%d1,%d0
 	bge	.Lv_skip
 
 	move.l	%d4,%d0
 	sub.l	%d2,%d0
-	bpl.s	.Lv_abs3
-	neg.l	%d0
-.Lv_abs3:
+	MR_DEBLK_ABS %d0,%d1,.Lv_abs3
 	cmp.l	%d1,%d0			/* %d1 still beta */
 	bge	.Lv_skip
 
 	move.l	%d2,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lv_abs4
-	neg.l	%d0
-.Lv_abs4:
+	MR_DEBLK_ABS %d0,%d1,.Lv_abs4
 	move.l	44(%sp),%d1		/* alpha */
 	asr.l	#2,%d1
 	addq.l	#2,%d1			/* %d1 = (alpha>>2)+2 */
@@ -138,9 +151,7 @@ mr_ih264_deblk_luma_vert_bs4_m68k:
 	move.b	2(%a3),%d7		/* q2 */
 	move.l	%d7,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lv_abs5
-	neg.l	%d0
-.Lv_abs5:
+	MR_DEBLK_ABS %d0,%d1,.Lv_abs5
 	move.l	48(%sp),%d1		/* beta */
 	cmp.l	%d1,%d0
 	bge	.Lv_q_weak
@@ -198,9 +209,7 @@ mr_ih264_deblk_luma_vert_bs4_m68k:
 	move.b	-3(%a3),%d7		/* p2 */
 	move.l	%d7,%d0
 	sub.l	%d2,%d0
-	bpl.s	.Lv_abs6
-	neg.l	%d0
-.Lv_abs6:
+	MR_DEBLK_ABS %d0,%d1,.Lv_abs6
 	move.l	48(%sp),%d1		/* beta */
 	cmp.l	%d1,%d0
 	bge	.Lv_p_weak
@@ -312,35 +321,27 @@ mr_ih264_deblk_luma_horz_bs4_m68k:
 
 	move.l	%d2,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lh_abs1
-	neg.l	%d0
-.Lh_abs1:
+	MR_DEBLK_ABS %d0,%d1,.Lh_abs1
 	move.l	44(%sp),%d1		/* alpha */
 	cmp.l	%d1,%d0
 	bge	.Lh_skip
 
 	move.l	%d5,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lh_abs2
-	neg.l	%d0
-.Lh_abs2:
+	MR_DEBLK_ABS %d0,%d1,.Lh_abs2
 	move.l	48(%sp),%d1		/* beta */
 	cmp.l	%d1,%d0
 	bge	.Lh_skip
 
 	move.l	%d4,%d0
 	sub.l	%d2,%d0
-	bpl.s	.Lh_abs3
-	neg.l	%d0
-.Lh_abs3:
+	MR_DEBLK_ABS %d0,%d1,.Lh_abs3
 	cmp.l	%d1,%d0
 	bge	.Lh_skip
 
 	move.l	%d2,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lh_abs4
-	neg.l	%d0
-.Lh_abs4:
+	MR_DEBLK_ABS %d0,%d1,.Lh_abs4
 	move.l	44(%sp),%d1		/* alpha */
 	asr.l	#2,%d1
 	addq.l	#2,%d1
@@ -355,9 +356,7 @@ mr_ih264_deblk_luma_horz_bs4_m68k:
 	move.b	(%a0),%d7		/* q2 */
 	move.l	%d7,%d0
 	sub.l	%d3,%d0
-	bpl.s	.Lh_abs5
-	neg.l	%d0
-.Lh_abs5:
+	MR_DEBLK_ABS %d0,%d1,.Lh_abs5
 	move.l	48(%sp),%d1		/* beta */
 	cmp.l	%d1,%d0
 	bge	.Lh_q_weak
@@ -428,9 +427,7 @@ mr_ih264_deblk_luma_horz_bs4_m68k:
 	move.b	(%a0),%d7		/* p2 */
 	move.l	%d7,%d0
 	sub.l	%d2,%d0
-	bpl.s	.Lh_abs6
-	neg.l	%d0
-.Lh_abs6:
+	MR_DEBLK_ABS %d0,%d1,.Lh_abs6
 	move.l	48(%sp),%d1		/* beta */
 	cmp.l	%d1,%d0
 	bge	.Lh_p_weak
@@ -625,9 +622,7 @@ mr_ih264_deblk_luma_vert_bslt4_m68k:
 	move.b	(%a3),%d1		/* q0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lvw_sk1
-	neg.l	%d2
-.Lvw_sk1:
+	MR_DEBLK_ABS %d2,%d3,.Lvw_sk1
 	move.l	48(%sp),%d3		/* alpha (12+36) */
 	cmp.l	%d3,%d2
 	bge	.Lvw_skip
@@ -636,9 +631,7 @@ mr_ih264_deblk_luma_vert_bslt4_m68k:
 	move.b	1(%a3),%d0		/* q1 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2			/* q1-q0 */
-	bpl.s	.Lvw_sk2
-	neg.l	%d2
-.Lvw_sk2:
+	MR_DEBLK_ABS %d2,%d3,.Lvw_sk2
 	move.l	52(%sp),%d3		/* beta  (16+36) */
 	cmp.l	%d3,%d2
 	bge	.Lvw_skip
@@ -649,9 +642,7 @@ mr_ih264_deblk_luma_vert_bslt4_m68k:
 	move.b	-1(%a3),%d1		/* p0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lvw_sk3
-	neg.l	%d2
-.Lvw_sk3:
+	MR_DEBLK_ABS %d2,%d3,.Lvw_sk3
 	cmp.l	%d3,%d2			/* %d3 still beta */
 	bge	.Lvw_skip
 
@@ -663,9 +654,7 @@ mr_ih264_deblk_luma_vert_bslt4_m68k:
 	move.b	-1(%a3),%d1		/* p0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lvw_ap1
-	neg.l	%d2
-.Lvw_ap1:
+	MR_DEBLK_ABS %d2,%d3,.Lvw_ap1
 	move.l	52(%sp),%d3		/* beta */
 	cmp.l	%d3,%d2
 	bge	.Lvw_ap1_no
@@ -677,9 +666,7 @@ mr_ih264_deblk_luma_vert_bslt4_m68k:
 	move.b	(%a3),%d1		/* q0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lvw_aq1
-	neg.l	%d2
-.Lvw_aq1:
+	MR_DEBLK_ABS %d2,%d3,.Lvw_aq1
 	cmp.l	%d3,%d2			/* %d3 still beta */
 	bge	.Lvw_aq1_no
 	addq.l	#1,%d7
@@ -720,9 +707,7 @@ mr_ih264_deblk_luma_vert_bslt4_m68k:
 	move.b	-1(%a3),%d1		/* p0 */
 	move.l	%d0,%d3
 	sub.l	%d1,%d3
-	bpl.s	.Lvw_ap2
-	neg.l	%d3
-.Lvw_ap2:
+	MR_DEBLK_ABS %d3,%d0,.Lvw_ap2
 	move.l	52(%sp),%d0		/* beta */
 	cmp.l	%d0,%d3
 	bge	.Lvw_p1_skip
@@ -763,9 +748,7 @@ mr_ih264_deblk_luma_vert_bslt4_m68k:
 	move.b	(%a3),%d1		/* q0 */
 	move.l	%d0,%d3
 	sub.l	%d1,%d3
-	bpl.s	.Lvw_aq2
-	neg.l	%d3
-.Lvw_aq2:
+	MR_DEBLK_ABS %d3,%d0,.Lvw_aq2
 	move.l	52(%sp),%d0		/* beta */
 	cmp.l	%d0,%d3
 	bge	.Lvw_q1_skip
@@ -881,9 +864,7 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	move.b	(%a3),%d1		/* q0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lhw_sk1
-	neg.l	%d2
-.Lhw_sk1:
+	MR_DEBLK_ABS %d2,%d3,.Lhw_sk1
 	move.l	48(%sp),%d3		/* alpha */
 	cmp.l	%d3,%d2
 	bge	.Lhw_skip
@@ -894,9 +875,7 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	move.b	(%a0),%d0		/* q1 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2			/* q1-q0 */
-	bpl.s	.Lhw_sk2
-	neg.l	%d2
-.Lhw_sk2:
+	MR_DEBLK_ABS %d2,%d3,.Lhw_sk2
 	move.l	52(%sp),%d3		/* beta */
 	cmp.l	%d3,%d2
 	bge	.Lhw_skip
@@ -912,9 +891,7 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	move.b	(%a0),%d1		/* p0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lhw_sk3
-	neg.l	%d2
-.Lhw_sk3:
+	MR_DEBLK_ABS %d2,%d3,.Lhw_sk3
 	cmp.l	%d3,%d2			/* %d3 still beta */
 	bge	.Lhw_skip
 
@@ -932,9 +909,7 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	move.b	(%a0),%d1		/* p0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lhw_ap1
-	neg.l	%d2
-.Lhw_ap1:
+	MR_DEBLK_ABS %d2,%d3,.Lhw_ap1
 	move.l	52(%sp),%d3		/* beta */
 	cmp.l	%d3,%d2
 	bge	.Lhw_ap1_no
@@ -949,9 +924,7 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	move.b	(%a3),%d1		/* q0 */
 	move.l	%d0,%d2
 	sub.l	%d1,%d2
-	bpl.s	.Lhw_aq1
-	neg.l	%d2
-.Lhw_aq1:
+	MR_DEBLK_ABS %d2,%d3,.Lhw_aq1
 	cmp.l	%d3,%d2			/* %d3 still beta */
 	bge	.Lhw_aq1_no
 	addq.l	#1,%d7
@@ -1005,9 +978,7 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	move.b	(%a0),%d1		/* p0 */
 	move.l	%d0,%d3
 	sub.l	%d1,%d3
-	bpl.s	.Lhw_ap2
-	neg.l	%d3
-.Lhw_ap2:
+	MR_DEBLK_ABS %d3,%d0,.Lhw_ap2
 	move.l	52(%sp),%d0		/* beta */
 	cmp.l	%d0,%d3
 	bge	.Lhw_p1_skip
@@ -1063,9 +1034,7 @@ mr_ih264_deblk_luma_horz_bslt4_m68k:
 	move.b	(%a3),%d1		/* q0 */
 	move.l	%d0,%d3
 	sub.l	%d1,%d3
-	bpl.s	.Lhw_aq2
-	neg.l	%d3
-.Lhw_aq2:
+	MR_DEBLK_ABS %d3,%d0,.Lhw_aq2
 	move.l	52(%sp),%d0		/* beta */
 	cmp.l	%d0,%d3
 	bge	.Lhw_q1_skip
@@ -2075,4 +2044,3 @@ mr_ih264_deblk_chroma_horz_bslt4_m68k:
 #if defined(__ELF__)
 	.section .note.GNU-stack,"",@progbits
 #endif
-
