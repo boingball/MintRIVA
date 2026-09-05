@@ -1,5 +1,49 @@
 # MintVID changelog
 
+## 1.2.0 - 2026-09-05
+
+### Improved
+
+- H.264 m68k inverse-quantisation, inverse-transform and reconstruction hot
+  loops inline their tiny coefficient/pixel helpers, removing up to 64
+  `BSR`/`RTS` pairs from an 8x8 block while retaining bit-exact truncation,
+  rounding and clipping.
+- The 68060 H.264 luma deblocking path replaces unpredictable sign branches
+  with an exact branchless absolute-difference sequence. The existing compact
+  implementation remains selected for 68030 and 68040 builds.
+- MintVID now enables MintAMP's CPU-aware AAC Huffman, dequantisation, stereo
+  and IMDCT helpers by default. The 68030/040 builds use hardware full-result
+  multiplication; the 68060 uses a bit-exact partial-product implementation
+  and avoids software emulation of register-pair `MULS.L`.
+- H.263, MPEG-2, MPEG-4 Part 2, Microsoft MP42/DIV2, WMV1 and WMV2 now share
+  MintVID's validated YUV420-to-RGB converter. Amiga builds consequently use
+  the existing hand-written m68k output loop rather than six scalar,
+  multiply-heavy private implementations.
+- CI exercises one million random and edge-case 68060 AAC multiply pairs and
+  retains host plus big-endian m68k codec conformance coverage.
+- Release metadata, Aminet text, AmigaGuide and licence index are refreshed
+  for 1.2.0.
+
+### Real-hardware validation
+
+- Stereo AAC/AAC+ playback was confirmed clean through MintAMP on a real
+  68060, and the same embedded AAC path remained stable alongside H.264 in
+  MintVID.
+- On the tested A1200 68060 with AGA/HAM8, the lowest-resolution BBC One HLS
+  stream approached real time with audio. Turbo+ maintained continuous audio
+  with keyframe/slideshow video when full decoding could not keep pace.
+- These results do not promise real-time H.264 at higher resolutions or on
+  every accelerator; CPU clock, memory, stream profile and display mode remain
+  significant.
+
+### Compatibility
+
+- Use the release matching a real 68030, 68040 or 68060. The 030/040 AAC
+  full-result multiply path is deliberately not suitable for a real 68060,
+  where that instruction form is software-emulated. PiStorm/Emu68 continues
+  to use MintVID040.
+- `AACASM=0` remains available for portable-C A/B and troubleshooting builds.
+
 ## 1.1.1 - 2026-09-03
 
 ### Added
