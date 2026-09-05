@@ -134,6 +134,18 @@ make -f Makefile.amiga all SSL=1 SSLCERTS=1 CPU=68060
 make -f Makefile.amiga release SSL=1 SSLCERTS=1   # release/MintVID030, 040 and 060
 ```
 
+MintVID compiles its MintAMP/Helix AAC decoder directly into `mrplay`.
+`AACASM=1` is the default: 68030/040 builds use the hardware full-result
+`MULS.L` path, while the 68060 build reconstructs the same result with
+hardware two-operand partial products and avoids the emulated register-pair
+instruction. For a portable-C comparison, clean and rebuild with
+`AACASM=0`:
+
+```sh
+make -f Makefile.amiga clean
+make -f Makefile.amiga mrplay CPU=68060 AACASM=0
+```
+
 For normal classic systems use the build matching the CPU. **PiStorm/Emu68
 users should use MintVID040.** Vampire/Apollo 68080 is not yet validated, so
 there is no official optimised-build recommendation for it. Use MintVID060 only

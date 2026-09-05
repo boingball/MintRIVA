@@ -55,6 +55,10 @@ CPUFLAGS := -m$(CPU)
 include vendor/libavc_port/libavc.mk
 SSL ?= 0
 SSLCERTS ?= 0
+# MintVID compiles MintAMP's Helix AAC sources directly into mrplay rather
+# than loading aac.decoder. Keep MintAMP's CPU-aware helpers enabled by
+# default; AACASM=0 remains the portable-C A/B and troubleshooting build.
+AACASM ?= 1
 HTTP_SSL_FLAGS =
 ifneq ($(filter 1 yes true on,$(SSL)),)
 HTTP_SSL_FLAGS += -DHAVE_AMISSL
@@ -128,6 +132,16 @@ MINTAMP_ROOT ?= vendor/MintAMP
 # ASM60_GROUPS="lowrate060 huffman midside planars8"` selects the same
 # groups the MintAMP release build above was tested with.
 MINTAMP_CPU := $(patsubst 680%,%,$(CPU))
+
+MINTAMP_AAC_CPPFLAGS :=
+MINTAMP_AAC_OPT_CHECK := true
+ifneq ($(filter 1 yes true on,$(AACASM)),)
+MINTAMP_AAC_CPPFLAGS := \
+    -I$(MINTAMP_ROOT)/decoders \
+    -include audio/mr_aac_m68k_config.h
+MINTAMP_AAC_OPT_CHECK := test -f audio/mr_aac_m68k_config.h -a \
+    -f $(MINTAMP_ROOT)/decoders/aac_m68k_aac_optimized.h
+endif
 
 MINTAMP_ASM_CPPFLAGS_FULL030 := \
     -DAMIGA_M68K_ASM \
@@ -214,6 +228,7 @@ MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
                 -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
                 -I$(MINTAMP_ROOT)/decoders/aac \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim \
+                $(MINTAMP_AAC_CPPFLAGS) \
                 $(MINTAMP_ASM_CPPFLAGS)
 LIBA52_ROOT = vendor/liba52
 LIBA52_FLAGS = -I$(LIBA52_ROOT)
@@ -383,6 +398,9 @@ check-mintamp:
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
 	      -f $(MINTAMP_ROOT)/decoders/aac/aacdec.h || { \
 	  echo "ERROR: initialise the MintAMP submodule first:"; \
+	  echo "  git submodule update --init --recursive"; exit 1; }
+	@$(MINTAMP_AAC_OPT_CHECK) || { \
+	  echo "ERROR: the pinned MintAMP submodule lacks the AAC m68k helper:"; \
 	  echo "  git submodule update --init --recursive"; exit 1; }
 
 check-libavc:

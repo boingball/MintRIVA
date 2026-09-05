@@ -51,6 +51,7 @@
  * the class of subtle bug mr_wmv.c's own development history warns about.
  */
 #include "mr_wmv2.h"
+#include "mr_yuv.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1578,24 +1579,11 @@ static int decode_picture(wmv2_ctx *c, bitreader *b)
 
 static void yuv_to_rgb(wmv2_ctx *c)
 {
-    int x, y;
-    for (y = 0; y < c->h; y++) {
-        const uint8_t *yl = c->cur[0] + (size_t)y * c->ystride;
-        const uint8_t *cb = c->cur[1] + (size_t)(y >> 1) * c->cstride;
-        const uint8_t *cr = c->cur[2] + (size_t)(y >> 1) * c->cstride;
-        uint8_t *dst = c->rgb + (size_t)y * c->w * 3;
-        for (x = 0; x < c->w; x++) {
-            int yy = yl[x] - 16;
-            int u = cb[x >> 1] - 128;
-            int v = cr[x >> 1] - 128;
-            int r = (298 * yy + 409 * v + 128) >> 8;
-            int g = (298 * yy - 100 * u - 208 * v + 128) >> 8;
-            int bb = (298 * yy + 516 * u + 128) >> 8;
-            *dst++ = (uint8_t)clip8(r);
-            *dst++ = (uint8_t)clip8(g);
-            *dst++ = (uint8_t)clip8(bb);
-        }
-    }
+    mr_yuv420_to_rgb24(c->rgb, c->w * 3,
+                       c->cur[0], c->ystride,
+                       c->cur[1], c->cstride,
+                       c->cur[2], c->cstride,
+                       c->w, c->h, NULL, NULL);
 }
 
 /* ---- codec lifecycle ---------------------------------------------------- */
