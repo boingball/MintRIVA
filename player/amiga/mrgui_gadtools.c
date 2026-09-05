@@ -1,5 +1,6 @@
 /* MintVID-GT: OS 3.0 GadTools controller for the shared mrplay engine. */
 #include "../core/mr_play_options.h"
+#include "mr_akiko.h"
 #include "mr_gui_menu.h"
 #include "mr_master_options.h"
 #include "mr_player_status.h"
@@ -65,6 +66,9 @@ typedef struct gt_app {
     mr_display_mode modes[7];
     STRPTR mode_labels[8];
     unsigned mode_count;
+    mr_c2p_mode c2p_modes[3];
+    STRPTR c2p_labels[4];
+    unsigned c2p_count;
     char path[512];
     struct MsgPort *timer_port;
     struct timerequest *timer_io;
@@ -72,8 +76,6 @@ typedef struct gt_app {
     ULONG status_seq;
 } gt_app;
 
-static STRPTR c2p_labels[] = {(STRPTR)"C2P: Standard", (STRPTR)"C2P: CD32",
-                             (STRPTR)"C2P: Kalms", NULL};
 static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
                               (STRPTR)"H.264: Balanced", (STRPTR)"H.264: Fast",
                               (STRPTR)"H.264: Turbo", (STRPTR)"H.264: Turbo+",
@@ -90,6 +92,24 @@ static int aga(void)
 static int ecs(void)
 {
     return GfxBase && (GfxBase->ChipRevBits0 & GFXF_HR_DENISE) != 0;
+}
+
+static void add_c2p_mode(gt_app *app, STRPTR label, mr_c2p_mode value)
+{
+    if (app->c2p_count >= sizeof app->c2p_modes / sizeof app->c2p_modes[0])
+        return;
+    app->c2p_labels[app->c2p_count] = label;
+    app->c2p_modes[app->c2p_count++] = value;
+    app->c2p_labels[app->c2p_count] = NULL;
+}
+
+static ULONG c2p_row(const gt_app *app, mr_c2p_mode value)
+{
+    unsigned i;
+    for (i = 0; i < app->c2p_count; i++)
+        if (app->c2p_modes[i] == value)
+            return (ULONG)i;
+    return 0;
 }
 
 static int screen_is_rtg(struct Screen *screen)
@@ -190,8 +210,8 @@ static void read_options(gt_app *app, mr_play_options *options)
     mr_play_options_default(options);
     options->display = mode < app->mode_count ? app->modes[mode]
                                                : MR_DISPLAY_AGA;
-    options->c2p = c2p == 1 ? MR_C2P_AKIKO :
-                   c2p == 2 ? MR_C2P_KALMS : MR_C2P_STANDARD;
+    options->c2p = c2p < app->c2p_count
+                 ? app->c2p_modes[c2p] : MR_C2P_STANDARD;
     options->h264_performance = h264 <= MR_H264_PERF_TURBO_GT
                               ? (mr_h264_performance)h264
                               : MR_H264_PERF_AUTO;
@@ -209,28 +229,43 @@ static void publish_options(gt_app *app)
     mr_master_options_publish(app->master, &options);
 }
 
-static void update_mode_controls(gt_app *app)
+static void update_mode_controls(gt_app *app, int output_changed)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
     ULONG disabled = selected < app->mode_count &&
                      (app->modes[selected] == MR_DISPLAY_CGX ||
                       app->modes[selected] == MR_DISPLAY_P96);
     ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
+    mr_c2p_mode selected_c2p_mode = selected_c2p < app->c2p_count
+                                  ? app->c2p_modes[selected_c2p]
+                                  : MR_C2P_STANDARD;
+    int kalms_available;
 
     /* HAM8 uses the normal eight-plane Kalms converter. CPU-specific 040/060
      * GUI builds also keep Kalms selected for the linked HAM6 bitmap kernel.
      * Lower-depth indexed modes snap back to Standard; disabled RTG mode keeps
      * the selection so returning to AGA restores the faster default. */
-    if (selected_c2p == 2 && !disabled &&
-        !(selected < app->mode_count &&
-          (app->modes[selected] == MR_DISPLAY_AGA ||
-           app->modes[selected] == MR_DISPLAY_HAM8
+    kalms_available = selected < app->mode_count &&
+                      ((app->modes[selected] == MR_DISPLAY_AGA && aga()) ||
+                       app->modes[selected] == MR_DISPLAY_HAM8
 #ifdef MR_KALMS_040
-           || app->modes[selected] == MR_DISPLAY_HAM6
+                       || app->modes[selected] == MR_DISPLAY_HAM6
 #endif
-          ))) {
+                      );
+
+    /* Restore the fast default after an unsupported output forced Standard.
+     * A manual Standard choice remains valid until the output is changed, and
+     * an explicit CD32/Akiko selection is never overwritten. */
+    if (output_changed && kalms_available &&
+        selected_c2p_mode == MR_C2P_STANDARD) {
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
-                         GTCY_Active, 0, TAG_DONE);
+                         GTCY_Active, c2p_row(app, MR_C2P_KALMS), TAG_DONE);
+        selected_c2p_mode = MR_C2P_KALMS;
+    }
+    if (selected_c2p_mode == MR_C2P_KALMS &&
+        !disabled && !kalms_available) {
+        GT_SetGadgetAttrs(app->c2p, app->window, NULL,
+                         GTCY_Active, c2p_row(app, MR_C2P_STANDARD), TAG_DONE);
     }
 
     GT_SetGadgetAttrs(app->c2p, app->window, NULL,
@@ -422,6 +457,11 @@ static int build_window(gt_app *app)
     }
     app->mode_labels[app->mode_count] = NULL;
 
+    add_c2p_mode(app, (STRPTR)"C2P: Standard", MR_C2P_STANDARD);
+    if (mr_akiko_available())
+        add_c2p_mode(app, (STRPTR)"C2P: CD32", MR_C2P_AKIKO);
+    add_c2p_mode(app, (STRPTR)"C2P: Kalms", MR_C2P_KALMS);
+
     g = app->gadgets;
     app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 56, 20, 573, 15,
         "", GTST_MaxChars, sizeof(app->path));
@@ -430,7 +470,7 @@ static int build_window(gt_app *app)
     app->mode = g = add_gadget(app, g, CYCLE_KIND, G_MODE, 8, 44, 240, 16,
         "", GTCY_Labels, (ULONG)app->mode_labels);
     app->c2p = g = add_gadget(app, g, CYCLE_KIND, G_C2P, 254, 44, 145, 16,
-        "", GTCY_Labels, (ULONG)c2p_labels);
+        "", GTCY_Labels, (ULONG)app->c2p_labels);
     app->h264 = g = add_gadget(app, g, CYCLE_KIND, G_H264, 405, 44, 170, 16,
         "", GTCY_Labels, (ULONG)h264_labels);
     app->lace = g = add_gadget(app, g, CHECKBOX_KIND, G_LACE, 581, 45, 80, 14,
@@ -478,7 +518,7 @@ static int build_window(gt_app *app)
         GT_SetGadgetAttrs(app->mode, app->window, NULL,
                          GTCY_Active, default_mode, TAG_DONE);
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
-                         GTCY_Active, 2, TAG_DONE);
+                         GTCY_Active, c2p_row(app, MR_C2P_KALMS), TAG_DONE);
         GT_SetGadgetAttrs(app->h264, app->window, NULL,
                          GTCY_Active, MR_H264_PERF_TURBO_GT, TAG_DONE);
     }
@@ -518,7 +558,7 @@ int main(void)
         !build_window(&app))
         goto out;
     app.master = mr_master_options_open();
-    update_mode_controls(&app);
+    update_mode_controls(&app, TRUE);
     publish_options(&app);
     mr_gui_menu_open(&app.menu, app.window);
     mask = 1UL << app.window->UserPort->mp_SigBit;
@@ -565,11 +605,11 @@ int main(void)
                 case G_IPTV: open_browser(&app, 0); break;
                 case G_YOUTUBE: open_browser(&app, 1); break;
                 case G_MODE:
-                    update_mode_controls(&app);
+                    update_mode_controls(&app, TRUE);
                     publish_options(&app);
                     break;
                 case G_C2P:
-                    update_mode_controls(&app);
+                    update_mode_controls(&app, FALSE);
                     publish_options(&app);
                     break;
                 case G_H264: case G_LACE: case G_2X:

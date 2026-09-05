@@ -22,6 +22,25 @@ All Kalms input allocations are explicitly aligned to 16 bytes. Geometry that
 does not meet a kernel's documented width, offset, depth, plane-layout, or
 row-length requirements falls back to `WritePixelArray8`.
 
+## GUI selection behaviour
+
+Kalms is selected by default in both the ReAction and GadTools controllers.
+Changing to a chipset output with a matching kernel restores Kalms if an
+unsupported lower-depth mode previously had to show Standard. A manual
+Standard selection remains in effect until the output mode changes, and an
+explicit CD32/Akiko selection is never overwritten.
+
+HAM8 supports both the Laced and 2x controls. Exact 2x eight-plane geometry
+uses the fused `c2p2x2_8_c5_bm` kernel; an aspect-ratio fit that is not exactly
+2x uses the normal eight-plane Kalms converter after resizing. HAM6 uses the
+linked six-plane kernel in 68040/68060 builds and falls back safely in the
+68030 build.
+
+The CD32 choice is only added when the read-only Akiko identification word
+`$CAFE` is present at `$B80002`. The player repeats this check before touching
+the C2P port, so a manually supplied `--cd32` on another Amiga falls back to
+the CPU C2P path instead of writing to unimplemented hardware.
+
 ## Dirty-row conversion
 
 The 1x1 indexed/HAM8 path still keeps a persistent screen-width chunky buffer,

@@ -11,6 +11,7 @@
  */
 #include "amiga_display.h"
 #include "display_backend.h"
+#include "mr_akiko.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_ham.h"
 #include "../core/mr_scale.h"
@@ -189,7 +190,7 @@ static void *aga_open(int w, int h, const char *title)
     aga_state *s;
     int   scale = (g_aga_scale == 2) ? 2 : 1;
     int   ham   = g_aga_ham;
-    int   akiko = g_aga_akiko;
+    int   akiko = g_aga_akiko && mr_akiko_available();
     int   riva_c2p_mode = (g_aga_c2p == 2) && !akiko;
     int   kalms_c2p_mode = (g_aga_c2p == 3) && !akiko;
     int   c2p   = (g_aga_c2p == 1) && !akiko;
@@ -199,6 +200,9 @@ static void *aga_open(int w, int h, const char *title)
 
     s_enc = s_blit = s_frame_enc = s_frame_blit = 0;
     s_kalms_active = 0;
+
+    if (g_aga_akiko && !akiko)
+        printf("planar: Akiko not detected; using CPU C2P\n");
 
     /* HAM8 and eight indexed planes need AGA. HAM6 is the original Amiga HAM
      * mode and works on OCS/ECS too. Ordinary OCS/ECS output uses a genuine

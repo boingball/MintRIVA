@@ -319,12 +319,19 @@ parsers, playback settings, and status/control protocol:
 Keep one complete GUI set beside `mrplay` (or put `mrplay` on the command
 path), run the controller, choose a
 movie and select **AGA**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
-apply to the three chipset modes; CGX playback opens a size-gadget window and
-scales the video as that window is resized. The **C2P** chooser selects the standard graphics.library path, CD32 Akiko
+apply to the chipset modes, including HAM6 and HAM8. A laced screen is opened
+when the source height after the requested 2x scale exceeds the non-laced
+256-line canvas. Exact 2x eight-plane output, including HAM8, uses the fused
+Kalms 2x2 converter; other sizes are fitted while preserving aspect ratio.
+CGX playback opens a size-gadget window and scales the video as that window is
+resized. The **C2P** chooser selects the standard graphics.library path, CD32 Akiko
 hardware, or the Kalms converter for chipset playback. Kalms is the default;
 unsupported geometry or bitmap layouts fall back safely to graphics.library.
-The chooser is disabled for CGX. Play starts the selected movie, Pause toggles
-playback, Stop exits it, and Fast forward toggles unpaced decode.
+Changing output mode restores Kalms whenever the new mode has a matching
+kernel. CD32 is only offered when Akiko's hardware ID is detected; an explicit
+Akiko selection is preserved. The chooser is disabled for CGX. Play starts the
+selected movie, Pause toggles playback, Stop exits it, and Fast forward toggles
+unpaced decode.
 
 **H.264 performance modes**
 
