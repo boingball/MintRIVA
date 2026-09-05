@@ -1,19 +1,19 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.1 (3.9.2026)
+@$VER: MintVID.guide 1.2 (5.9.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @wordwrap
 @smartwrap
 
 @node MAIN "MintVID Guide"
-@{b}MintVID 1.1.1@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
+@{b}MintVID 1.2.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
 hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG machines.
 
 This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.1.1 " LINK WhatsNew}
+  @{" What's new in 1.2.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -35,7 +35,7 @@ page below also links back here.
 @{b}MintVID Guide@{ub} - Contents
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.1.1 " LINK WhatsNew}
+  @{" What's new in 1.2.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" The GUI editions "    LINK GUIEditions}
@@ -48,28 +48,30 @@ page below also links back here.
   @{" Support MintVID "     LINK Support}
 @endnode
 
-@node WhatsNew "What's new in 1.1.1"
+@node WhatsNew "What's new in 1.2.0"
 @toc MintVID.guide/MAIN
-@{b}MintVID 1.1.1@{ub}
+@{b}MintVID 1.2.0@{ub}
 
-This is a small stability and codec follow-up to 1.1.0. All of the TurboGT,
-Kalms C2P, RTG, YouTube, queueing and audio improvements from 1.1.0 remain.
+This is a performance release for real accelerated m68k systems. The WMV7/8
+and HLS stability work from 1.1.1 and the wider 1.1.0 improvements remain.
 
-  - Adds native WMV1 / Windows Media Video 7 decoding for AVI files.
-  - Adds native WMV2 / Windows Media Video 8 decoding for AVI files, including
-    the normal MSPEL, adaptive block transform and loop-filter paths.
-  - Regression-tests both WMV decoders against ffmpeg on the host and on a
-    big-endian m68k target under QEMU.
-  - Fixes the remaining live-HLS ESC/Stop shutdown regression seen as a
-    "MintVID HLS fetch" #80000004 worker failure during A1200/WinUAE testing.
-  - Restores the proven 1.0.0 single-next-segment compressed HLS lookahead
-    policy while retaining the 1.1.0 hard worker join and AmiSSL cleanup fixes.
-  - Refreshes the shared GUI About requester to describe local/HLS/IPTV/
-    YouTube playback and the WMV7/WMV8 additions.
+  - Speeds up H.264 inverse-transform/reconstruction by inlining the tiny
+    operations previously called for individual coefficients and pixels.
+  - Selects an exact branchless luma-deblocking primitive for MintVID060;
+    MintVID030 and MintVID040 retain their established shorter sequence.
+  - Enables MintAMP's CPU-aware AAC Huffman, dequantisation, stereo and IMDCT
+    helpers by default. The 68030/040 editions use hardware full-result
+    multiplication. MintVID060 uses bit-exact partial products and avoids the
+    software-emulated register-pair MULS.L instruction.
+  - Gives H.263, MPEG-2, MPEG-4 Part 2, MP42/DIV2, WMV1 and WMV2 the existing
+    shared table-driven/m68k-ASM YUV output path.
+  - Adds a million-pair 68060 AAC arithmetic check to CI alongside the host
+    and big-endian m68k codec conformance suites.
 
-WMV1's low-bitrate spatial intra/inter prediction mode is deliberately
-rejected rather than approximated. WMV2 IntraX8 (J-frame) coding is also not
-supported; normal tested WMV1/WMV2 AVI I/P streams use the native decoders.
+Real-A1200 68060 testing confirmed clean stereo AAC and brought the lowest-
+resolution BBC One H.264/HLS stream close to real time using AGA/HAM8. Turbo+
+keeps audio continuous and displays keyframes when full video remains beyond
+the machine. Performance still depends on CPU clock, stream and display mode.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
 for the detailed list.
@@ -97,11 +99,10 @@ on processor speed, codec complexity, resolution, bitrate and display mode:
     formats may decode correctly without being practical in real time.
   - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2,
     MPEG-4 Part 2 and WMV7/8 become more practical at modest resolutions,
-    especially with RTG. H.264/AVC remains far too demanding for normal
-    real-time YouTube/IPTV viewing on classic CPUs. On a tested 68060 using
-    AGA, lowest-resolution YouTube/IPTV H.264 playback has been around 7 fps
-    at best. Treat H.264 streaming here as a compatibility or demonstration
-    path rather than smooth video playback.
+    especially with RTG. H.264/AVC remains extremely demanding, but 1.2.0
+    brought the lowest-resolution BBC One HLS stream close to real time on a
+    tested real 68060 using AGA/HAM8. Higher resolutions remain beyond normal
+    classic hardware, and results depend on the exact stream and configuration.
   - PiStorm/Emu68 (ARM-hosted 68k) - use the MintVID040 build. H.264/AVC
     (Baseline through High Profile, CABAC and B-frames) becomes much more
     practical. On the tested Pi3-based PiStorm 600, low-resolution H.264
@@ -264,10 +265,11 @@ HLS prefers supported low-resolution variants (640 px wide by default)
 and cannot make DRM, login-only, unsupported-codec, or dead streams
 playable.
 
-On classic 68040/060 hardware, an H.264 IPTV stream decoding successfully
-does not mean it will be real-time. The tested 68060/AGA system has been
-around 7 fps at best at the lowest streaming resolutions. PiStorm/Emu68 is
-the intended tier for practical H.264 IPTV playback.
+Classic 68040/060 H.264 results depend heavily on the exact stream and output
+mode. With the 1.2.0 optimisations, the lowest-resolution BBC One HLS stream
+has approached real time on a tested real 68060 using AGA/HAM8, while higher
+resolutions remain beyond normal classic hardware. PiStorm/Emu68 remains the
+practical tier for broader H.264 IPTV playback.
 
 Only the selected country's channels are held in RAM; unrelated global
 streams are validated and discarded. Each channel retains up to four
@@ -308,10 +310,11 @@ player challenges are rejected. Selecting 720p, 1080p, or Best tries
 stay on the 360p muxed format. There is no standard muxed 480p or 1080p
 target yet.
 
-On classic 68040/060 machines this H.264 support is primarily compatibility
-and demonstration territory, not a claim of smooth YouTube playback. A
-tested 68060 with AGA has managed around 7 fps at best at the lowest online
-resolutions. PiStorm/Emu68 is the practical streaming target.
+On classic 68040/060 machines H.264 remains highly dependent on the stream and
+output mode. The lowest-resolution BBC One HLS stream has approached real time
+on a tested real 68060 with AGA/HAM8 after the 1.2.0 work, but ordinary 360p
+uploads and higher resolutions remain beyond normal classic hardware.
+PiStorm/Emu68 is the practical target for the broader YouTube range.
 
 This support is intentionally narrow: age/login/region-restricted
 videos, DRM, uploads without a usable muxed format, and YouTube's
