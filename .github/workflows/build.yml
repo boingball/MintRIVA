@@ -52,6 +52,10 @@ jobs:
           sudo apt-get install -y -qq \
             ffmpeg gcc-m68k-linux-gnu binutils-m68k-linux-gnu qemu-user
 
+      - name: Check the 68060 AAC partial-product arithmetic
+        working-directory: player/vendor/MintAMP
+        run: make -f Makefile.amiga aac-mulshift60-ref-test
+
       - name: make check (host, video codecs vs ffmpeg)
         working-directory: player
         run: make check
