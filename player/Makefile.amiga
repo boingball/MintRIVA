@@ -137,12 +137,10 @@ MINTAMP_AAC_CPPFLAGS :=
 MINTAMP_AAC_OPT_CHECK := true
 ifneq ($(filter 1 yes true on,$(AACASM)),)
 MINTAMP_AAC_CPPFLAGS := \
-    -include $(MINTAMP_ROOT)/decoders/aac_m68k_aac_optimized.h \
-    -DAMIGA_M68K_ASM_AAC_HUFFMAN \
-    -DAMIGA_M68K_ASM_AAC_DEQUANT \
-    -DAMIGA_M68K_ASM_AAC_STEREO \
-    -DAMIGA_M68K_ASM_AAC_IMDCT
-MINTAMP_AAC_OPT_CHECK := test -f $(MINTAMP_ROOT)/decoders/aac_m68k_aac_optimized.h
+    -I$(MINTAMP_ROOT)/decoders \
+    -include audio/mr_aac_m68k_config.h
+MINTAMP_AAC_OPT_CHECK := test -f audio/mr_aac_m68k_config.h -a \
+    -f $(MINTAMP_ROOT)/decoders/aac_m68k_aac_optimized.h
 endif
 
 MINTAMP_ASM_CPPFLAGS_FULL030 := \
