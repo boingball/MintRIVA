@@ -7,6 +7,7 @@
  * (I-VOP intra first, then P-VOP, then the ASP tools).
  */
 #include "mr_mpeg4.h"
+#include "mr_yuv.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1380,27 +1381,15 @@ static int decode_bvop(m4_ctx *c, bitreader *b)
 /* ---- YUV420 -> RGB24 --------------------------------------------------- */
 static void yuv_to_rgb(m4_ctx *c, uint8_t *const pl[3])
 {
-    int x, y;
     /* Output the display region, but never read past the coded planes when the
      * display is larger than the coded frame; the rest of rgb stays as-is. */
     int oh = c->h < c->ch ? c->h : c->ch;
     int ow = c->w < c->cw ? c->w : c->cw;
-    for (y = 0; y < oh; y++) {
-        const uint8_t *yl = pl[0] + (size_t)y * c->ystride;
-        const uint8_t *cb = pl[1] + (size_t)(y >> 1) * c->cstride;
-        const uint8_t *cr = pl[2] + (size_t)(y >> 1) * c->cstride;
-        uint8_t *d = c->rgb + (size_t)y * c->w * 3;
-        for (x = 0; x < ow; x++) {
-            int Y = yl[x] - 16, U = cb[x >> 1] - 128, V = cr[x >> 1] - 128;
-            int r = (298 * Y + 409 * V + 128) >> 8;
-            int g = (298 * Y - 100 * U - 208 * V + 128) >> 8;
-            int bb = (298 * Y + 516 * U + 128) >> 8;
-            if (r < 0) r = 0; else if (r > 255) r = 255;
-            if (g < 0) g = 0; else if (g > 255) g = 255;
-            if (bb < 0) bb = 0; else if (bb > 255) bb = 255;
-            *d++ = (uint8_t)r; *d++ = (uint8_t)g; *d++ = (uint8_t)bb;
-        }
-    }
+    mr_yuv420_to_rgb24(c->rgb, c->w * 3,
+                       pl[0], c->ystride,
+                       pl[1], c->cstride,
+                       pl[2], c->cstride,
+                       ow, oh, NULL, NULL);
 }
 
 /* ---- codec lifecycle --------------------------------------------------- */

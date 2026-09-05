@@ -6,6 +6,7 @@
  * per call and converts the displayed YUV420 frame to RGB24.
  */
 #include "mr_mpeg2.h"
+#include "mr_yuv.h"
 
 #include "mpeg2.h"
 
@@ -22,23 +23,13 @@ typedef struct {
     int                flush_done;
 } mpeg2_state;
 
-static int clip8(int v)
-{
-    if (v < 0) return 0;
-    if (v > 255) return 255;
-    return v;
-}
-
 static mr_status emit_rgb(mr_decoder *dec, uint8_t *rgb)
 {
     mpeg2_state *s = (mpeg2_state *)dec->priv;
     const mpeg2_sequence_t *seq = s->info->sequence;
     uint8_t *const *planes = s->info->display_fbuf->buf;
     int width = dec->width, height = dec->height;
-    int y_stride, uv_stride, x, y;
-    int c, d, e, y_term;
-    int r_chroma, g_chroma, b_chroma;
-    int pairs;
+    int y_stride, uv_stride;
 
     if (!seq || !planes[0] || !planes[1] || !planes[2] || !rgb)
         return MR_EFORMAT;
@@ -47,52 +38,11 @@ static mr_status emit_rgb(mr_decoder *dec, uint8_t *rgb)
     y_stride = (int)seq->width;
     uv_stride = (int)seq->chroma_width;
 
-    for (y = 0; y < height; y++) {
-        const uint8_t *yp = planes[0] + (size_t)y * y_stride;
-        const uint8_t *up = planes[1] + (size_t)(y >> 1) * uv_stride;
-        const uint8_t *vp = planes[2] + (size_t)(y >> 1) * uv_stride;
-        uint8_t *dst = rgb + (size_t)y * dec->width * 3u;
-
-        pairs = width >> 1;
-        for (x = 0; x < pairs; x++) {
-            d = (int)*up++ - 128;
-            e = (int)*vp++ - 128;
-
-            /* YUV420 shares one U/V sample between these two pixels. */
-            r_chroma = 409 * e + 128;
-            g_chroma = -100 * d - 208 * e + 128;
-            b_chroma = 516 * d + 128;
-
-            c = (int)*yp++ - 16;
-            if (c < 0) c = 0;
-            y_term = 298 * c;
-            *dst++ = (uint8_t)clip8((y_term + r_chroma) >> 8);
-            *dst++ = (uint8_t)clip8((y_term + g_chroma) >> 8);
-            *dst++ = (uint8_t)clip8((y_term + b_chroma) >> 8);
-
-            c = (int)*yp++ - 16;
-            if (c < 0) c = 0;
-            y_term = 298 * c;
-            *dst++ = (uint8_t)clip8((y_term + r_chroma) >> 8);
-            *dst++ = (uint8_t)clip8((y_term + g_chroma) >> 8);
-            *dst++ = (uint8_t)clip8((y_term + b_chroma) >> 8);
-        }
-
-        if (width & 1) {
-            d = (int)*up - 128;
-            e = (int)*vp - 128;
-            r_chroma = 409 * e + 128;
-            g_chroma = -100 * d - 208 * e + 128;
-            b_chroma = 516 * d + 128;
-
-            c = (int)*yp - 16;
-            if (c < 0) c = 0;
-            y_term = 298 * c;
-            *dst++ = (uint8_t)clip8((y_term + r_chroma) >> 8);
-            *dst++ = (uint8_t)clip8((y_term + g_chroma) >> 8);
-            *dst++ = (uint8_t)clip8((y_term + b_chroma) >> 8);
-        }
-    }
+    mr_yuv420_to_rgb24(rgb, dec->width * 3,
+                       planes[0], y_stride,
+                       planes[1], uv_stride,
+                       planes[2], uv_stride,
+                       width, height, NULL, NULL);
 
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = dec->height;

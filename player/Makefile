@@ -165,7 +165,9 @@ mr_legacy_video_check: tests/mr_legacy_video_check.c \
                        core/mr_msvideo1.c core/mr_rle.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-mr_codec_registry_check: tests/mr_codec_registry_check.c core/mr_codec.c core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_h263.c
+mr_codec_registry_check: tests/mr_codec_registry_check.c core/mr_codec.c \
+                         core/mr_mpeg4.c core/mr_msmpeg4v2.c \
+                         core/mr_h263.c core/mr_yuv.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 mr_rawvideo_check: tests/mr_rawvideo_check.c core/mr_rawvideo.c
