@@ -43,6 +43,7 @@
 #include <string.h>
 #include "../core/mr_play_options.h"
 #include "mr_master_options.h"
+#include "mr_akiko.h"
 #include "mr_gui_menu.h"
 #include "mr_player_status.h"
 
@@ -96,6 +97,8 @@ enum {
  * hard-coded row number. This map is populated alongside the labels. */
 static mr_display_mode mode_values[7];
 static unsigned mode_count;
+static mr_c2p_mode c2p_values[3];
+static unsigned c2p_count;
 static int add_chooser_node(struct List *list, const char *text);
 
 static int chipset_has_aga(void)
@@ -116,6 +119,25 @@ static int add_mode_node(struct List *list, const char *text,
         return 0;
     mode_values[mode_count++] = value;
     return 1;
+}
+
+static int add_c2p_node(struct List *list, const char *text,
+                        mr_c2p_mode value)
+{
+    if (c2p_count >= sizeof c2p_values / sizeof c2p_values[0] ||
+        !add_chooser_node(list, text))
+        return 0;
+    c2p_values[c2p_count++] = value;
+    return 1;
+}
+
+static ULONG c2p_row(mr_c2p_mode value)
+{
+    unsigned i;
+    for (i = 0; i < c2p_count; i++)
+        if (c2p_values[i] == value)
+            return (ULONG)i;
+    return 0;
 }
 
 static int open_reaction_classes(void)
@@ -298,8 +320,8 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     GetAttr(CHECKBOX_Checked, no_audio, &checked_no_audio);
     options->display = selected < mode_count
                      ? mode_values[selected] : MR_DISPLAY_AGA;
-    options->c2p = selected_c2p == 1 ? MR_C2P_AKIKO :
-                   selected_c2p == 2 ? MR_C2P_KALMS : MR_C2P_STANDARD;
+    options->c2p = selected_c2p < c2p_count
+                 ? c2p_values[selected_c2p] : MR_C2P_STANDARD;
     options->laced = checked_lace != 0;
     options->scale_2x = checked_2x != 0;
     options->h264_performance = selected_h264 <= MR_H264_PERF_TURBO_GT
@@ -452,11 +474,14 @@ static void update_file_info(Object *file, Object *info,
 }
 
 static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
-                                 Object *twox, struct Window *window)
+                                 Object *twox, struct Window *window,
+                                 int output_changed)
 {
     ULONG selected;
     ULONG disable_chipset_options;
     ULONG selected_c2p;
+    mr_c2p_mode selected_c2p_mode;
+    int kalms_available;
 
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
@@ -472,16 +497,32 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
      * the selection so returning to AGA restores the faster default. */
     selected_c2p = 0;
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
-    if (selected_c2p == 2 && !disable_chipset_options &&
-        !(selected < mode_count &&
-          (mode_values[selected] == MR_DISPLAY_AGA ||
-           mode_values[selected] == MR_DISPLAY_HAM8
+    selected_c2p_mode = selected_c2p < c2p_count
+                      ? c2p_values[selected_c2p] : MR_C2P_STANDARD;
+    kalms_available = selected < mode_count &&
+                      ((mode_values[selected] == MR_DISPLAY_AGA &&
+                        chipset_has_aga()) ||
+                       mode_values[selected] == MR_DISPLAY_HAM8
 #ifdef MR_KALMS_040
-           || mode_values[selected] == MR_DISPLAY_HAM6
+                       || mode_values[selected] == MR_DISPLAY_HAM6
 #endif
-          ))) {
+                      );
+
+    /* An unsupported chipset mode has to show Standard while it is active,
+     * but that automatic fallback must not become the default for the next
+     * output. Restore Kalms whenever a mode change reaches an implemented
+     * kernel. Leave CD32/Akiko alone because it is an explicit hardware
+     * selection, and do not fight a manual Standard choice on a C2P event. */
+    if (output_changed && kalms_available &&
+        selected_c2p_mode == MR_C2P_STANDARD) {
         SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
-                       CHOOSER_Selected, 0, TAG_DONE);
+                       CHOOSER_Selected, c2p_row(MR_C2P_KALMS), TAG_DONE);
+        selected_c2p_mode = MR_C2P_KALMS;
+    }
+    if (selected_c2p_mode == MR_C2P_KALMS &&
+        !disable_chipset_options && !kalms_available) {
+        SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
+                       CHOOSER_Selected, c2p_row(MR_C2P_STANDARD), TAG_DONE);
     }
 
     SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
@@ -780,9 +821,10 @@ int main(void)
         (have_rtg && !add_mode_node(&modes, "RTG (P96)", MR_DISPLAY_P96)))
         goto cleanup;
     if (have_rtg) default_mode = (int)mode_count - 2;
-    if (!add_chooser_node(&c2p_modes, "Standard") ||
-        !add_chooser_node(&c2p_modes, "CD32") ||
-        !add_chooser_node(&c2p_modes, "Kalms"))
+    if (!add_c2p_node(&c2p_modes, "Standard", MR_C2P_STANDARD) ||
+        (mr_akiko_available() &&
+         !add_c2p_node(&c2p_modes, "CD32", MR_C2P_AKIKO)) ||
+        !add_c2p_node(&c2p_modes, "Kalms", MR_C2P_KALMS))
         goto cleanup;
     if (!add_chooser_node(&h264_modes, "Auto") ||
         !add_chooser_node(&h264_modes, "Quality") ||
@@ -815,7 +857,7 @@ int main(void)
                               GA_ID, G_C2P,
                               GA_RelVerify, TRUE,
                               CHOOSER_Labels, (ULONG)&c2p_modes,
-                              CHOOSER_Selected, 2,
+                              CHOOSER_Selected, c2p_row(MR_C2P_KALMS),
                               TAG_DONE);
     h264 = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                GA_ID, G_H264,
@@ -976,7 +1018,7 @@ int main(void)
         goto cleanup;
     mr_gui_menu_open(&app_menu, window);
 
-    update_mode_controls(mode, c2p, lace, twox, window);
+    update_mode_controls(mode, c2p, lace, twox, window, TRUE);
     master_options = mr_master_options_open();
     publish_play_options(master_options, mode, c2p, h264, lace, twox,
                          audio_rate, no_audio);
@@ -1021,13 +1063,13 @@ int main(void)
                     break;
 
                 case G_MODE:
-                    update_mode_controls(mode, c2p, lace, twox, window);
+                    update_mode_controls(mode, c2p, lace, twox, window, TRUE);
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, twox, audio_rate, no_audio);
                     break;
 
                 case G_C2P:
-                    update_mode_controls(mode, c2p, lace, twox, window);
+                    update_mode_controls(mode, c2p, lace, twox, window, FALSE);
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, twox, audio_rate, no_audio);
                     break;
