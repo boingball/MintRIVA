@@ -18,6 +18,38 @@
 
 ### Improved
 
+- MPEG-1 was still colour-converting through pl_mpeg's own
+  `plm_frame_to_rgb()`: the 1.2.0 change that moved H.263, MPEG-2, MPEG-4
+  Part 2, MP42/DIV2, WMV1 and WMV2 onto MintVID's shared converter missed
+  this one call site, and it is the site where it mattered most. Colour
+  conversion, not decoding, is where most of an MPEG-1 frame's time goes -
+  44% of executed instructions on a 352x288 clip - and pl_mpeg's version
+  performs two 32-bit multiplies per pixel where MintVID's performs none,
+  indexing pre-multiplied tables instead. A 68030 `MULS.L` is tens of cycles;
+  on 101k pixels per frame that is the difference between practical and not.
+  MPEG-1 now uses `mr_yuv420_to_rgb24()` like every other codec, and picks up
+  its m68k assembly with it.
+- Both shared YUV420-to-RGB converters now walk the picture a row *pair* at a
+  time. 4:2:0 gives one chroma sample per 2x2 luma quad, so the three
+  chroma-derived addends are shared by four output pixels; stepping single
+  rows recomputed them for the second row of every pair, doubling the chroma
+  work for output that was identical either way. This applies to the portable
+  C (`mr_yuv.c`, where `emit_pixel()` is now also force-inlined - GCC had been
+  emitting an indirect call twice per pixel) and to the hand-written m68k
+  kernel (`mr_yuv_m68k.S`), which was restructured to emit the whole quad,
+  streaming row 0 through the postincrement path and reaching row 1 from the
+  same pointers with the strides in `d3`/`d7`. Measured under qemu-m68k on
+  352x288, the C form is 27% faster than before. Every codec that reaches the
+  display through RGB24 benefits, MPEG-1 and MPEG-2 included.
+- `make -f Makefile.amiga YUV_ASM=0` now builds that one converter from
+  portable C while leaving every other hand-asm path enabled, so the two can
+  be A/B'd on real hardware. They are bit-identical, so it only ever changes
+  speed. The switch exists because the answer is genuinely open: the
+  assembly was written when GCC was not inlining `emit_pixel()`, which is no
+  longer true, and under qemu-m68k the C now measures about 23% faster - but
+  qemu costs instructions rather than cycles and models neither the 68030's
+  memory system nor its lack of branch prediction, which is most of what that
+  kernel is tuned around.
 - AGA HAM playback of H.264 can now convert straight from the decoder's
   YUV420P planes to HAM pixel bytes (`core/mr_yuv_ham.c`), where previously
   HAM was the one display mode still materialising a full-resolution RGB24
