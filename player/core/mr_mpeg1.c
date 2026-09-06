@@ -12,7 +12,6 @@
 #include "pl_mpeg.h"
 
 #include "mr_mpeg1.h"
-#include "mr_yuv.h"
 
 struct mr_mpeg1 {
     plm_t   *plm;
@@ -113,24 +112,21 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
     fr = plm_decode_video(m->plm);
     if (!fr) return 0;
     /*
-     * pl_mpeg ships its own YUV->RGB pass (plm_frame_to_rgb), and MPEG-1 was
-     * the one codec left using it: the 1.2.0 change that moved H.263, MPEG-2,
-     * MPEG-4 Part 2, MP42/DIV2, WMV1 and WMV2 onto MintVID's shared converter
-     * missed this call site. That mattered more here than anywhere else,
-     * because plm_frame_to_rgb() is scalar C with no m68k path while
-     * mr_yuv420_to_rgb24() dispatches to core/mr_yuv_m68k.S on Amiga builds -
-     * and colour conversion, not decoding, is where an MPEG-1 frame's time
-     * actually goes (44% of executed instructions on a 352x288 clip).
-     *
-     * pl_mpeg rounds each plane up to a whole macroblock, so the plane widths
-     * are the strides and may exceed the display width; the converter is told
-     * both, and reads only m->w/m->h of them.
+     * Deliberately pl_mpeg's own converter, not MintVID's shared
+     * mr_yuv420_to_rgb24(), even though every other codec uses the shared
+     * one. Switching this over was tried and measured worse: both are
+     * multiply-free (GCC strength-reduces pl_mpeg's constant multiplies into
+     * shift/add chains - checking the disassembly rather than the source is
+     * what settled that) and both step 2x2 quads, but on a 352x288 frame
+     * under qemu-m68k pl_mpeg's costs 649ms/300 against the shared
+     * converter's 821ms with core/mr_yuv_m68k.S active, and its output is
+     * also marginally closer to the ffmpeg reference (worst MAE 0.963 vs
+     * 1.161). Revisit if the YUV_ASM=0 question settles in the portable C's
+     * favour on real hardware - the shared C form measures 661ms, a wash with
+     * this, and then one validated converter for everything would win on
+     * merit rather than only on tidiness.
      */
-    mr_yuv420_to_rgb24(m->fb, m->w * 3,
-                       fr->y.data, (int)fr->y.width,
-                       fr->cb.data, (int)fr->cb.width,
-                       fr->cr.data, (int)fr->cr.width,
-                       m->w, m->h, NULL, NULL);
+    plm_frame_to_rgb(fr, m->fb, m->w * 3);
     out->width  = m->w;
     out->height = m->h;
     out->fmt    = MR_PIX_RGB24;

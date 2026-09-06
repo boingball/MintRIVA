@@ -18,17 +18,6 @@
 
 ### Improved
 
-- MPEG-1 was still colour-converting through pl_mpeg's own
-  `plm_frame_to_rgb()`: the 1.2.0 change that moved H.263, MPEG-2, MPEG-4
-  Part 2, MP42/DIV2, WMV1 and WMV2 onto MintVID's shared converter missed
-  this one call site, and it is the site where it mattered most. Colour
-  conversion, not decoding, is where most of an MPEG-1 frame's time goes -
-  44% of executed instructions on a 352x288 clip - and pl_mpeg's version
-  performs two 32-bit multiplies per pixel where MintVID's performs none,
-  indexing pre-multiplied tables instead. A 68030 `MULS.L` is tens of cycles;
-  on 101k pixels per frame that is the difference between practical and not.
-  MPEG-1 now uses `mr_yuv420_to_rgb24()` like every other codec, and picks up
-  its m68k assembly with it.
 - Both shared YUV420-to-RGB converters now walk the picture a row *pair* at a
   time. 4:2:0 gives one chroma sample per 2x2 luma quad, so the three
   chroma-derived addends are shared by four output pixels; stepping single
@@ -50,6 +39,14 @@
   qemu costs instructions rather than cycles and models neither the 68030's
   memory system nor its lack of branch prediction, which is most of what that
   kernel is tuned around.
+- MPEG-1 keeps pl_mpeg's own colour converter rather than moving to the shared
+  one like every other codec. Moving it was tried and measured worse: GCC
+  strength-reduces pl_mpeg's constant multiplies into shift/add chains, so
+  both are multiply-free and both step 2x2 quads, but on 352x288 under
+  qemu-m68k pl_mpeg's costs 649ms/300 iterations against the shared
+  converter's 821ms with the assembly active, and its output is marginally
+  closer to the ffmpeg reference too. `core/mr_mpeg1.c` now records that,
+  including the condition under which the switch becomes worth making.
 - AGA HAM playback of H.264 can now convert straight from the decoder's
   YUV420P planes to HAM pixel bytes (`core/mr_yuv_ham.c`), where previously
   HAM was the one display mode still materialising a full-resolution RGB24

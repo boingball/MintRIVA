@@ -112,10 +112,8 @@ mr_yuv_ham_check: tests/mr_yuv_ham_check.c core/mr_yuv_ham.c \
 	    core/mr_yuv.c core/mr_scale.c core/mr_ham.c
 
 mr_mpeg1_probe_check: tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
-                      core/mr_mpeg1.h core/pl_mpeg.h core/mr_yuv.c \
-                      core/mr_yuv.h core/mr_types.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
-	    core/mr_yuv.c
+                      core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c
 
 mr_ps_check: tests/mr_ps_check.c core/mr_ps.c core/mr_ps.h \
              core/mr_demux.h core/mr_types.h
