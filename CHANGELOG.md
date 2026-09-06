@@ -1,5 +1,67 @@
 # MintVID changelog
 
+## Unreleased
+
+### Fixed
+
+- H.264 Balanced, Fast and Turbo asked libavc to degrade only *some* pictures
+  (`i4_degrade_pics` 1 and 3). libavc skips `ih264d_set_deblocking_parameters()`
+  and `pf_compute_bs()` per macroblock on a degraded picture, but the
+  per-macroblock deblocking descriptor array they fill in persists across
+  pictures - so the next undegraded picture was deblocked against the previous
+  pictures' stale `MB_DISABLE_FILTERING` flags, boundary strengths and QPs.
+  The result was both wrong output and far more edges filtered than the
+  picture contains: measured on a 320x180 CABAC stream, Fast spent 51% of the
+  entire decode inside `ih264d_deblock_mb_nonmbaff()` and ran ~47% *slower*
+  than Quality, which deblocks every picture properly. Every degrading mode
+  now uses the all-or-nothing policy that Turbo+ and TurboGT already used.
+
+### Improved
+
+- The inter-prediction half of libavc's degrade control was dead code:
+  `i4_degrade_type` bits 2 and 3 ("faster"/"fastest inter prediction filters")
+  set `ps_dec->i4_mv_frac_mask`, and nothing in the vendored decoder reads that
+  field - `ih264d_form_mb_part_info_*()` extracts the fractional motion vector
+  with a hardcoded `& 0x3`. Fast, Turbo, Turbo+ and TurboGT were therefore only
+  ever getting the deblocking half of what they requested. MintVID now supplies
+  the missing filters itself, in `vendor/libavc_port/ih264_mc_degrade.c`,
+  selected the same way the rest of the port swaps in m68k assembly - by
+  rewriting `apf_inter_pred_luma[]` / `pf_inter_pred_chroma`, with the vendored
+  submodule untouched. Fast and below now interpolate quarter-pel luma
+  bilinearly instead of with the separable six-tap filter.
+- Chroma motion compensation - previously the single hottest function in an
+  H.264 decode at 21% of executed instructions - now takes exact shortcuts when
+  `dx` or `dy` is zero. Substituting into spec equation (8-266) collapses those
+  cases to a block copy or a two-tap average with no rounding difference, and
+  the `CLIP_U8` can never fire, so this is bit-identical and applies to every
+  speed mode including Quality. Chroma inherits the luma motion vector, so the
+  zero-motion background most streams are largely made of takes the copy path.
+- Measured on a 320x180 High Profile CABAC stream, cross-built for m68k and run
+  under qemu-m68k with the hand-written assembly active: Quality -7%
+  (bit-identical output), Balanced -30%, Fast -52%, Turbo -48%, TurboGT -8%.
+  At 640x360 the same modes are -9%, -29%, -56%, -54% and -11%.
+- `tests/mr_h264_mc_degrade_check.c` checks the exact filter set sample-for-
+  sample against Ittiam's reference for every `dx`/`dy` and block geometry, and
+  the bilinear set against a direct transcription of its documented formula.
+  It runs in both `make check` and `make check-m68k`, the latter covering the
+  unaligned longword loads the packed paths make on real big-endian m68k.
+
+### Changed
+
+- Turbo and TurboGT are now the same setting. TurboGT previously differed only
+  by disabling deblocking on keyframes as well, and every mode from Balanced
+  down now does that unconditionally - see the fix above. The obvious
+  replacement lever, truncating motion vectors to whole samples so prediction
+  becomes a block copy, was implemented and measured at 3-4% for a 17 dB PSNR
+  loss (23.1 dB against bilinear's 40.5 dB, and 17.8 dB on low-detail content),
+  so it is not shipped. TurboGT remains selectable everywhere it was - GUI
+  choosers, `--h264-speed=turbogt`, saved settings - and is both faster and
+  cleaner than the TurboGT of 1.2.0.
+- Balanced now means "in-loop deblocking off, motion compensation exact",
+  and Fast means "Balanced plus bilinear interpolation". Both descriptions are
+  what the modes actually do; the previous per-picture wording described a
+  policy the decoder was not carrying out.
+
 ## 1.2.0 - 2026-09-05
 
 ### Improved

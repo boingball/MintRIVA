@@ -73,6 +73,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     | grep -v -e ithread.c -e ih264_resi_trans_quant.c -e ih264_trans_data.c) \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
     vendor/libavc_port/ih264d_function_selector_port.c \
+    vendor/libavc_port/ih264_mc_degrade.c \
     vendor/libavc_port/ih264d_stage_profile.c \
     vendor/libavc_port/ih264_m68k_optim.c \
     vendor/libavc_port/ih264_m68k_interp.S \
@@ -130,6 +131,9 @@ $CC -o "$BUILD/mr_h264_cabac_coeff_check.m68k" tests/mr_h264_cabac_coeff_check.c
 echo "== building mr_h264_mvpred_dispatch_check.m68k (real ih264d_mvpred_nonmbaff/_nonmbaffB vs asm) =="
 $CC -o "$BUILD/mr_h264_mvpred_dispatch_check.m68k" tests/mr_h264_mvpred_dispatch_check.c $LIBAVC_SRC
 
+echo "== building mr_h264_mc_degrade_check.m68k (exact chroma/luma filter sets + bilinear vs spec) =="
+$CC -o "$BUILD/mr_h264_mc_degrade_check.m68k" tests/mr_h264_mc_degrade_check.c $LIBAVC_SRC
+
 echo "== building mr_h264_recon8x8_check.m68k (real ih264_iquant_itrans_recon_8x8/_dc vs asm) =="
 $CC -o "$BUILD/mr_h264_recon8x8_check.m68k" tests/mr_h264_recon8x8_check.c $LIBAVC_SRC
 
@@ -179,6 +183,7 @@ run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 run "$BUILD/mr_h264_m68k_check.m68k"
 run "$BUILD/mr_h264_cabac_coeff_check.m68k"
 run "$BUILD/mr_h264_mvpred_dispatch_check.m68k"
+run "$BUILD/mr_h264_mc_degrade_check.m68k"
 run "$BUILD/mr_h264_recon8x8_check.m68k"
 run "$BUILD/mr_h264_intra8x8_check.m68k"
 run "$BUILD/mr_h264_intra_chroma_check.m68k"

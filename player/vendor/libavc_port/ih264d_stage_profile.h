@@ -44,6 +44,13 @@ typedef struct mr_h264_stage_us {
  * ih264d_structs.h just to spell the parameter type. */
 void mr_h264_stage_profile_install(void *codec);
 
+/* Re-apply the motion-compensation wrappers after something else has
+ * rewritten apf_inter_pred_luma[] - mr_h264_set_speed_mode() switching filter
+ * sets, via ih264_mc_degrade.c. No-op until mr_h264_stage_profile_install()
+ * has run, so a normal playback build (and the install-time call order) costs
+ * nothing. */
+void mr_h264_stage_profile_rewrap_mc(void *codec);
+
 /* Zero the accumulators before a libavc decode sub-call. */
 void mr_h264_stage_profile_reset(void);
 

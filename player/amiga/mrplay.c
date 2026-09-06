@@ -1101,8 +1101,11 @@ static mr_h264_speed_mode effective_h264_speed(int requested)
     /* Auto follows the release's throughput-first default. TurboGT preserves
      * the P-frame reference chain, unlike Turbo+, while skipping B pictures
      * and applying libavc's strongest practical degradation policy to every
-     * decoded picture. Explicit Fast remains available for users who prefer
-     * to keep every frame, and Quality/Balanced remain deliberate opt-ins. */
+     * decoded picture - which is now also exactly Turbo's policy, TurboGT
+     * being kept as a name rather than a distinct setting (see
+     * mr_h264_set_speed_mode()). Explicit Fast remains available for users
+     * who prefer to keep every frame, and Quality/Balanced remain deliberate
+     * opt-ins. */
     return MR_H264_SPEED_TURBO_GT;
 }
 
@@ -1112,10 +1115,10 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
     mode = effective_h264_speed(requested);
-    name = mode == MR_H264_SPEED_TURBO_GT ? "TurboGT (B-skip, all-frame degrade)" :
-           mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip, all-frame degrade)" :
-           mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip)" :
-           mode == MR_H264_SPEED_FAST ? "Fast" :
+    name = mode == MR_H264_SPEED_TURBO_GT ? "TurboGT (B-skip, bilinear MC)" :
+           mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip, keyframes only)" :
+           mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip, bilinear MC)" :
+           mode == MR_H264_SPEED_FAST ? "Fast (bilinear MC)" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
     if (!mr_h264_set_speed_mode(dec, mode)) return 0;
     if (verbose || requested < 0)

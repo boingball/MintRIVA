@@ -246,14 +246,41 @@ static void intra_ref_filt_wrap(UWORD8 *pu1_left, UWORD8 *pu1_topleft,
     g_intra_us += stage_elapsed_us(t0);
 }
 
-void mr_h264_stage_profile_install(void *codec_v)
+/* Set once mr_h264_stage_profile_install() has run, so
+ * mr_h264_stage_profile_rewrap_mc() can tell "the table changed under us and
+ * needs re-wrapping" from "the profiler is not installed at all". Without it,
+ * the rewrap called from mr_h264_port_install_inter_pred() during
+ * ih264d_init_function_ptr() would wrap the table before install() got to it,
+ * and install() would then capture those wrappers as the originals. */
+static int g_installed;
+
+static void wrap_mc_table(dec_struct_t *codec)
 {
-    dec_struct_t *codec = (dec_struct_t *)codec_v;
     int i;
     for (i = 0; i < 16; i++) {
         g_mc_orig[i] = codec->apf_inter_pred_luma[i];
         codec->apf_inter_pred_luma[i] = g_mc_wrap[i];
     }
+}
+
+/* mr_h264_set_speed_mode() swaps whole inter-prediction filter sets into
+ * apf_inter_pred_luma[] (ih264_mc_degrade.c), which overwrites these
+ * wrappers. Re-apply them to the new filters so mc_us keeps reporting after a
+ * mid-stream mode change instead of silently reading zero. Re-wrapping only
+ * the MC slots, rather than calling install() again, is what keeps a wrapper
+ * from being captured as another wrapper's original. */
+void mr_h264_stage_profile_rewrap_mc(void *codec_v)
+{
+    if (!g_installed || !codec_v) return;
+    wrap_mc_table((dec_struct_t *)codec_v);
+}
+
+void mr_h264_stage_profile_install(void *codec_v)
+{
+    dec_struct_t *codec = (dec_struct_t *)codec_v;
+    int i;
+    wrap_mc_table(codec);
+    g_installed = 1;
 
     g_deblk_luma_vert_bs4_orig = codec->pf_deblk_luma_vert_bs4;
     codec->pf_deblk_luma_vert_bs4 = deblk_luma_vert_bs4_wrap;
