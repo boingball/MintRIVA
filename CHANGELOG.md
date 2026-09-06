@@ -18,6 +18,35 @@
 
 ### Improved
 
+- AGA HAM playback of H.264 can now convert straight from the decoder's
+  YUV420P planes to HAM pixel bytes (`core/mr_yuv_ham.c`), where previously
+  HAM was the one display mode still materialising a full-resolution RGB24
+  frame per picture. Hold-and-modify resets at every scanline start, so the
+  greedy encoder fuses with the YUV->RGB pass exactly as the ordered dither
+  already does for the indexed modes, and the HAM bytes it produces are
+  chunky bytes reaching the screen through the same C2P and blit as palette
+  indices.
+
+  This is enabled for the exact vertical-downscale geometry only - the
+  640x360-into-a-640x180-non-laced-screen shape an AGA fit normally produces -
+  and that restriction is a measured result rather than a structural limit.
+  Removing the RGB24 intermediate is worth less than it looks, because the
+  three-stage path's YUV->RGB stage is hand-written m68k assembly and the
+  fused encoder is portable C: at 1:1 the two are a wash, swinging either way
+  by more with a change of inlining than the fusion itself is worth. What
+  does not depend on out-coding that assembly is converting fewer samples,
+  and on a vertical downscale the old path converted every source row to RGB
+  before throwing half of them away. Measured under qemu-m68k on a 640x360
+  HAM8 frame, the whole conversion drops 45%, consistently across every code
+  layout tried. The other HAM geometries stay on the proven three-stage path;
+  a hand-written assembly fused encoder, as `mr_yuv_dither_m68k.S` already is
+  for the indexed modes, is what would open them up.
+- `tests/mr_yuv_ham_check.c` checks the fused encoder sample-for-sample
+  against the real `mr_yuv420_to_rgb24()` -> `mr_scale_resize_rgb24()` ->
+  `mr_ham_encode()` composition, for HAM6 and HAM8 across seven geometries,
+  padded and unpadded plane strides, and random and extreme content. It runs
+  in both `make check` and `make check-m68k`, the latter comparing against
+  the accelerated assembly pipeline on real big-endian m68k.
 - The inter-prediction half of libavc's degrade control was dead code:
   `i4_degrade_type` bits 2 and 3 ("faster"/"fastest inter prediction filters")
   set `ps_dec->i4_mv_frac_mask`, and nothing in the vendored decoder reads that

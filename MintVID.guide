@@ -165,6 +165,13 @@ CD32 Akiko hardware, or the Kalms converter for chipset playback (it is
 disabled for CGX). Kalms is the default; incompatible geometry or bitmap
 layouts fall back safely to graphics.library.
 
+On a HAM6 or HAM8 screen whose height is an exact whole fraction of the
+decoded height (the 640x360 into 640x180 shape a non-laced fit normally
+produces), H.264 is converted straight from YUV to HAM pixel bytes rather
+than through a full-resolution RGB24 frame - only the rows the downscale
+keeps are converted, cutting that conversion by about 45%. Other HAM
+geometries keep the established route.
+
   Play          starts the selected movie
   Pause         toggles playback
   Stop          exits the player

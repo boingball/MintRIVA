@@ -168,6 +168,14 @@ $CC -o "$BUILD/mr_yuv_dither_check.m68k" tests/mr_yuv_dither_check.c \
     core/mr_yuv_dither.c core/mr_yuv_dither_m68k.S core/mr_yuv.c \
     core/mr_yuv_m68k.S core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
 
+echo "== building mr_yuv_ham_check.m68k =="
+# Same idea for HAM: the reference composition links the real hand-asm
+# mr_yuv420_to_rgb24_m68k, so this cross-checks the fused encoder against the
+# accelerated three-stage pipeline on real big-endian m68k.
+$CC -o "$BUILD/mr_yuv_ham_check.m68k" tests/mr_yuv_ham_check.c \
+    core/mr_yuv_ham.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_scale.c \
+    core/mr_ham.c
+
 echo "== building mr_mpeg1_blockset_check.m68k / mr_mpeg1_idct_check.m68k =="
 $CC -o "$BUILD/mr_mpeg1_blockset_check.m68k" tests/mr_mpeg1_blockset_check.c \
     core/mr_mpeg1_blockset_m68k.S
@@ -194,6 +202,7 @@ run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
+run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
 run "$BUILD/mr_mpeg1_idct_check.m68k"
 run "$BUILD/mr_media_clock_check.m68k"

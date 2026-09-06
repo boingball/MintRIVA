@@ -26,6 +26,7 @@
 #include "../core/mr_media_clock.h"
 #include "../core/mr_yuv.h"
 #include "../core/mr_yuv_dither.h"
+#include "../core/mr_yuv_ham.h"
 #include "../audio/mr_audio_decode.h"
 #include "../iptv/mr_iptv.h"
 #include "amiga_display.h"
@@ -828,21 +829,26 @@ static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
  * Same contract as queue_copy_indexed(), but for the AGA resize case
  * (display_supports_yuv_indexed() - see display_backend.h and
  * aga_supports_yuv_indexed()): fr must be a MR_PIX_YUV420P frame
- * (mr_h264_set_yuv_output() enabled), and dst_w/dst_h/vscale are
+ * (mr_h264_set_yuv_output() enabled), and dst_w/dst_h/vscale/ham are
  * display_supports_yuv_indexed()'s own output for this session. Converts
- * straight from the decoder's YUV planes to indexed at the display's
- * fitted size in one pass (core/mr_yuv_dither.h) - no RGB24 buffer, full
- * resolution or resized, ever exists on this path. vscale > 0 selects the
- * exact vertical-only downscale's hand-tuned m68k assembly;
- * vscale == 0 selects the general 2D nearest-neighbour path
- * (mr_yuv420_dither_indexed_resize(), portable C only) for every other resize
- * shape, including an upscale (e.g. a 192x108 mobile HLS variant fitted up
- * to a 320x180 AGA screen).
+ * straight from the decoder's YUV planes to chunky pixels at the display's
+ * fitted size in one pass - no RGB24 buffer, full resolution or resized,
+ * ever exists on this path.
+ *
+ * ham is 0 for palette indices (core/mr_yuv_dither.h) or 6/8 for HAM6/HAM8
+ * pixel bytes (core/mr_yuv_ham.h); both fill the same one-byte-per-pixel
+ * slot and are presented identically by display_show_indexed(). HAM is only
+ * ever reported for the exact vertical downscale.
+ *
+ * vscale > 0 selects the exact vertical-only downscale (hand-tuned m68k
+ * assembly on the indexed side); vscale == 0 selects the general 2D
+ * nearest-neighbour path for every other resize shape, including an upscale
+ * (e.g. a 192x108 mobile HLS variant fitted up to a 320x180 AGA screen).
  */
 static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
                                   uint64_t pts, uint64_t decoded_at,
                                   int dst_w, int dst_h, int vscale,
-                                  int indexed_depth)
+                                  int indexed_depth, int ham)
 {
     size_t bytes = (size_t)dst_w * (size_t)dst_h;
     if (q->capacity < bytes) {
@@ -850,7 +856,15 @@ static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    if (vscale > 0)
+    if (ham)
+        /* aga_supports_yuv_indexed() only reports ham for the exact vertical
+         * downscale, so vscale is always > 1 here - see core/mr_yuv_ham.h for
+         * why the other shapes stay on aga_show()'s three-stage path. */
+        mr_yuv420_ham_encode(fr->data, fr->stride, fr->u_data,
+                             fr->u_stride, fr->v_data, fr->v_stride,
+                             fr->width, fr->height, vscale, ham,
+                             q->rgb, dst_w);
+    else if (vscale > 0)
         mr_yuv420_dither_indexed(fr->data, fr->stride, fr->u_data,
                                  fr->u_stride, fr->v_data, fr->v_stride,
                                  fr->width, fr->height, vscale, indexed_depth,
@@ -1877,11 +1891,11 @@ int main(int argc, char **argv)
      * use_indexed_queue below: at 1:1 both would otherwise apply, and this
      * is strictly the cheaper of the two. */
     int use_yuv_indexed_queue = 0, yuv_dst_w = 0, yuv_dst_h = 0;
-    int yuv_vscale = 1, indexed_depth = 8;
+    int yuv_vscale = 1, indexed_depth = 8, yuv_ham = 0;
     if (codec == &mr_codec_h264)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
             disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale,
-            &indexed_depth);
+            &indexed_depth, &yuv_ham);
     /* True for a plain 4-, 5- or 8-plane native indexed configuration (see
      * display_backend.h / aga_supports_indexed()) when the YUV path above
      * doesn't already cover this (non-H.264, or an AGA mode
@@ -1911,7 +1925,11 @@ int main(int argc, char **argv)
                    "yuv=%s\n", diag_depth, diag_ham, diag_scale, diag_resize,
                    diag_c2p, use_yuv_indexed_queue ? "supported"
                                                    : "unsupported");
-        if (use_yuv_indexed_queue)
+        if (use_yuv_indexed_queue && yuv_ham)
+            printf("video path: YUV420P %dx%d -> HAM%d %dx%d %s\n",
+                   vi->width, vi->height, yuv_ham, yuv_dst_w, yuv_dst_h,
+                   yuv_vscale > 1 ? "(vscale path)" : "(unexpected shape)");
+        else if (use_yuv_indexed_queue)
             printf("video path: YUV420P %dx%d -> INDEX%d %dx%d %s\n",
                    vi->width, vi->height, indexed_depth, yuv_dst_w, yuv_dst_h,
                    yuv_vscale == 1 ? "(1:1 identity)" :
@@ -3149,17 +3167,18 @@ int main(int argc, char **argv)
                             uint64_t decoded_at = want_time ? monotonic_us() : 0;
                             int copy_ok;
                             if (use_yuv_indexed_queue) {
-                                /* Only the fused YUV420->indexed path gets its
+                                /* Only the fused YUV420->chunky path gets its
                                  * own timing bucket: it is real per-frame work
-                                 * (mr_yuv420_dither8()), not folded into any
-                                 * existing stat, and is the next ASM
+                                 * (mr_yuv420_dither8(), or mr_yuv420_ham_
+                                 * encode() on a HAM screen), not folded into
+                                 * any existing stat, and is the next ASM
                                  * candidate - this is how its cost gets
                                  * measured. */
                                 uint64_t yt0 = want_time ? monotonic_us() : 0;
                                 copy_ok = queue_copy_yuv_indexed(
                                     tail, &dec.frame, pts, decoded_at,
                                     yuv_dst_w, yuv_dst_h, yuv_vscale,
-                                    indexed_depth);
+                                    indexed_depth, yuv_ham);
                                 if (want_time) {
                                     unsigned long us =
                                         (unsigned long)(monotonic_us() - yt0);

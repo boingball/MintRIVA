@@ -327,6 +327,12 @@ CGX playback opens a size-gadget window and scales the video as that window is
 resized. The **C2P** chooser selects the standard graphics.library path, CD32 Akiko
 hardware, or the Kalms converter for chipset playback. Kalms is the default;
 unsupported geometry or bitmap layouts fall back safely to graphics.library.
+For H.264 on a HAM6 or HAM8 screen whose height is an exact whole fraction of
+the decoded height — the 640x360-into-640x180 shape a non-laced AGA fit
+normally produces — the player converts the decoder's YUV planes straight to
+HAM pixel bytes instead of building a full-resolution RGB24 frame and encoding
+that, converting only the rows the downscale keeps and cutting the conversion
+by about 45%. Other HAM geometries keep the established RGB24 route.
 Changing output mode restores Kalms whenever the new mode has a matching
 kernel. CD32 is only offered when Akiko's hardware ID is detected; an explicit
 Akiko selection is preserved. The chooser is disabled for CGX. Play starts the
