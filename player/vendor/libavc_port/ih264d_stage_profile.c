@@ -47,6 +47,21 @@ MR_MC_WRAP(8)  MR_MC_WRAP(9)  MR_MC_WRAP(10) MR_MC_WRAP(11)
 MR_MC_WRAP(12) MR_MC_WRAP(13) MR_MC_WRAP(14) MR_MC_WRAP(15)
 #undef MR_MC_WRAP
 
+/* Chroma prediction is motion compensation too, and it is not cheap - before
+ * ih264_mc_degrade.c's exact dx/dy shortcuts it was the single hottest
+ * function in a decode. Leaving it out of mc_us made the on-hardware "h264
+ * stages:" line under-report motion compensation and inflate the unattributed
+ * remainder. */
+static ih264_inter_pred_chroma_ft *g_mc_chroma_orig;
+static void mc_chroma_wrap(UWORD8 *pu1_src, UWORD8 *pu1_dst, WORD32 src_strd,
+                           WORD32 dst_strd, WORD32 dx, WORD32 dy,
+                           WORD32 ht, WORD32 wd)
+{
+    clock_t t0 = clock();
+    g_mc_chroma_orig(pu1_src, pu1_dst, src_strd, dst_strd, dx, dy, ht, wd);
+    g_mc_us += stage_elapsed_us(t0);
+}
+
 static ih264_inter_pred_luma_ft * const g_mc_wrap[16] = {
     mc_wrap_0,  mc_wrap_1,  mc_wrap_2,  mc_wrap_3,
     mc_wrap_4,  mc_wrap_5,  mc_wrap_6,  mc_wrap_7,
@@ -261,6 +276,8 @@ static void wrap_mc_table(dec_struct_t *codec)
         g_mc_orig[i] = codec->apf_inter_pred_luma[i];
         codec->apf_inter_pred_luma[i] = g_mc_wrap[i];
     }
+    g_mc_chroma_orig = codec->pf_inter_pred_chroma;
+    codec->pf_inter_pred_chroma = mc_chroma_wrap;
 }
 
 /* mr_h264_set_speed_mode() swaps whole inter-prediction filter sets into

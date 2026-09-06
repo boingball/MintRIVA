@@ -32,8 +32,11 @@ typedef struct mr_h264_stage_us {
     unsigned long intra_us;
 } mr_h264_stage_us;
 
-/* Wrap this codec instance's apf_inter_pred_luma[]/deblock/recon function
- * pointers with timing instrumentation. Call once, after
+/* Wrap this codec instance's apf_inter_pred_luma[]/pf_inter_pred_chroma/
+ * deblock/recon function pointers with timing instrumentation. mc_us covers
+ * chroma prediction as well as luma - chroma is motion compensation too, and
+ * was the hottest single function in a decode before ih264_mc_degrade.c's
+ * exact dx/dy shortcuts. Call once, after
  * ih264d_init_function_ptr_generic() and any MR_M68K_ASM overrides have set
  * up the real implementations to measure - this captures whatever is
  * sitting in each slot at that point (generic C or our asm) and installs a
